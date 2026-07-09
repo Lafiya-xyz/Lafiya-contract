@@ -146,13 +146,13 @@ Issues and PRs welcome once M0/M1 land. Contributors agree to the project's code
 
 This repo is one of five in the `lafiya-xyz` organization.
 
-| Repo                  | Purpose                                                                                              | Priority                 |
-| ---------------------- | ----------------------------------------------------------------------------------------------------- | ------------------------- |
-| `lafiya-web`           | Patient + responder web app (Next.js). Public emergency page, authed profile editor, QR generation.    | Build first               |
-| **`lafiya-contracts`** _(this repo)_ | Soroban smart contracts (Rust): attestation registry + attester allowlist. Testnet first. | **Build next**            |
-| `lafiya-docs`          | Concept note, data model, threat model, privacy design, funding/DPG materials, references.             | Start now (lightweight)   |
-| `.github`              | Organization profile README and contribution guidelines.                                               | Start now                 |
-| `lafiya-verifier`      | CHW verification tool. Begins as a route inside `lafiya-web`; split out only if it grows.               | Later                     |
+| Repo                  | URL | Purpose                                                                                              | Priority                 |
+| ---------------------- | --- | ----------------------------------------------------------------------------------------------------- | ------------------------- |
+| `lafiya-web`           | [github.com/Lafiya-xyz/lafiya-web](https://github.com/Lafiya-xyz/lafiya-web) | Patient + responder web app (Next.js). Public emergency page, authed profile editor, QR generation.    | Build first               |
+| **`lafiya-contracts`** _(this repo)_ | [github.com/Lafiya-xyz/Lafiya-contract](https://github.com/Lafiya-xyz/Lafiya-contract) | Soroban smart contracts (Rust): attestation registry + attester allowlist. Testnet first. | **Build next**            |
+| `lafiya-docs`          | [github.com/Lafiya-xyz/lafiya-docs](https://github.com/Lafiya-xyz/lafiya-docs) | Concept note, data model, threat model, privacy design, funding/DPG materials, references.             | Start now (lightweight)   |
+| `.github`              | [github.com/Lafiya-xyz/.github](https://github.com/Lafiya-xyz/.github) | Organization profile README and contribution guidelines.                                               | Start now                 |
+| `lafiya-verifier`      | [github.com/Lafiya-xyz/lafiya-verifier](https://github.com/Lafiya-xyz/lafiya-verifier) | CHW verification tool. Begins as a route inside `lafiya-web`; split out only if it grows.               | Later                     |
 
 > Resist scaffolding empty repos. Two working repos (`lafiya-web`, `lafiya-contracts`) beat five half-built ones. Build one honest milestone at a time.
 
