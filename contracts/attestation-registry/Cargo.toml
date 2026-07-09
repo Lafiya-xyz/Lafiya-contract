@@ -12,10 +12,13 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
-attester-registry = { path = "../attester-registry" }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+# Only needed to register the real contract in integration tests. The
+# release build calls attester-registry purely through the #[contractclient]
+# interface in lib.rs, so its contract implementation never links into
+# this crate's wasm.
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 
 [features]

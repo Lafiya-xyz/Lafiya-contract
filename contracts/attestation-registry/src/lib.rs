@@ -1,8 +1,18 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
+    BytesN, Env,
 };
+
+/// The subset of the `attester-registry` contract this crate calls. Kept
+/// as a trait interface (rather than a direct crate dependency) so that
+/// `attester-registry`'s own contract implementation never links into this
+/// crate's wasm — only the typed cross-contract call it generates does.
+#[contractclient(name = "AttesterRegistryClient")]
+pub trait AttesterRegistryInterface {
+    fn is_attester(env: Env, attester: Address) -> bool;
+}
 
 /// Storage keys for the attestation registry.
 #[contracttype]
@@ -80,7 +90,7 @@ impl AttestationRegistry {
             .instance()
             .get(&DataKey::AttesterRegistry)
             .ok_or(Error::NotInitialized)?;
-        let registry = attester_registry::AttesterRegistryClient::new(&env, &registry_id);
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
         }
