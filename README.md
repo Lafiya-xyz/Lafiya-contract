@@ -121,9 +121,12 @@ contracts/
         ├── lib.rs           # initialize, attest, get_attestation
         └── test.rs
 Cargo.toml                   # workspace + release profile
+Cargo.lock                    # committed for reproducible builds
 rust-toolchain.toml           # pins stable + wasm32v1-none
 Makefile                      # build/test/fmt/clippy/wasm/check
 .github/workflows/ci.yml      # runs the same checks on push/PR
+LICENSE                       # MIT
+CONTRIBUTING.md               # local dev workflow
 ```
 
 ## Tech Stack
