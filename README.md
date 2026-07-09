@@ -4,6 +4,8 @@
 [![Soroban Smart Contracts](https://img.shields.io/badge/Smart%20Contracts-Soroban-purple)](https://soroban.stellar.org)
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange)]()
 [![Network](https://img.shields.io/badge/network-testnet-lightgrey)]()
+[![CI](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/ci.yml/badge.svg)](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 Soroban smart contracts for Lafiya's on-chain trust layer — an attestation registry and attester allowlist that let a health worker's verification of an emergency health record be checked cryptographically, without the underlying health data ever touching the blockchain.
 
@@ -74,46 +76,82 @@ graph TB
 
 ### Core Components
 
-- **Attestation registry** — the on-chain record that a specific attester verified a specific record's hash at a specific time
-- **Attester allowlist** — the on-chain list of health workers authorized to write attestations
+- **`attester-registry`** — the on-chain allowlist of health workers authorized to write attestations
+- **`attestation-registry`** — the on-chain record of which attester verified which record hash, and when; calls into `attester-registry` on every write
 
-Both are targeted for milestone **M1** (see [Roadmap](#roadmap)); this repository is currently pre-alpha with no contract code yet.
+Both are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); neither has been deployed to testnet yet.
 
-## Smart Contract Layer (planned)
+## Smart Contract Layer
 
-The Soroban contracts here are the on-chain truth layer for Lafiya attestations — described at the level the project's roadmap and design principle currently commit to; exact function signatures are not yet finalized.
+Two Soroban contracts, each in its own crate under `contracts/`.
 
 **Design principle:** no personal health data ever touches the blockchain. Personal data lives in `lafiya-web`'s encrypted, access-controlled off-chain database. Stellar holds only hashes, attestations, and payments. This is what keeps Lafiya both privacy-respecting and regulator-compatible.
 
-Conceptually, the registry needs to:
+### `attester-registry`
 
-1. Accept an attestation from a caller, consisting of a record hash, the attester's identity, and a timestamp
-2. Reject attestations from callers not present in the attester allowlist
-3. Allow any caller (e.g. `lafiya-web` rendering a public emergency page) to look up whether — and by whom — a given record hash was attested
+| Function | Description |
+| --- | --- |
+| `initialize(admin: Address)` | Sets the admin. Callable once. |
+| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Emits `AttesterAdded`. |
+| `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Emits `AttesterRemoved`. |
+| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. |
+
+### `attestation-registry`
+
+| Function | Description |
+| --- | --- |
+| `initialize(admin: Address, attester_registry: Address)` | Sets the admin and the `attester-registry` contract to consult. Callable once. |
+| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, overwriting any prior attestation for that hash. Emits `AttestationRecorded`. |
+| `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
+
+`attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
 
 ## Repository Structure
 
-This repository is pre-alpha and does not yet contain contract code. Once M1 lands, the Soroban attestation registry and attester allowlist contracts — along with their tests — will live here.
+```
+contracts/
+├── attester-registry/       # allowlist contract
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester
+│       └── test.rs
+└── attestation-registry/    # attestation contract
+    ├── Cargo.toml
+    └── src/
+        ├── lib.rs           # initialize, attest, get_attestation
+        └── test.rs
+Cargo.toml                   # workspace + release profile
+rust-toolchain.toml           # pins stable + wasm32v1-none
+Makefile                      # build/test/fmt/clippy/wasm/check
+.github/workflows/ci.yml      # runs the same checks on push/PR
+```
 
 ## Tech Stack
 
-- **On-chain:** Soroban smart contracts (Rust) on Stellar; USDC on Stellar for CHW payments
+- **On-chain:** Soroban smart contracts (Rust), `soroban-sdk` 25.x, on Stellar; USDC on Stellar for CHW payments
 - **Network:** Stellar testnet first
 - **Standards informing design:** W3C Verifiable Credentials data model (issuer/holder/verifier roles, hash-based attestation)
 
 ## Getting Started
 
-Pre-alpha; this repository has no contract code yet. Setup instructions land with milestone M1 (see [Roadmap](#roadmap)).
+```bash
+git clone https://github.com/Lafiya-xyz/Lafiya-contract.git
+cd Lafiya-contract
+rustup target add wasm32v1-none   # also picked up automatically via rust-toolchain.toml
+make check                        # fmt-check + clippy + test + wasm build
+```
+
+Not yet deployed to testnet — deployment scripts and instructions land with the rest of milestone M1.
 
 ## Privacy & Compliance
 
 - **Nigeria Data Protection Act (2023)** governs all personal data held across the Lafiya project. Consent, encryption, and minimal disclosure are designed in from day one.
-- No health data is ever written on-chain — only non-reversible hashes and attestations, by design (see [Smart Contract Layer](#smart-contract-layer-planned)).
+- No health data is ever written on-chain — only non-reversible hashes and attestations, by design (see [Smart Contract Layer](#smart-contract-layer)).
 
 ## Roadmap
 
 - **M0 — Public card (testnet).** One patient can create a profile and expose a working read-only emergency page via QR. *(`lafiya-web`)*
-- **M1 — Attestation.** Soroban registry lets an allowlisted attester verify a record; the card shows a verified indicator. **← this repo**
+- **M1 — Attestation.** Soroban registry lets an allowlisted attester verify a record; the card shows a verified indicator. **← this repo** — contracts implemented and unit-tested; testnet deployment and `lafiya-web` integration still open.
 - **M2 — Incentives.** USDC-on-Stellar payout to a CHW per verified registration.
 - **M3 — Pilot.** Small supervised field pilot; measure verified cards created and scan events.
 - **M4 — Mainnet + funding.** Launch on mainnet; open transparent funding pool.
@@ -124,20 +162,34 @@ Stellar/Soroban does two things Lafiya genuinely needs that a plain web app cann
 
 ## Testing
 
-No tests yet. Contract tests land alongside the attestation registry and attester allowlist implementation (M1).
+```bash
+make test
+```
+
+Covers, per contract (see `contracts/*/src/test.rs`):
+
+- ✅ Initialize / double-initialize rejection
+- ✅ Admin-gated writes (`add_attester`, `remove_attester`), including rejection when the caller's auth entry doesn't match
+- ✅ Allowlist lookups (`is_attester`)
+- ✅ `attest` by an allowlisted vs. non-allowlisted attester, and before the contract is initialized
+- ✅ `get_attestation` lookups, including unknown hashes and re-attestation overwrite
+- ✅ Emitted events (`AttesterAdded`, `AttesterRemoved`, `AttestationRecorded`)
+
+Not yet covered: testnet deployment / integration testing against a live Soroban RPC, and the attester allowlist growing large enough to matter for storage TTL/cost.
 
 ## Dependencies
 
-- Rust + Soroban SDK (planned, once M1 contract work begins)
-- Stellar testnet account and USDC trustline for local development
+- Rust (stable) + `wasm32v1-none` target — see `rust-toolchain.toml`
+- `soroban-sdk` 25.x
+- Stellar testnet account and USDC trustline, once deployment scripts land
 
 ## License
 
-Recommended: **Apache-2.0** (OSI-approved, includes a patent grant — required for Digital Public Good status). Not yet finalized project-wide.
+[MIT](LICENSE).
 
 ## Contributing
 
-Issues and PRs welcome once M0/M1 land. Contributors agree to the project's code of conduct and license terms. This repository specifically needs collaborators with experience in:
+See [CONTRIBUTING.md](CONTRIBUTING.md) for the local dev workflow (`make check` etc.). Issues and PRs welcome. This repository specifically needs collaborators with experience in:
 
 - Stellar / Soroban smart contract development (Rust)
 - On-chain data modeling and attestation/verifiable-credential design
@@ -184,8 +236,8 @@ lafiya-web  ──(record hash)──▶  lafiya-contracts
 ### Conventions for AI Agents
 
 - Treat this section as the source of truth for **cross-repo** contracts. Each repo's own README covers repo-local conventions.
-- This repo is pre-alpha: do not assume contract code, tests, or a build system exist yet — check before referencing paths that aren't in [Repository Structure](#repository-structure).
-- When a change here affects the attestation schema, call it out explicitly so `lafiya-web` can be updated to match.
+- The contracts are implemented and unit-tested but not yet deployed to testnet — don't assume a live contract ID or deployment scripts exist; check [Repository Structure](#repository-structure) before referencing a path.
+- When a change here affects the attestation schema or either contract's function signatures, call it out explicitly so `lafiya-web` can be updated to match.
 
 ## Support
 
