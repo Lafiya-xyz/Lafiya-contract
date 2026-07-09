@@ -1,0 +1,7 @@
+/target
+**/*.rs.bk
+.DS_Store
+*.wasm
+!contracts/**/target
+.env
+.soroban
