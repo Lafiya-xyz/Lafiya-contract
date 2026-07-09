@@ -36,6 +36,30 @@ impl AttesterRegistry {
         env.storage().instance().set(&DataKey::Admin, &admin);
         Ok(())
     }
+
+    /// Add `attester` to the allowlist. Requires the admin's authorization.
+    pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Attester(attester), &true);
+        Ok(())
+    }
+
+    /// Remove `attester` from the allowlist. Requires the admin's
+    /// authorization. A no-op if the attester was never allowlisted.
+    pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage().persistent().remove(&DataKey::Attester(attester));
+        Ok(())
+    }
+
+    fn admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
 }
 
 #[cfg(test)]
