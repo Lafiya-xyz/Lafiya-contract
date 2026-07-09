@@ -1,8 +1,10 @@
 #![cfg(test)]
 
+extern crate std;
+
 use super::*;
-use soroban_sdk::testutils::Address as _;
-use soroban_sdk::Env;
+use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::{Env, Event, IntoVal};
 
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -26,4 +28,79 @@ fn initialize_twice_fails() {
 
     let result = client.try_initialize(&admin);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+}
+
+#[test]
+fn is_attester_false_before_allowlisting() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let someone = Address::generate(&env);
+    assert!(!client.is_attester(&someone));
+}
+
+#[test]
+fn add_attester_allowlists_and_emits_event() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "add_attester"),
+                    (attester.clone(),).into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+
+    let expected_event = AttesterAdded {
+        attester: attester.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn remove_attester_revokes_allowlisting() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    assert!(client.is_attester(&attester));
+
+    client.remove_attester(&attester);
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn remove_attester_never_added_is_a_no_op() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.remove_attester(&attester);
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn add_attester_before_initialize_fails() {
+    let (env, client, _admin) = setup();
+    let attester = Address::generate(&env);
+
+    let result = client.try_add_attester(&attester);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }

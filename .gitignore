@@ -5,3 +5,4 @@
 !contracts/**/target
 .env
 .soroban
+test_snapshots/
