@@ -125,9 +125,11 @@ fn attest_without_attester_auth_fails() {
 #[test]
 fn benchmark_storage_costs() {
     let (env, client, attester_registry, _admin) = setup();
+    // Benchmark with 10, 100, and 1000 attesters
     let sizes = [10, 100, 1000];
     
     for size in sizes.iter() {
+        // Setup: add attesters to the allowlist
         for _ in 0..*size {
             let attester = Address::generate(&env);
             attester_registry.add_attester(&attester);
@@ -137,15 +139,18 @@ fn benchmark_storage_costs() {
         attester_registry.add_attester(&attester);
         let record_hash = BytesN::from_array(&env, &[0u8; 32]);
         
-        env.budget().reset_unlimited();
+        // 1. Benchmark add_attester
+        env.budget().reset_unlimited(); // Reset budget to measure only the target operation
         let new_attester = Address::generate(&env);
         attester_registry.add_attester(&new_attester);
         std::println!("Size: {}, add_attester cost: {}", size, env.budget().cpu_instruction_cost());
 
+        // 2. Benchmark attest
         env.budget().reset_unlimited();
         client.attest(&attester, &record_hash);
         std::println!("Size: {}, attest cost: {}", size, env.budget().cpu_instruction_cost());
 
+        // 3. Benchmark remove_attester
         env.budget().reset_unlimited();
         attester_registry.remove_attester(&new_attester);
         std::println!("Size: {}, remove_attester cost: {}", size, env.budget().cpu_instruction_cost());
