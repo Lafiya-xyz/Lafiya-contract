@@ -95,3 +95,5 @@ impl AttesterRegistry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
+#[cfg(test)]
+mod large_test;
