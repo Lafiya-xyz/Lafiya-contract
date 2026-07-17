@@ -11,6 +11,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 |---|---|---|
 | `1` | `NotInitialized` | The contract has not been initialized yet. |
 | `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
+| `3` | `MigrationNotRequired` | `migrate()` was called but no storage migration is pending: the recorded schema version already matches (or exceeds) the running code's `SCHEMA_VERSION`. |
 
 ## `attestation-registry`
 
@@ -19,3 +20,4 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `1` | `NotInitialized` | The contract has not been initialized yet. |
 | `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
 | `3` | `AttesterNotAllowlisted` | The attester address is not allowlisted in the configured `attester-registry` contract. |
+| `4` | `MigrationNotRequired` | `migrate()` was called but no storage migration is pending: the recorded schema version already matches (or exceeds) the running code's `SCHEMA_VERSION`. |

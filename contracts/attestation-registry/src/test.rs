@@ -230,3 +230,89 @@ fn test_error_codes_are_documented() {
         );
     }
 }
+
+#[test]
+fn initialize_records_schema_version_one() {
+    let (_, client, _, _) = setup();
+    assert_eq!(client.get_schema_version(), 1);
+}
+
+#[test]
+fn get_schema_version_is_zero_before_initialize() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+
+    assert_eq!(client.get_schema_version(), 0);
+}
+
+#[test]
+fn upgrade_before_initialize_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let wasm_hash = BytesN::from_array(&env, &[8u8; 32]);
+
+    let result = client.try_upgrade(&wasm_hash);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn upgrade_without_admin_auth_fails() {
+    let (env, client, _attester_registry, _admin) = setup();
+
+    // Replace the blanket auth mock with an empty set: the upgrade call's
+    // `admin.require_auth()` now has no matching auth entry to satisfy it.
+    env.mock_auths(&[]);
+    let wasm_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let result = client.try_upgrade(&wasm_hash);
+    assert!(result.is_err());
+}
+
+#[test]
+fn migrate_fails_when_no_migration_pending() {
+    let (_, client, _, _) = setup();
+
+    // initialize already recorded SCHEMA_VERSION, so there is nothing to do.
+    let result = client.try_migrate();
+    assert_eq!(result, Err(Ok(Error::MigrationNotRequired)));
+}
+
+#[test]
+fn migrate_without_admin_auth_fails() {
+    let (env, client, _, _) = setup();
+    // Simulate a legacy (pre-versioning) instance so a migration IS pending.
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::SchemaVersion);
+    });
+
+    env.mock_auths(&[]);
+    let result = client.try_migrate();
+    assert!(result.is_err());
+
+    env.mock_all_auths();
+    assert_eq!(client.get_schema_version(), 0);
+}
+
+#[test]
+fn migrate_records_version_and_preserves_attestation() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[6u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+
+    // Simulate a legacy (pre-versioning) instance: instance storage was
+    // written before the SchemaVersion key existed.
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::SchemaVersion);
+    });
+    assert_eq!(client.get_schema_version(), 0);
+
+    client.migrate();
+
+    assert_eq!(client.get_schema_version(), 1);
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}

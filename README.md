@@ -95,6 +95,9 @@ Two Soroban contracts, each in its own crate under `contracts/`.
 | `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Emits `AttesterAdded`. |
 | `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Emits `AttesterRemoved`. |
 | `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. |
+| `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
+| `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
+| `get_schema_version() -> u32` | Storage schema version recorded for the instance (`0` = legacy pre-versioning or uninitialized). Open to any caller. |
 
 ### `attestation-registry`
 
@@ -103,6 +106,19 @@ Two Soroban contracts, each in its own crate under `contracts/`.
 | `initialize(admin: Address, attester_registry: Address)` | Sets the admin and the `attester-registry` contract to consult. Callable once. |
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, overwriting any prior attestation for that hash. Emits `AttestationRecorded`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
+| `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
+| `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
+| `get_schema_version() -> u32` | Storage schema version recorded for the instance (`0` = legacy pre-versioning or uninitialized). Open to any caller. |
+
+### Contract upgrades
+
+Both contracts are upgradeable by their admin (`upgrade`/`migrate`/`get_schema_version`
+above), with storage schema versioning (`SCHEMA_VERSION` starts at `1`) to make
+schema-changing upgrades explicit and verifiable. **Operators** must follow
+[docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the
+pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
+reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
+mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 
 `attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
 
@@ -113,15 +129,22 @@ contracts/
 ├── attester-registry/       # allowlist contract
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester
+│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
 │       └── test.rs
 └── attestation-registry/    # attestation contract
     ├── Cargo.toml
     └── src/
-        ├── lib.rs           # initialize, attest, get_attestation
+        ├── lib.rs           # initialize, attest, get_attestation, upgrade, migrate, get_schema_version
         └── test.rs
+docs/
+├── error-codes.md           # contract error enums (kept in sync by a unit test)
+└── runbooks/
+    └── contract-upgrade.md  # production upgrade runbook
+scripts/
+└── upgrade.sh               # build → hash → upload → upgrade → (migrate) → verify
 Cargo.toml                   # workspace + release profile
 Cargo.lock                    # committed for reproducible builds
+CHANGELOG.md                  # release notes incl. schema-impact statements
 rust-toolchain.toml           # pins stable + wasm32v1-none
 Makefile                      # build/test/fmt/clippy/wasm/check
 .github/workflows/ci.yml      # runs the same checks on push/PR
@@ -177,6 +200,7 @@ Covers, per contract (see `contracts/*/src/test.rs`):
 - ✅ `attest` by an allowlisted vs. non-allowlisted attester, and before the contract is initialized
 - ✅ `get_attestation` lookups, including unknown hashes and re-attestation overwrite
 - ✅ Emitted events (`AttesterAdded`, `AttesterRemoved`, `AttestationRecorded`)
+- ✅ Upgrade machinery: `get_schema_version` before/after initialize, `upgrade`/`migrate` authorization and uninitialized rejects, `MigrationNotRequired` guard, and `migrate()` recording the version while preserving pre-existing data (legacy-instance simulation)
 
 Not yet covered: testnet deployment / integration testing against a live Soroban RPC, and the attester allowlist growing large enough to matter for storage TTL/cost.
 
