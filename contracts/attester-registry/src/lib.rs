@@ -16,6 +16,12 @@ enum DataKey {
     Attester(Address),
 }
 
+/// Instance storage TTL policy:
+/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
+/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
+const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -51,6 +57,9 @@ impl AttesterRegistry {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -60,6 +69,9 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &true);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
@@ -71,6 +83,9 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         AttesterRemoved { attester }.publish(&env);
         Ok(())
     }

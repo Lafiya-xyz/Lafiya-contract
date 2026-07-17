@@ -27,6 +27,12 @@ enum DataKey {
     Attestation(BytesN<32>),
 }
 
+/// Instance storage TTL policy:
+/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
+/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
+const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+
 /// A single attestation: proof that `attester` verified the off-chain
 /// record whose hash is the lookup key, at `timestamp`. Never contains the
 /// underlying health data.
@@ -72,6 +78,9 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::AttesterRegistry, &attester_registry);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -103,6 +112,10 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attestation(record_hash.clone()), &attestation);
+
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         AttestationRecorded {
             record_hash,

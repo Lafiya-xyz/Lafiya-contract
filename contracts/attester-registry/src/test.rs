@@ -133,3 +133,28 @@ fn add_attester_without_admin_auth_fails() {
     assert!(result.is_err());
     assert!(!client.is_attester(&attester));
 }
+
+#[test]
+fn test_instance_ttl_extension() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // Advance ledger to simulate time passing (less than bump amount, more than threshold)
+    env.ledger().with_mut(|li| {
+        li.sequence += 1_000_000;
+    });
+
+    // The contract should still be callable because `initialize` extended the TTL
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    assert!(client.is_attester(&attester));
+
+    // Advance ledger again
+    env.ledger().with_mut(|li| {
+        li.sequence += 1_000_000;
+    });
+
+    // Still callable because `add_attester` extended the TTL
+    client.remove_attester(&attester);
+    assert!(!client.is_attester(&attester));
+}
