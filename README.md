@@ -78,12 +78,13 @@ graph TB
 
 - **`attester-registry`** — the on-chain allowlist of health workers authorized to write attestations
 - **`attestation-registry`** — the on-chain record of which attester verified which record hash, and when; calls into `attester-registry` on every write
+- **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization
 
-Both are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); neither has been deployed to testnet yet.
+All three are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); none has been deployed to testnet yet.
 
 ## Smart Contract Layer
 
-Two Soroban contracts, each in its own crate under `contracts/`.
+Three Soroban contracts, each in its own crate under `contracts/`.
 
 **Design principle:** no personal health data ever touches the blockchain. Personal data lives in `lafiya-web`'s encrypted, access-controlled off-chain database. Stellar holds only hashes, attestations, and payments. This is what keeps Lafiya both privacy-respecting and regulator-compatible.
 
@@ -104,12 +105,25 @@ Two Soroban contracts, each in its own crate under `contracts/`.
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, overwriting any prior attestation for that hash. Emits `AttestationRecorded`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
 
+### `multisig-account`
+
+| Function | Description |
+| --- | --- |
+| `__constructor(signers: Vec<BytesN<32>>, threshold: u32)` | Configures the ed25519 signer set and required N-of-M threshold at deployment. |
+| `__check_auth(...)` | Verifies ordered, unique signatures from configured signers whenever another contract calls `require_auth()` for this account address. |
+
 `attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
 
 ## Repository Structure
 
 ```
 contracts/
+├── multisig-account/        # reusable N-of-M admin account
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs
+│       ├── test.rs
+│       └── integration_test.rs
 ├── attester-registry/       # allowlist contract
 │   ├── Cargo.toml
 │   └── src/
@@ -144,6 +158,19 @@ rustup target add wasm32v1-none   # also picked up automatically via rust-toolch
 make check                        # fmt-check + clippy + test + wasm build
 ```
 
+### Recommended admin setup
+
+Deploy `multisig-account` first with the ed25519 public keys of all M administrators and the required threshold N. For example, three signer keys with a threshold of two creates a 2-of-3 admin account. Keep the signer keys in separate custody and order submitted signatures by public key.
+
+Use the deployed multisig contract address as `admin` when initializing both registries:
+
+```text
+attester-registry.initialize(multisig_address)
+attestation-registry.initialize(multisig_address, attester_registry_address)
+```
+
+The registry contracts need no multisig-specific logic. Their existing `admin.require_auth()` calls invoke the account contract's `__check_auth`, so an admin operation succeeds only when its authorization entry contains at least N valid signatures.
+
 Not yet deployed to testnet — deployment scripts and instructions land with the rest of milestone M1.
 
 ## Privacy & Compliance
@@ -177,6 +204,8 @@ Covers, per contract (see `contracts/*/src/test.rs`):
 - ✅ `attest` by an allowlisted vs. non-allowlisted attester, and before the contract is initialized
 - ✅ `get_attestation` lookups, including unknown hashes and re-attestation overwrite
 - ✅ Emitted events (`AttesterAdded`, `AttesterRemoved`, `AttestationRecorded`)
+- ✅ Multisig threshold, signer validation, signature ordering, and invalid-signature rejection
+- ✅ Multisig-backed initialization and admin operations through the contract-account authorization path
 
 Not yet covered: testnet deployment / integration testing against a live Soroban RPC, and the attester allowlist growing large enough to matter for storage TTL/cost.
 
