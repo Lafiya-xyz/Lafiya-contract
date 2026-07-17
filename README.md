@@ -144,8 +144,13 @@ rustup target add wasm32v1-none   # also picked up automatically via rust-toolch
 make check                        # fmt-check + clippy + test + wasm build
 ```
 
-Not yet deployed to testnet — deployment scripts and instructions land with the rest of milestone M1.
+To deploy and configure the contracts on the Stellar testnet, ensure you have the `stellar` CLI installed. A default testnet identity will be generated automatically if you do not have one configured.
 
+```bash
+make deploy-testnet     # Deploys both contracts and saves IDs
+make init-contracts     # Initializes contracts and wires them together
+make bindings           # Generates TS client bindings in bindings/
+```
 ## Privacy & Compliance
 
 - **Nigeria Data Protection Act (2023)** governs all personal data held across the Lafiya project. Consent, encryption, and minimal disclosure are designed in from day one.
