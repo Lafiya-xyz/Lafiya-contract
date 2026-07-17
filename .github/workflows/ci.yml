@@ -49,3 +49,5 @@ jobs:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --release --locked --target wasm32v1-none
+        - name: Check README contract tables
+          run: python .github/scripts/check_readme_contracts.py
