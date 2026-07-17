@@ -116,12 +116,40 @@ fn attest_without_attester_auth_fails() {
     let record_hash = BytesN::from_array(&env, &[5u8; 32]);
     let _ = &admin;
 
-    // Replace the blanket auth mock with an empty set: the attest call's
-    // `attester.require_auth()` now has no matching auth entry to satisfy it.
     env.mock_auths(&[]);
     let result = client.try_attest(&attester, &record_hash);
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn benchmark_storage_costs() {
+    let (env, client, attester_registry, _admin) = setup();
+    let sizes = [10, 100, 1000];
+    
+    for size in sizes.iter() {
+        for _ in 0..*size {
+            let attester = Address::generate(&env);
+            attester_registry.add_attester(&attester);
+        }
+        
+        let attester = Address::generate(&env);
+        attester_registry.add_attester(&attester);
+        let record_hash = BytesN::from_array(&env, &[0u8; 32]);
+        
+        env.budget().reset_unlimited();
+        let new_attester = Address::generate(&env);
+        attester_registry.add_attester(&new_attester);
+        std::println!("Size: {}, add_attester cost: {}", size, env.budget().cpu_instruction_cost());
+
+        env.budget().reset_unlimited();
+        client.attest(&attester, &record_hash);
+        std::println!("Size: {}, attest cost: {}", size, env.budget().cpu_instruction_cost());
+
+        env.budget().reset_unlimited();
+        attester_registry.remove_attester(&new_attester);
+        std::println!("Size: {}, remove_attester cost: {}", size, env.budget().cpu_instruction_cost());
+    }
 }
 
 fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
