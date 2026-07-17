@@ -123,3 +123,110 @@ fn attest_without_attester_auth_fails() {
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), None);
 }
+
+fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
+    let mut variants = std::vec::Vec::new();
+    if let Some(start_idx) = content.find("pub enum Error") {
+        if let Some(block_start) = content[start_idx..].find('{') {
+            let block = &content[start_idx + block_start + 1..];
+            if let Some(block_end) = block.find('}') {
+                let body = &block[..block_end];
+                for line in body.lines() {
+                    let line = line.trim();
+                    if line.is_empty() || line.starts_with("//") {
+                        continue;
+                    }
+                    if let Some(first_char) = line.chars().next() {
+                        if first_char.is_ascii_alphabetic() {
+                            let name: std::string::String = line
+                                .chars()
+                                .take_while(|c| c.is_ascii_alphanumeric())
+                                .collect();
+                            if !name.is_empty() {
+                                variants.push(name);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    variants
+}
+
+#[test]
+fn test_error_codes_are_documented() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+
+    let doc_path = workspace_root.join("docs").join("error-codes.md");
+    let doc_content = std::fs::read_to_string(&doc_path)
+        .expect("Failed to read docs/error-codes.md. Make sure it exists.");
+
+    let attester_src_path = workspace_root
+        .join("contracts")
+        .join("attester-registry")
+        .join("src")
+        .join("lib.rs");
+    let attester_src = std::fs::read_to_string(&attester_src_path)
+        .expect("Failed to read attester-registry lib.rs");
+
+    let attestation_src_path = workspace_root
+        .join("contracts")
+        .join("attestation-registry")
+        .join("src")
+        .join("lib.rs");
+    let attestation_src = std::fs::read_to_string(&attestation_src_path)
+        .expect("Failed to read attestation-registry lib.rs");
+
+    let attester_variants = parse_error_variants(&attester_src);
+    let attestation_variants = parse_error_variants(&attestation_src);
+
+    assert!(
+        !attester_variants.is_empty(),
+        "Could not find any Error variants in attester-registry"
+    );
+    assert!(
+        !attestation_variants.is_empty(),
+        "Could not find any Error variants in attestation-registry"
+    );
+
+    let attester_section_idx = doc_content
+        .find("## `attester-registry`")
+        .expect("Missing '## `attester-registry`' section in docs/error-codes.md");
+    let attestation_section_idx = doc_content
+        .find("## `attestation-registry`")
+        .expect("Missing '## `attestation-registry`' section in docs/error-codes.md");
+
+    let (attester_doc, attestation_doc) = if attester_section_idx < attestation_section_idx {
+        (
+            &doc_content[attester_section_idx..attestation_section_idx],
+            &doc_content[attestation_section_idx..],
+        )
+    } else {
+        (
+            &doc_content[attester_section_idx..],
+            &doc_content[attestation_section_idx..attester_section_idx],
+        )
+    };
+
+    for variant in &attester_variants {
+        assert!(
+            attester_doc.contains(variant),
+            "Error variant '{}' is not documented under '## `attester-registry`' in docs/error-codes.md",
+            variant
+        );
+    }
+
+    for variant in &attestation_variants {
+        assert!(
+            attestation_doc.contains(variant),
+            "Error variant '{}' is not documented under '## `attestation-registry`' in docs/error-codes.md",
+            variant
+        );
+    }
+}
