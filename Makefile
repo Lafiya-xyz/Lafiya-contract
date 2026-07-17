@@ -22,3 +22,6 @@ check: fmt-check clippy test wasm
 
 clean:
 	cargo clean
+
+bench:
+	cargo test -- --nocapture
