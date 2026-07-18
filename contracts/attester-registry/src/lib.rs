@@ -54,6 +54,12 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Return the address authorized to manage the allowlist.
+    /// Fails until the contract has been initialized.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::admin(&env)
+    }
+
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();

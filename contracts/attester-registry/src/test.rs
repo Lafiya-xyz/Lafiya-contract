@@ -19,6 +19,15 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 fn initialize_sets_admin() {
     let (_, client, admin) = setup();
     client.initialize(&admin);
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn get_admin_before_initialize_fails() {
+    let (_, client, _admin) = setup();
+
+    let result = client.try_get_admin();
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
 
 #[test]

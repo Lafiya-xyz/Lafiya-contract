@@ -30,6 +30,27 @@ fn setup() -> (
 }
 
 #[test]
+fn configuration_getters_return_initialized_addresses() {
+    let (_env, client, attester_registry, admin) = setup();
+
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_attester_registry(), attester_registry.address);
+}
+
+#[test]
+fn configuration_getters_before_initialize_fail() {
+    let env = Env::default();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+
+    assert_eq!(client.try_get_admin(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_get_attester_registry(),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
 fn attest_by_allowlisted_attester_succeeds() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);

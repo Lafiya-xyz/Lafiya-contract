@@ -75,6 +75,18 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Return the address authorized to configure this registry.
+    /// Fails until the contract has been initialized.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::admin(&env)
+    }
+
+    /// Return the configured `attester-registry` contract address.
+    /// Fails until the contract has been initialized.
+    pub fn get_attester_registry(env: Env) -> Result<Address, Error> {
+        Self::attester_registry(&env)
+    }
+
     /// Record that `attester` verified the record hashing to `record_hash`.
     /// Requires `attester`'s authorization and that `attester` is
     /// currently allowlisted in the configured `attester-registry`.
@@ -86,11 +98,7 @@ impl AttestationRegistry {
     ) -> Result<Attestation, Error> {
         attester.require_auth();
 
-        let registry_id: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttesterRegistry)
-            .ok_or(Error::NotInitialized)?;
+        let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
@@ -121,6 +129,20 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Attestation(record_hash))
+    }
+
+    fn admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    fn attester_registry(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttesterRegistry)
+            .ok_or(Error::NotInitialized)
     }
 }
 
