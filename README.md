@@ -192,8 +192,16 @@ Not yet covered: testnet deployment / integration testing against a live Soroban
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the local dev workflow (`make check` etc.). Issues and PRs welcome. This repository specifically needs collaborators with experience in:
+Contributions are welcome! As an open-source Digital Public Good, we rely on community contributions to build and maintain Lafiya.
 
+Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for our detailed guidelines, which cover:
+- Local development environment setup
+- Branching and commit conventions (Conventional Commits)
+- Cross-repo shared-contract coordination guidelines
+- Database/Supabase migration details
+- Smart contract quality standards and testing checklist
+
+This repository specifically needs collaborators with experience in:
 - Stellar / Soroban smart contract development (Rust)
 - On-chain data modeling and attestation/verifiable-credential design
 
