@@ -92,9 +92,11 @@ Two Soroban contracts, each in its own crate under `contracts/`.
 | Function | Description |
 | --- | --- |
 | `initialize(admin: Address)` | Sets the admin. Callable once. |
-| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Emits `AttesterAdded`. |
+| `add_attester(attester: Address)` | Legacy: allowlists `attester` without metadata. Emits `AttesterAdded`. |
+| `add_attester_with_info(attester: Address, info: AttesterInfo)` | Allowlists `attester` with optional metadata (`license_hash`, `region`). Emits `AttesterAdded`. |
 | `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Emits `AttesterRemoved`. |
 | `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. |
+| `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. |
 
 ### `attestation-registry`
 
