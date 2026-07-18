@@ -38,6 +38,14 @@ pub struct Attestation {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct Initialized {
+    #[topic]
+    pub admin: Address,
+    pub attester_registry: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct AttestationRecorded {
     #[topic]
     pub record_hash: BytesN<32>,
@@ -71,6 +79,11 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::AttesterRegistry, &attester_registry);
+        Initialized {
+            admin,
+            attester_registry,
+        }
+        .publish(&env);
         Ok(())
     }
 

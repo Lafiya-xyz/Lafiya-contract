@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 extern crate std;
 
 use super::*;
@@ -16,9 +14,17 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 }
 
 #[test]
-fn initialize_sets_admin() {
-    let (_, client, admin) = setup();
+fn initialize_emits_event() {
+    let (env, client, admin) = setup();
     client.initialize(&admin);
+
+    let expected_event = Initialized {
+        admin: admin.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
 }
 
 #[test]

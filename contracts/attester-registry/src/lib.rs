@@ -25,6 +25,13 @@ pub enum Error {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct Initialized {
+    #[topic]
+    pub admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct AttesterAdded {
     #[topic]
     pub attester: Address,
@@ -50,6 +57,7 @@ impl AttesterRegistry {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        Initialized { admin }.publish(&env);
         Ok(())
     }
 

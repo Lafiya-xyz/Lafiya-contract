@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 extern crate std;
 
 use super::*;
@@ -27,6 +25,28 @@ fn setup() -> (
     client.initialize(&admin, &attester_registry_id);
 
     (env, client, attester_registry_client, admin)
+}
+
+#[test]
+fn initialize_emits_event() {
+    let env = Env::default();
+    env.mock_all_auths();
+
+    let attester_registry_id = env.register(attester_registry::AttesterRegistry, ());
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    client.initialize(&admin, &attester_registry_id);
+
+    let expected_event = Initialized {
+        admin: admin.clone(),
+        attester_registry: attester_registry_id.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
 }
 
 #[test]
