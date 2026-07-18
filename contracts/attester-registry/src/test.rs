@@ -133,3 +133,74 @@ fn add_attester_without_admin_auth_fails() {
     assert!(result.is_err());
     assert!(!client.is_attester(&attester));
 }
+
+#[test]
+fn suspend_and_reinstate_attester_works() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+
+    let expected_added = AttesterAdded {
+        attester: attester.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_added.to_xdr(&env, &client.address)]
+    );
+    assert!(client.is_attester(&attester));
+
+    // Suspend the attester
+    client.suspend_attester(&attester);
+
+    let expected_suspend_event = AttesterSuspended {
+        attester: attester.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_suspend_event.to_xdr(&env, &client.address)]
+    );
+    assert!(!client.is_attester(&attester));
+
+    // Reinstate the attester
+    client.reinstate_attester(&attester);
+
+    let expected_reinstate_event = AttesterReinstated {
+        attester: attester.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_reinstate_event.to_xdr(&env, &client.address)]
+    );
+    assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn suspend_and_reinstate_without_admin_auth_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let attester = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.add_attester(&attester);
+
+    env.mock_auths(&[]);
+    let result_suspend = client.try_suspend_attester(&attester);
+    assert!(result_suspend.is_err());
+    assert!(client.is_attester(&attester));
+
+    // Suspend with admin (mock all auths again)
+    env.mock_all_auths();
+    client.suspend_attester(&attester);
+    assert!(!client.is_attester(&attester));
+
+    // Try reinstate without admin auth
+    env.mock_auths(&[]);
+    let result_reinstate = client.try_reinstate_attester(&attester);
+    assert!(result_reinstate.is_err());
+    assert!(!client.is_attester(&attester));
+}

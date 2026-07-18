@@ -124,6 +124,30 @@ fn attest_without_attester_auth_fails() {
     assert_eq!(client.get_attestation(&record_hash), None);
 }
 
+#[test]
+fn attest_when_attester_suspended_fails_and_reinstate_succeeds() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash_1 = BytesN::from_array(&env, &[12u8; 32]);
+    let record_hash_2 = BytesN::from_array(&env, &[13u8; 32]);
+
+    // Test: attester succeeds when not suspended
+    let attestation_1 = client.attest(&attester, &record_hash_1);
+    assert_eq!(attestation_1.attester, attester);
+
+    // Test: suspend attester, then attest fails
+    attester_registry.suspend_attester(&attester);
+    let result_suspended = client.try_attest(&attester, &record_hash_2);
+    assert_eq!(result_suspended, Err(Ok(Error::AttesterNotAllowlisted)));
+
+    // Test: reinstate attester, then attest succeeds again
+    attester_registry.reinstate_attester(&attester);
+    let attestation_2 = client.attest(&attester, &record_hash_2);
+    assert_eq!(attestation_2.attester, attester);
+}
+
 fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
     let mut variants = std::vec::Vec::new();
     if let Some(start_idx) = content.find("pub enum Error") {

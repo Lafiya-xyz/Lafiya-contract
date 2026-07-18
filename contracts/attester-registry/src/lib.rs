@@ -14,6 +14,9 @@ enum DataKey {
     /// Presence of this key (mapped to `true`) means the address is an
     /// allowlisted attester.
     Attester(Address),
+    /// Presence of this key (mapped to `true`) means the address is a
+    /// suspended attester.
+    Suspended(Address),
 }
 
 #[contracterror]
@@ -34,6 +37,20 @@ pub struct AttesterAdded {
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterRemoved {
+    #[topic]
+    pub attester: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterSuspended {
+    #[topic]
+    pub attester: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterReinstated {
     #[topic]
     pub attester: Address,
 }
@@ -71,17 +88,50 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Suspended(attester.clone()));
         AttesterRemoved { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Suspend an allowlisted attester. Requires the admin's authorization.
+    pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Suspended(attester.clone()), &true);
+        AttesterSuspended { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Reinstate a suspended attester. Requires the admin's authorization.
+    pub fn reinstate_attester(env: Env, attester: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Suspended(attester.clone()));
+        AttesterReinstated { attester }.publish(&env);
         Ok(())
     }
 
     /// Whether `attester` is currently allowlisted. Callable by anyone,
     /// including other contracts (e.g. `attestation-registry`).
     pub fn is_attester(env: Env, attester: Address) -> bool {
-        env.storage()
+        let is_allowlisted = env
+            .storage()
             .persistent()
-            .get(&DataKey::Attester(attester))
-            .unwrap_or(false)
+            .get(&DataKey::Attester(attester.clone()))
+            .unwrap_or(false);
+        if !is_allowlisted {
+            return false;
+        }
+        let is_suspended = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Suspended(attester))
+            .unwrap_or(false);
+        !is_suspended
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
