@@ -50,6 +50,13 @@ pub struct AttestationRecorded {
     pub timestamp: u64,
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationRevoked {
+    #[topic]
+    pub record_hash: BytesN<32>,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -57,6 +64,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     AttesterNotAllowlisted = 3,
+    AttestationNotFound = 4,
 }
 
 #[contract]
@@ -120,6 +128,33 @@ impl AttestationRegistry {
         .publish(&env);
 
         Ok(attestation)
+    }
+
+    /// Revoke the attestation associated with `record_hash`.
+    /// Gated by the contract's Admin authorization.
+    pub fn revoke_attestation(env: Env, record_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attestation(record_hash.clone()))
+        {
+            return Err(Error::AttestationNotFound);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Attestation(record_hash.clone()));
+
+        AttestationRevoked { record_hash }.publish(&env);
+
+        Ok(())
     }
 
     /// Look up the latest attestation for `record_hash`, if any. Callable

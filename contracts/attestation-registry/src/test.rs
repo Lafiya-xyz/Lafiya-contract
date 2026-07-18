@@ -130,6 +130,75 @@ fn attest_without_attester_auth_fails() {
     assert_eq!(client.get_attestation(&record_hash), None);
 }
 
+#[test]
+fn revoke_then_lookup_succeeds() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[10u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation.clone()));
+
+    // Clear events first to isolate the revocation event
+    let _ = env.events().all();
+
+    client.revoke_attestation(&record_hash);
+    assert_eq!(client.get_attestation(&record_hash), None);
+
+    let expected_event = AttestationRevoked {
+        record_hash: record_hash.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+}
+
+#[test]
+fn revoke_by_unauthorized_caller_fails() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[11u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+
+    // Disable automatic mock auths to test unauthorized caller
+    env.mock_auths(&[]);
+    let result = client.try_revoke_attestation(&record_hash);
+    assert!(result.is_err());
+    
+    // Attestation should still exist
+    env.mock_all_auths();
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn revoke_nonexistent_hash_fails() {
+    let (env, client, _, _admin) = setup();
+    let record_hash = BytesN::from_array(&env, &[12u8; 32]);
+
+    let result = client.try_revoke_attestation(&record_hash);
+    assert_eq!(result, Err(Ok(Error::AttestationNotFound)));
+}
+
+#[test]
+fn re_attest_after_revocation_succeeds() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[13u8; 32]);
+    client.attest(&attester, &record_hash);
+
+    client.revoke_attestation(&record_hash);
+    assert_eq!(client.get_attestation(&record_hash), None);
+
+    let second = client.attest(&attester, &record_hash);
+    assert_eq!(client.get_attestation(&record_hash), Some(second));
+}
+
 fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
     let mut variants = std::vec::Vec::new();
     if let Some(start_idx) = content.find("pub enum Error") {

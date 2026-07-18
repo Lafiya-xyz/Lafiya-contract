@@ -19,3 +19,4 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `1` | `NotInitialized` | The contract has not been initialized yet. |
 | `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
 | `3` | `AttesterNotAllowlisted` | The attester address is not allowlisted in the configured `attester-registry` contract. |
+| `4` | `AttestationNotFound` | The attestation for the given record hash was not found. |
