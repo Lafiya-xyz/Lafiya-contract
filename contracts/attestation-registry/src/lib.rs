@@ -46,6 +46,12 @@ pub struct AttestationRecorded {
     pub timestamp: u64,
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Upgraded {
+    pub new_wasm_hash: BytesN<32>,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -121,6 +127,29 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Attestation(record_hash))
+    }
+
+    /// Upgrade the contract's Wasm code to a new version.
+    /// Requires the admin's authorization.
+    ///
+    /// Runbook:
+    /// 1. Build the new Wasm binary (e.g. `cargo build --workspace --release --target wasm32v1-none`).
+    /// 2. Upload/install the new Wasm on-chain to obtain its 32-byte hash (`new_wasm_hash`).
+    /// 3. The admin calls this `upgrade` function passing the `new_wasm_hash`.
+    ///
+    /// For any accompanying state/data migrations, see the storage-versioning guidelines
+    /// (e.g. implementing migration scripts or handling lazy migrations on reading old schema versions).
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        Upgraded { new_wasm_hash }.publish(&env);
+        Ok(())
     }
 }
 
