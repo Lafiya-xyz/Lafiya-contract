@@ -79,6 +79,10 @@ graph TB
 - **`attester-registry`** — the on-chain allowlist of health workers authorized to write attestations
 - **`attestation-registry`** — the on-chain record of which attester verified which record hash, and when; calls into `attester-registry` on every write
 
+Significant design choices and their trade-offs are recorded in the
+[Architecture Decision Records](docs/adr/README.md). Contributors should add or supersede an ADR
+when changing a security boundary, privacy assumption, contract interface, or trust model.
+
 Both are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); neither has been deployed to testnet yet.
 
 ## Smart Contract Layer
@@ -120,6 +124,8 @@ contracts/
     └── src/
         ├── lib.rs           # initialize, attest, get_attestation
         └── test.rs
+docs/
+└── adr/                      # architecture decisions, index, and template
 Cargo.toml                   # workspace + release profile
 Cargo.lock                    # committed for reproducible builds
 rust-toolchain.toml           # pins stable + wasm32v1-none
