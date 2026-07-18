@@ -133,3 +133,52 @@ fn add_attester_without_admin_auth_fails() {
     assert!(result.is_err());
     assert!(!client.is_attester(&attester));
 }
+
+#[test]
+fn get_attester_info_returns_none_for_non_allowlisted() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let someone = Address::generate(&env);
+    assert_eq!(client.get_attester_info(&someone), None);
+}
+
+#[test]
+fn add_attester_has_none_metadata() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+
+    assert!(client.is_attester(&attester));
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: None,
+            region: None,
+        })
+    );
+}
+
+#[test]
+fn add_attester_with_info_stores_metadata() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[5u8; 32]);
+    let region = soroban_sdk::Symbol::new(&env, "US_WEST");
+
+    client.add_attester_with_info(&attester, &Some(license_hash.clone()), &Some(region.clone()));
+
+    assert!(client.is_attester(&attester));
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: Some(license_hash),
+            region: Some(region),
+        })
+    );
+}
+

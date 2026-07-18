@@ -109,6 +109,9 @@ Two Soroban contracts, each in its own crate under `contracts/`.
 ## Repository Structure
 
 ```
+bindings/
+├── attestation-registry/    # generated TS client for attestation contract
+└── attester-registry/       # generated TS client for allowlist contract
 contracts/
 ├── attester-registry/       # allowlist contract
 │   ├── Cargo.toml
@@ -123,11 +126,42 @@ contracts/
 Cargo.toml                   # workspace + release profile
 Cargo.lock                    # committed for reproducible builds
 rust-toolchain.toml           # pins stable + wasm32v1-none
-Makefile                      # build/test/fmt/clippy/wasm/check
+Makefile                      # build/test/fmt/clippy/wasm/bindings/check
 .github/workflows/ci.yml      # runs the same checks on push/PR
 LICENSE                       # MIT
 CONTRIBUTING.md               # local dev workflow
 ```
+
+## TypeScript Client Bindings
+
+Client bindings are generated from the built WASM contracts using the `stellar-cli` tool. They allow frontend applications (like `lafiya-web`) to interact with the deployed contracts with full type safety.
+
+### Generation
+
+To generate the bindings, run:
+
+```bash
+make bindings
+```
+
+This builds the contracts and outputs TypeScript packages to the `bindings/` directory:
+- `bindings/attester-registry`
+- `bindings/attestation-registry`
+
+To compile the generated packages:
+
+```bash
+cd bindings/attester-registry && npm install && npm run build
+cd ../attestation-registry && npm install && npm run build
+```
+
+### Publishing & Consumption
+
+The generated bindings are committed directly to this repository under the `bindings/` directory. `lafiya-web` (or any other consumer) can consume them via:
+- Direct git path dependency in `package.json` pointing to the repo or subdirectory.
+- A git submodule in the consuming project.
+- Alternatively, CI/CD can be configured to publish these directories as packages to the `@lafiya` npm organization.
+
 
 ## Tech Stack
 

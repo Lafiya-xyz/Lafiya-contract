@@ -2,7 +2,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
+    Symbol,
 };
 
 /// Storage keys for the attester registry.
@@ -11,9 +12,17 @@ use soroban_sdk::{
 enum DataKey {
     /// The address authorized to add/remove attesters.
     Admin,
-    /// Presence of this key (mapped to `true`) means the address is an
+    /// Presence of this key (mapped to `AttesterInfo`) means the address is an
     /// allowlisted attester.
     Attester(Address),
+}
+
+/// Metadata associated with an allowlisted attester.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttesterInfo {
+    pub license_hash: Option<BytesN<32>>,
+    pub region: Option<Symbol>,
 }
 
 #[contracterror]
@@ -57,9 +66,32 @@ impl AttesterRegistry {
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        let info = AttesterInfo {
+            license_hash: None,
+            region: None,
+        };
         env.storage()
             .persistent()
-            .set(&DataKey::Attester(attester.clone()), &true);
+            .set(&DataKey::Attester(attester.clone()), &info);
+        AttesterAdded { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
+    pub fn add_attester_with_info(
+        env: Env,
+        attester: Address,
+        license_hash: Option<BytesN<32>>,
+        region: Option<Symbol>,
+    ) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        let info = AttesterInfo {
+            license_hash,
+            region,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Attester(attester.clone()), &info);
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
@@ -80,8 +112,14 @@ impl AttesterRegistry {
     pub fn is_attester(env: Env, attester: Address) -> bool {
         env.storage()
             .persistent()
+            .has(&DataKey::Attester(attester))
+    }
+
+    /// Get the optional metadata associated with `attester` if they are allowlisted.
+    pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
+        env.storage()
+            .persistent()
             .get(&DataKey::Attester(attester))
-            .unwrap_or(false)
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
