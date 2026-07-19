@@ -6,6 +6,7 @@
 [![Network](https://img.shields.io/badge/network-testnet-lightgrey)]()
 [![CI](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/ci.yml/badge.svg)](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Docs](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/docs.yml/badge.svg)](https://Lafiya-xyz.github.io/Lafiya-contract/)
 
 Soroban smart contracts for Lafiya's on-chain trust layer — an attestation registry and attester allowlist that let a health worker's verification of an emergency health record be checked cryptographically, without the underlying health data ever touching the blockchain.
 
@@ -16,6 +17,9 @@ Soroban smart contracts for Lafiya's on-chain trust layer — an attestation reg
 > **Status:** Pre-alpha · Stellar **testnet** · not yet audited · not a medical device. See [Disclaimer](#disclaimer).
 
 ## Overview
+
+🔗 Documentation: https://Lafiya-xyz.github.io/Lafiya-contract/
+
 
 Lafiya is a free, patient-owned emergency health card: the handful of facts that change how you are treated in an emergency — blood group, genotype, allergies, current medications, chronic conditions — travel with you as a scannable QR code and can be **cryptographically verified** by a health worker so a first responder can trust them on the spot.
 

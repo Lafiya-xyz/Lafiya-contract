@@ -1,5 +1,6 @@
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+#![warn(missing_docs)]
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
