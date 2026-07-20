@@ -31,6 +31,12 @@ pub struct AttesterInfo {
     pub region: Option<Symbol>,
 }
 
+/// Instance storage TTL policy:
+/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
+/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
+const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
+const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
