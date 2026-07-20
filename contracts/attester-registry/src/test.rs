@@ -133,3 +133,152 @@ fn add_attester_without_admin_auth_fails() {
     assert!(result.is_err());
     assert!(!client.is_attester(&attester));
 }
+
+#[test]
+fn batch_add_and_remove_attesters_success() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester1 = Address::generate(&env);
+    let attester2 = Address::generate(&env);
+    let attester3 = Address::generate(&env);
+
+    let mut batch = Vec::new(&env);
+    batch.push_back(attester1.clone());
+    batch.push_back(attester2.clone());
+    batch.push_back(attester3.clone());
+
+    // Clear events from setup / initialize
+    env.events().all();
+
+    // Add batch
+    client.add_attesters(&batch);
+
+    // Verify events immediately (before other contract calls clear the event log)
+    let events = env.events().all().events().to_vec();
+    assert_eq!(events.len(), 3);
+    assert_eq!(*events.get(0).unwrap(), AttesterAdded { attester: attester1.clone() }.to_xdr(&env, &client.address));
+    assert_eq!(*events.get(1).unwrap(), AttesterAdded { attester: attester2.clone() }.to_xdr(&env, &client.address));
+    assert_eq!(*events.get(2).unwrap(), AttesterAdded { attester: attester3.clone() }.to_xdr(&env, &client.address));
+
+    assert!(client.is_attester(&attester1));
+    assert!(client.is_attester(&attester2));
+    assert!(client.is_attester(&attester3));
+
+    // Remove batch
+    let mut remove_batch = Vec::new(&env);
+    remove_batch.push_back(attester1.clone());
+    remove_batch.push_back(attester2.clone());
+
+    client.remove_attesters(&remove_batch);
+
+    // Verify remove events immediately
+    let events = env.events().all().events().to_vec();
+    assert_eq!(events.len(), 2);
+    assert_eq!(*events.get(0).unwrap(), AttesterRemoved { attester: attester1.clone() }.to_xdr(&env, &client.address));
+    assert_eq!(*events.get(1).unwrap(), AttesterRemoved { attester: attester2.clone() }.to_xdr(&env, &client.address));
+
+    assert!(!client.is_attester(&attester1));
+    assert!(!client.is_attester(&attester2));
+    assert!(client.is_attester(&attester3));
+}
+
+#[test]
+fn batch_add_and_remove_exceeding_limit_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let mut batch = Vec::new(&env);
+    for _ in 0..=(BATCH_LIMIT) {
+        batch.push_back(Address::generate(&env));
+    }
+
+    let result_add = client.try_add_attesters(&batch);
+    assert_eq!(result_add, Err(Ok(Error::BatchTooLarge)));
+
+    let result_remove = client.try_remove_attesters(&batch);
+    assert_eq!(result_remove, Err(Ok(Error::BatchTooLarge)));
+}
+
+#[test]
+fn batch_add_and_remove_partial_failure_idempotent() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester1 = Address::generate(&env);
+    let attester2 = Address::generate(&env);
+
+    // Pre-add attester1
+    client.add_attester(&attester1);
+    assert!(client.is_attester(&attester1));
+
+    // Clear events
+    env.events().all();
+
+    // Batch add both. attester1 is already allowlisted, so it should be skipped.
+    let mut batch = Vec::new(&env);
+    batch.push_back(attester1.clone());
+    batch.push_back(attester2.clone());
+
+    client.add_attesters(&batch);
+
+    // Verify only attester2 event was emitted immediately
+    let events = env.events().all().events().to_vec();
+    assert_eq!(events.len(), 1);
+    assert_eq!(*events.get(0).unwrap(), AttesterAdded { attester: attester2.clone() }.to_xdr(&env, &client.address));
+
+    // Both should be allowlisted
+    assert!(client.is_attester(&attester1));
+    assert!(client.is_attester(&attester2));
+
+    // Clear events
+    env.events().all();
+
+    // Pre-remove attester1
+    client.remove_attester(&attester1);
+    assert!(!client.is_attester(&attester1));
+    assert!(client.is_attester(&attester2));
+
+    // Clear events
+    env.events().all();
+
+    // Batch remove both. attester1 is not allowlisted, so it should be skipped.
+    let mut remove_batch = Vec::new(&env);
+    remove_batch.push_back(attester1.clone());
+    remove_batch.push_back(attester2.clone());
+
+    client.remove_attesters(&remove_batch);
+
+    // Verify only attester2 event was emitted immediately
+    let events = env.events().all().events().to_vec();
+    assert_eq!(events.len(), 1);
+    assert_eq!(*events.get(0).unwrap(), AttesterRemoved { attester: attester2.clone() }.to_xdr(&env, &client.address));
+
+    assert!(!client.is_attester(&attester1));
+    assert!(!client.is_attester(&attester2));
+}
+
+#[test]
+fn test_batch_budget() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // Build a maximum sized batch (50 addresses)
+    let mut batch = Vec::new(&env);
+    for _ in 0..BATCH_LIMIT {
+        batch.push_back(Address::generate(&env));
+    }
+
+    // Reset CPU budget tracking to get clean metrics
+    env.cost_estimate().budget().reset_default();
+
+    // Run maximum batch addition
+    client.add_attesters(&batch);
+
+    // Retrieve CPU instruction count
+    let cpu_insns = env.cost_estimate().budget().cpu_instruction_cost();
+    std::println!("CPU instructions consumed for batch of {}: {}", BATCH_LIMIT, cpu_insns);
+
+    // Assert that the resource consumption is well under Soroban's per-transaction limit (100 million)
+    assert!(cpu_insns < 100_000_000, "CPU instructions exceed 100M limit");
+}

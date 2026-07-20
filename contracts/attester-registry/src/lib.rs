@@ -2,8 +2,18 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env, Vec,
 };
+
+/// Maximum number of addresses that may be processed in a single batch
+/// add_attesters / remove_attesters call.
+///
+/// Rationale: benchmarks (see `test_batch_budget`) show that a batch of 50
+/// addresses consumes well under the 100 M-instruction per-transaction cap
+/// even on a cold ledger (all keys missing).  Batches beyond this size are
+/// rejected with `Error::BatchTooLarge` to give an early, deterministic error
+/// rather than a silent resource-limit abort.
+pub const BATCH_LIMIT: u32 = 40;
 
 /// Storage keys for the attester registry.
 #[contracttype]
@@ -22,6 +32,8 @@ enum DataKey {
 pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
+    /// The supplied batch exceeds `BATCH_LIMIT` addresses.
+    BatchTooLarge = 3,
 }
 
 #[contractevent]
@@ -72,6 +84,57 @@ impl AttesterRegistry {
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
         AttesterRemoved { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Add multiple attesters to the allowlist in a single transaction.
+    ///
+    /// Requires the admin's authorization. Returns `Error::BatchTooLarge` if
+    /// `attesters.len() > BATCH_LIMIT`. Addresses that are already
+    /// allowlisted are silently skipped (idempotent), so the call never fails
+    /// due to duplicates in the batch and no duplicate events are emitted.
+    /// Exactly one `AttesterAdded` event is emitted per newly added address.
+    pub fn add_attesters(env: Env, attesters: Vec<Address>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+
+        if attesters.len() > BATCH_LIMIT {
+            return Err(Error::BatchTooLarge);
+        }
+
+        for attester in attesters.iter() {
+            let key = DataKey::Attester(attester.clone());
+            // Skip if already allowlisted — no storage write, no event.
+            if !env.storage().persistent().has(&key) {
+                env.storage().persistent().set(&key, &true);
+                AttesterAdded { attester }.publish(&env);
+            }
+        }
+        Ok(())
+    }
+
+    /// Remove multiple attesters from the allowlist in a single transaction.
+    ///
+    /// Requires the admin's authorization. Returns `Error::BatchTooLarge` if
+    /// `attesters.len() > BATCH_LIMIT`. Addresses that are not currently
+    /// allowlisted are silently skipped (idempotent), so the call never fails
+    /// if an address was already removed and no spurious events are emitted.
+    /// Exactly one `AttesterRemoved` event is emitted per address that was
+    /// actually removed.
+    pub fn remove_attesters(env: Env, attesters: Vec<Address>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+
+        if attesters.len() > BATCH_LIMIT {
+            return Err(Error::BatchTooLarge);
+        }
+
+        for attester in attesters.iter() {
+            let key = DataKey::Attester(attester.clone());
+            // Skip if not allowlisted — no storage remove, no event.
+            if env.storage().persistent().has(&key) {
+                env.storage().persistent().remove(&key);
+                AttesterRemoved { attester }.publish(&env);
+            }
+        }
         Ok(())
     }
 

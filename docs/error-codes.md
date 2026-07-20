@@ -11,6 +11,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 |---|---|---|
 | `1` | `NotInitialized` | The contract has not been initialized yet. |
 | `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
+| `3` | `BatchTooLarge` | The number of attesters in the batch exceeds the limit. |
 
 ## `attestation-registry`
 

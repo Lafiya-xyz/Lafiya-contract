@@ -12,7 +12,7 @@ license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
 [workspace.dependencies]
-soroban-sdk = "25.3.1"
+soroban-sdk = "27.0.0"
 
 [profile.release]
 opt-level = "z"
