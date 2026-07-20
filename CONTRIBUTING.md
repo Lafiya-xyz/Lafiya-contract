@@ -8,6 +8,7 @@ project overview and architecture.
 
 - Rust (stable), installed via [rustup](https://rustup.rs)
 - The `wasm32v1-none` target: `rustup target add wasm32v1-none`
+- `pre-commit` (required for local git hooks): Install via `pip install pre-commit` or `brew install pre-commit`, then run `pre-commit install` in the repository root.
 
 `rust-toolchain.toml` pins the toolchain and target automatically once
 you run any `cargo` command in this repo.
