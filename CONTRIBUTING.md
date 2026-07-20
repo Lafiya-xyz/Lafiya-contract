@@ -4,7 +4,9 @@ Thank you for your interest in contributing to Lafiya! Lafiya is an open-source 
 
 This repository holds the Soroban (Stellar) smart contracts. Because Lafiya is a multi-repo ecosystem, contributions here often have ripple effects across other repositories. This guide outlines the setup, conventions, and workflows required to contribute safely.
 
----
+- Rust (stable), installed via [rustup](https://rustup.rs)
+- The `wasm32v1-none` target: `rustup target add wasm32v1-none`
+- `pre-commit` (required for local git hooks): Install via `pip install pre-commit` or `brew install pre-commit`, then run `pre-commit install` in the repository root.
 
 ## Table of Contents
 - [Local Setup](#local-setup)
@@ -116,7 +118,17 @@ This runs:
 3. `make test` (all cargo tests)
 4. `make wasm` (building target WASM binaries)
 
----
+- Every new contract function needs unit tests covering both the success
+  path and the failure/authorization paths (see `contracts/*/src/test.rs`
+  for existing patterns using `soroban_sdk::testutils`).
+- Cross-contract calls should go through a `#[contractclient]` trait
+  interface (see `attestation-registry`'s `AttesterRegistryInterface`),
+  not a direct crate dependency on the callee — depending on the whole
+  crate links its contract implementation into your wasm build too.
+- Any pull request (PR) that changes contract behavior, storage schemas, or public function signatures must include a corresponding entry in `CHANGELOG.md` under the `[Unreleased]` section. Refer to [releasing.md](docs/releasing.md) for details.
+- Run `make check` locally before pushing; it's the same set of checks CI
+  runs.
+- Keep `Cargo.lock` committed and up to date so builds are reproducible.
 
 ## Pull Request Process
 
