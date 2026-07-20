@@ -374,3 +374,30 @@ fn test_error_codes_are_documented() {
         );
     }
 }
+
+#[test]
+fn test_instance_ttl_extension() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    // Advance ledger to simulate time passing
+    env.ledger().with_mut(|li| {
+        li.sequence += 1_000_000;
+    });
+
+    // Contract should still be callable because initialize extended the TTL
+    let record_hash = BytesN::from_array(&env, &[10u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+    assert_eq!(attestation.attester, attester);
+
+    // Advance ledger again
+    env.ledger().with_mut(|li| {
+        li.sequence += 1_000_000;
+    });
+
+    // Contract should still be callable because attest extended the TTL
+    let record_hash2 = BytesN::from_array(&env, &[11u8; 32]);
+    let attestation2 = client.attest(&attester, &record_hash2);
+    assert_eq!(attestation2.attester, attester);
+}
