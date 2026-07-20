@@ -98,6 +98,7 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Emits `AttesterAdded`. |
 | `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Emits `AttesterRemoved`. |
 | `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. |
+| `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. |
 
 ### `attestation-registry`
 
