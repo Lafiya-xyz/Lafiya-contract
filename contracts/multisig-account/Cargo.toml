@@ -1,0 +1,24 @@
+[package]
+name = "multisig-account"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+doctest = false
+
+[dependencies]
+soroban-sdk = { workspace = true }
+
+[dev-dependencies]
+soroban-sdk = { workspace = true, features = ["testutils"] }
+attestation-registry = { path = "../attestation-registry", features = ["testutils"] }
+attester-registry = { path = "../attester-registry", features = ["testutils"] }
+ed25519-dalek = "2.2.0"
+sha2 = "0.10.9"
+
+[features]
+testutils = ["soroban-sdk/testutils"]
