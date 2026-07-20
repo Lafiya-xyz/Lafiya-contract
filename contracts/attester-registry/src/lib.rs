@@ -2,7 +2,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
+    Symbol,
 };
 
 /// Storage keys for the attester registry.
@@ -11,9 +12,19 @@ use soroban_sdk::{
 enum DataKey {
     /// The address authorized to add/remove attesters.
     Admin,
+    /// Pending admin address for two-step admin transfer.
+    PendingAdmin,
     /// Presence of this key (mapped to `true`) means the address is an
     /// allowlisted attester.
     Attester(Address),
+}
+
+/// Metadata associated with an allowlisted attester.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttesterInfo {
+    pub license_hash: Option<BytesN<32>>,
+    pub region: Option<Symbol>,
 }
 
 #[contracterror]
@@ -22,6 +33,16 @@ enum DataKey {
 pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
+    NoPendingTransfer = 3,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferred {
+    #[topic]
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
 }
 
 #[contractevent]
@@ -54,12 +75,70 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Propose a new admin address. The caller must authorize as the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin = Self::admin(&env)?;
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let previous_admin = Self::admin(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+
+        pending_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferred {
+            previous_admin,
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        let info = AttesterInfo {
+            license_hash: None,
+            region: None,
+        };
         env.storage()
             .persistent()
-            .set(&DataKey::Attester(attester.clone()), &true);
+            .set(&DataKey::Attester(attester.clone()), &info);
+        AttesterAdded { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
+    pub fn add_attester_with_info(
+        env: Env,
+        attester: Address,
+        license_hash: Option<BytesN<32>>,
+        region: Option<Symbol>,
+    ) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        let info = AttesterInfo {
+            license_hash,
+            region,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Attester(attester.clone()), &info);
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
@@ -80,8 +159,14 @@ impl AttesterRegistry {
     pub fn is_attester(env: Env, attester: Address) -> bool {
         env.storage()
             .persistent()
+            .has(&DataKey::Attester(attester))
+    }
+
+    /// Get the optional metadata associated with `attester` if they are allowlisted.
+    pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
+        env.storage()
+            .persistent()
             .get(&DataKey::Attester(attester))
-            .unwrap_or(false)
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
@@ -95,3 +180,5 @@ impl AttesterRegistry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
+#[cfg(test)]
+mod large_test;
