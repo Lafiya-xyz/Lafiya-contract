@@ -118,6 +118,7 @@ This runs:
 3. `make test` (all cargo tests)
 4. `make wasm` (building target WASM binaries)
 
+
 - Every new contract function needs unit tests covering both the success
   path and the failure/authorization paths (see `contracts/*/src/test.rs`
   for existing patterns using `soroban_sdk::testutils`).

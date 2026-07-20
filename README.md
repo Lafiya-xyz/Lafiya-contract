@@ -234,10 +234,11 @@ Stellar/Soroban does two things Lafiya genuinely needs that a plain web app cann
 ## Testing
 
 ```bash
-make test
+make test              # Unit tests (in-process soroban-sdk testutils)
+make test-integration  # Integration tests (deployed WASMs on local Soroban network)
 ```
 
-Covers, per contract (see `contracts/*/src/test.rs`):
+Covers, per contract (see `contracts/*/src/test.rs` and `tests/integration/run.sh`):
 
 - ✅ Initialize / double-initialize rejection
 - ✅ Admin-gated writes (`add_attester`, `remove_attester`), including rejection when the caller's auth entry doesn't match
@@ -248,7 +249,6 @@ Covers, per contract (see `contracts/*/src/test.rs`):
 - ✅ Multisig threshold, signer validation, signature ordering, and invalid-signature rejection
 - ✅ Multisig-backed initialization and admin operations through the contract-account authorization path
 
-Not yet covered: testnet deployment / integration testing against a live Soroban RPC, and the attester allowlist growing large enough to matter for storage TTL/cost.
 
 ## Dependencies
 
