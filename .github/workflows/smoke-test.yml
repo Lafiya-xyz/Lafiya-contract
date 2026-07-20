@@ -1,0 +1,51 @@
+name: Smoke Test
+
+on:
+  workflow_dispatch:
+    inputs:
+      att_registry:
+        description: 'Attestation Registry contract ID'
+        required: true
+        type: string
+      attester_registry:
+        description: 'Attester Registry contract ID'
+        required: true
+        type: string
+      network_url:
+        description: 'Horizon URL for the target testnet'
+        required: true
+        type: string
+      admin_secret:
+        description: 'Secret key of admin account'
+        required: true
+        type: string
+
+jobs:
+  smoke-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          override: true
+
+      - name: Install Stellar CLI
+        run: |
+          curl -L https://github.com/stellar/stellar-cli/releases/download/v0.8.0/stellar-cli-linux-amd64.tar.gz -o stellar-cli.tar.gz
+          tar -xzf stellar-cli.tar.gz stellar-cli
+          sudo mv stellar-cli /usr/local/bin/
+          stellar-cli version
+
+      - name: Run smoke test script
+        env:
+          ATT_REGISTRY: ${{ github.event.inputs.att_registry }}
+          ATTESTER_REGISTRY: ${{ github.event.inputs.attester_registry }}
+          NETWORK_URL: ${{ github.event.inputs.network_url }}
+          ADMIN_SECRET: ${{ github.event.inputs.admin_secret }}
+        run: |
+          chmod +x scripts/smoke-test.sh
+          ./scripts/smoke-test.sh
