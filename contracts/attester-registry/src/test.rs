@@ -128,7 +128,7 @@ fn add_attester_without_admin_auth_fails() {
     }]);
 
     let result = client.try_add_attester(&attester);
-    assert!(result.is_err());
+    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     assert!(!client.is_attester(&attester));
 }
 
