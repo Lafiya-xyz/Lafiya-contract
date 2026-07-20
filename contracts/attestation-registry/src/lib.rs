@@ -21,6 +21,8 @@ pub trait AttesterRegistryInterface {
 enum DataKey {
     /// The address authorized to (re)point `AttesterRegistry`.
     Admin,
+    /// Pending admin address for two-step admin transfer.
+    PendingAdmin,
     /// The deployed `attester-registry` contract consulted on every `attest` call.
     AttesterRegistry,
     /// Latest attestation recorded for a given record hash.
@@ -45,6 +47,15 @@ pub struct Attestation {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct AdminTransferred {
+    #[topic]
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct AttestationRecorded {
     #[topic]
     pub record_hash: BytesN<32>,
@@ -59,6 +70,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     AttesterNotAllowlisted = 3,
+    NoPendingTransfer = 4,
 }
 
 #[contract]
@@ -81,6 +93,41 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Propose a new admin address. The caller must authorize as the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin = Self::admin(&env)?;
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let previous_admin = Self::admin(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+
+        pending_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferred {
+            previous_admin,
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -134,6 +181,13 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Attestation(record_hash))
+    }
+
+    fn admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
     }
 }
 
