@@ -15,6 +15,8 @@ pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
 }
 
+const SCHEMA_VERSION: u32 = 1;
+
 /// Storage keys for the attestation registry.
 #[contracttype]
 #[derive(Clone)]
@@ -27,6 +29,8 @@ enum DataKey {
     AttesterRegistry,
     /// Latest attestation recorded for a given record hash.
     Attestation(BytesN<32>),
+    /// The storage schema version of the contract.
+    SchemaVersion,
 }
 
 /// Instance storage TTL policy:
@@ -63,6 +67,13 @@ pub struct AttestationRecorded {
     pub timestamp: u64,
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationRevoked {
+    #[topic]
+    pub record_hash: BytesN<32>,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -92,7 +103,7 @@ impl AttestationRegistry {
             .set(&DataKey::AttesterRegistry, &attester_registry);
         env.storage()
             .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
         Ok(())
     }
 
@@ -142,13 +153,13 @@ impl AttestationRegistry {
     ) -> Result<Attestation, Error> {
         attester.require_auth();
 
-        let registry_id: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttesterRegistry)
-            .ok_or(Error::NotInitialized)?;
+        let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
-        if !registry.is_attester(&attester) {
+        let is_allowlisted = match registry.try_is_attester(&attester) {
+            Ok(Ok(res)) => res,
+            _ => return Err(Error::InvalidRegistryWiring),
+        };
+        if !is_allowlisted {
             return Err(Error::AttesterNotAllowlisted);
         }
 
@@ -172,6 +183,33 @@ impl AttestationRegistry {
         .publish(&env);
 
         Ok(attestation)
+    }
+
+    /// Revoke the attestation associated with `record_hash`.
+    /// Gated by the contract's Admin authorization.
+    pub fn revoke_attestation(env: Env, record_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attestation(record_hash.clone()))
+        {
+            return Err(Error::AttestationNotFound);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Attestation(record_hash.clone()));
+
+        AttestationRevoked { record_hash }.publish(&env);
+
+        Ok(())
     }
 
     /// Look up the latest attestation for `record_hash`, if any. Callable
