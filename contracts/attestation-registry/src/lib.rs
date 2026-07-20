@@ -1,4 +1,5 @@
 #![no_std]
+#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
@@ -14,16 +15,22 @@ pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
 }
 
+const SCHEMA_VERSION: u32 = 1;
+
 /// Storage keys for the attestation registry.
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
     /// The address authorized to (re)point `AttesterRegistry`.
     Admin,
+    /// Pending admin address for two-step admin transfer.
+    PendingAdmin,
     /// The deployed `attester-registry` contract consulted on every `attest` call.
     AttesterRegistry,
     /// Latest attestation recorded for a given record hash.
     Attestation(BytesN<32>),
+    /// The storage schema version of the contract.
+    SchemaVersion,
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -38,10 +45,11 @@ pub struct Attestation {
 
 #[contractevent]
 #[derive(Clone, Debug)]
-pub struct Initialized {
+pub struct AdminTransferred {
     #[topic]
-    pub admin: Address,
-    pub attester_registry: Address,
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
 }
 
 #[contractevent]
@@ -53,6 +61,13 @@ pub struct AttestationRecorded {
     pub timestamp: u64,
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationRevoked {
+    #[topic]
+    pub record_hash: BytesN<32>,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -60,6 +75,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     AttesterNotAllowlisted = 3,
+    NoPendingTransfer = 4,
 }
 
 #[contract]
@@ -79,11 +95,44 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::AttesterRegistry, &attester_registry);
-        Initialized {
-            admin,
-            attester_registry,
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        Ok(())
+    }
+
+    /// Propose a new admin address. The caller must authorize as the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin = Self::admin(&env)?;
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let previous_admin = Self::admin(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+
+        pending_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferred {
+            previous_admin,
+            new_admin: pending_admin,
         }
         .publish(&env);
+
         Ok(())
     }
 
@@ -98,13 +147,13 @@ impl AttestationRegistry {
     ) -> Result<Attestation, Error> {
         attester.require_auth();
 
-        let registry_id: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttesterRegistry)
-            .ok_or(Error::NotInitialized)?;
+        let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
-        if !registry.is_attester(&attester) {
+        let is_allowlisted = match registry.try_is_attester(&attester) {
+            Ok(Ok(res)) => res,
+            _ => return Err(Error::InvalidRegistryWiring),
+        };
+        if !is_allowlisted {
             return Err(Error::AttesterNotAllowlisted);
         }
 
@@ -126,6 +175,33 @@ impl AttestationRegistry {
         Ok(attestation)
     }
 
+    /// Revoke the attestation associated with `record_hash`.
+    /// Gated by the contract's Admin authorization.
+    pub fn revoke_attestation(env: Env, record_hash: BytesN<32>) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attestation(record_hash.clone()))
+        {
+            return Err(Error::AttestationNotFound);
+        }
+
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Attestation(record_hash.clone()));
+
+        AttestationRevoked { record_hash }.publish(&env);
+
+        Ok(())
+    }
+
     /// Look up the latest attestation for `record_hash`, if any. Callable
     /// by anyone — this is what lets a responder's QR scan independently
     /// check a card without an external oracle.
@@ -134,7 +210,15 @@ impl AttestationRegistry {
             .persistent()
             .get(&DataKey::Attestation(record_hash))
     }
+
+    fn admin(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;

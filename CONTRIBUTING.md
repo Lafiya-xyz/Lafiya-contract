@@ -8,6 +8,7 @@ project overview and architecture.
 
 - Rust (stable), installed via [rustup](https://rustup.rs)
 - The `wasm32v1-none` target: `rustup target add wasm32v1-none`
+- `pre-commit` (required for local git hooks): Install via `pip install pre-commit` or `brew install pre-commit`, then run `pre-commit install` in the repository root.
 
 `rust-toolchain.toml` pins the toolchain and target automatically once
 you run any `cargo` command in this repo.
@@ -35,6 +36,7 @@ a PR won't merge if any of them fail.
   interface (see `attestation-registry`'s `AttesterRegistryInterface`),
   not a direct crate dependency on the callee — depending on the whole
   crate links its contract implementation into your wasm build too.
+- Any pull request (PR) that changes contract behavior, storage schemas, or public function signatures must include a corresponding entry in `CHANGELOG.md` under the `[Unreleased]` section. Refer to [releasing.md](docs/releasing.md) for details.
 - Run `make check` locally before pushing; it's the same set of checks CI
   runs.
 - Keep `Cargo.lock` committed and up to date so builds are reproducible.

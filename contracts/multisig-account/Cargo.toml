@@ -1,5 +1,5 @@
 [package]
-name = "attester-registry"
+name = "multisig-account"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,7 +15,10 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
-proptest = "1"
+attestation-registry = { path = "../attestation-registry", features = ["testutils"] }
+attester-registry = { path = "../attester-registry", features = ["testutils"] }
+ed25519-dalek = "2.2.0"
+sha2 = "0.10.9"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
