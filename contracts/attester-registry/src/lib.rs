@@ -51,6 +51,13 @@ pub struct AdminTransferred {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct Initialized {
+    #[topic]
+    pub admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct AttesterAdded {
     #[topic]
     pub attester: Address,
