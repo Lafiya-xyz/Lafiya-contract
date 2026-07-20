@@ -330,6 +330,10 @@ For issues and questions:
 
 Lafiya is an information aid, **not a medical device** and **not a substitute for professional medical judgment**. Verified indicators reflect that a record was attested by a registered health worker; they are not a clinical guarantee. Treatment decisions remain the responsibility of the attending clinician.
 
+## Security
+
+Found a vulnerability? Please don't open a public issue — see [SECURITY.md](SECURITY.md) for how to report it privately.
+
 ## References
 
 These works directly informed Lafiya's design and are the intended reading for contributors, particularly the attestation/trust-layer work in this repo.
