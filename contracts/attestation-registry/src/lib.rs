@@ -149,7 +149,11 @@ impl AttestationRegistry {
 
         let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
-        if !registry.is_attester(&attester) {
+        let is_allowlisted = match registry.try_is_attester(&attester) {
+            Ok(Ok(res)) => res,
+            _ => return Err(Error::InvalidRegistryWiring),
+        };
+        if !is_allowlisted {
             return Err(Error::AttesterNotAllowlisted);
         }
 
