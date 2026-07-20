@@ -142,6 +142,8 @@ contracts/
     └── src/
         ├── lib.rs           # initialize, attest, get_attestation
         └── test.rs
+docs/
+└── adr/                      # architecture decisions, index, and template
 Cargo.toml                   # workspace + release profile
 Cargo.lock                    # committed for reproducible builds
 rust-toolchain.toml           # pins stable + wasm32v1-none
