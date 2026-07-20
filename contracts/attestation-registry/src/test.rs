@@ -114,8 +114,6 @@ fn attest_without_attester_auth_fails() {
     let record_hash = BytesN::from_array(&env, &[5u8; 32]);
     let _ = &admin;
 
-    // Replace the blanket auth mock with an empty set: the attest call's
-    // `attester.require_auth()` now has no matching auth entry to satisfy it.
     env.mock_auths(&[]);
     let result = client.try_attest(&attester, &record_hash);
     assert!(result.is_err());
