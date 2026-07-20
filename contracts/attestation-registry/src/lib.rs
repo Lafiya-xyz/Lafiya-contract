@@ -23,6 +23,8 @@ const SCHEMA_VERSION: u32 = 1;
 enum DataKey {
     /// The address authorized to (re)point `AttesterRegistry`.
     Admin,
+    /// Pending admin address for two-step admin transfer.
+    PendingAdmin,
     /// The deployed `attester-registry` contract consulted on every `attest` call.
     AttesterRegistry,
     /// Latest attestation recorded for a given record hash.
@@ -39,6 +41,15 @@ enum DataKey {
 pub struct Attestation {
     pub attester: Address,
     pub timestamp: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferred {
+    #[topic]
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
 }
 
 #[contractevent]
@@ -64,7 +75,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     AttesterNotAllowlisted = 3,
-    AttestationNotFound = 4,
+    NoPendingTransfer = 4,
 }
 
 #[contract]
@@ -90,6 +101,40 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Propose a new admin address. The caller must authorize as the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin = Self::admin(&env)?;
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let previous_admin = Self::admin(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+
+        pending_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferred {
+            previous_admin,
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
 
     /// Record that `attester` verified the record hashing to `record_hash`.
     /// Requires `attester`'s authorization and that `attester` is
@@ -102,11 +147,7 @@ impl AttestationRegistry {
     ) -> Result<Attestation, Error> {
         attester.require_auth();
 
-        let registry_id: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::AttesterRegistry)
-            .ok_or(Error::NotInitialized)?;
+        let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
@@ -166,12 +207,11 @@ impl AttestationRegistry {
             .get(&DataKey::Attestation(record_hash))
     }
 
-    /// Query the current storage schema version of the contract.
-    pub fn get_schema_version(env: Env) -> u32 {
+    fn admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()
-            .get(&DataKey::SchemaVersion)
-            .unwrap_or(1)
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
     }
 }
 
