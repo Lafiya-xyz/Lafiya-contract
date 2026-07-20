@@ -2,8 +2,11 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, Env,
+    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
+    Symbol,
 };
+
+const SCHEMA_VERSION: u32 = 1;
 
 /// Storage keys for the attester registry.
 #[contracttype]
@@ -11,9 +14,21 @@ use soroban_sdk::{
 enum DataKey {
     /// The address authorized to add/remove attesters.
     Admin,
+    /// Pending admin address for two-step admin transfer.
+    PendingAdmin,
     /// Presence of this key (mapped to `true`) means the address is an
     /// allowlisted attester.
     Attester(Address),
+    /// The storage schema version of the contract.
+    SchemaVersion,
+}
+
+/// Metadata associated with an allowlisted attester.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttesterInfo {
+    pub license_hash: Option<BytesN<32>>,
+    pub region: Option<Symbol>,
 }
 
 #[contracterror]
@@ -22,6 +37,23 @@ enum DataKey {
 pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
+    NoPendingTransfer = 3,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferred {
+    #[topic]
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Initialized {
+    #[topic]
+    pub admin: Address,
 }
 
 #[contractevent]
@@ -34,6 +66,20 @@ pub struct AttesterAdded {
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterRemoved {
+    #[topic]
+    pub attester: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterSuspended {
+    #[topic]
+    pub attester: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterReinstated {
     #[topic]
     pub attester: Address,
 }
@@ -51,15 +97,76 @@ impl AttesterRegistry {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        Ok(())
+    }
+
+    /// Propose a new admin address. The caller must authorize as the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin = Self::admin(&env)?;
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let previous_admin = Self::admin(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+
+        pending_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferred {
+            previous_admin,
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        let info = AttesterInfo {
+            license_hash: None,
+            region: None,
+        };
         env.storage()
             .persistent()
-            .set(&DataKey::Attester(attester.clone()), &true);
+            .set(&DataKey::Attester(attester.clone()), &info);
+        AttesterAdded { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
+    pub fn add_attester_with_info(
+        env: Env,
+        attester: Address,
+        license_hash: Option<BytesN<32>>,
+        region: Option<Symbol>,
+    ) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        let info = AttesterInfo {
+            license_hash,
+            region,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Attester(attester.clone()), &info);
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
@@ -71,17 +178,81 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Suspended(attester.clone()));
         AttesterRemoved { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Suspend an allowlisted attester. Requires the admin's authorization.
+    pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .persistent()
+            .set(&DataKey::Suspended(attester.clone()), &true);
+        AttesterSuspended { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Reinstate a suspended attester. Requires the admin's authorization.
+    pub fn reinstate_attester(env: Env, attester: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Suspended(attester.clone()));
+        AttesterReinstated { attester }.publish(&env);
         Ok(())
     }
 
     /// Whether `attester` is currently allowlisted. Callable by anyone,
     /// including other contracts (e.g. `attestation-registry`).
     pub fn is_attester(env: Env, attester: Address) -> bool {
+        let is_allowlisted = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(attester.clone()))
+            .unwrap_or(false);
+        if !is_allowlisted {
+            return false;
+        }
+        let is_suspended = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester))
+    }
+
+    /// Get the optional metadata associated with `attester` if they are allowlisted.
+    pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
         env.storage()
             .persistent()
             .get(&DataKey::Attester(attester))
-            .unwrap_or(false)
+    }
+
+    /// Query the current storage schema version of the contract.
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1)
+    }
+
+    /// Upgrade the contract's Wasm code to a new version.
+    /// Requires the admin's authorization.
+    ///
+    /// Runbook:
+    /// 1. Build the new Wasm binary (e.g. `cargo build --workspace --release --target wasm32v1-none`).
+    /// 2. Upload/install the new Wasm on-chain to obtain its 32-byte hash (`new_wasm_hash`).
+    /// 3. The admin calls this `upgrade` function passing the `new_wasm_hash`.
+    ///
+    /// For any accompanying state/data migrations, see the storage-versioning guidelines
+    /// (e.g. implementing migration scripts or handling lazy migrations on reading old schema versions).
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        Upgraded { new_wasm_hash }.publish(&env);
+        Ok(())
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
@@ -95,3 +266,5 @@ impl AttesterRegistry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
+#[cfg(test)]
+mod large_test;

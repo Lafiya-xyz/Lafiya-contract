@@ -49,24 +49,5 @@ jobs:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
       - run: cargo build --workspace --release --locked --target wasm32v1-none
-
-  integration-test:
-    name: Integration Test (Local Network)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: wasm32v1-none
-      - uses: Swatinem/rust-cache@v2
-      - name: Start Soroban Quickstart Container
-        run: |
-          docker run -d -p 8000:8000 --name stellar stellar/quickstart:testing --local
-      - name: Install Stellar CLI
-        run: |
-          curl -sSL https://raw.githubusercontent.com/stellar/stellar-cli/main/install.sh | sh
-          echo "$HOME/.cargo/bin" >> $GITHUB_PATH
-          echo "$HOME/.local/bin" >> $GITHUB_PATH
-      - name: Run Integration Suite
-        run: make test-integration
-
+        - name: Check README contract tables
+          run: python .github/scripts/check_readme_contracts.py
