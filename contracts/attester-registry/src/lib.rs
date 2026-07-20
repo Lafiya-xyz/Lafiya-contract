@@ -12,7 +12,9 @@ use soroban_sdk::{
 enum DataKey {
     /// The address authorized to add/remove attesters.
     Admin,
-    /// Presence of this key (mapped to `AttesterInfo`) means the address is an
+    /// Pending admin address for two-step admin transfer.
+    PendingAdmin,
+    /// Presence of this key (mapped to `true`) means the address is an
     /// allowlisted attester.
     Attester(Address),
 }
@@ -31,6 +33,16 @@ pub struct AttesterInfo {
 pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
+    NoPendingTransfer = 3,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferred {
+    #[topic]
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
 }
 
 #[contractevent]
@@ -60,6 +72,41 @@ impl AttesterRegistry {
         }
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
+        Ok(())
+    }
+
+    /// Propose a new admin address. The caller must authorize as the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin = Self::admin(&env)?;
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let previous_admin = Self::admin(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+
+        pending_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferred {
+            previous_admin,
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -133,3 +180,5 @@ impl AttesterRegistry {
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
+#[cfg(test)]
+mod large_test;

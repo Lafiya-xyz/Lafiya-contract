@@ -1,0 +1,18 @@
+[package]
+name = "lafiya-cli"
+version = "0.1.0"
+edition = "2021"
+description = "Lafiya admin CLI - interacts with Soroban contracts using config/networks.toml"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[[bin]]
+name = "lafiya-cli"
+path = "src/main.rs"
+
+[dependencies]
+lafiya-config = { path = "../lafiya-config" }
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+anyhow = "1.0"

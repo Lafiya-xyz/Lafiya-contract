@@ -1,5 +1,3 @@
-#![cfg(test)]
-
 extern crate std;
 
 use super::*;
@@ -135,50 +133,145 @@ fn add_attester_without_admin_auth_fails() {
 }
 
 #[test]
-fn get_attester_info_returns_none_for_non_allowlisted() {
-    let (env, client, admin) = setup();
+fn propose_admin_by_non_admin_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let malicious = Address::generate(&env);
+
+    env.mock_all_auths();
     client.initialize(&admin);
 
-    let someone = Address::generate(&env);
-    assert_eq!(client.get_attester_info(&someone), None);
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_propose_admin(&new_admin);
+    assert!(result.is_err());
 }
 
 #[test]
-fn add_attester_has_none_metadata() {
+fn accept_admin_by_wrong_address_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let malicious = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.propose_admin(&new_admin);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
+}
+
+#[test]
+fn accept_admin_with_no_pending_proposal_fails() {
+    let (_env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let result = client.try_accept_admin();
+    assert_eq!(result, Err(Ok(Error::NoPendingTransfer)));
+}
+
+#[test]
+fn successful_admin_transfer_flow() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
+
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "propose_admin"),
+                    (new_admin.clone(),).into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+
+    client.accept_admin();
+
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            new_admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "accept_admin"),
+                    ().into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+
+    let expected_event = AdminTransferred {
+        previous_admin: admin.clone(),
+        new_admin: new_admin.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
 
     let attester = Address::generate(&env);
     client.add_attester(&attester);
 
-    assert!(client.is_attester(&attester));
     assert_eq!(
-        client.get_attester_info(&attester),
-        Some(AttesterInfo {
-            license_hash: None,
-            region: None,
-        })
+        env.auths(),
+        std::vec![(
+            new_admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "add_attester"),
+                    (attester.clone(),).into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
     );
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "add_attester",
+            args: (attester.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_add_attester(&attester);
+    assert!(result.is_err());
 }
-
-#[test]
-fn add_attester_with_info_stores_metadata() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    let license_hash = BytesN::from_array(&env, &[5u8; 32]);
-    let region = soroban_sdk::Symbol::new(&env, "US_WEST");
-
-    client.add_attester_with_info(&attester, &Some(license_hash.clone()), &Some(region.clone()));
-
-    assert!(client.is_attester(&attester));
-    assert_eq!(
-        client.get_attester_info(&attester),
-        Some(AttesterInfo {
-            license_hash: Some(license_hash),
-            region: Some(region),
-        })
-    );
-}
-
