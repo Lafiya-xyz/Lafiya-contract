@@ -36,6 +36,8 @@ enum DataKey {
     /// The address authorized to (re)point `AttesterRegistry` and to upgrade
     /// the contract.
     Admin,
+    /// Pending admin address for two-step admin transfer.
+    PendingAdmin,
     /// The deployed `attester-registry` contract consulted on every `attest` call.
     AttesterRegistry,
     /// Latest attestation recorded for a given record hash.
@@ -57,6 +59,15 @@ pub struct Attestation {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct AdminTransferred {
+    #[topic]
+    pub previous_admin: Address,
+    #[topic]
+    pub new_admin: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct AttestationRecorded {
     #[topic]
     pub record_hash: BytesN<32>,
@@ -71,7 +82,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     AttesterNotAllowlisted = 3,
-    MigrationNotRequired = 4,
+    NoPendingTransfer = 4,
 }
 
 #[contract]
@@ -94,6 +105,41 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        Ok(())
+    }
+
+    /// Propose a new admin address. The caller must authorize as the current admin.
+    pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
+        let current_admin = Self::admin(&env)?;
+        current_admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdmin, &new_admin);
+        Ok(())
+    }
+
+    /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
+    pub fn accept_admin(env: Env) -> Result<(), Error> {
+        let previous_admin = Self::admin(&env)?;
+        let pending_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+
+        pending_admin.require_auth();
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Admin, &pending_admin);
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+
+        AdminTransferred {
+            previous_admin,
+            new_admin: pending_admin,
+        }
+        .publish(&env);
+
         Ok(())
     }
 
@@ -143,64 +189,6 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Attestation(record_hash))
-    }
-
-    /// The storage schema version recorded for this instance. `0` means no
-    /// version has been recorded: the instance was deployed before schema
-    /// versioning landed (legacy) or was never initialized.
-    pub fn get_schema_version(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::SchemaVersion)
-            .unwrap_or(0)
-    }
-
-    /// Replace this contract's code with the wasm blob identified by
-    /// `new_wasm_hash`. The blob must already have been uploaded to the
-    /// ledger (e.g. `stellar contract upload`); otherwise the ledger rejects
-    /// the update. Requires the admin's authorization. Instance and
-    /// persistent storage are untouched — the new code starts exactly where
-    /// the old code left off. The swap itself takes effect once this
-    /// invocation finishes successfully. See
-    /// `docs/runbooks/contract-upgrade.md` for the full production
-    /// procedure, including how reviewers verify `new_wasm_hash` against
-    /// the audited source before this call is signed.
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
-        Ok(())
-    }
-
-    /// Run any pending storage migration, then record the new schema
-    /// version. Requires the admin's authorization.
-    ///
-    /// Call this after `upgrade()` only when the new build bumps
-    /// `SCHEMA_VERSION` (a storage-schema-changing release) — including the
-    /// first upgrade of a legacy (pre-versioning, schema version `0`)
-    /// instance, which must be migrated to version 1. When no migration is
-    /// pending (`SchemaVersion >= SCHEMA_VERSION`) this returns
-    /// `Error::MigrationNotRequired` so the call can't accidentally re-run.
-    pub fn migrate(env: Env) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
-
-        let stored = Self::get_schema_version(env.clone());
-        if stored >= SCHEMA_VERSION {
-            return Err(Error::MigrationNotRequired);
-        }
-
-        // Per-version migration steps, oldest first. This build introduces
-        // schema version 1, whose layout is identical to the legacy
-        // (unversioned) layout, so no data reshaping is required here.
-        // Schema-changing releases insert their steps below, guarded by the
-        // version they migrate FROM, e.g.:
-        //
-        //   if stored < 2 { /* move/reshape v1 data into the v2 layout */ }
-        //   if stored < 3 { /* ... */ }
-
-        env.storage()
-            .instance()
-            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
-        Ok(())
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {

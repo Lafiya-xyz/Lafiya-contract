@@ -1,10 +1,8 @@
-#![cfg(test)]
-
 extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{BytesN, Env, Event};
+use soroban_sdk::{BytesN, Env, Event, IntoVal};
 
 fn setup() -> (
     Env,
@@ -116,12 +114,154 @@ fn attest_without_attester_auth_fails() {
     let record_hash = BytesN::from_array(&env, &[5u8; 32]);
     let _ = &admin;
 
-    // Replace the blanket auth mock with an empty set: the attest call's
-    // `attester.require_auth()` now has no matching auth entry to satisfy it.
     env.mock_auths(&[]);
     let result = client.try_attest(&attester, &record_hash);
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn propose_admin_by_non_admin_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let malicious = Address::generate(&env);
+
+    env.mock_all_auths();
+    let attester_registry_id = env.register(attester_registry::AttesterRegistry, ());
+    client.initialize(&admin, &attester_registry_id);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "propose_admin",
+            args: (new_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_propose_admin(&new_admin);
+    assert!(result.is_err());
+}
+
+#[test]
+fn accept_admin_by_wrong_address_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let new_admin = Address::generate(&env);
+    let malicious = Address::generate(&env);
+
+    env.mock_all_auths();
+    let attester_registry_id = env.register(attester_registry::AttesterRegistry, ());
+    client.initialize(&admin, &attester_registry_id);
+    client.propose_admin(&new_admin);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
+}
+
+#[test]
+fn accept_admin_with_no_pending_proposal_fails() {
+    let (_env, client, _, _admin) = setup();
+
+    let result = client.try_accept_admin();
+    assert_eq!(result, Err(Ok(Error::NoPendingTransfer)));
+}
+
+#[test]
+fn successful_admin_transfer_flow() {
+    let (env, client, _, admin) = setup();
+
+    let new_admin = Address::generate(&env);
+
+    client.propose_admin(&new_admin);
+
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "propose_admin"),
+                    (new_admin.clone(),).into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+
+    client.accept_admin();
+
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            new_admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "accept_admin"),
+                    ().into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+
+    let expected_event = AdminTransferred {
+        previous_admin: admin.clone(),
+        new_admin: new_admin.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    let newer_admin = Address::generate(&env);
+    client.propose_admin(&newer_admin);
+
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            new_admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "propose_admin"),
+                    (newer_admin.clone(),).into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "propose_admin",
+            args: (newer_admin.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_propose_admin(&newer_admin);
+    assert!(result.is_err());
 }
 
 fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
