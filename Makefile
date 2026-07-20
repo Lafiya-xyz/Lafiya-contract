@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check clippy wasm check clean
+.PHONY: build test fmt fmt-check clippy wasm check clean config-check config-list deploy
 
 build:
 	cargo build --workspace

@@ -4,6 +4,8 @@ members = [
     "contracts/multisig-account",
     "contracts/attester-registry",
     "contracts/attestation-registry",
+    "crates/lafiya-config",
+    "crates/lafiya-cli",
 ]
 
 [workspace.package]
