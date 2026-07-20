@@ -1,0 +1,56 @@
+# Lafiya - Network Configuration
+# This file centralizes public network parameters and contract IDs.
+# NEVER store private keys, mnemonics, or secrets here.
+# Only public identifiers: RPC URLs, passphrases, contract IDs.
+#
+# Usage:
+#   - Deploy script: ./scripts/deploy.sh --network testnet
+#   - Admin CLI (bash): ./scripts/admin.sh --network testnet <command>
+#   - Admin CLI (rust): cargo run -p lafiya-cli -- --network testnet <command>
+#
+# Contract IDs are empty until deployed. After deployment, update the relevant
+# network section with the deployed contract IDs.
+
+[local]
+rpc_url = "http://localhost:8000/soroban/rpc"
+network_passphrase = "Standalone Network ; February 2017"
+# Local network is for development with stellar/quickstart
+
+[local.contracts]
+attester_registry = ""
+attestation_registry = ""
+
+[standalone]
+rpc_url = "http://localhost:8000/soroban/rpc"
+network_passphrase = "Standalone Network ; February 2017"
+
+[standalone.contracts]
+attester_registry = ""
+attestation_registry = ""
+
+[testnet]
+rpc_url = "https://soroban-testnet.stellar.org"
+network_passphrase = "Test SDF Network ; September 2015"
+# SDF Public Testnet
+
+[testnet.contracts]
+attester_registry = ""
+attestation_registry = ""
+
+[futurenet]
+rpc_url = "https://rpc-futurenet.stellar.org"
+network_passphrase = "Test SDF Future Network ; October 2022"
+# SDF Futurenet - for testing upcoming protocol changes
+
+[futurenet.contracts]
+attester_registry = ""
+attestation_registry = ""
+
+[mainnet]
+rpc_url = "https://mainnet.sorobanrpc.com"
+network_passphrase = "Public Global Stellar Network ; September 2015"
+# WARNING: Mainnet - real funds. Requires audit.
+
+[mainnet.contracts]
+attester_registry = ""
+attestation_registry = ""
