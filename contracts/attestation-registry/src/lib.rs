@@ -120,14 +120,16 @@ impl AttestationRegistry {
         let new_sequence = sequence + 1;
 
         // Store the attestation with the new sequence number
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attestation(record_hash.clone(), new_sequence), &attestation);
+        env.storage().persistent().set(
+            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            &attestation,
+        );
 
         // Update the sequence number
-        env.storage()
-            .persistent()
-            .set(&DataKey::AttestationSequence(record_hash.clone()), &new_sequence);
+        env.storage().persistent().set(
+            &DataKey::AttestationSequence(record_hash.clone()),
+            &new_sequence,
+        );
 
         // Update the count and enforce bounded history
         let count: u64 = env
