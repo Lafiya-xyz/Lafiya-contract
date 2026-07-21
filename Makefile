@@ -32,3 +32,6 @@ clean:
 
 bench:
 	cargo test -- --nocapture
+
+fuzz:
+	cargo test --workspace --locked fuzz_test -- --nocapture

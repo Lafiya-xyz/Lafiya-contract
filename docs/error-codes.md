@@ -21,3 +21,5 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
 | `3` | `AttesterNotAllowlisted` | The attester address is not allowlisted in the configured `attester-registry` contract. |
 | `4` | `NoPendingTransfer` | No admin transfer is pending. |
+| `5` | `InvalidRegistryWiring` | The configured `attester-registry` contract address did not respond as expected to the `is_attester` cross-contract call. |
+| `6` | `AttestationNotFound` | No attestation exists for the given `record_hash`. |
