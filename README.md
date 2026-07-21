@@ -95,10 +95,13 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `initialize(admin: Address)` | Sets the admin. Callable once. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Emits `AttesterAdded`. |
+| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Fails with `Error::AllowlistFull` if the allowlist is at its configured cap and `attester` isn't already present. Emits `AttesterAdded`. |
 | `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Emits `AttesterRemoved`. |
 | `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. |
 | `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. |
+| `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Defaults to 50,000 until set. |
+| `get_max_attesters() -> u32` | Returns the current soft cap. |
+| `get_attester_count() -> u32` | Returns the current number of allowlisted attesters. |
 
 ### `attestation-registry`
 

@@ -19,8 +19,14 @@ enum DataKey {
     /// Presence of this key (mapped to `true`) means the address is an
     /// allowlisted attester.
     Attester(Address),
+    /// Presence of this key means the attester is currently suspended.
+    Suspended(Address),
     /// The storage schema version of the contract.
     SchemaVersion,
+    /// The current number of allowlisted attesters.
+    AttesterCount,
+    /// The configurable soft cap on the number of allowlisted attesters.
+    MaxAttesters,
 }
 
 /// Metadata associated with an allowlisted attester.
@@ -37,6 +43,13 @@ pub struct AttesterInfo {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+/// Default soft cap on the number of allowlisted attesters, used until an
+/// admin raises it via `set_max_attesters`. Sized generously above any
+/// realistic CHW allowlist so it never trips in normal operation; it exists
+/// so a compromised or buggy admin key can't grow persistent-storage rent
+/// unboundedly.
+const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -44,6 +57,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     NoPendingTransfer = 3,
+    AllowlistFull = 4,
 }
 
 #[contractevent]
@@ -88,6 +102,12 @@ pub struct AttesterSuspended {
 pub struct AttesterReinstated {
     #[topic]
     pub attester: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Upgraded {
+    pub new_wasm_hash: BytesN<32>,
 }
 
 #[contract]
@@ -145,20 +165,22 @@ impl AttesterRegistry {
     }
 
     /// Add `attester` to the allowlist. Requires the admin's authorization.
+    /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
+    /// `attester` is not already present (see `set_max_attesters`).
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         let info = AttesterInfo {
             license_hash: None,
             region: None,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(attester.clone()), &info);
+        Self::insert_attester(&env, attester.clone(), info)?;
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
 
     /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
+    /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
+    /// `attester` is not already present (see `set_max_attesters`).
     pub fn add_attester_with_info(
         env: Env,
         attester: Address,
@@ -170,9 +192,7 @@ impl AttesterRegistry {
             license_hash,
             region,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(attester.clone()), &info);
+        Self::insert_attester(&env, attester.clone(), info)?;
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
@@ -181,14 +201,40 @@ impl AttesterRegistry {
     /// authorization. A no-op if the attester was never allowlisted.
     pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Attester(attester.clone()));
+        let key = DataKey::Attester(attester.clone());
+        if env.storage().persistent().has(&key) {
+            let count = Self::attester_count(&env);
+            env.storage()
+                .instance()
+                .set(&DataKey::AttesterCount, &count.saturating_sub(1));
+        }
+        env.storage().persistent().remove(&key);
         env.storage()
             .persistent()
             .remove(&DataKey::Suspended(attester.clone()));
         AttesterRemoved { attester }.publish(&env);
         Ok(())
+    }
+
+    /// Set the soft cap on the number of allowlisted attesters. Requires the
+    /// admin's authorization. Does not evict existing attesters if lowered
+    /// below the current count; it only blocks further `add_attester` calls.
+    pub fn set_max_attesters(env: Env, max_attesters: u32) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAttesters, &max_attesters);
+        Ok(())
+    }
+
+    /// The current soft cap on the number of allowlisted attesters.
+    pub fn get_max_attesters(env: Env) -> u32 {
+        Self::max_attesters(&env)
+    }
+
+    /// The current number of allowlisted attesters.
+    pub fn get_attester_count(env: Env) -> u32 {
+        Self::attester_count(&env)
     }
 
     /// Suspend an allowlisted attester. Requires the admin's authorization.
@@ -214,25 +260,26 @@ impl AttesterRegistry {
     /// Whether `attester` is currently allowlisted. Callable by anyone,
     /// including other contracts (e.g. `attestation-registry`).
     pub fn is_attester(env: Env, attester: Address) -> bool {
-        let is_allowlisted = env
+        if !env
             .storage()
             .persistent()
-            .get(&DataKey::Attester(attester.clone()))
-            .unwrap_or(false);
-        if !is_allowlisted {
+            .has(&DataKey::Attester(attester.clone()))
+        {
             return false;
         }
-        let is_suspended = env
-            .storage()
+        !env.storage()
             .persistent()
-            .has(&DataKey::Attester(attester))
+            .has(&DataKey::Suspended(attester))
+    }
+
+    /// Query the current admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::admin(&env)
     }
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Attester(attester))
+        env.storage().persistent().get(&DataKey::Attester(attester))
     }
 
     /// Query the current storage schema version of the contract.
@@ -267,10 +314,46 @@ impl AttesterRegistry {
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
     }
+
+    fn attester_count(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttesterCount)
+            .unwrap_or(0)
+    }
+
+    fn max_attesters(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAttesters)
+            .unwrap_or(DEFAULT_MAX_ATTESTERS)
+    }
+
+    /// Insert or overwrite `attester`'s info, enforcing the allowlist cap
+    /// for newly-added attesters (already-present attesters can always be
+    /// updated in place without affecting the count).
+    fn insert_attester(env: &Env, attester: Address, info: AttesterInfo) -> Result<(), Error> {
+        let key = DataKey::Attester(attester);
+        let already_present = env.storage().persistent().has(&key);
+        if !already_present {
+            let count = Self::attester_count(env);
+            if count >= Self::max_attesters(env) {
+                return Err(Error::AllowlistFull);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::AttesterCount, &(count + 1));
+        }
+        env.storage().persistent().set(&key, &info);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
 }
 
 #[cfg(test)]
+mod large_test;
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
-#[cfg(test)]
-mod large_test;

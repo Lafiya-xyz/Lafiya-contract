@@ -4,8 +4,6 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::{Env, Event, IntoVal};
 
-use proptest::prelude::*;
-
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -293,4 +291,50 @@ fn successful_admin_transfer_flow() {
 
     let result = client.try_add_attester(&attester);
     assert!(result.is_err());
+}
+
+#[test]
+fn add_attester_beyond_cap_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+    client.set_max_attesters(&2);
+
+    client.add_attester(&Address::generate(&env));
+    client.add_attester(&Address::generate(&env));
+    assert_eq!(client.get_attester_count(), 2);
+
+    let result = client.try_add_attester(&Address::generate(&env));
+    assert_eq!(result, Err(Ok(Error::AllowlistFull)));
+    assert_eq!(client.get_attester_count(), 2);
+}
+
+#[test]
+fn removing_an_attester_frees_cap_slot() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+    client.set_max_attesters(&1);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    assert_eq!(
+        client.try_add_attester(&Address::generate(&env)),
+        Err(Ok(Error::AllowlistFull))
+    );
+
+    client.remove_attester(&attester);
+    assert_eq!(client.get_attester_count(), 0);
+    client.add_attester(&Address::generate(&env));
+    assert_eq!(client.get_attester_count(), 1);
+}
+
+#[test]
+fn re_adding_an_existing_attester_does_not_consume_cap() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+    client.set_max_attesters(&1);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    client.add_attester(&attester);
+    assert_eq!(client.get_attester_count(), 1);
 }

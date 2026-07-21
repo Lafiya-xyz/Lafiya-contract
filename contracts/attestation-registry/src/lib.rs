@@ -82,6 +82,8 @@ pub enum Error {
     AlreadyInitialized = 2,
     AttesterNotAllowlisted = 3,
     NoPendingTransfer = 4,
+    InvalidRegistryWiring = 5,
+    AttestationNotFound = 6,
 }
 
 #[contract]
@@ -140,6 +142,16 @@ impl AttestationRegistry {
         .publish(&env);
 
         Ok(())
+    }
+
+    /// Query the current admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::admin(&env)
+    }
+
+    /// Query the configured `attester-registry` contract address.
+    pub fn get_attester_registry(env: Env) -> Result<Address, Error> {
+        Self::attester_registry(&env)
     }
 
     /// Record that `attester` verified the record hashing to `record_hash`.
@@ -225,6 +237,13 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)
+    }
+
+    fn attester_registry(env: &Env) -> Result<Address, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttesterRegistry)
             .ok_or(Error::NotInitialized)
     }
 }
