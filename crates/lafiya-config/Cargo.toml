@@ -1,0 +1,15 @@
+[package]
+name = "lafiya-config"
+version = "0.1.0"
+edition = "2021"
+description = "Shared loader for Lafiya network config (config/networks.toml)"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+toml = "0.8"
+thiserror = "1.0"
+
+[dev-dependencies]
+tempfile = "3.10"

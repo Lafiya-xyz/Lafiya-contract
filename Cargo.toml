@@ -1,8 +1,11 @@
 [workspace]
 resolver = "2"
 members = [
+    "contracts/multisig-account",
     "contracts/attester-registry",
     "contracts/attestation-registry",
+    "crates/lafiya-config",
+    "crates/lafiya-cli",
 ]
 
 [workspace.package]
@@ -12,7 +15,7 @@ license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
 [workspace.dependencies]
-soroban-sdk = "25.3.1"
+soroban-sdk = "27.0.0"
 
 [profile.release]
 opt-level = "z"
