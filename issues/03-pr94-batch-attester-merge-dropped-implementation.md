@@ -1,25 +1,37 @@
 ---
-title: "[bug]: PR #94 (batch add/remove attesters) merged without its own contract code — feature does not exist on main"
-labels: bug, priority:p0, process
+title: "[audit] PROC-01: PR #94 merged without its own contract diff — batch-attester feature does not exist on main"
+labels: bug, priority:p0, process, severity:high
 ---
 
-> Distinct from the general "main doesn't compile" issue (#02): this isn't
-> a code defect in a landed feature, it's a **merged PR whose feature
-> never actually landed**. Likely enabled by #01 (CI never ran, so nothing
-> flagged that the merge diff didn't match the PR's stated diff).
+**Severity:** High
+**Difficulty:** N/A — not an exploit; a release-integrity defect already realized
+**Type:** Software Supply Chain / Release Integrity
 
-## Description
+> Distinct from BUILD-01: not a defect in landed code, but a merged pull
+> request whose actual diff never landed. Almost certainly enabled by
+> CI-01 (no CI ran on the PR or on `main` post-merge to catch the
+> mismatch).
 
-Commit `5a93edd` — *"feat(attester-registry): add batch add/remove
-attesters with idempotency and budget bound"* — on branch
-`issue-16-batch-attesters`, per its own commit message and diffstat, adds:
+## Summary
 
-- `add_attesters(Vec<Address>)` / `remove_attesters(Vec<Address>)`
-- `BATCH_LIMIT` constant and `Error::BatchTooLarge`
-- 12 new unit tests
-- a `docs/error-codes.md` entry for `BatchTooLarge`
-- plus unrelated tooling changes (`Cargo.toml`, `Cargo.lock`,
-  `.cargo/config.toml`)
+Commit `5a93edd`, on branch `issue-16-batch-attesters`, implements
+`add_attesters`/`remove_attesters` with a budget bound and idempotency,
+per its own commit message and diffstat. The merge commit that landed
+this branch on `main`, `245d0f9` ("Merge pull request #94"), carries none
+of the contract source changes — only incidental tooling/lockfile
+changes. GitHub's UI shows PR #94 as merged; the feature it describes is
+absent from `main`.
+
+## Location
+
+- Source commit (intended change): `5a93edd`
+- Merge commit (actual landed change): `245d0f9`
+- Absence confirmed at: `contracts/attester-registry/src/lib.rs`,
+  `contracts/attester-registry/src/test.rs`, `docs/error-codes.md`
+
+## Technical Detail
+
+`5a93edd`'s diffstat:
 
 ```
  .cargo/config.toml                      |   5 +
@@ -31,8 +43,7 @@ attesters with idempotency and budget bound"* — on branch
  6 files changed, 374 insertions(+), 116 deletions(-)
 ```
 
-But the merge commit on `main`, `245d0f9` — *"Merge pull request #94 from
-Agencybuilds/issue-16-batch-attesters"* — only carries:
+`245d0f9`'s diffstat (the actual merge to `main`):
 
 ```
  .cargo/config.toml |   5 +
@@ -41,79 +52,60 @@ Agencybuilds/issue-16-batch-attesters"* — only carries:
  3 files changed, 160 insertions(+), 115 deletions(-)
 ```
 
-`contracts/attester-registry/src/lib.rs`, `src/test.rs`, and
-`docs/error-codes.md` are **absent** from the merge. Confirmed on the
-current tree:
+`lib.rs`, `test.rs`, and `docs/error-codes.md` are absent from the merge
+diff entirely.
+
+## Proof of Concept
 
 ```
 $ grep -rn batch contracts/ --include=*.rs -i
 (no output)
 ```
 
-There is no `add_attesters`, `remove_attesters`, `BATCH_LIMIT`, or
-`Error::BatchTooLarge` anywhere in `contracts/`. GitHub shows PR #94 as
-merged, closing whatever issue tracked "issue-16-batch-attesters," but the
-actual contract change it describes does not exist on `main`. Anyone
-relying on the PR history (changelog, issue tracker, `lafiya-cli` or
-`lafiya-web` integration work planned against the batch API) will be
-working against a feature that was never actually shipped.
+No `add_attesters`, `remove_attesters`, `BATCH_LIMIT`, or
+`Error::BatchTooLarge` exists anywhere in `contracts/` on `main`.
 
-## How this likely happened
+## Likely Root Cause
 
-Almost certainly a merge-conflict resolution that took "ours" for the
-contract source files while correctly merging the non-conflicting tooling
-files (`Cargo.lock`/`Cargo.toml`/`.cargo/config.toml`, which are
-append/version-bump style changes that merge cleanly). Nothing caught it
-because (see #01) the CI workflow that would run `cargo test` on the PR
-and on `main` post-merge cannot even parse, so the 12 new tests this PR
-claims to add never ran, on the PR or after.
+A merge-conflict resolution that took "ours" for the contract source
+files while cleanly merging the non-conflicting, append-style tooling
+files (`Cargo.lock`/`Cargo.toml`/`.cargo/config.toml`). Undetected because
+CI-01 means `cargo test` never ran on the PR or on `main` post-merge — the
+12 tests `5a93edd` claims to add never executed.
 
-## Expected behavior
+## Impact
 
-Merging PR #94 should have landed `add_attesters`, `remove_attesters`,
-`BATCH_LIMIT`, `Error::BatchTooLarge`, their tests, and the docs entry, on
-`main`.
+- PR #94 and whatever issue it closed are misleading records: they claim
+  a shipped feature that does not exist.
+- Anyone integrating against the batch API (`lafiya-cli`, `lafiya-web`,
+  or an operator following `docs/error-codes.md` if it had landed) is
+  working against a feature that was never actually deployed.
+- Demonstrates that a passing merge (green checkmark, or in this case no
+  check at all per CI-01) does not guarantee the PR's stated diff landed —
+  worth treating as a signal to spot-check other recent merges for the
+  same failure mode, not assumed to be an isolated incident.
 
-## Actual behavior
+## Recommendation
 
-None of the above exist on `main`. Only the incidental tooling changes
-landed.
+1. Recover the dropped diff directly from `5a93edd` (`git show 5a93edd --
+   contracts/ docs/error-codes.md`) and reapply it on current `main`,
+   reconciled with BUILD-01's fixes (the original diff was authored
+   against a differently-broken version of `lib.rs`).
+2. Do not merge the reapplied change until CI-01 is fixed and the 12
+   tests from `5a93edd` are observed passing in an actual CI run.
+3. Spot-check other recently merged PRs (`git diff
+   <merge-commit>^2..<merge-commit>` against the PR's own stated diffstat)
+   for the same pattern, given it has now happened at least once
+   undetected.
 
-## Suggested fix
-
-1. Re-apply the dropped diff. The full intended change is recoverable
-   directly from commit `5a93edd` (`git show 5a93edd -- contracts/
-   docs/error-codes.md` gives the exact patch) — this shouldn't need to be
-   re-implemented from scratch, just cherry-picked/re-applied on top of
-   current `main` and reconciled with whatever else has landed in
-   `attester-registry/src/lib.rs` since (including the fixes from #02,
-   since `5a93edd`'s `lib.rs` diff was presumably based on a
-   still-broken or differently-broken version of the file).
-2. Before merging the reapplied change, confirm #01 is fixed so `cargo
-   test` actually runs and the 12 tests this feature claims execute in
-   CI.
-3. Treat this as a signal to audit other recently-merged PRs for the same
-   failure mode — if this happened once undetected, it's worth a quick
-   `git diff <pr-branch> <merge-commit>^2..<merge-commit>` sanity check
-   (or equivalent) across recent merges rather than assuming this is the
-   only instance.
-
-## Acceptance criteria
+## Verification
 
 - [ ] `add_attesters`/`remove_attesters` (or a deliberately reconsidered
-      replacement, if a maintainer decides the batch design should change
-      given time has passed) exist on `main`, admin-gated, budget-bounded,
-      idempotent, as originally specified.
-- [ ] Tests from `5a93edd` (or their equivalent) pass in CI.
+      replacement) exist on `main`, admin-gated, budget-bounded,
+      idempotent, matching the original specification or an explicit
+      revision of it.
+- [ ] Tests equivalent to `5a93edd`'s 12 tests pass in CI.
 - [ ] `docs/error-codes.md` documents `BatchTooLarge`.
-- [ ] A short note added to `CHANGELOG.md` under `[Unreleased]`, per
-      `CONTRIBUTING.md`'s rule that contract-behavior changes need a
-      changelog entry — this one arguably needs it twice: once for
-      landing late, and to avoid future confusion about when the feature
-      actually shipped.
-
-## Environment
-
-- Contract(s) affected: attester-registry
-- Reference commit for the original (dropped) implementation: `5a93edd`
-- Merge commit that dropped it: `245d0f9`
+- [ ] `CHANGELOG.md` gets an `[Unreleased]` entry per `CONTRIBUTING.md`.
+- [ ] At least one other recent merge is spot-checked for the same
+      failure mode, with the result noted on this issue.

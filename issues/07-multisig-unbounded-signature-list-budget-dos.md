@@ -1,98 +1,110 @@
 ---
-title: "[bug]: MultisigAccount::__check_auth has no upper bound on signature count — attacker-controlled CPU budget cost"
-labels: bug, priority:p1, security, architecture
+title: "[audit] SEC-01: MultisigAccount::__check_auth has no upper bound on signature count"
+labels: bug, priority:p1, security, architecture, severity:high
 ---
 
-> Architect/security-tier: this is a resource-exhaustion vector in the
-> account contract every admin-gated call in both registries authenticates
-> through (per ADR-0003, this multisig is the intended production admin
-> custody model), not a logic bug in the happy path.
+**Severity:** High
+**Difficulty:** Low — requires only constructing an oversized `Vec<Signature>` in the authorization entry; no privileged access needed
+**Type:** Denial of Service / Unbounded Resource Consumption (CWE-400)
 
-## Description
+> This is the auth check the protocol invokes on every transaction the
+> account authorizes, per ADR-0003's intended production admin-custody
+> model — a resource-exhaustion vector here has account-wide blast
+> radius, not just a single call's.
 
-`contracts/multisig-account/src/lib.rs::__check_auth` (~65-106) checks a
-lower bound on the number of signatures supplied but never an upper one:
+## Summary
+
+`MultisigAccount::__check_auth` bounds the *minimum* number of signatures
+required (`>= threshold`) but never bounds the *maximum*. The loop that
+performs per-signature storage lookups and `ed25519_verify` calls is
+indexed by `signatures.len()` — a value fully controlled by whoever
+constructs the authorization entry, with no contract-enforced ceiling
+tied to the account's actual configuration.
+
+## Location
+
+`contracts/multisig-account/src/lib.rs:65-106`
+
+## Technical Detail
 
 ```rust
-if signatures.len() < threshold {
-    return Err(Error::NotEnoughSigners);
-}
-
-for index in 0..signatures.len() {
-    let signature = signatures.get_unchecked(index);
-    if index > 0 {
-        let previous = signatures.get_unchecked(index - 1);
-        if previous.public_key >= signature.public_key {
-            return Err(Error::BadSignatureOrder);
-        }
-    }
-
-    if !env.storage().instance().has(&DataKey::Signer(signature.public_key.clone())) {
-        return Err(Error::UnknownSigner);
-    }
-
-    env.crypto().ed25519_verify(
-        &signature.public_key,
-        &signature_payload.clone().into(),
-        &signature.signature,
-    );
-}
+65	    fn __check_auth(
+66	        env: Env,
+67	        signature_payload: Hash<32>,
+68	        signatures: Self::Signature,
+69	        _auth_contexts: Vec<Context>,
+70	    ) -> Result<(), Error> {
+71	        let threshold: u32 = env
+72	            .storage()
+73	            .instance()
+74	            .get(&DataKey::Threshold)
+75	            .ok_or(Error::NotInitialized)?;
+76	
+77	        if signatures.len() < threshold {
+78	            return Err(Error::NotEnoughSigners);
+79	        }
+80	
+81	        for index in 0..signatures.len() {
+82	            let signature = signatures.get_unchecked(index);
+83	            if index > 0 {
+84	                let previous = signatures.get_unchecked(index - 1);
+85	                if previous.public_key >= signature.public_key {
+86	                    return Err(Error::BadSignatureOrder);
+87	                }
+88	            }
+89	
+90	            if !env
+91	                .storage()
+92	                .instance()
+93	                .has(&DataKey::Signer(signature.public_key.clone()))
+94	            {
+95	                return Err(Error::UnknownSigner);
+96	            }
+97	
+98	            env.crypto().ed25519_verify(
+99	                &signature.public_key,
+100	                &signature_payload.clone().into(),
+101	                &signature.signature,
+102	            );
+103	        }
+104	
+105	        Ok(())
+106	    }
 ```
 
-`signatures: Self::Signature` (`Vec<Signature>`) is caller-supplied data —
-it comes from the `SorobanCredentials::Address` authorization entry
-attached to a transaction, which in Soroban's auth model is constructed
-by whoever is submitting the transaction, not validated against the
-account's configured signer set before `__check_auth` runs. The strict
-ascending-order check (`previous.public_key >= signature.public_key`)
-prevents duplicate *valid* signer entries from being repeated, but it does
-**nothing** to cap the total list length: an attacker can submit a
-`Vec<Signature>` containing many entries with distinct-but-garbage
-`public_key`/`signature` pairs, sorted to satisfy the ordering check, and
-the loop will run `env.crypto().ed25519_verify` — a genuinely expensive
-CPU operation — once per entry before hitting the `UnknownSigner` check
-for each one (the unknown-signer check happens *before* the crypto call
-per-iteration here, so actually each bogus unknown signer would be
-rejected before verify runs for that entry — but a list interleaving a
-few genuinely known signer public keys with attacker-chosen signatures
-under them still forces real `ed25519_verify` calls for those entries,
-and there's no bound on how many *known* signer public keys can be
-repeated-with-different-garbage-signatures... actually the ordering check
-prevents literal duplicates of the same public key, but does not prevent
-padding the list with many distinct *unknown* keys interleaved with a
-couple of real ones, each triggering a storage `has()` lookup at minimum).
-Regardless of the exact worst-case shape, the core problem stands
-independent of the exact accounting: **the loop bound is
-`signatures.len()`, a value the caller fully controls, with no
-contract-enforced ceiling**, so the cost of a single `__check_auth`
-invocation scales linearly with attacker input rather than with the
-account's actual configured `threshold`/signer count.
+`signatures: Vec<Signature>` originates from the caller-supplied
+`SorobanCredentials::Address` authorization entry — it is not validated
+against the account's configured signer set before `__check_auth` runs.
+The strict-ascending-order check at lines 84-87 prevents literal
+duplicate entries for the same public key, but places no ceiling on the
+list's total length. The per-entry unknown-signer check (lines 90-96)
+runs before the crypto call for that entry, so the check order limits
+*which* entries reach `ed25519_verify` — but it does not bound how many
+entries the loop processes overall: the loop body runs once per element
+of `signatures`, and `signatures.len()` is attacker-controlled with no
+upper limit.
 
-Since this is the auth check for a *custom account* — invoked on every
-transaction that account authorizes — an oversized signature list either
-burns disproportionate CPU budget relative to what a legitimate
-`threshold`-sized submission needs, or, if the resource limits are hit,
-fails the transaction in a way that's cheap for an attacker to trigger
-repeatedly against a target account's pending operations.
+## Impact
 
-## Expected behavior
+The cost of a single `__check_auth` invocation scales with attacker
+input, not with the account's configured `threshold` or signer count. A
+caller can pad the authorization entry with an arbitrarily long
+`Vec<Signature>`, forcing the account contract to iterate, perform
+storage lookups, and — for any entries whose `public_key` matches a real
+configured signer — perform genuine `ed25519_verify` calls, an expensive
+operation, for far more entries than a legitimate `threshold`-sized
+submission would ever require. Against a resource-metered execution
+environment, this is a budget-griefing vector: a submission cheap for the
+attacker to construct forces disproportionate, attacker-directed cost
+onto the account's authorization path, either wasting resources relative
+to a legitimate call or pushing the transaction toward the network's
+hard resource ceiling.
 
-`__check_auth` rejects signature lists whose length exceeds some sane,
-configuration-derived ceiling (e.g. `signers.len()`, since supplying more
-signatures than there are configured signers can never be legitimate)
-before doing any per-entry work, so cost is bounded by the account's own
-configuration, not by caller input.
+## Recommendation
 
-## Actual behavior
-
-No such bound exists; `signatures.len()` is used directly as the loop
-count with no ceiling check.
-
-## Proposed fix
-
-Store `signers.len()` (or just reuse `threshold` plus a separate stored
-signer count) at `__constructor` time, and add an early check in
-`__check_auth`:
+Store the configured signer count at `__constructor` time (or derive it
+from `signers.len()` at construction and persist it alongside
+`Threshold`), and reject oversized lists before any per-entry work:
 
 ```rust
 if signatures.len() > signer_count {
@@ -100,24 +112,18 @@ if signatures.len() > signer_count {
 }
 ```
 
-placed before the loop, alongside the existing `signatures.len() <
-threshold` check. This bounds worst-case cost to `O(signer_count)`
-regardless of what a caller submits.
+Place this check immediately after the existing `signatures.len() <
+threshold` check, before the loop. This bounds worst-case cost to
+`O(signer_count)` regardless of caller input, since supplying more
+signatures than there are configured signers can never be legitimate.
 
-## Acceptance criteria
+## Verification
 
 - [ ] `__check_auth` rejects any `signatures` list longer than the
-      account's configured signer count, before doing any per-entry
-      storage lookups or crypto verification.
-- [ ] New `Error::TooManySigners` (or similarly named) variant added,
-      tested, and documented in `docs/error-codes.md` (currently
-      `docs/error-codes.md` doesn't cover `multisig-account` at all — see
-      the separate error-codes-documentation issue for that gap).
-- [ ] A test in `contracts/multisig-account/src/test.rs` submitting more
-      signatures than configured signers and asserting rejection.
-
-## Environment
-
-- Contract(s) affected: multisig-account
-- Verified by reading source; `cargo` unavailable in this audit
-  environment.
+      account's configured signer count, before any per-entry storage
+      lookup or crypto verification executes.
+- [ ] New `Error::TooManySigners` (or equivalent) variant added, tested,
+      and documented in `docs/error-codes.md` (see QA-01 — that document
+      currently has no `multisig-account` section at all).
+- [ ] `contracts/multisig-account/src/test.rs` gains a test submitting
+      more signatures than configured signers and asserting rejection.

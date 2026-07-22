@@ -1,114 +1,103 @@
 ---
-title: "[feature]: MultisigAccount::__check_auth ignores auth_contexts — signers authorize arbitrary invocations with no scoping"
-labels: enhancement, priority:p2, security, architecture
+title: "[audit] SEC-03: MultisigAccount::__check_auth ignores auth_contexts — no invocation scoping"
+labels: enhancement, priority:p2, security, architecture, severity:medium
 ---
 
-> Architect-tier least-privilege question, not a bug in the sense of
-> broken code — the signature says `_auth_contexts: Vec<Context>`, so the
-> current behavior is deliberate, but it's worth surfacing as a
-> conscious design decision given what this account is meant to custody.
+**Severity:** Medium
+**Difficulty:** Low — requires no special access; any signer collusion, or a single compromised signer's tooling, exercises the full unscoped authority
+**Type:** Access Control / Least-Privilege Violation (CWE-284)
 
-## Description
+> Not broken code in the sense of a bug — the parameter is deliberately
+> named `_auth_contexts` — but a conscious design gap worth surfacing
+> given what this account is intended to custody per ADR-0003.
 
-`CustomAccountInterface::__check_auth`'s third parameter,
-`_auth_contexts: Vec<Context>`, is prefixed with an underscore and never
-read:
+## Summary
+
+`__check_auth`'s third parameter, `auth_contexts: Vec<Context>`, carries
+exactly the information Soroban gives a custom account to make a scoped
+authorization decision — which contract, which function, which
+arguments, which sub-invocations are being requested. This implementation
+never reads it. Once `threshold`-many valid, known, correctly-ordered
+signatures are presented over the payload hash, the account authorizes
+**any** invocation the payload was constructed for, with no restriction
+on target contract or function.
+
+## Location
+
+`contracts/multisig-account/src/lib.rs:65-70` (unused parameter),
+`96-106` (unconditional `Ok(())` return with no scope check performed
+anywhere in the function body).
+
+## Technical Detail
 
 ```rust
-fn __check_auth(
-    env: Env,
-    signature_payload: Hash<32>,
-    signatures: Self::Signature,
-    _auth_contexts: Vec<Context>,
-) -> Result<(), Error> {
+65	    fn __check_auth(
+66	        env: Env,
+67	        signature_payload: Hash<32>,
+68	        signatures: Self::Signature,
+69	        _auth_contexts: Vec<Context>,
+70	    ) -> Result<(), Error> {
 ```
 
-Soroban passes `auth_contexts` specifically so a custom account *can*
-inspect what it's being asked to authorize — which contract, which
-function, which arguments, and any sub-invocations — and make a scoped
-decision (e.g. "this account will sign for `attester-registry::
-add_attester` and `attestation-registry::revoke_attestation`, but not for
-transferring the native XLM balance, and not for calling arbitrary
-third-party contracts"). This contract does none of that: once
-`threshold`-many valid, known-signer, correctly-ordered signatures are
-presented over the payload hash, `__check_auth` returns `Ok(())`
-unconditionally, for **any** invocation the payload was constructed for —
-sending funds, calling any contract, anything.
+The leading underscore is the Rust convention for "intentionally unused"
+— confirming this is a deliberate simplification, not an oversight, but
+one that should be a documented decision given the account's intended
+role.
 
-Per ADR-0003, this account is intended to become the `Admin` for both
-`attester-registry` and `attestation-registry` — a narrow, specific
-role. As deployed today, though, the account contract itself enforces no
-scope: it's a general-purpose N-of-M signer, not an
-admin-of-these-two-registries-specifically signer. That's not
-automatically wrong (a general multisig is a reasonable, simpler
-building block, and scope could be enforced entirely at the caller/policy
-layer instead), but it does mean:
+## Impact
 
-- If this account is ever funded directly with XLM (e.g. to pay for its
-  own transaction fees, which is a normal operational pattern for
-  Soroban accounts), the same N signers who can add an attester can also
-  drain that balance to any address, with no separate spending policy.
-- If the signer set is ever reused across other purposes beyond
-  administering these two registries (tempting, since standing up a
-  second multisig has real operational cost), there is no contract-level
-  guardrail stopping it from being used to authorize something the
-  signers didn't intend the *quorum* to cover — every signer is
-  individually trusted for literally anything the account is asked to
-  sign, with no per-purpose separation of duties.
+Per ADR-0003, this account is intended to become `Admin` for both
+`attester-registry` and `attestation-registry` — a narrow role. As
+implemented, the contract itself enforces no such narrowing: it is a
+general-purpose N-of-M signer, not an
+admin-of-these-two-registries-specifically signer.
 
-## Proposed change
+- If the account is ever funded directly with XLM (a normal operational
+  pattern, e.g. to cover its own transaction fees), the same signer
+  quorum that can add an attester can authorize draining that balance to
+  any address — there is no separate spending policy.
+- If the signer set is ever reused for any purpose beyond administering
+  these two registries, there is no contract-level guardrail preventing
+  the quorum from authorizing something outside what signers understood
+  themselves to be approving when they agreed to be signers. Every signer
+  is individually trusted for anything the account is asked to sign, with
+  no per-purpose separation of duties.
 
-At minimum, this should be a documented decision rather than an implicit
-default:
+## Recommendation
 
-- If unscoped signing is intentional (simplicity, and scope enforcement
-  belongs elsewhere — e.g. never fund this account beyond fee reserves,
-  never reuse its signer set for anything else), say so explicitly in
+Requires an explicit decision, not a default:
+
+- **If unscoped signing is intentional:** document it — in
   `docs/adr/0003-single-admin-initial-model.md`'s follow-up section or a
-  new ADR, with the operational constraints that make it safe spelled
-  out (e.g. "this account must never hold a balance beyond N XLM fee
-  reserve" as a documented operational rule, since the contract itself
-  won't enforce it).
-- If scoping is wanted, `_auth_contexts` gives everything needed to
-  implement it — e.g. reject contexts whose `Context::Contract`
-  `contract` address isn't in an allowlisted set, or whose invoked
-  function isn't in an allowlisted set per contract. This is real added
-  complexity (mirrors the "custom N-of-M logic" tradeoff ADR-0003 already
-  weighed once and deferred in favor of using account abstraction — this
-  issue isn't proposing reopening that decision, just noting the
-  in-contract scoping question is a layer above "multisig vs. single key,"
-  and got skipped rather than decided).
+  new ADR — along with the operational constraints that make it safe
+  (e.g. "this account must never hold a balance beyond an N-XLM fee
+  reserve," "this signer set must not be reused for any purpose outside
+  registry administration"), since the contract will not enforce these
+  itself.
+- **If scoping is wanted:** `auth_contexts` provides everything needed —
+  reject any `Context::Contract` entry whose `contract` address or
+  invoked function is outside an allowlisted set. This adds real
+  complexity and is a separate design question from "multisig vs. single
+  key" (which ADR-0003 already resolved) — it is a layer above that
+  decision and was skipped rather than explicitly deferred.
 
-## Alternatives considered
+## Alternatives Considered
 
-- **Enforce scope entirely off-chain** (only ever construct authorization
-  entries for the intended two contracts via `lafiya-cli`/deploy tooling,
-  never sign anything else). Workable as a stopgap, but relies on every
-  signer's tooling behaving correctly forever — an on-chain guardrail is
-  strictly stronger since it holds even if a signer's tooling is
-  compromised or a signer is careless.
+**Enforce scope entirely off-chain** (only ever construct authorization
+entries for the two intended contracts via `lafiya-cli`/deploy tooling).
+Workable as an interim measure, but depends on every signer's tooling
+behaving correctly indefinitely. An on-chain guardrail is strictly
+stronger: it holds even if a signer's tooling is compromised or a signer
+is careless.
 
-## Scope
+## Verification
 
-- Component(s) affected: multisig-account
-- Does this change a contract's public function signatures? No — this is
-  about the *body* of `__check_auth`, not its interface.
-
-## Acceptance criteria
-
-- [ ] A maintainer decision recorded (scope-in-contract vs.
-      scope-off-chain-with-documented-constraints) in an ADR.
-- [ ] If scoping is chosen: implemented, tested (a test that a correctly
-      threshold-signed authorization for an out-of-scope contract/function
-      is rejected), and any allowlist made admin-configurable through the
-      same signer quorum rather than hardcoded, if the team wants
-      flexibility to administer additional contracts later.
+- [ ] A maintainer decision is recorded (in-contract scoping vs.
+      documented off-chain constraints) via ADR.
+- [ ] If scoping is chosen: implemented, tested (a threshold-signed
+      authorization for an out-of-scope contract/function is rejected),
+      with any allowlist configurable through the existing signer quorum
+      rather than hardcoded.
 - [ ] If off-chain-only is chosen: the operational constraints (funding
-      limits, signer-set reuse policy) are written down somewhere a future
-      operator will actually find them (ADR-0003 follow-up, or
-      `docs/releasing.md`/a new ops doc).
-
-## Additional context
-
-- [ADR-0003](../docs/adr/0003-single-admin-initial-model.md)
-- `contracts/multisig-account/src/lib.rs`
+      limits, signer-set reuse policy) are written down where a future
+      operator will find them.

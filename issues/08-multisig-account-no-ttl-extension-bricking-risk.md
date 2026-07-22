@@ -1,118 +1,115 @@
 ---
-title: "[bug]: multisig-account never extends its own instance storage TTL — expiry permanently bricks the account"
-labels: bug, priority:p1, security, architecture
+title: "[audit] SEC-02: multisig-account never extends its own storage TTL — archival permanently bricks the account"
+labels: bug, priority:p0, security, architecture, severity:critical
 ---
 
-> Related to #04 (attester-registry's missing TTL policy) but materially
-> more severe: a registry losing a persistent entry to expiry is data
-> loss; a **custom account** losing its instance storage to expiry is
-> total, permanent loss of the account's ability to authorize anything.
+**Severity:** Critical
+**Difficulty:** N/A — occurs passively through ordinary low-frequency use; no attacker required
+**Type:** Availability / Storage-Rent leading to Irrecoverable Denial of Service
 
-## Description
+> Same root cause class as ARCH-01 (attester-registry's missing TTL
+> policy) but materially more severe: a registry losing a persistent
+> entry is data loss; a **custom account** losing its instance storage is
+> total, potentially permanent loss of the account's ability to authorize
+> anything — including the transaction needed to fix it.
 
-`contracts/multisig-account/src/lib.rs` stores `Threshold` and every
-`Signer(BytesN<32>)` entry in **instance** storage, written once in
-`__constructor` and never touched again by any other function in the
-contract:
+## Summary
+
+`multisig-account` writes `Threshold` and every `Signer(BytesN<32>)`
+entry to instance storage exactly once, in `__constructor`, and never
+extends their TTL anywhere else in the contract. `__check_auth` only
+reads this storage; reads do not extend TTL in Soroban. Per ADR-0003,
+this contract is the team's intended production replacement for the
+current single-admin model on both registries — an account that
+authorizes infrequently is a realistic operating pattern, and Soroban's
+state-archival mechanism means this account's own configuration can be
+evicted through simple inactivity.
+
+## Location
+
+`contracts/multisig-account/src/lib.rs:41-57` (`__constructor`, writing
+`Signer`/`Threshold` to instance storage); no `extend_ttl` call exists
+anywhere else in the file (confirmed via `grep -n "extend_ttl"
+contracts/multisig-account/src/lib.rs` → no matches).
+
+## Technical Detail
 
 ```rust
-pub fn __constructor(env: Env, signers: Vec<BytesN<32>>, threshold: u32) {
-    ...
-    for signer in signers.iter() {
-        let key = DataKey::Signer(signer);
-        ...
-        env.storage().instance().set(&key, &());
-    }
-    env.storage().instance().set(&DataKey::Threshold, &threshold);
-}
+41	    pub fn __constructor(env: Env, signers: Vec<BytesN<32>>, threshold: u32) {
+42	        if threshold == 0 || threshold > signers.len() {
+43	            panic_with_error!(&env, Error::InvalidThreshold);
+44	        }
+45	
+46	        for signer in signers.iter() {
+47	            let key = DataKey::Signer(signer);
+48	            if env.storage().instance().has(&key) {
+49	                panic_with_error!(&env, Error::DuplicateSigner);
+50	            }
+51	            env.storage().instance().set(&key, &());
+52	        }
+53	
+54	        env.storage()
+55	            .instance()
+56	            .set(&DataKey::Threshold, &threshold);
+57	    }
 ```
 
-`__check_auth` only **reads** this storage (`env.storage().instance()
-.get(&DataKey::Threshold)`, `.has(&DataKey::Signer(...))`) — reads do not
-extend TTL in Soroban. There is no `extend_ttl` call anywhere in this
-file, unlike `attestation-registry::attest()` which at least bumps its
-own instance TTL on every write.
+`__check_auth` (lines 65-106) only performs `env.storage().instance()
+.get(&DataKey::Threshold)` and `.has(&DataKey::Signer(...))` — both reads.
+Unlike `attestation-registry::attest()`, which at least bumps its own
+instance TTL on every write, this contract has no write path after
+construction and therefore no natural point where TTL gets extended at
+all.
 
-Per ADR-0003, this multisig contract is the team's intended production
-replacement for the current single-admin model — the address configured
-as `Admin` on both registries is meant to eventually *be* a deployed
-`MultisigAccount`. If this contract's instance storage TTL expires (gets
-archived because the account happened to go unused past the rent
-threshold — plausible for an admin account that only transacts
-occasionally, e.g. adding an attester once a month), the archived entry
-means `Threshold`/`Signer` reads start failing. Depending on how the
-account is restored (Soroban supports state archival recovery via
-explicit restore operations, at a cost, if the entry hasn't been evicted
-past a recovery window), this is at minimum an availability incident
-requiring off-chain intervention, and at worst — if restoration isn't
-performed in time or isn't operationally set up — **permanent loss of the
-ability to authorize any transaction from this account**, including the
-transactions that would be needed to fix the problem, since fixing it
-would itself require authorizing a call through the now-broken account.
-For an account gating the admin of both registries, that's a
-custody-ending failure mode, not just a data-availability one.
+## Impact
 
-This is a more severe instance of the same root problem as the
-attester-registry TTL issue (#04), but distinct enough — different
-contract, different blast radius (bricked custody vs. missing allowlist
-entries), different fix shape (an account contract can't easily "bump TTL
-on every admin call" the way a registry can, since `__check_auth` is
-called by the protocol, not invoked as a regular contract call the
-account itself controls the body of in the same way) — to warrant tracking
-separately rather than folding into #04.
+If this account's instance storage TTL lapses (archived due to
+infrequent use — e.g. an admin account that only transacts once a month
+to add an attester, well within a plausible operating cadence), reads of
+`Threshold`/`Signer` begin failing. Soroban supports state-archival
+recovery via explicit restore operations within a recovery window, at a
+cost — but that requires off-chain operational awareness and timely
+action. If recovery is not performed within the window, or is not
+operationally set up at all, the result is **permanent loss of the
+account's ability to authorize any transaction**, including the
+transaction that would restore or fix it, since any fix would itself
+require authorizing a call through the now-inaccessible account. For an
+account gating administrative control of both registries per ADR-0003,
+this is a custody-ending failure mode, not merely a data-availability
+incident — the difference between this and ARCH-01 is the difference
+between "an attester needs re-adding" and "the admin key is gone."
 
-## Expected behavior
+## Recommendation
 
-The account's instance storage TTL is kept alive indefinitely through
-routine operation, or through an explicit, documented keep-alive
-mechanism, so an admin account that authorizes transactions infrequently
-doesn't risk archival.
+Requires a design decision — the right mechanism depends on constraints
+this audit cannot fully verify (specifically, whether Soroban's execution
+model permits storage-extending writes *during* the `__check_auth` phase,
+which has historically had tighter restrictions than ordinary contract
+invocations in some SDK versions):
 
-## Actual behavior
+1. **Extend TTL inside `__check_auth` itself**, if permitted by the
+   current `soroban-sdk` version's auth-check execution semantics —
+   verify this against the pinned SDK version before committing to this
+   approach.
+2. **A permissionless `keep_alive()` entrypoint** that does nothing but
+   extend instance TTL, callable by anyone (or any signer) and driven by
+   a scheduled off-chain job — simplest and most auditable, at the cost
+   of depending on an off-chain scheduler staying alive as a backstop
+   (the same tradeoff ARCH-01 weighs and rejects as a *sole* mechanism,
+   but may be acceptable here specifically as a documented backstop given
+   option 1's uncertainty).
+3. **Operational runbook**, if neither in-contract mechanism is adopted:
+   document the required TTL-extension cadence and ownership explicitly —
+   the current silent default (no mechanism, no documented runbook) is
+   the actual defect, not the absence of automation per se.
 
-No TTL extension exists anywhere in the contract. An infrequently-used
-account is a real archival risk.
+## Verification
 
-## Proposed fix (needs design, not just a one-line patch)
-
-A few shapes worth evaluating together with a maintainer, since the right
-answer depends on constraints this audit can't fully see (how
-`__check_auth` interacts with TTL extension calls made *during*
-authorization, and whether that's even permitted/metered the same way in
-Soroban's auth-check execution context):
-
-1. **Extend TTL inside `__check_auth` itself**, if Soroban's execution
-   model permits storage-extending writes during the auth-check phase (this
-   needs verifying against current `soroban-sdk` semantics — auth checks
-   historically have had tighter restrictions than normal contract
-   invocations in some SDK versions).
-2. **A permissionless `keep_alive()` entrypoint** any signer (or even
-   anyone) can call, that does nothing but extend instance TTL, callable
-   as a scheduled off-chain cron job (the `lafiya-cli`/deploy tooling
-   already has a network-config-aware CLI that could host this) — simplest
-   and most auditable, at the cost of depending on an off-chain scheduler
-   staying alive, which is the same tradeoff #04 already weighs and
-   rejects as a *sole* mechanism but which may be acceptable as a
-   documented backstop here.
-3. **Operational runbook**: document the required TTL-extension cadence
-   and who's responsible, if the team decides an in-contract mechanism
-   isn't worth the complexity for now — but that decision should be
-   explicit, not the current silent default.
-
-## Acceptance criteria
-
-- [ ] A maintainer decision recorded on which mechanism is used.
-- [ ] Whichever mechanism is chosen is implemented and tested, including
-      a test that advances the ledger sequence past the instance TTL
-      threshold and confirms the account remains authorizable.
-- [ ] The chosen mechanism (or the operational runbook, if that's the
-      route) is documented in `docs/adr/0003-single-admin-initial-model.md`'s
-      follow-up section or a new short ADR, since this is directly
-      relevant to that ADR's "Before a production or mainnet deployment"
-      gate.
-
-## Environment
-
-- Contract(s) affected: multisig-account
-- Verified by reading source; `cargo` unavailable in this audit
-  environment.
+- [ ] A maintainer decision is recorded on which mechanism is used.
+- [ ] The chosen mechanism is implemented and tested, including a test
+      that advances the ledger sequence past the instance TTL threshold
+      and confirms the account remains authorizable.
+- [ ] The chosen mechanism (or runbook) is documented in
+      `docs/adr/0003-single-admin-initial-model.md`'s follow-up section or
+      a new ADR — directly relevant to that ADR's stated gate on
+      production/mainnet deployment.

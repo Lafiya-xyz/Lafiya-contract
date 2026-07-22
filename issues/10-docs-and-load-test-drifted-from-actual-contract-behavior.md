@@ -1,128 +1,119 @@
 ---
-title: "[bug]: design docs and the attester-load test have drifted from actual contract behavior — false confidence in coverage that doesn't exist"
-labels: bug, priority:p2, documentation, test-coverage
+title: "[audit] QA-01: safety-net artifacts (load test, cost benchmarks, event-indexing spec, error-code docs) have drifted from actual contract behavior"
+labels: bug, priority:p2, documentation, test-coverage, severity:low
 ---
 
-> Architect-tier: each item below is individually minor, but together
-> they're the same failure pattern as #01/#03 at smaller scale —
-> something that looks like a safety net (a benchmark, a load test, a
-> design spec, an error-code reference) has quietly stopped reflecting
-> reality, and nothing has been checking. Grouped as one issue since the
-> fix for all four is "make the artifact honest and re-sync it," not four
-> separate code changes.
+**Severity:** Low (individually); the pattern is the same class of failure as CI-01/PROC-01 at smaller scale
+**Difficulty:** N/A — passive documentation/test drift, not an exploit
+**Type:** Quality Assurance / Observability Gap
 
-## Description
+> Four independent findings grouped as one issue because the fix for all
+> four is identical in kind — "make the artifact honest and re-sync it" —
+> not four separate code changes. Each is evidence of the same root
+> pattern already established by CI-01 and PROC-01: something that looks
+> like a safety net has quietly stopped reflecting reality, unchecked.
 
-Four artifacts in this repo exist specifically to give confidence about
-behavior or cost, and all four have drifted from what the contracts
-actually do:
+## Finding QA-01a — Load test asserts nothing about resource cost
 
-### 1. `contracts/attester-registry/src/large_test.rs` asserts nothing about budget
+**Location:** `contracts/attester-registry/src/large_test.rs:50-55`
 
 ```rust
-// Record resource budget usage (debug output for CI logs)
-let budget = env.budget();
-// These methods exist on Budget; if not, they are placeholders for illustration.
-// In actual Soroban SDK, you can query used CPU instructions and memory.
-// For now we just ensure the test completes without hitting limits.
-println!("Budget after adding {} attesters: {:?}", total_attesters, budget);
+50	        // Record resource budget usage (debug output for CI logs)
+51	        let budget = env.budget();
+52	        // These methods exist on Budget; if not, they are placeholders for illustration.
+53	        // In actual Soroban SDK, you can query used CPU instructions and memory.
+54	        // For now we just ensure the test completes without hitting limits.
+55	        println!("Budget after adding {} attesters: {:?}", total_attesters, budget);
 ```
 
-The test's own comments admit it: this doesn't assert a CPU/memory
-ceiling, it just prints the budget and relies on the test *not panicking*
-from resource exhaustion as its only signal. A regression that
-significantly increases per-attester cost (e.g. an accidental O(n) scan
-introduced somewhere) would have to roughly reach Soroban's hard resource
-limit before this test would ever fail — anything short of that passes
-silently. For a test explicitly named "load test" whose purpose is
-catching cost regressions at scale, that's a false sense of coverage.
+The test's own comments concede it: no CPU/memory ceiling is asserted.
+Its only pass/fail signal is whether the test panics from hitting
+Soroban's hard resource limit outright. A regression that meaningfully
+increases per-attester cost (e.g. an accidental O(n) scan) would have to
+approach that hard limit before this test — explicitly named a "load
+test" — would ever fail. Anything short of that passes silently. This is
+false coverage: the test's existence implies a cost regression would be
+caught; it would not be, short of a near-total budget blowout.
 
-### 2. `docs/storage-cost.md` benchmarks aren't wired to anything
+**Recommendation:** capture the relevant `Budget` accessor (current
+`soroban-sdk` API — verify exact method name against the pinned version)
+after 10, 100, and 1000 attesters and assert each stays under an
+explicit, documented ceiling with headroom, so a real regression fails
+the test.
 
-The doc says "You can re-run these benchmarks using... `make bench`,"
-and `make bench` is `cargo test -- --nocapture` — i.e. it just runs the
-test suite with stdout visible, including `large_test.rs`'s `println!`
-above. There's no script that regenerates the table in
-`docs/storage-cost.md` from that output, and no check that the numbers in
-the doc still match reality. The 1000-attester row's cost figures could
-be arbitrarily stale (they predate at least the TTL and suspend/reinstate
-work per the commit history) and nothing would notice.
+## Finding QA-01b — Cost benchmarks in docs aren't wired to the test suite
 
-### 3. `docs/architecture/event-indexing.md`'s event list is stale
+**Location:** `docs/storage-cost.md` (entire document)
+
+The doc states benchmarks are re-run via `make bench`, which is `cargo
+test -- --nocapture` — it prints QA-01a's `println!` output to stdout.
+No script regenerates the markdown table from that output, and nothing
+checks the documented figures still match reality. The table predates at
+least the TTL-extension and suspend/reinstate work per commit history and
+could be arbitrarily stale.
+
+**Recommendation:** either automate table generation from load-test
+output (a small parsing script, run in CI or pre-commit) or, at minimum,
+add a "last verified against commit `<sha>`" line so staleness is visible
+rather than silent.
+
+## Finding QA-01c — Event-indexing design spec omits 5 of 8 currently-declared events
+
+**Location:** `docs/architecture/event-indexing.md:5-8`
 
 ```
-Lafiya contracts emit the following events on-chain:
-- AttesterAdded
-- AttesterRemoved
-- AttestationRecorded
+5	Lafiya contracts emit the following events on-chain:
+6	- `AttesterAdded`
+7	- `AttesterRemoved`
+8	- `AttestationRecorded`
 ```
 
-Actual events currently declared across both contracts (per
-`#[contractevent]` in each `lib.rs`): `AdminTransferred` (both
-contracts), `Initialized`, `AttesterAdded`, `AttesterRemoved`,
-`AttesterSuspended`, `AttesterReinstated`, `AttestationRecorded`,
-`AttestationRevoked` — the design doc is missing five of eight. This
-matters beyond "doc is out of date": this spec is what's supposed to
-drive the event-indexer that keeps `lafiya-web`'s displayed verification
-status in sync with on-chain state (per the doc's own stated purpose).
-An indexer built strictly from this spec would never process
+Actual `#[contractevent]` types currently declared across both
+contracts: `AdminTransferred` (both contracts), `Initialized`,
+`AttesterAdded`, `AttesterRemoved`, `AttesterSuspended`,
+`AttesterReinstated`, `AttestationRecorded`, `AttestationRevoked` — the
+spec lists 3 of 8. This is not merely stale documentation: this spec is
+the stated design input for the event-indexer that keeps `lafiya-web`'s
+displayed verification status synchronized with on-chain state. An
+indexer implemented strictly from this spec would never process
 `AttesterSuspended`, `AttesterReinstated`, or `AttestationRevoked` —
-silently compounding the revocation-semantics gap in issue #05, since
-even a *correct* fix to that issue's on-chain logic wouldn't reach
-`lafiya-web` if the indexer spec never told it those events exist.
+compounding ARCH-02 (revocation-semantics gap): even a correct on-chain
+fix for that finding would not reach `lafiya-web` if the indexer's own
+design spec never told it those events exist.
 
-### 4. `docs/error-codes.md` doesn't cover `multisig-account` at all
+**Recommendation:** update the event list to the current set. Consider
+extending the existing `test_error_codes_are_documented`-style
+enforcement (see QA-01d) with a sibling check that greps for
+`#[contractevent]` declarations and asserts each is named somewhere in
+this doc — the codebase already has precedent for this pattern.
 
-The doc's two sections are `attester-registry` and `attestation-registry`
-only. `contracts/multisig-account/src/lib.rs` defines its own
-`#[contracterror] pub enum Error` with six variants
+## Finding QA-01d — Error-code reference omits multisig-account entirely
+
+**Location:** `docs/error-codes.md` (entire document, sections at lines
+`8` and `16`)
+
+The document has exactly two sections, `attester-registry` and
+`attestation-registry`. `contracts/multisig-account/src/lib.rs:24-34`
+declares its own `#[contracterror] pub enum Error` with six variants
 (`InvalidThreshold`, `DuplicateSigner`, `NotEnoughSigners`,
 `BadSignatureOrder`, `UnknownSigner`, `NotInitialized`) — none
-documented. `attestation-registry/src/test.rs` has a
-`test_error_codes_are_documented` test that enforces this doc stays in
-sync *for the two contracts it checks*, but nothing equivalent covers
-`multisig-account`, so this gap has no test to catch it even after #01
-(CI) is fixed.
+documented. `attestation-registry/src/test.rs`'s
+`test_error_codes_are_documented` enforces sync *only* for the two
+contracts it reads source from; `multisig-account` has no equivalent
+check, so this gap will persist even after CI-01 is fixed.
 
-## Proposed fix
+**Recommendation:** add a `## \`multisig-account\`` section documenting
+its six variants (including the new `TooManySigners` variant proposed in
+SEC-01, once added), and extend `test_error_codes_are_documented`-style
+coverage to include `multisig-account`'s source path.
 
-- `large_test.rs`: add an actual assertion — e.g. capture
-  `budget.cpu_instruction_cost()` (or the equivalent current-SDK accessor)
-  after 10, 100, and 1000 attesters and assert each stays under an
-  explicit, documented ceiling with headroom, so a real regression fails
-  the test rather than just printing a bigger number.
-- Either automate `docs/storage-cost.md` generation from the load test's
-  output (a small script parsing test output into the markdown table,
-  run in CI or pre-commit) or, more cheaply, add a one-line note to the
-  doc stating the table is manually maintained and the date/commit it was
-  last verified against, so staleness is at least visible rather than
-  silent.
-- Update `docs/architecture/event-indexing.md`'s event list to the actual
-  current set, and add a short line asking future contract PRs that add
-  `#[contractevent]` types to update this doc (or, better, extend the
-  existing `test_error_codes_are_documented` pattern with a sibling test
-  that greps for `#[contractevent]` structs and asserts each is named in
-  this doc — same mechanism, same payoff, already has precedent in this
-  codebase).
-- Add a `## \`multisig-account\`` section to `docs/error-codes.md` with
-  its six error variants, and extend
-  `test_error_codes_are_documented`-style coverage to include
-  `multisig-account` (currently that test only reads
-  `attester-registry`/`attestation-registry` source paths).
-
-## Acceptance criteria
+## Verification
 
 - [ ] `large_test.rs` asserts a concrete budget ceiling per allowlist
-      size tested, not just "didn't panic."
-- [ ] `docs/storage-cost.md` either regenerates automatically or is
-      explicitly marked with a last-verified reference point.
+      size tested, not merely "did not panic."
+- [ ] `docs/storage-cost.md` either regenerates automatically or carries
+      an explicit last-verified reference point.
 - [ ] `docs/architecture/event-indexing.md` lists all currently-declared
       events.
 - [ ] `docs/error-codes.md` documents `multisig-account`'s `Error` enum,
       and doc-sync test coverage extends to it.
-
-## Environment
-
-- Affected: `contracts/attester-registry/src/large_test.rs`,
-  `docs/storage-cost.md`, `docs/architecture/event-indexing.md`,
-  `docs/error-codes.md`, `contracts/multisig-account/src/lib.rs`
