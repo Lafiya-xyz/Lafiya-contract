@@ -32,3 +32,4 @@ administrative trust models generally do.
 | [ADR-0001](0001-hash-only-on-chain-footprint.md) | Keep health data off-chain and store only opaque commitments | Accepted |
 | [ADR-0002](0002-contractclient-boundary.md) | Use a local `#[contractclient]` interface for registry-to-registry calls | Accepted |
 | [ADR-0003](0003-single-admin-initial-model.md) | Use a single admin address for the pre-alpha contracts | Accepted |
+| [ADR-0007](0007-unscoped-multisig-authorization.md) | Keep multisig authorization unscoped during pre-alpha | Proposed |
