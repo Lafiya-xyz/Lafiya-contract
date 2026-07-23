@@ -212,6 +212,25 @@ attestation-registry.initialize(multisig_address, attester_registry_address)
 
 The registry contracts need no multisig-specific logic. Their existing `admin.require_auth()` calls invoke the account contract's `__check_auth`, so an admin operation succeeds only when its authorization entry contains at least N valid signatures.
 
+> **Authorization scope:** `multisig-account` is a general-purpose N-of-M account. It does not
+> inspect Soroban's authorization contexts or restrict the contract, function, arguments, asset
+> movement, or nested invocations that a valid quorum may approve. It is not a
+> registry-scoped or least-privileged account.
+
+For pre-alpha use, assign a signer set dedicated exclusively to Lafiya registry administration;
+do not reuse those keys or that quorum for treasury or unrelated authority. Do not use the
+multisig address as a treasury: keep only the bounded XLM fee reserve recorded for the deployment
+and sweep any excess. Before signing, each signer must inspect the decoded authorization tree
+and independently verify the registry address, function, arguments, asset movements, and
+sub-invocations. A payload hash or transaction label alone is not sufficient.
+
+The deployment record must contain the signer-set identifier (never secret keys), threshold,
+approved registry addresses, fee-reserve ceiling, and balance-sweep and authorization-review
+procedures. This account must not administer a production or mainnet deployment until its
+unscoped authority is explicitly accepted for that environment or replaced by an on-chain
+scoping policy. See
+[ADR-0007](docs/adr/0007-unscoped-multisig-authorization.md) for the decision and residual risks.
+
 Not yet deployed to testnet — deployment scripts and instructions land with the rest of milestone M1.
 
 ## Privacy & Compliance
