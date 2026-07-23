@@ -315,6 +315,38 @@ fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
     variants
 }
 
+fn parse_contract_events(content: &str) -> std::vec::Vec<std::string::String> {
+    let mut events = std::vec::Vec::new();
+    let mut event_attribute_seen = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "#[contractevent]" {
+            event_attribute_seen = true;
+        } else if let (true, Some(declaration)) =
+            (event_attribute_seen, line.strip_prefix("pub struct "))
+        {
+            let name = declaration
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect();
+            events.push(name);
+            event_attribute_seen = false;
+        }
+    }
+
+    events
+}
+
+fn markdown_section<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
+    let start = content.find(heading)?;
+    let body = &content[start + heading.len()..];
+    let end = body
+        .find("\n## ")
+        .map_or(content.len(), |offset| start + heading.len() + offset);
+    Some(&content[start..end])
+}
+
 #[test]
 fn test_error_codes_are_documented() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -343,52 +375,73 @@ fn test_error_codes_are_documented() {
         .join("lib.rs");
     let attestation_src = std::fs::read_to_string(&attestation_src_path)
         .expect("Failed to read attestation-registry lib.rs");
+    let multisig_src_path = workspace_root
+        .join("contracts")
+        .join("multisig-account")
+        .join("src")
+        .join("lib.rs");
+    let multisig_src =
+        std::fs::read_to_string(&multisig_src_path).expect("Failed to read multisig-account lib.rs");
 
-    let attester_variants = parse_error_variants(&attester_src);
-    let attestation_variants = parse_error_variants(&attestation_src);
-
-    assert!(
-        !attester_variants.is_empty(),
-        "Could not find any Error variants in attester-registry"
-    );
-    assert!(
-        !attestation_variants.is_empty(),
-        "Could not find any Error variants in attestation-registry"
-    );
-
-    let attester_section_idx = doc_content
-        .find("## `attester-registry`")
-        .expect("Missing '## `attester-registry`' section in docs/error-codes.md");
-    let attestation_section_idx = doc_content
-        .find("## `attestation-registry`")
-        .expect("Missing '## `attestation-registry`' section in docs/error-codes.md");
-
-    let (attester_doc, attestation_doc) = if attester_section_idx < attestation_section_idx {
-        (
-            &doc_content[attester_section_idx..attestation_section_idx],
-            &doc_content[attestation_section_idx..],
-        )
-    } else {
-        (
-            &doc_content[attester_section_idx..],
-            &doc_content[attestation_section_idx..attester_section_idx],
-        )
-    };
-
-    for variant in &attester_variants {
+    for (contract, source) in [
+        ("attester-registry", attester_src.as_str()),
+        ("attestation-registry", attestation_src.as_str()),
+        ("multisig-account", multisig_src.as_str()),
+    ] {
+        let variants = parse_error_variants(source);
         assert!(
-            attester_doc.contains(variant),
-            "Error variant '{}' is not documented under '## `attester-registry`' in docs/error-codes.md",
-            variant
+            !variants.is_empty(),
+            "Could not find any Error variants in {contract}"
         );
+
+        let heading = std::format!("## `{contract}`");
+        let section = markdown_section(&doc_content, &heading)
+            .unwrap_or_else(|| panic!("Missing '{heading}' section in docs/error-codes.md"));
+        for variant in variants {
+            assert!(
+                section.contains(&std::format!("`{variant}`")),
+                "Error variant '{variant}' is not documented under '{heading}' in docs/error-codes.md"
+            );
+        }
     }
+}
 
-    for variant in &attestation_variants {
+#[test]
+fn test_contract_events_are_documented() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+
+    let doc_path = workspace_root
+        .join("docs")
+        .join("architecture")
+        .join("event-indexing.md");
+    let doc_content = std::fs::read_to_string(&doc_path)
+        .expect("Failed to read docs/architecture/event-indexing.md. Make sure it exists.");
+
+    for contract in ["attester-registry", "attestation-registry"] {
+        let source_path = workspace_root
+            .join("contracts")
+            .join(contract)
+            .join("src")
+            .join("lib.rs");
+        let source = std::fs::read_to_string(&source_path)
+            .unwrap_or_else(|_| panic!("Failed to read {contract} lib.rs"));
+        let events = parse_contract_events(&source);
         assert!(
-            attestation_doc.contains(variant),
-            "Error variant '{}' is not documented under '## `attestation-registry`' in docs/error-codes.md",
-            variant
+            !events.is_empty(),
+            "Could not find any contract events in {contract}"
         );
+
+        for event in events {
+            assert!(
+                doc_content.contains(&std::format!("`{event}`")),
+                "Event '{event}' from {contract} is not documented in docs/architecture/event-indexing.md"
+            );
+        }
     }
 }
 
@@ -588,4 +641,3 @@ fn test_attest_auth_matrix() {
         }
     }
 }
-
