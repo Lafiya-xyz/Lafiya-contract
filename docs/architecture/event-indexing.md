@@ -2,10 +2,20 @@
 
 ## Overview
 
-Lafiya contracts emit the following events on-chain:
+Lafiya contracts currently declare the following on-chain event schemas:
+
+- `AdminTransferred` (`attester-registry` and `attestation-registry`)
+- `Initialized`
 - `AttesterAdded`
 - `AttesterRemoved`
+- `AttesterSuspended`
+- `AttesterReinstated`
 - `AttestationRecorded`
+- `AttestationRevoked`
+
+`Initialized` is currently a declared schema only: neither registry publishes it
+during initialization. Indexers must not rely on receiving it unless contract
+behavior is changed in a future release.
 
 These events need to be consumed by the off‑chain services used by **lafiya‑web** to display the verified status in near‑real‑time. This document outlines the design of an **event indexing / webhook service** that polls or streams Soroban events and reconciles them with the existing Supabase‑backed profile data.
 
@@ -45,7 +55,11 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
    - Writes a row to a new `event_log` table in Supabase for auditability.
 2. **Profile Updater**
    - For `AttestationRecorded`, update the `profiles` table (e.g., set `verified = true`, store attestation metadata).
-   - For `AttesterAdded` / `AttesterRemoved`, update a secondary `attesters` table that tracks which accounts are authorized to attest.
+   - For `AttestationRevoked`, remove the indexed attestation and set the corresponding profile's `verified` state to false.
+   - For `AttesterAdded` / `AttesterRemoved`, add or remove the account in a secondary `attesters` table.
+   - For `AttesterSuspended` / `AttesterReinstated`, update the account's active status without losing its allowlist history.
+   - Record `AdminTransferred` as a contract-administration audit event; it does not directly change profile verification state.
+   - If a future contract release begins publishing `Initialized`, record it as an administration audit event as well.
 3. **Webhook Interface**
    - Expose a simple HTTP endpoint that **lafiya‑web** can call (or use Supabase realtime listeners) to receive push notifications when a profile changes.
    - The webhook payload contains the profile ID and the updated verification state.
