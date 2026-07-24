@@ -4,6 +4,8 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::{BytesN, Env, Event, IntoVal};
 
+use proptest::prelude::*;
+
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
@@ -14,9 +16,26 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 }
 
 #[test]
+fn get_schema_version_succeeds() {
+    let (_, client, admin) = setup();
+    assert_eq!(client.get_schema_version(), 1);
+    client.initialize(&admin);
+    assert_eq!(client.get_schema_version(), 1);
+}
+
+#[test]
 fn initialize_sets_admin() {
     let (_, client, admin) = setup();
     client.initialize(&admin);
+    assert_eq!(client.get_admin(), admin);
+}
+
+#[test]
+fn get_admin_before_initialize_fails() {
+    let (_, client, _admin) = setup();
+
+    let result = client.try_get_admin();
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
 
 #[test]
@@ -128,7 +147,7 @@ fn add_attester_without_admin_auth_fails() {
     }]);
 
     let result = client.try_add_attester(&attester);
-    assert!(result.is_err());
+    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     assert!(!client.is_attester(&attester));
 }
 

@@ -98,9 +98,7 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Emits `AttesterAdded`. |
 | `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Emits `AttesterRemoved`. |
 | `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. |
-| `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
-| `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
-| `get_schema_version() -> u32` | Storage schema version recorded for the instance (`0` = legacy pre-versioning or uninitialized). Open to any caller. |
+| `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. |
 
 ### `attestation-registry`
 
@@ -137,6 +135,9 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 ## Repository Structure
 
 ```
+bindings/
+├── attestation-registry/    # generated TS client for attestation contract
+└── attester-registry/       # generated TS client for allowlist contract
 contracts/
 ├── multisig-account/        # reusable N-of-M admin account
 │   ├── Cargo.toml
@@ -155,20 +156,47 @@ contracts/
         ├── lib.rs           # initialize, attest, get_attestation, upgrade, migrate, get_schema_version
         └── test.rs
 docs/
-├── error-codes.md           # contract error enums (kept in sync by a unit test)
-└── runbooks/
-    └── contract-upgrade.md  # production upgrade runbook
-scripts/
-└── upgrade.sh               # build → hash → upload → upgrade → (migrate) → verify
+└── adr/                      # architecture decisions, index, and template
 Cargo.toml                   # workspace + release profile
 Cargo.lock                    # committed for reproducible builds
 CHANGELOG.md                  # release notes incl. schema-impact statements
 rust-toolchain.toml           # pins stable + wasm32v1-none
-Makefile                      # build/test/fmt/clippy/wasm/check
+Makefile                      # build/test/fmt/clippy/wasm/bindings/check
 .github/workflows/ci.yml      # runs the same checks on push/PR
 LICENSE                       # MIT
 CONTRIBUTING.md               # local dev workflow
 ```
+
+## TypeScript Client Bindings
+
+Client bindings are generated from the built WASM contracts using the `stellar-cli` tool. They allow frontend applications (like `lafiya-web`) to interact with the deployed contracts with full type safety.
+
+### Generation
+
+To generate the bindings, run:
+
+```bash
+make bindings
+```
+
+This builds the contracts and outputs TypeScript packages to the `bindings/` directory:
+- `bindings/attester-registry`
+- `bindings/attestation-registry`
+
+To compile the generated packages:
+
+```bash
+cd bindings/attester-registry && npm install && npm run build
+cd ../attestation-registry && npm install && npm run build
+```
+
+### Publishing & Consumption
+
+The generated bindings are committed directly to this repository under the `bindings/` directory. `lafiya-web` (or any other consumer) can consume them via:
+- Direct git path dependency in `package.json` pointing to the repo or subdirectory.
+- A git submodule in the consuming project.
+- Alternatively, CI/CD can be configured to publish these directories as packages to the `@lafiya` npm organization.
+
 
 ## Tech Stack
 
@@ -198,6 +226,25 @@ attestation-registry.initialize(multisig_address, attester_registry_address)
 
 The registry contracts need no multisig-specific logic. Their existing `admin.require_auth()` calls invoke the account contract's `__check_auth`, so an admin operation succeeds only when its authorization entry contains at least N valid signatures.
 
+> **Authorization scope:** `multisig-account` is a general-purpose N-of-M account. It does not
+> inspect Soroban's authorization contexts or restrict the contract, function, arguments, asset
+> movement, or nested invocations that a valid quorum may approve. It is not a
+> registry-scoped or least-privileged account.
+
+For pre-alpha use, assign a signer set dedicated exclusively to Lafiya registry administration;
+do not reuse those keys or that quorum for treasury or unrelated authority. Do not use the
+multisig address as a treasury: keep only the bounded XLM fee reserve recorded for the deployment
+and sweep any excess. Before signing, each signer must inspect the decoded authorization tree
+and independently verify the registry address, function, arguments, asset movements, and
+sub-invocations. A payload hash or transaction label alone is not sufficient.
+
+The deployment record must contain the signer-set identifier (never secret keys), threshold,
+approved registry addresses, fee-reserve ceiling, and balance-sweep and authorization-review
+procedures. This account must not administer a production or mainnet deployment until its
+unscoped authority is explicitly accepted for that environment or replaced by an on-chain
+scoping policy. See
+[ADR-0007](docs/adr/0007-unscoped-multisig-authorization.md) for the decision and residual risks.
+
 Not yet deployed to testnet — deployment scripts and instructions land with the rest of milestone M1.
 
 ## Privacy & Compliance
@@ -220,10 +267,11 @@ Stellar/Soroban does two things Lafiya genuinely needs that a plain web app cann
 ## Testing
 
 ```bash
-make test
+make test              # Unit tests (in-process soroban-sdk testutils)
+make test-integration  # Integration tests (deployed WASMs on local Soroban network)
 ```
 
-Covers, per contract (see `contracts/*/src/test.rs`):
+Covers, per contract (see `contracts/*/src/test.rs` and `tests/integration/run.sh`):
 
 - ✅ Initialize / double-initialize rejection
 - ✅ Admin-gated writes (`add_attester`, `remove_attester`), including rejection when the caller's auth entry doesn't match
@@ -234,7 +282,6 @@ Covers, per contract (see `contracts/*/src/test.rs`):
 - ✅ Multisig threshold, signer validation, signature ordering, and invalid-signature rejection
 - ✅ Multisig-backed initialization and admin operations through the contract-account authorization path
 
-Not yet covered: testnet deployment / integration testing against a live Soroban RPC, and the attester allowlist growing large enough to matter for storage TTL/cost.
 
 ## Dependencies
 
@@ -248,8 +295,16 @@ Not yet covered: testnet deployment / integration testing against a live Soroban
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the local dev workflow (`make check` etc.). Issues and PRs welcome. This repository specifically needs collaborators with experience in:
+Contributions are welcome! As an open-source Digital Public Good, we rely on community contributions to build and maintain Lafiya.
 
+Please refer to [CONTRIBUTING.md](CONTRIBUTING.md) for our detailed guidelines, which cover:
+- Local development environment setup
+- Branching and commit conventions (Conventional Commits)
+- Cross-repo shared-contract coordination guidelines
+- Database/Supabase migration details
+- Smart contract quality standards and testing checklist
+
+This repository specifically needs collaborators with experience in:
 - Stellar / Soroban smart contract development (Rust)
 - On-chain data modeling and attestation/verifiable-credential design
 
@@ -307,6 +362,10 @@ For issues and questions:
 ## Disclaimer
 
 Lafiya is an information aid, **not a medical device** and **not a substitute for professional medical judgment**. Verified indicators reflect that a record was attested by a registered health worker; they are not a clinical guarantee. Treatment decisions remain the responsibility of the attending clinician.
+
+## Security
+
+Found a vulnerability? Please don't open a public issue — see [SECURITY.md](SECURITY.md) for how to report it privately.
 
 ## References
 

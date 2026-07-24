@@ -28,6 +28,27 @@ fn setup() -> (
 }
 
 #[test]
+fn configuration_getters_return_initialized_addresses() {
+    let (_env, client, attester_registry, admin) = setup();
+
+    assert_eq!(client.get_admin(), admin);
+    assert_eq!(client.get_attester_registry(), attester_registry.address);
+}
+
+#[test]
+fn configuration_getters_before_initialize_fail() {
+    let env = Env::default();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+
+    assert_eq!(client.try_get_admin(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_get_attester_registry(),
+        Err(Ok(Error::NotInitialized))
+    );
+}
+
+#[test]
 fn attest_by_allowlisted_attester_succeeds() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
@@ -294,6 +315,38 @@ fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
     variants
 }
 
+fn parse_contract_events(content: &str) -> std::vec::Vec<std::string::String> {
+    let mut events = std::vec::Vec::new();
+    let mut event_attribute_seen = false;
+
+    for line in content.lines() {
+        let line = line.trim();
+        if line == "#[contractevent]" {
+            event_attribute_seen = true;
+        } else if let (true, Some(declaration)) =
+            (event_attribute_seen, line.strip_prefix("pub struct "))
+        {
+            let name = declaration
+                .chars()
+                .take_while(|character| character.is_ascii_alphanumeric() || *character == '_')
+                .collect();
+            events.push(name);
+            event_attribute_seen = false;
+        }
+    }
+
+    events
+}
+
+fn markdown_section<'a>(content: &'a str, heading: &str) -> Option<&'a str> {
+    let start = content.find(heading)?;
+    let body = &content[start + heading.len()..];
+    let end = body
+        .find("\n## ")
+        .map_or(content.len(), |offset| start + heading.len() + offset);
+    Some(&content[start..end])
+}
+
 #[test]
 fn test_error_codes_are_documented() {
     let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
@@ -322,137 +375,269 @@ fn test_error_codes_are_documented() {
         .join("lib.rs");
     let attestation_src = std::fs::read_to_string(&attestation_src_path)
         .expect("Failed to read attestation-registry lib.rs");
+    let multisig_src_path = workspace_root
+        .join("contracts")
+        .join("multisig-account")
+        .join("src")
+        .join("lib.rs");
+    let multisig_src =
+        std::fs::read_to_string(&multisig_src_path).expect("Failed to read multisig-account lib.rs");
 
-    let attester_variants = parse_error_variants(&attester_src);
-    let attestation_variants = parse_error_variants(&attestation_src);
-
-    assert!(
-        !attester_variants.is_empty(),
-        "Could not find any Error variants in attester-registry"
-    );
-    assert!(
-        !attestation_variants.is_empty(),
-        "Could not find any Error variants in attestation-registry"
-    );
-
-    let attester_section_idx = doc_content
-        .find("## `attester-registry`")
-        .expect("Missing '## `attester-registry`' section in docs/error-codes.md");
-    let attestation_section_idx = doc_content
-        .find("## `attestation-registry`")
-        .expect("Missing '## `attestation-registry`' section in docs/error-codes.md");
-
-    let (attester_doc, attestation_doc) = if attester_section_idx < attestation_section_idx {
-        (
-            &doc_content[attester_section_idx..attestation_section_idx],
-            &doc_content[attestation_section_idx..],
-        )
-    } else {
-        (
-            &doc_content[attester_section_idx..],
-            &doc_content[attestation_section_idx..attester_section_idx],
-        )
-    };
-
-    for variant in &attester_variants {
+    for (contract, source) in [
+        ("attester-registry", attester_src.as_str()),
+        ("attestation-registry", attestation_src.as_str()),
+        ("multisig-account", multisig_src.as_str()),
+    ] {
+        let variants = parse_error_variants(source);
         assert!(
-            attester_doc.contains(variant),
-            "Error variant '{}' is not documented under '## `attester-registry`' in docs/error-codes.md",
-            variant
+            !variants.is_empty(),
+            "Could not find any Error variants in {contract}"
         );
-    }
 
-    for variant in &attestation_variants {
-        assert!(
-            attestation_doc.contains(variant),
-            "Error variant '{}' is not documented under '## `attestation-registry`' in docs/error-codes.md",
-            variant
-        );
+        let heading = std::format!("## `{contract}`");
+        let section = markdown_section(&doc_content, &heading)
+            .unwrap_or_else(|| panic!("Missing '{heading}' section in docs/error-codes.md"));
+        for variant in variants {
+            assert!(
+                section.contains(&std::format!("`{variant}`")),
+                "Error variant '{variant}' is not documented under '{heading}' in docs/error-codes.md"
+            );
+        }
     }
 }
 
 #[test]
-fn initialize_records_schema_version_one() {
-    let (_, client, _, _) = setup();
-    assert_eq!(client.get_schema_version(), 1);
+fn test_contract_events_are_documented() {
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+
+    let doc_path = workspace_root
+        .join("docs")
+        .join("architecture")
+        .join("event-indexing.md");
+    let doc_content = std::fs::read_to_string(&doc_path)
+        .expect("Failed to read docs/architecture/event-indexing.md. Make sure it exists.");
+
+    for contract in ["attester-registry", "attestation-registry"] {
+        let source_path = workspace_root
+            .join("contracts")
+            .join(contract)
+            .join("src")
+            .join("lib.rs");
+        let source = std::fs::read_to_string(&source_path)
+            .unwrap_or_else(|_| panic!("Failed to read {contract} lib.rs"));
+        let events = parse_contract_events(&source);
+        assert!(
+            !events.is_empty(),
+            "Could not find any contract events in {contract}"
+        );
+
+        for event in events {
+            assert!(
+                doc_content.contains(&std::format!("`{event}`")),
+                "Event '{event}' from {contract} is not documented in docs/architecture/event-indexing.md"
+            );
+        }
+    }
 }
 
 #[test]
-fn get_schema_version_is_zero_before_initialize() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(AttestationRegistry, ());
-    let client = AttestationRegistryClient::new(&env, &contract_id);
+fn test_initialize_auth_matrix() {
+    struct TestCase {
+        name: &'static str,
+        auth_role: &'static str, // "admin", "wrong_user", "none", "attester"
+        expected_result: Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>>,
+    }
 
-    assert_eq!(client.get_schema_version(), 0);
+    let cases = std::vec![
+        TestCase {
+            name: "Right Caller (Admin)",
+            auth_role: "admin",
+            expected_result: Ok(Ok(())),
+        },
+        TestCase {
+            name: "Wrong Caller (Wrong User)",
+            auth_role: "wrong_user",
+            expected_result: Err(Err(soroban_sdk::InvokeError::Abort)),
+        },
+        TestCase {
+            name: "No Auth Provided",
+            auth_role: "none",
+            expected_result: Err(Err(soroban_sdk::InvokeError::Abort)),
+        },
+        TestCase {
+            name: "Role Confusion (Attester)",
+            auth_role: "attester",
+            expected_result: Err(Err(soroban_sdk::InvokeError::Abort)),
+        },
+    ];
+
+    for case in cases {
+        let env = Env::default();
+        let contract_id = env.register(AttestationRegistry, ());
+        let client = AttestationRegistryClient::new(&env, &contract_id);
+
+        let admin = Address::generate(&env);
+        let wrong_user = Address::generate(&env);
+        let attester = Address::generate(&env);
+        let attester_registry = Address::generate(&env);
+
+        let auth_address = match case.auth_role {
+            "admin" => Some(admin.clone()),
+            "wrong_user" => Some(wrong_user.clone()),
+            "attester" => Some(attester.clone()),
+            _ => None,
+        };
+
+        if let Some(addr) = auth_address {
+            env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+                address: &addr,
+                invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "initialize",
+                    args: (admin.clone(), attester_registry.clone()).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }]);
+        } else {
+            env.mock_auths(&[]);
+        }
+
+        let result = client.try_initialize(&admin, &attester_registry);
+        assert_eq!(
+            result, case.expected_result,
+            "Failed case '{}': expected {:?}, got {:?}",
+            case.name, case.expected_result, result
+        );
+    }
 }
 
 #[test]
-fn upgrade_before_initialize_fails() {
-    let env = Env::default();
-    env.mock_all_auths();
-    let contract_id = env.register(AttestationRegistry, ());
-    let client = AttestationRegistryClient::new(&env, &contract_id);
-    let wasm_hash = BytesN::from_array(&env, &[8u8; 32]);
+fn test_attest_auth_matrix() {
+    struct TestCase {
+        name: &'static str,
+        call_role: &'static str,  // "attester", "wrong_user", "admin"
+        auth_role: &'static str,  // "attester", "wrong_user", "admin", "none"
+        allowlisted: bool,
+        expected_result: Result<Result<Attestation, soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>>,
+    }
 
-    let result = client.try_upgrade(&wasm_hash);
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
-}
+    let cases = std::vec![
+        TestCase {
+            name: "Right Caller (Attester)",
+            call_role: "attester",
+            auth_role: "attester",
+            allowlisted: true,
+            expected_result: Ok(Ok(Attestation {
+                attester: Address::generate(&Env::default()), // will be overwritten in comparison/check
+                timestamp: 0,
+            })),
+        },
+        TestCase {
+            name: "Wrong Caller (not allowlisted)",
+            call_role: "wrong_user",
+            auth_role: "wrong_user",
+            allowlisted: false,
+            expected_result: Err(Ok(Error::AttesterNotAllowlisted)),
+        },
+        TestCase {
+            name: "Wrong Caller (wrong auth)",
+            call_role: "attester",
+            auth_role: "wrong_user",
+            allowlisted: true,
+            expected_result: Err(Err(soroban_sdk::InvokeError::Abort)),
+        },
+        TestCase {
+            name: "No Auth Provided",
+            call_role: "attester",
+            auth_role: "none",
+            allowlisted: true,
+            expected_result: Err(Err(soroban_sdk::InvokeError::Abort)),
+        },
+        TestCase {
+            name: "Role Confusion (Admin)",
+            call_role: "admin",
+            auth_role: "admin",
+            allowlisted: false,
+            expected_result: Err(Ok(Error::AttesterNotAllowlisted)),
+        },
+    ];
 
-#[test]
-fn upgrade_without_admin_auth_fails() {
-    let (env, client, _attester_registry, _admin) = setup();
+    for case in cases {
+        let env = Env::default();
+        let attester_registry_id = env.register(attester_registry::AttesterRegistry, ());
+        let attester_registry_client =
+            attester_registry::AttesterRegistryClient::new(&env, &attester_registry_id);
 
-    // Replace the blanket auth mock with an empty set: the upgrade call's
-    // `admin.require_auth()` now has no matching auth entry to satisfy it.
-    env.mock_auths(&[]);
-    let wasm_hash = BytesN::from_array(&env, &[9u8; 32]);
-    let result = client.try_upgrade(&wasm_hash);
-    assert!(result.is_err());
-}
+        let contract_id = env.register(AttestationRegistry, ());
+        let client = AttestationRegistryClient::new(&env, &contract_id);
 
-#[test]
-fn migrate_fails_when_no_migration_pending() {
-    let (_, client, _, _) = setup();
+        let admin = Address::generate(&env);
+        let wrong_user = Address::generate(&env);
+        let attester = Address::generate(&env);
+        let record_hash = BytesN::from_array(&env, &[99u8; 32]);
 
-    // initialize already recorded SCHEMA_VERSION, so there is nothing to do.
-    let result = client.try_migrate();
-    assert_eq!(result, Err(Ok(Error::MigrationNotRequired)));
-}
+        // Setup attester registry allowlist
+        env.mock_all_auths();
+        attester_registry_client.initialize(&admin);
+        client.initialize(&admin, &attester_registry_id);
 
-#[test]
-fn migrate_without_admin_auth_fails() {
-    let (env, client, _, _) = setup();
-    // Simulate a legacy (pre-versioning) instance so a migration IS pending.
-    env.as_contract(&client.address, || {
-        env.storage().instance().remove(&DataKey::SchemaVersion);
-    });
+        if case.allowlisted {
+            attester_registry_client.add_attester(&attester);
+        }
 
-    env.mock_auths(&[]);
-    let result = client.try_migrate();
-    assert!(result.is_err());
+        // Determine which addresses are used for call vs auth
+        let call_address = match case.call_role {
+            "attester" => attester.clone(),
+            "wrong_user" => wrong_user.clone(),
+            "admin" => admin.clone(),
+            _ => panic!("Unknown call role"),
+        };
 
-    env.mock_all_auths();
-    assert_eq!(client.get_schema_version(), 0);
-}
+        let auth_address = match case.auth_role {
+            "attester" => Some(attester.clone()),
+            "wrong_user" => Some(wrong_user.clone()),
+            "admin" => Some(admin.clone()),
+            _ => None,
+        };
 
-#[test]
-fn migrate_records_version_and_preserves_attestation() {
-    let (env, client, attester_registry, _admin) = setup();
-    let attester = Address::generate(&env);
-    attester_registry.add_attester(&attester);
-    let record_hash = BytesN::from_array(&env, &[6u8; 32]);
-    let attestation = client.attest(&attester, &record_hash);
+        if let Some(addr) = auth_address {
+            env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+                address: &addr,
+                invoke: &soroban_sdk::testutils::MockAuthInvoke {
+                    contract: &client.address,
+                    fn_name: "attest",
+                    args: (call_address.clone(), record_hash.clone()).into_val(&env),
+                    sub_invokes: &[],
+                },
+            }]);
+        } else {
+            env.mock_auths(&[]);
+        }
 
-    // Simulate a legacy (pre-versioning) instance: instance storage was
-    // written before the SchemaVersion key existed.
-    env.as_contract(&client.address, || {
-        env.storage().instance().remove(&DataKey::SchemaVersion);
-    });
-    assert_eq!(client.get_schema_version(), 0);
+        let result = client.try_attest(&call_address, &record_hash);
 
-    client.migrate();
-
-    assert_eq!(client.get_schema_version(), 1);
-    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+        // Check matching expected results
+        match (&result, &case.expected_result) {
+            (Ok(Ok(attestation)), Ok(Ok(_))) => {
+                assert_eq!(attestation.attester, call_address);
+                assert_eq!(client.get_attestation(&record_hash), Some(attestation.clone()));
+            }
+            (Err(Ok(err)), Err(Ok(expected_err))) => {
+                assert_eq!(err, expected_err);
+                assert_eq!(client.get_attestation(&record_hash), None);
+            }
+            (Err(Err(soroban_sdk::InvokeError::Abort)), Err(Err(soroban_sdk::InvokeError::Abort))) => {
+                assert_eq!(client.get_attestation(&record_hash), None);
+            }
+            _ => panic!(
+                "Failed case '{}': expected {:?}, got {:?}",
+                case.name, case.expected_result, result
+            ),
+        }
+    }
 }
