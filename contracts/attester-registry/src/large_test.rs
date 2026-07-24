@@ -2,7 +2,9 @@
 
 #[cfg(test)]
 mod large_test {
-    use super::*;
+    extern crate std;
+
+    use crate::{AttesterRegistry, AttesterRegistryClient};
     use soroban_sdk::testutils::Address as _;
     use soroban_sdk::{Address, Env};
 
@@ -38,7 +40,6 @@ mod large_test {
 
     #[test]
     fn large_attester_allowlist_load() {
-        // Setup environment and contract client
         let (env, client, admin) = {
             let env = Env::default();
             env.mock_all_auths();
@@ -47,7 +48,6 @@ mod large_test {
             let admin = Address::generate(&env);
             (env, client, admin)
         };
-        // Initialize with admin
         client.initialize(&admin);
 
         let mut sampled_attesters = std::vec::Vec::<Address>::new();
@@ -63,12 +63,10 @@ mod large_test {
                 .find(|checkpoint| checkpoint.attesters == attester_count)
             {
                 observed_checkpoints += 1;
-                // Soroban resets budget metering before each top-level invocation, so
-                // this measures the add that ran with the stated allowlist size.
                 let budget = env.budget();
                 let cpu = budget.cpu_instruction_cost();
                 let memory = budget.memory_bytes_cost();
-                println!(
+                std::println!(
                     "add_attester at {attester_count} attesters: cpu={cpu}, memory={memory}"
                 );
                 assert!(
@@ -87,7 +85,6 @@ mod large_test {
                 );
             }
 
-            // Capture early, middle, and last attesters for verification
             if i == 0 || i == TOTAL_ATTESTERS / 2 || i == TOTAL_ATTESTERS - 1 {
                 sampled_attesters.push(attester);
             }
@@ -95,7 +92,6 @@ mod large_test {
 
         assert_eq!(observed_checkpoints, BUDGET_CHECKPOINTS.len());
 
-        // Verify that lookups succeed for selected attesters
         assert_eq!(sampled_attesters.len(), 3);
         for attester in &sampled_attesters {
             assert!(client.is_attester(attester));

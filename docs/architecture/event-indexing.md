@@ -12,6 +12,7 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AttesterReinstated`
 - `AttestationRecorded`
 - `AttestationRevoked`
+- `Upgraded` (`attester-registry`)
 
 `Initialized` is currently a declared schema only: neither registry publishes it
 during initialization. Indexers must not rely on receiving it unless contract

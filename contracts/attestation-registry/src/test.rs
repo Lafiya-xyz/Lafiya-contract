@@ -108,6 +108,54 @@ fn re_attest_overwrites_previous_attestation() {
 }
 
 #[test]
+fn get_attestation_history_returns_all_attestations() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester_a = Address::generate(&env);
+    let attester_b = Address::generate(&env);
+    let attester_c = Address::generate(&env);
+    attester_registry.add_attester(&attester_a);
+    attester_registry.add_attester(&attester_b);
+    attester_registry.add_attester(&attester_c);
+
+    let record_hash = BytesN::from_array(&env, &[6u8; 32]);
+    let first = client.attest(&attester_a, &record_hash);
+    let second = client.attest(&attester_b, &record_hash);
+    let third = client.attest(&attester_c, &record_hash);
+
+    let history = client.get_attestation_history(&record_hash);
+    assert_eq!(history.len(), 3);
+    assert_eq!(history.get(0), Some(first));
+    assert_eq!(history.get(1), Some(second));
+    assert_eq!(history.get(2), Some(third));
+}
+
+#[test]
+fn get_attestation_history_returns_empty_for_unknown_hash() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let record_hash = BytesN::from_array(&env, &[8u8; 32]);
+    let history = client.get_attestation_history(&record_hash);
+    assert_eq!(history.len(), 0);
+}
+
+#[test]
+fn attestation_history_is_bounded() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[10u8; 32]);
+
+    // Create more attestations than MAX_HISTORY (10)
+    for _ in 0..15 {
+        client.attest(&attester, &record_hash);
+    }
+
+    let history = client.get_attestation_history(&record_hash);
+    // Should only keep the last 10 attestations
+    assert_eq!(history.len(), 10);
+}
+
+#[test]
 fn attest_emits_event() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
@@ -380,8 +428,8 @@ fn test_error_codes_are_documented() {
         .join("multisig-account")
         .join("src")
         .join("lib.rs");
-    let multisig_src =
-        std::fs::read_to_string(&multisig_src_path).expect("Failed to read multisig-account lib.rs");
+    let multisig_src = std::fs::read_to_string(&multisig_src_path)
+        .expect("Failed to read multisig-account lib.rs");
 
     for (contract, source) in [
         ("attester-registry", attester_src.as_str()),
@@ -450,7 +498,10 @@ fn test_initialize_auth_matrix() {
     struct TestCase {
         name: &'static str,
         auth_role: &'static str, // "admin", "wrong_user", "none", "attester"
-        expected_result: Result<Result<(), soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>>,
+        expected_result: Result<
+            Result<(), soroban_sdk::ConversionError>,
+            Result<Error, soroban_sdk::InvokeError>,
+        >,
     }
 
     let cases = std::vec![
@@ -520,10 +571,13 @@ fn test_initialize_auth_matrix() {
 fn test_attest_auth_matrix() {
     struct TestCase {
         name: &'static str,
-        call_role: &'static str,  // "attester", "wrong_user", "admin"
-        auth_role: &'static str,  // "attester", "wrong_user", "admin", "none"
+        call_role: &'static str, // "attester", "wrong_user", "admin"
+        auth_role: &'static str, // "attester", "wrong_user", "admin", "none"
         allowlisted: bool,
-        expected_result: Result<Result<Attestation, soroban_sdk::ConversionError>, Result<Error, soroban_sdk::InvokeError>>,
+        expected_result: Result<
+            Result<Attestation, soroban_sdk::ConversionError>,
+            Result<Error, soroban_sdk::InvokeError>,
+        >,
     }
 
     let cases = std::vec![
@@ -625,13 +679,19 @@ fn test_attest_auth_matrix() {
         match (&result, &case.expected_result) {
             (Ok(Ok(attestation)), Ok(Ok(_))) => {
                 assert_eq!(attestation.attester, call_address);
-                assert_eq!(client.get_attestation(&record_hash), Some(attestation.clone()));
+                assert_eq!(
+                    client.get_attestation(&record_hash),
+                    Some(attestation.clone())
+                );
             }
             (Err(Ok(err)), Err(Ok(expected_err))) => {
                 assert_eq!(err, expected_err);
                 assert_eq!(client.get_attestation(&record_hash), None);
             }
-            (Err(Err(soroban_sdk::InvokeError::Abort)), Err(Err(soroban_sdk::InvokeError::Abort))) => {
+            (
+                Err(Err(soroban_sdk::InvokeError::Abort)),
+                Err(Err(soroban_sdk::InvokeError::Abort)),
+            ) => {
                 assert_eq!(client.get_attestation(&record_hash), None);
             }
             _ => panic!(

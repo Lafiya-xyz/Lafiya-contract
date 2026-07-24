@@ -22,9 +22,11 @@ enum DataKey {
     Admin,
     /// Pending admin address for two-step admin transfer.
     PendingAdmin,
-    /// Presence of this key (mapped to `true`) means the address is an
+    /// Presence of this key (mapped to `AttesterInfo`) means the address is an
     /// allowlisted attester.
     Attester(Address),
+    /// Presence of this key means the attester is currently suspended.
+    Suspended(Address),
     /// The storage schema version of the contract.
     SchemaVersion,
 }
@@ -96,6 +98,13 @@ pub struct AttesterReinstated {
     pub attester: Address,
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Upgraded {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
+}
+
 #[contract]
 pub struct AttesterRegistry;
 
@@ -113,6 +122,11 @@ impl AttesterRegistry {
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
         Ok(())
+    }
+
+    /// Return the current admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::admin(&env)
     }
 
     /// Propose a new admin address. The caller must authorize as the current admin.
@@ -217,28 +231,24 @@ impl AttesterRegistry {
         Ok(())
     }
 
-    /// Whether `attester` is currently allowlisted. Callable by anyone,
+    /// Whether `attester` is currently allowlisted (and not suspended). Callable by anyone,
     /// including other contracts (e.g. `attestation-registry`).
     pub fn is_attester(env: Env, attester: Address) -> bool {
-        let is_allowlisted = env
+        if !env
             .storage()
             .persistent()
-            .get(&DataKey::Attester(attester.clone()))
-            .unwrap_or(false);
-        if !is_allowlisted {
+            .has(&DataKey::Attester(attester.clone()))
+        {
             return false;
         }
-        let is_suspended = env
-            .storage()
+        !env.storage()
             .persistent()
-            .has(&DataKey::Attester(attester))
+            .has(&DataKey::Suspended(attester))
     }
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::Attester(attester))
+        env.storage().persistent().get(&DataKey::Attester(attester))
     }
 
     /// Query the current storage schema version of the contract.
@@ -334,7 +344,7 @@ impl AttesterRegistry {
 }
 
 #[cfg(test)]
+mod large_test;
+#[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
-#[cfg(test)]
-mod large_test;
