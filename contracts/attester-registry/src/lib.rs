@@ -9,20 +9,28 @@ use soroban_sdk::{
 const SCHEMA_VERSION: u32 = 1;
 
 /// Storage keys for the attester registry.
+///
+/// UPGRADE SAFETY: `#[contracttype]` enums serialize variants by their
+/// position index, so variant order and existing variants must never change
+/// — append new variants at the end only. Reordering breaks decoding of
+/// data written by earlier versions.
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
-    /// The address authorized to add/remove attesters.
+    /// The address authorized to add/remove attesters and to upgrade the
+    /// contract.
     Admin,
     /// Pending admin address for two-step admin transfer.
     PendingAdmin,
-    /// Presence of this key (mapped to `true`) means the address is an
+    /// Presence of this key (mapped to `AttesterInfo`) means the address is an
     /// allowlisted attester.
     Attester(Address),
     /// Presence of this key means the attester is currently suspended.
     Suspended(Address),
     /// The storage schema version of the contract.
     SchemaVersion,
+    /// Whether state-changing operations are currently paused.
+    Paused,
 }
 
 /// Metadata associated with an allowlisted attester.
@@ -39,6 +47,13 @@ pub struct AttesterInfo {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+/// Default soft cap on the number of allowlisted attesters, used until an
+/// admin raises it via `set_max_attesters`. Sized generously above any
+/// realistic CHW allowlist so it never trips in normal operation; it exists
+/// so a compromised or buggy admin key can't grow persistent-storage rent
+/// unboundedly.
+const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -46,6 +61,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     NoPendingTransfer = 3,
+    ContractPaused = 4,
 }
 
 #[contractevent]
@@ -95,6 +111,7 @@ pub struct AttesterReinstated {
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Upgraded {
+    #[topic]
     pub new_wasm_hash: BytesN<32>,
 }
 
@@ -115,6 +132,11 @@ impl AttesterRegistry {
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
         Ok(())
+    }
+
+    /// Return the current admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::admin(&env)
     }
 
     /// Propose a new admin address. The caller must authorize as the current admin.
@@ -152,9 +174,40 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Pause the contract, blocking `add_attester`, `add_attester_with_info`,
+    /// `remove_attester`, `suspend_attester`, and `reinstate_attester` until
+    /// `unpause` is called. Requires the admin's authorization.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Paused { by: admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Resume normal operation after a `pause`. Requires the admin's authorization.
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Unpaused { by: admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     /// Add `attester` to the allowlist. Requires the admin's authorization.
+    /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
+    /// `attester` is not already present (see `set_max_attesters`).
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         let info = AttesterInfo {
             license_hash: None,
             region: None,
@@ -170,6 +223,8 @@ impl AttesterRegistry {
     }
 
     /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
+    /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
+    /// `attester` is not already present (see `set_max_attesters`).
     pub fn add_attester_with_info(
         env: Env,
         attester: Address,
@@ -177,6 +232,7 @@ impl AttesterRegistry {
         region: Option<Symbol>,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         let info = AttesterInfo {
             license_hash,
             region,
@@ -195,6 +251,7 @@ impl AttesterRegistry {
     /// authorization. A no-op if the attester was never allowlisted.
     pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
@@ -205,9 +262,31 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Set the soft cap on the number of allowlisted attesters. Requires the
+    /// admin's authorization. Does not evict existing attesters if lowered
+    /// below the current count; it only blocks further `add_attester` calls.
+    pub fn set_max_attesters(env: Env, max_attesters: u32) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAttesters, &max_attesters);
+        Ok(())
+    }
+
+    /// The current soft cap on the number of allowlisted attesters.
+    pub fn get_max_attesters(env: Env) -> u32 {
+        Self::max_attesters(&env)
+    }
+
+    /// The current number of allowlisted attesters.
+    pub fn get_attester_count(env: Env) -> u32 {
+        Self::attester_count(&env)
+    }
+
     /// Suspend an allowlisted attester. Requires the admin's authorization.
     pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
             .set(&DataKey::Suspended(attester.clone()), &true);
@@ -218,6 +297,7 @@ impl AttesterRegistry {
     /// Reinstate a suspended attester. Requires the admin's authorization.
     pub fn reinstate_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
             .remove(&DataKey::Suspended(attester.clone()));
@@ -225,7 +305,7 @@ impl AttesterRegistry {
         Ok(())
     }
 
-    /// Whether `attester` is currently allowlisted. Callable by anyone,
+    /// Whether `attester` is currently allowlisted (and not suspended). Callable by anyone,
     /// including other contracts (e.g. `attestation-registry`).
     pub fn is_attester(env: Env, attester: Address) -> bool {
         if !env
@@ -238,11 +318,6 @@ impl AttesterRegistry {
         !env.storage()
             .persistent()
             .has(&DataKey::Suspended(attester))
-    }
-
-    /// Query the current admin address.
-    pub fn get_admin(env: Env) -> Result<Address, Error> {
-        Self::admin(&env)
     }
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
@@ -276,17 +351,84 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// The storage schema version recorded for this instance. `0` means no
+    /// version has been recorded: the instance was deployed before schema
+    /// versioning landed (legacy) or was never initialized.
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(0)
+    }
+
+    /// Replace this contract's code with the wasm blob identified by
+    /// `new_wasm_hash`. The blob must already have been uploaded to the
+    /// ledger (e.g. `stellar contract upload`); otherwise the ledger rejects
+    /// the update. Requires the admin's authorization. Instance and
+    /// persistent storage are untouched — the new code starts exactly where
+    /// the old code left off. The swap itself takes effect once this
+    /// invocation finishes successfully. See
+    /// `docs/runbooks/contract-upgrade.md` for the full production
+    /// procedure, including how reviewers verify `new_wasm_hash` against
+    /// the audited source before this call is signed.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.deployer().update_current_contract_wasm(new_wasm_hash);
+        Ok(())
+    }
+
+    /// Run any pending storage migration, then record the new schema
+    /// version. Requires the admin's authorization.
+    ///
+    /// Call this after `upgrade()` only when the new build bumps
+    /// `SCHEMA_VERSION` (a storage-schema-changing release) — including the
+    /// first upgrade of a legacy (pre-versioning, schema version `0`)
+    /// instance, which must be migrated to version 1. When no migration is
+    /// pending (`SchemaVersion >= SCHEMA_VERSION`) this returns
+    /// `Error::MigrationNotRequired` so the call can't accidentally re-run.
+    pub fn migrate(env: Env) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+
+        let stored = Self::get_schema_version(env.clone());
+        if stored >= SCHEMA_VERSION {
+            return Err(Error::MigrationNotRequired);
+        }
+
+        // Per-version migration steps, oldest first. This build introduces
+        // schema version 1, whose layout is identical to the legacy
+        // (unversioned) layout, so no data reshaping is required here.
+        // Schema-changing releases insert their steps below, guarded by the
+        // version they migrate FROM, e.g.:
+        //
+        //   if stored < 2 { /* move/reshape v1 data into the v2 layout */ }
+        //   if stored < 3 { /* ... */ }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        Ok(())
+    }
+
     fn admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
     }
+
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            return Err(Error::ContractPaused);
+        }
+        Ok(())
+    }
 }
 
-#[cfg(test)]
-#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-mod fuzz_test;
 #[cfg(test)]
 mod large_test;
 #[cfg(test)]

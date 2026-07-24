@@ -95,10 +95,13 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `initialize(admin: Address)` | Sets the admin. Callable once. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Emits `AttesterAdded`. |
-| `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Emits `AttesterRemoved`. |
-| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. |
-| `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. |
+| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
+| `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
+| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. Callable while paused. |
+| `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
+| `pause()` | Blocks `add_attester`, `add_attester_with_info`, `remove_attester`, `suspend_attester`, and `reinstate_attester` until unpaused. Requires admin auth. Emits `Paused`. |
+| `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
+| `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
 
 ### `attestation-registry`
 
@@ -109,6 +112,19 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, overwriting any prior attestation for that hash. Emits `AttestationRecorded`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
+| `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
+| `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
+| `get_schema_version() -> u32` | Storage schema version recorded for the instance (`0` = legacy pre-versioning or uninitialized). Open to any caller. |
+
+### Contract upgrades
+
+Both contracts are upgradeable by their admin (`upgrade`/`migrate`/`get_schema_version`
+above), with storage schema versioning (`SCHEMA_VERSION` starts at `1`) to make
+schema-changing upgrades explicit and verifiable. **Operators** must follow
+[docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the
+pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
+reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
+mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 
 ### `multisig-account`
 
@@ -135,17 +151,18 @@ contracts/
 ├── attester-registry/       # allowlist contract
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester
+│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
 │       └── test.rs
 └── attestation-registry/    # attestation contract
     ├── Cargo.toml
     └── src/
-        ├── lib.rs           # initialize, attest, get_attestation
+        ├── lib.rs           # initialize, attest, get_attestation, upgrade, migrate, get_schema_version
         └── test.rs
 docs/
 └── adr/                      # architecture decisions, index, and template
 Cargo.toml                   # workspace + release profile
 Cargo.lock                    # committed for reproducible builds
+CHANGELOG.md                  # release notes incl. schema-impact statements
 rust-toolchain.toml           # pins stable + wasm32v1-none
 Makefile                      # build/test/fmt/clippy/wasm/bindings/check
 .github/workflows/ci.yml      # runs the same checks on push/PR
@@ -211,6 +228,25 @@ attestation-registry.initialize(multisig_address, attester_registry_address)
 ```
 
 The registry contracts need no multisig-specific logic. Their existing `admin.require_auth()` calls invoke the account contract's `__check_auth`, so an admin operation succeeds only when its authorization entry contains at least N valid signatures.
+
+> **Authorization scope:** `multisig-account` is a general-purpose N-of-M account. It does not
+> inspect Soroban's authorization contexts or restrict the contract, function, arguments, asset
+> movement, or nested invocations that a valid quorum may approve. It is not a
+> registry-scoped or least-privileged account.
+
+For pre-alpha use, assign a signer set dedicated exclusively to Lafiya registry administration;
+do not reuse those keys or that quorum for treasury or unrelated authority. Do not use the
+multisig address as a treasury: keep only the bounded XLM fee reserve recorded for the deployment
+and sweep any excess. Before signing, each signer must inspect the decoded authorization tree
+and independently verify the registry address, function, arguments, asset movements, and
+sub-invocations. A payload hash or transaction label alone is not sufficient.
+
+The deployment record must contain the signer-set identifier (never secret keys), threshold,
+approved registry addresses, fee-reserve ceiling, and balance-sweep and authorization-review
+procedures. This account must not administer a production or mainnet deployment until its
+unscoped authority is explicitly accepted for that environment or replaced by an on-chain
+scoping policy. See
+[ADR-0007](docs/adr/0007-unscoped-multisig-authorization.md) for the decision and residual risks.
 
 Not yet deployed to testnet — deployment scripts and instructions land with the rest of milestone M1.
 

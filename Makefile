@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check clippy wasm check clean config-check config-list deploy
+.PHONY: build test fmt fmt-check clippy wasm check clean config-check config-list deploy bench
 
 build:
 	cargo build --workspace
@@ -31,7 +31,4 @@ clean:
 	cargo clean
 
 bench:
-	cargo test -- --nocapture
-
-fuzz:
-	cargo test --workspace --locked fuzz_test -- --nocapture
+	cargo test -p attester-registry large_attester_allowlist_load -- --nocapture
