@@ -29,6 +29,8 @@ enum DataKey {
     Suspended(Address),
     /// The storage schema version of the contract.
     SchemaVersion,
+    /// Whether state-changing operations are currently paused.
+    Paused,
 }
 
 /// Metadata associated with an allowlisted attester.
@@ -52,6 +54,7 @@ pub enum Error {
     NotInitialized = 1,
     AlreadyInitialized = 2,
     NoPendingTransfer = 3,
+    ContractPaused = 4,
 }
 
 #[contractevent]
@@ -164,9 +167,38 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Pause the contract, blocking `add_attester`, `add_attester_with_info`,
+    /// `remove_attester`, `suspend_attester`, and `reinstate_attester` until
+    /// `unpause` is called. Requires the admin's authorization.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Paused { by: admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Resume normal operation after a `pause`. Requires the admin's authorization.
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Unpaused { by: admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         let info = AttesterInfo {
             license_hash: None,
             region: None,
@@ -174,6 +206,9 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
@@ -186,6 +221,7 @@ impl AttesterRegistry {
         region: Option<Symbol>,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         let info = AttesterInfo {
             license_hash,
             region,
@@ -193,6 +229,9 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         AttesterAdded { attester }.publish(&env);
         Ok(())
     }
@@ -201,6 +240,7 @@ impl AttesterRegistry {
     /// authorization. A no-op if the attester was never allowlisted.
     pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
@@ -214,6 +254,7 @@ impl AttesterRegistry {
     /// Suspend an allowlisted attester. Requires the admin's authorization.
     pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
             .set(&DataKey::Suspended(attester.clone()), &true);
@@ -224,6 +265,7 @@ impl AttesterRegistry {
     /// Reinstate a suspended attester. Requires the admin's authorization.
     pub fn reinstate_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
             .remove(&DataKey::Suspended(attester.clone()));
@@ -340,6 +382,18 @@ impl AttesterRegistry {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            return Err(Error::ContractPaused);
+        }
+        Ok(())
     }
 }
 

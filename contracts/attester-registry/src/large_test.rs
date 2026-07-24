@@ -97,4 +97,20 @@ mod large_test {
             assert!(client.is_attester(attester));
         }
     }
+
+    // Verify that lookups succeed for the first, middle, and last attesters added.
+    let early_attester = &attesters[0];
+    let mid_attester = &attesters[total_attesters / 2];
+    let last_attester = &attesters[total_attesters - 1];
+    assert!(client.is_attester(early_attester));
+    assert!(client.is_attester(mid_attester));
+    assert!(client.is_attester(last_attester));
+
+    // Record resource budget usage (debug output for CI logs)
+    let budget = env.cost_estimate().budget();
+    std::println!(
+        "Budget after adding {} attesters: {:?}",
+        total_attesters,
+        budget
+    );
 }

@@ -52,6 +52,8 @@ enum DataKey {
     AttestationCount(BytesN<32>),
     /// The storage schema version of the contract.
     SchemaVersion,
+    /// Whether state-changing operations are currently paused.
+    Paused,
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -89,6 +91,20 @@ pub struct AttestationRevoked {
     pub record_hash: BytesN<32>,
 }
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Paused {
+    #[topic]
+    pub by: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Unpaused {
+    #[topic]
+    pub by: Address,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -97,6 +113,9 @@ pub enum Error {
     AlreadyInitialized = 2,
     AttesterNotAllowlisted = 3,
     NoPendingTransfer = 4,
+    InvalidRegistryWiring = 5,
+    AttestationNotFound = 6,
+    ContractPaused = 7,
 }
 
 #[contract]
@@ -167,6 +186,43 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Pause the contract, blocking `attest` until `unpause` is called.
+    /// Requires the admin's authorization.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Paused { by: admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Resume normal operation after a `pause`. Requires the admin's authorization.
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Unpaused { by: admin }.publish(&env);
+        Ok(())
+    }
+
+    /// Whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
+    /// Query the current admin address.
+    pub fn get_admin(env: Env) -> Result<Address, Error> {
+        Self::admin(&env)
+    }
+
+    /// Query the configured `attester-registry` contract address.
+    pub fn get_attester_registry(env: Env) -> Result<Address, Error> {
+        Self::attester_registry(&env)
+    }
+
     /// Record that `attester` verified the record hashing to `record_hash`.
     /// Requires `attester`'s authorization and that `attester` is
     /// currently allowlisted in the configured `attester-registry`.
@@ -178,6 +234,7 @@ impl AttestationRegistry {
         record_hash: BytesN<32>,
     ) -> Result<Attestation, Error> {
         attester.require_auth();
+        Self::require_not_paused(&env)?;
 
         let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
