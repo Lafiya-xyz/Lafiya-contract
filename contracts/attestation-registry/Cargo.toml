@@ -20,6 +20,7 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 # interface in lib.rs, so its contract implementation never links into
 # this crate's wasm.
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
+proptest = "1"
 
 [features]
 testutils = ["soroban-sdk/testutils"]

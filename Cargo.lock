@@ -241,6 +241,7 @@ name = "attestation-registry"
 version = "0.1.0"
 dependencies = [
  "attester-registry",
+ "proptest",
  "soroban-sdk",
 ]
 

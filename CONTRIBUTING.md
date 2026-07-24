@@ -107,6 +107,22 @@ To maintain high security and minimize gas/storage costs on Soroban, all contrac
   - **Failure paths**: Rejection of double-initialization, invalid inputs, and unauthorized calls.
   - **Events**: Verify that correct events (like `AttesterAdded`, `AttestationRecorded`) are emitted.
 
+### Fuzz / Property-Based Testing
+`attester-registry` and `attestation-registry` each have a `fuzz_test.rs` module (built with [`proptest`](https://docs.rs/proptest), already a dev-dependency in both crates) alongside their regular `test.rs`:
+- `attester-registry::fuzz_test` generates arbitrary sequences of `add_attester`/`remove_attester`/`suspend_attester`/`reinstate_attester` calls over a small pool of addresses and checks, after every step, that `is_attester` agrees with a plain-Rust model — i.e. it never observes an address as simultaneously allowlisted and not.
+- `attestation-registry::fuzz_test` calls `attest` with arbitrary/adversarial 32-byte `record_hash` values (including all-zero and all-`0xFF`) and in unusual orderings relative to `initialize`, asserting it only ever returns a typed `Result` and never panics.
+
+CI runs these with a small, time-bounded case count (`PROPTEST_CASES=256`, see `.github/workflows/ci.yml`) as a **non-blocking** job — a regression there is a signal to investigate, not a merge blocker, since proptest's case count/seed is inherently variable run to run.
+
+To fuzz much harder locally (uncapped, until you stop it or hit a shrink-and-report), raise the case count and optionally the max shrink iterations:
+```bash
+PROPTEST_CASES=100000 cargo test -p attester-registry fuzz_test -- --nocapture
+PROPTEST_CASES=100000 cargo test -p attestation-registry fuzz_test -- --nocapture
+```
+If proptest finds a failing case, it shrinks it to a minimal repro and writes it to `contracts/<crate>/proptest-regressions/fuzz_test.txt`; commit that file alongside your fix so the minimal input becomes a permanent regression test (proptest replays entries from that file automatically on every run).
+
+If a crash or invariant violation surfaces while working on either fuzz target, file it as its own bug report and fix it — don't fold an unrelated fix into a feature PR.
+
 ### Local Quality Gate
 Always run the validation suite locally before committing:
 ```bash
