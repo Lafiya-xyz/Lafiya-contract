@@ -18,10 +18,16 @@ pub trait AttesterRegistryInterface {
 const SCHEMA_VERSION: u32 = 1;
 
 /// Storage keys for the attestation registry.
+///
+/// UPGRADE SAFETY: `#[contracttype]` enums serialize variants by their
+/// position index, so variant order and existing variants must never change
+/// — append new variants at the end only. Reordering breaks decoding of
+/// data written by earlier versions.
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
-    /// The address authorized to (re)point `AttesterRegistry`.
+    /// The address authorized to (re)point `AttesterRegistry` and to upgrade
+    /// the contract.
     Admin,
     /// Pending admin address for two-step admin transfer.
     PendingAdmin,

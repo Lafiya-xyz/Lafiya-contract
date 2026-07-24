@@ -2,7 +2,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{Env, Event, IntoVal};
+use soroban_sdk::{BytesN, Env, Event, IntoVal};
 
 use proptest::prelude::*;
 

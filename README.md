@@ -109,6 +109,19 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, overwriting any prior attestation for that hash. Emits `AttestationRecorded`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
+| `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
+| `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
+| `get_schema_version() -> u32` | Storage schema version recorded for the instance (`0` = legacy pre-versioning or uninitialized). Open to any caller. |
+
+### Contract upgrades
+
+Both contracts are upgradeable by their admin (`upgrade`/`migrate`/`get_schema_version`
+above), with storage schema versioning (`SCHEMA_VERSION` starts at `1`) to make
+schema-changing upgrades explicit and verifiable. **Operators** must follow
+[docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the
+pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
+reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
+mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 
 ### `multisig-account`
 
@@ -135,17 +148,18 @@ contracts/
 ├── attester-registry/       # allowlist contract
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester
+│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
 │       └── test.rs
 └── attestation-registry/    # attestation contract
     ├── Cargo.toml
     └── src/
-        ├── lib.rs           # initialize, attest, get_attestation
+        ├── lib.rs           # initialize, attest, get_attestation, upgrade, migrate, get_schema_version
         └── test.rs
 docs/
 └── adr/                      # architecture decisions, index, and template
 Cargo.toml                   # workspace + release profile
 Cargo.lock                    # committed for reproducible builds
+CHANGELOG.md                  # release notes incl. schema-impact statements
 rust-toolchain.toml           # pins stable + wasm32v1-none
 Makefile                      # build/test/fmt/clippy/wasm/bindings/check
 .github/workflows/ci.yml      # runs the same checks on push/PR
