@@ -47,6 +47,13 @@ pub struct AttesterInfo {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+/// Default soft cap on the number of allowlisted attesters, used until an
+/// admin raises it via `set_max_attesters`. Sized generously above any
+/// realistic CHW allowlist so it never trips in normal operation; it exists
+/// so a compromised or buggy admin key can't grow persistent-storage rent
+/// unboundedly.
+const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -196,6 +203,8 @@ impl AttesterRegistry {
     }
 
     /// Add `attester` to the allowlist. Requires the admin's authorization.
+    /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
+    /// `attester` is not already present (see `set_max_attesters`).
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
@@ -214,6 +223,8 @@ impl AttesterRegistry {
     }
 
     /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
+    /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
+    /// `attester` is not already present (see `set_max_attesters`).
     pub fn add_attester_with_info(
         env: Env,
         attester: Address,
@@ -249,6 +260,27 @@ impl AttesterRegistry {
             .remove(&DataKey::Suspended(attester.clone()));
         AttesterRemoved { attester }.publish(&env);
         Ok(())
+    }
+
+    /// Set the soft cap on the number of allowlisted attesters. Requires the
+    /// admin's authorization. Does not evict existing attesters if lowered
+    /// below the current count; it only blocks further `add_attester` calls.
+    pub fn set_max_attesters(env: Env, max_attesters: u32) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAttesters, &max_attesters);
+        Ok(())
+    }
+
+    /// The current soft cap on the number of allowlisted attesters.
+    pub fn get_max_attesters(env: Env) -> u32 {
+        Self::max_attesters(&env)
+    }
+
+    /// The current number of allowlisted attesters.
+    pub fn get_attester_count(env: Env) -> u32 {
+        Self::attester_count(&env)
     }
 
     /// Suspend an allowlisted attester. Requires the admin's authorization.
