@@ -106,6 +106,36 @@ Produces shell-friendly env output:
 eval $(cargo run -p lafiya-cli -- --network testnet config env)
 ```
 
+## Input Validation
+
+Operator input is validated locally, before anything is handed to the `stellar` CLI,
+so malformed values fail immediately instead of producing a late error from the network.
+
+| Value | Rule |
+| --- | --- |
+| `--network` | 1-32 characters, letters/digits/`-`/`_`, and present in `networks.toml` |
+| Attester address | 56-character `G...` account or `C...` contract strkey |
+| Contract IDs (from config or from a deploy) | 56-character `C...` strkey |
+| Record hash | 64 hex characters (32 bytes) |
+| `--admin` | 56-character `G...` account address |
+| `--source` | `stellar` identity name (letters/digits/`.`/`-`/`_`) or a `G...` address; secret keys are rejected |
+| `rpc_url` | `http://` or `https://` with a host |
+
+Additional guarantees:
+
+- Partially deployed profiles (only one of the two registry IDs recorded) are reported
+  explicitly instead of failing later with a confusing contract error.
+- `deploy.sh` refuses to run without `--source`/`STELLAR_ACCOUNT` and without a resolvable
+  admin address, unless `--dry-run` or `--build-only` is used.
+- Error messages name the offending field and the expected shape; they never echo secrets.
+
+Shared implementations:
+
+- Shell: `scripts/lib/validate.sh`, sourced by `deploy.sh` and `admin.sh`.
+  Run its offline self-test with `./scripts/lib/validate.sh --self-test`.
+- Rust: `lafiya_config::validation`, which additionally verifies the strkey CRC16
+  checksum, so a single mistyped character in an address is caught before any call.
+
 ## Adding a New Network
 
 Edit `config/networks.toml`:
