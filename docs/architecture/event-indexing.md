@@ -4,8 +4,8 @@
 
 Lafiya contracts currently declare the following on-chain event schemas:
 
-- `AdminTransferred` (`attester-registry` and `attestation-registry`)
-- `Initialized`
+- `AdminTransferred` (`attester-registry`, `attestation-registry`, `incentive-pool`)
+- `Initialized` (`attester-registry`, `incentive-pool`)
 - `AttesterAdded`
 - `AttesterRemoved`
 - `AttesterSuspended`
@@ -13,9 +13,13 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AttestationRecorded`
 - `AttestationRevoked`
 - `Upgraded` (`attester-registry`)
-- `Paused` (`attester-registry` and `attestation-registry`)
-- `Unpaused` (`attester-registry` and `attestation-registry`)
-- `AttesterRegistryRepointed` (`attestation-registry`)
+- `Paused` (`attester-registry`, `attestation-registry`, `incentive-pool`)
+- `Unpaused` (`attester-registry`, `attestation-registry`, `incentive-pool`)
+- `AttesterRegistryRepointed` (`attestation-registry`, `incentive-pool`)
+- `PoolFunded` (`incentive-pool`)
+- `PoolWithdrawn` (`incentive-pool`)
+- `WorkItemApproved` (`incentive-pool`)
+- `PayoutClaimed` (`incentive-pool`)
 
 `Initialized` is currently a declared schema only: neither registry publishes it
 during initialization. Indexers must not rely on receiving it unless contract
@@ -64,6 +68,10 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
    - For `AttesterSuspended` / `AttesterReinstated`, update the account's active status without losing its allowlist history.
    - Record `AdminTransferred` as a contract-administration audit event; it does not directly change profile verification state.
    - If a future contract release begins publishing `Initialized`, record it as an administration audit event as well.
+   - For `PoolFunded`, record donor funding events for the incentive pool audit trail.
+   - For `PoolWithdrawn`, record recovery/withdrawal events.
+   - For `WorkItemApproved`, record work-item approval events linking attesters to specific items.
+   - For `PayoutClaimed`, update the CHW incentive ledger and deduct from pool balance tracking.
 3. **Webhook Interface**
    - Expose a simple HTTP endpoint that **lafiya‑web** can call (or use Supabase realtime listeners) to receive push notifications when a profile changes.
    - The webhook payload contains the profile ID and the updated verification state.

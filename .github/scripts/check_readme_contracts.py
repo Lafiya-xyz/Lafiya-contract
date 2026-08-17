@@ -39,7 +39,7 @@ def parse_readme_functions(section_name: str, readme_path: pathlib.Path):
 def main():
     repo_root = ROOT
     readme = repo_root / "README.md"
-    crates = [repo_root / "contracts" / "attester-registry", repo_root / "contracts" / "attestation-registry"]
+    crates = [repo_root / "contracts" / "attester-registry", repo_root / "contracts" / "attestation-registry", repo_root / "contracts" / "incentive-pool"]
     all_ok = True
     for crate in crates:
         name = crate.name.replace('-', '_')

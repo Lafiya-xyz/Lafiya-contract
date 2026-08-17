@@ -61,6 +61,7 @@ graph TB
     subgraph Contracts["lafiya-contracts (Soroban)"]
         ALLOW[Attester allowlist]
         REG[Attestation registry]
+        POOL[Incentive pool]
     end
 
     subgraph Actors["Actors"]
@@ -75,7 +76,8 @@ graph TB
     ALLOW -->|checks attester is licensed| REG
     REG -->|hash + attester id + timestamp| CARD
     RESP -->|scans QR, checks attestation| CARD
-    DONOR -->|USDC incentive pool| CHW
+    DONOR -->|USDC incentive pool| POOL
+    POOL -->|USDC payout per verified registration| CHW
 ```
 
 ### Core Components
@@ -83,12 +85,13 @@ graph TB
 - **`attester-registry`** — the on-chain allowlist of health workers authorized to write attestations
 - **`attestation-registry`** — the on-chain record of which attester verified which record hash, and when; calls into `attester-registry` on every write
 - **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization
+- **`incentive-pool`** — bounded USDC payout/escrow contract for CHW incentives; manages donor funding, work-item approval, per-attestation replay protection, and configurable payout limits
 
-All three are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); none has been deployed to testnet yet.
+All three core registry contracts are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); none has been deployed to testnet yet. `incentive-pool` implements the M2 milestone.
 
 ## Smart Contract Layer
 
-Three Soroban contracts, each in its own crate under `contracts/`.
+Four Soroban contracts, each in its own crate under `contracts/`.
 
 **Design principle:** no personal health data ever touches the blockchain. Personal data lives in `lafiya-web`'s encrypted, access-controlled off-chain database. Stellar holds only hashes, attestations, and payments. This is what keeps Lafiya both privacy-respecting and regulator-compatible.
 
@@ -139,6 +142,34 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 
 `attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
 
+### `incentive-pool`
+
+Bounded USDC payout/escrow contract for the M2 milestone. Donors fund the pool, an approver authorizes work items, and approved allowlisted attesters claim per-item payouts with per-attestation replay protection.
+
+| Function | Description |
+| --- | --- |
+| `initialize(admin, approver, token, attester_registry, max_per_claim, max_per_attester)` | Sets admin, approver, token contract, attester-registry, and payout caps. Performs best-effort interface checks against both `attester_registry` and `token`. Callable once. |
+| `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
+| `accept_admin()` | Finalizes the admin transfer. Requires pending-admin auth. Emits `AdminTransferred`. |
+| `set_approver(new_approver: Address)` | Sets the address authorized to approve work items. Requires admin auth. |
+| `set_attester_registry(new_registry: Address)` | Changes the attester-registry contract. Requires admin auth. Emits `AttesterRegistryRepointed`. |
+| `set_max_per_claim(max: i128)` | Sets the per-claim payout cap. Requires admin auth. |
+| `set_max_per_attester(max: i128)` | Sets the per-attester cumulative claim cap. Requires admin auth. |
+| `fund(amount: i128)` | Deposits tokens from the caller into the pool. Requires admin auth. Blocked while paused. Emits `PoolFunded`. |
+| `withdraw(to: Address, amount: i128)` | Withdraws tokens from the pool to `to`. Requires admin auth. Blocked while paused. Emits `PoolWithdrawn`. |
+| `approve_work_item(work_item_id, attester, payout_amount)` | Approves a work item for payout. Requires approver auth. Verifies attester is allowlisted, enforces per-claim cap. Blocked while paused. Emits `WorkItemApproved`. |
+| `claim(work_item_id)` | Claims payout for an approved work item. Requires the approved attester's auth. Enforces replay protection, per-attester cap, and pool balance. Transfers tokens on success. Blocked while paused. Emits `PayoutClaimed`. |
+| `pause()` | Blocks `fund`, `withdraw`, `approve_work_item`, and `claim`. Requires admin auth. Emits `Paused`. |
+| `unpause()` | Resumes normal operation. Requires admin auth. Emits `Unpaused`. |
+| `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
+| `get_admin() / get_approver() / get_token() / get_attester_registry()` | Configuration getters. |
+| `get_max_per_claim() / get_max_per_attester()` | Cap getters. |
+| `get_total_deposited() / get_total_paid()` | Pool accounting getters. |
+| `is_work_item_approved(id) / is_work_item_claimed(id) / get_work_item(id)` | Work-item state getters. |
+| `get_attester_total_claimed(attester)` | Per-attester cumulative claim getter. |
+
+`incentive-pool` calls `attester-registry` through the same local `#[contractclient]` interface pattern used by `attestation-registry` (see [ADR-0002](docs/adr/0002-cross-contract-interfaces.md)).
+
 ## Repository Structure
 
 ```
@@ -157,10 +188,15 @@ contracts/
 │   └── src/
 │       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
 │       └── test.rs
-└── attestation-registry/    # attestation contract
+├── attestation-registry/    # attestation contract
+│   ├── Cargo.toml
+│   └── src/
+│       ├── lib.rs           # initialize, attest, get_attestation, upgrade, migrate, get_schema_version
+│       └── test.rs
+└── incentive-pool/          # bounded USDC payout/escrow (M2)
     ├── Cargo.toml
     └── src/
-        ├── lib.rs           # initialize, attest, get_attestation, upgrade, migrate, get_schema_version
+        ├── lib.rs           # initialize, fund, withdraw, approve_work_item, claim, pause/unpause
         └── test.rs
 docs/
 └── adr/                      # architecture decisions, index, and template
@@ -207,7 +243,7 @@ The generated bindings are committed directly to this repository under the `bind
 
 ## Tech Stack
 
-- **On-chain:** Soroban smart contracts (Rust), `soroban-sdk` 25.x, on Stellar; USDC on Stellar for CHW payments
+- **On-chain:** Soroban smart contracts (Rust), `soroban-sdk` 25.x, on Stellar; USDC on Stellar for CHW payments via `incentive-pool` contract
 - **Network:** Stellar testnet first
 - **Standards informing design:** W3C Verifiable Credentials data model (issuer/holder/verifier roles, hash-based attestation)
 
@@ -263,7 +299,7 @@ Not yet deployed to testnet — deployment scripts and instructions land with th
 
 - **M0 — Public card (testnet).** One patient can create a profile and expose a working read-only emergency page via QR. *(`lafiya-web`)*
 - **M1 — Attestation.** Soroban registry lets an allowlisted attester verify a record; the card shows a verified indicator. **← this repo** — contracts implemented and unit-tested; testnet deployment and `lafiya-web` integration still open.
-- **M2 — Incentives.** USDC-on-Stellar payout to a CHW per verified registration.
+- **M2 — Incentives.** USDC-on-Stellar payout to a CHW per verified registration. **← `incentive-pool` contract** — implemented and unit-tested; testnet deployment pending.
 - **M3 — Pilot.** Small supervised field pilot; measure verified cards created and scan events.
 - **M4 — Mainnet + funding.** Launch on mainnet; open transparent funding pool.
 
@@ -288,6 +324,12 @@ Covers, per contract (see `contracts/*/src/test.rs` and `tests/integration/run.s
 - ✅ Emitted events (`AttesterAdded`, `AttesterRemoved`, `AttestationRecorded`)
 - ✅ Multisig threshold, signer validation, signature ordering, and invalid-signature rejection
 - ✅ Multisig-backed initialization and admin operations through the contract-account authorization path
+- ✅ Pool funding, withdrawal, and accounting
+- ✅ Work-item approval and claim with replay protection
+- ✅ Per-claim and per-attester payout cap enforcement
+- ✅ Insufficient pool balance rejection
+- ✅ Suspended/removed attester claim rejection
+- ✅ Pause/unpause cycle blocking all state-changing operations
 
 
 ## Dependencies
@@ -343,16 +385,25 @@ lafiya-web  ──(record hash)──▶  lafiya-contracts
                                        │
                                        ▼
                          responder scans QR, sees verified indicator
+
+Donor funds ──(USDC)──▶  incentive-pool
+                              │
+   Approver ──(approve)──▶  │  (work item + attester + amount)
+                              ▼
+          attester claims  ──▶  USDC payout (replay-protected)
 ```
 
 1. **`lafiya-web`** holds the patient's private profile and computes a hash of the emergency-relevant record.
 2. A licensed CHW, verified against the **attester allowlist**, submits an attestation to the **attestation registry** in this repo — a hash, the attester's identity, and a timestamp, never the health data itself.
 3. **`lafiya-web`**'s public emergency page reads the attestation to show a verified indicator; a responder scanning the QR can independently trust it without an external oracle.
-4. **`lafiya-verifier`** (later) gives CHWs a dedicated flow for step 2 as it splits out of `lafiya-web`.
+4. **`attestation-registry`** (later) gives CHWs a dedicated flow for step 2 as it splits out of `lafiya-web`.
+5. Donors fund the **incentive pool** with USDC. An approver authorizes work items (attester + payout). The attester claims payout with replay protection and cap enforcement.
 
 ### Shared Contracts (must stay in sync across repos)
 
 **Attestation schema** — a hash of the record + the attester's identity + a timestamp, defined by the contracts in this repo and consumed by `lafiya-web`'s public emergency page. If the shape of an attestation changes here, `lafiya-web`'s verification-display logic must be updated in the same change set (or a tracked follow-up opened there).
+
+**Incentive pool interface** — the `incentive-pool` contract's function signatures, event schemas, and error codes are consumed by `lafiya-web` (or future CHW tooling) to display pool balance, claim status, and payout history. Changes to the pool interface require coordinated updates.
 
 ### Conventions for AI Agents
 
