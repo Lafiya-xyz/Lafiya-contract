@@ -3,6 +3,8 @@
 //! No secrets are ever stored in the config file — only public RPC URLs,
 //! passphrases, and contract IDs.
 
+pub mod record;
+
 use serde::Deserialize;
 use std::{collections::BTreeMap, fs, path::Path, path::PathBuf};
 use thiserror::Error;

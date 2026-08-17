@@ -1105,6 +1105,7 @@ dependencies = [
  "clap",
  "lafiya-config",
  "serde",
+ "serde_json",
  "toml",
 ]
 
@@ -1113,6 +1114,8 @@ name = "lafiya-config"
 version = "0.1.0"
 dependencies = [
  "serde",
+ "serde_json",
+ "sha2",
  "tempfile",
  "thiserror",
  "toml",

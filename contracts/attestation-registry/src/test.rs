@@ -582,7 +582,7 @@ fn test_initialize_auth_matrix() {
         let admin = Address::generate(&env);
         let wrong_user = Address::generate(&env);
         let attester = Address::generate(&env);
-        let attester_registry = Address::generate(&env);
+        let attester_registry = env.register(attester_registry::AttesterRegistry, ());
 
         let auth_address = match case.auth_role {
             "admin" => Some(admin.clone()),
