@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 
 /// The Domain Separation Tag (DST) prepended to the serialized record payload.
 pub const DST: &[u8] = b"Lafiya-Emergency-Record-v1\0";
@@ -32,8 +32,14 @@ impl EmergencyRecord {
         map.insert("blood_group", serde_json::to_value(&self.blood_group)?);
         map.insert("genotype", serde_json::to_value(&self.genotype)?);
         map.insert("allergies", serde_json::to_value(&self.allergies)?);
-        map.insert("current_medications", serde_json::to_value(&self.current_medications)?);
-        map.insert("chronic_conditions", serde_json::to_value(&self.chronic_conditions)?);
+        map.insert(
+            "current_medications",
+            serde_json::to_value(&self.current_medications)?,
+        );
+        map.insert(
+            "chronic_conditions",
+            serde_json::to_value(&self.chronic_conditions)?,
+        );
         map.insert("salt", serde_json::to_value(&self.salt)?);
 
         serde_json::to_string(&map)

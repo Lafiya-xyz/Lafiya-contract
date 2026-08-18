@@ -16,7 +16,7 @@ clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
 wasm:
-	cargo build --workspace --release --target wasm32v1-none
+	cargo build -p attester-registry -p attestation-registry -p multisig-account --release --target wasm32v1-none
 
 test-integration: wasm
 	./tests/integration/run.sh

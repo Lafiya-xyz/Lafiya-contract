@@ -2,6 +2,7 @@
 //! Used by deploy script (via Rust wrapper) and admin CLI.
 //! No secrets are ever stored in the config file — only public RPC URLs,
 //! passphrases, and contract IDs.
+#![allow(clippy::result_large_err)]
 
 pub mod record;
 
@@ -10,6 +11,7 @@ use std::{collections::BTreeMap, fs, path::Path, path::PathBuf};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
+#[allow(clippy::result_large_err)]
 pub enum ConfigError {
     #[error("config file not found: {0}")]
     NotFound(PathBuf),
