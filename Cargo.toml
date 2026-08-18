@@ -4,6 +4,7 @@ members = [
     "contracts/multisig-account",
     "contracts/attester-registry",
     "contracts/attestation-registry",
+    "contracts/incentive-pool",
     "crates/lafiya-config",
     "crates/lafiya-cli",
     "crates/lafiya-commitment",
