@@ -24,6 +24,8 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
 # shellcheck source=./lib/config.sh
 source "$SCRIPT_DIR/lib/config.sh"
+# shellcheck source=./lib/validate.sh
+source "$SCRIPT_DIR/lib/validate.sh"
 
 NETWORK="testnet"
 SOURCE_ACCOUNT="${STELLAR_ACCOUNT:-}"
@@ -42,9 +44,11 @@ Options:
   --network <name>      Network to deploy to (local, standalone, testnet, futurenet, mainnet)
                         Reads RPC and passphrase from config/networks.toml
                         Default: testnet
-  --source <account>    Stellar identity name or secret key alias (managed by stellar CLI)
+  --source <account>    Stellar identity name or G... address (managed by stellar CLI)
                         Or set STELLAR_ACCOUNT env var
-  --admin <address>     Admin address for contracts (defaults to source account address)
+                        Required unless --dry-run or --build-only is used
+  --admin <address>     Admin address (G...) for contracts (defaults to source account address)
+                        Or set ADMIN_ADDRESS env var
   --config <path>       Path to networks.toml (default: config/networks.toml)
   --dry-run             Show what would be done without deploying
   --build-only          Only build WASM, don't deploy
@@ -99,6 +103,29 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
+# Validate operator input before touching the config or the network.
+lafiya_validate_network_name "$NETWORK" || exit 1
+if [[ -n "$SOURCE_ACCOUNT" ]]; then
+    lafiya_validate_source_account "$SOURCE_ACCOUNT" || exit 1
+fi
+if [[ -n "$ADMIN_ADDRESS" ]]; then
+    lafiya_validate_account_address "admin address" "$ADMIN_ADDRESS" || exit 1
+fi
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    echo "ERROR: config file not found: $CONFIG_PATH" >&2
+    exit 1
+fi
+
+# A live deployment must know who signs and who administers the contracts.
+# Dry runs and build-only runs stay usable without any credentials.
+if [[ "$DRY_RUN" != "true" && "$BUILD_ONLY" != "true" ]]; then
+    if [[ -z "$SOURCE_ACCOUNT" ]]; then
+        echo "ERROR: deployment requires a transaction source." >&2
+        echo "       Pass --source <identity> or set STELLAR_ACCOUNT (use --dry-run to preview)." >&2
+        exit 1
+    fi
+fi
+
 echo "==> Loading network config: $NETWORK from $CONFIG_PATH"
 load_network_config "$NETWORK" "$CONFIG_PATH"
 
@@ -107,6 +134,20 @@ echo "    RPC URL: $LAFIYA_RPC_URL"
 echo "    Passphrase: $LAFIYA_NETWORK_PASSPHRASE"
 echo "    Existing attester-registry: ${LAFIYA_ATTESTER_REGISTRY_ID:-<none>}"
 echo "    Existing attestation-registry: ${LAFIYA_ATTESTATION_REGISTRY_ID:-<none>}"
+
+# Report a half-recorded profile: redeploying over it leaves stale IDs behind.
+if [[ -n "$LAFIYA_ATTESTER_REGISTRY_ID" ]]; then
+    lafiya_validate_contract_id "existing attester_registry ($NETWORK)" "$LAFIYA_ATTESTER_REGISTRY_ID" || exit 1
+fi
+if [[ -n "$LAFIYA_ATTESTATION_REGISTRY_ID" ]]; then
+    lafiya_validate_contract_id "existing attestation_registry ($NETWORK)" "$LAFIYA_ATTESTATION_REGISTRY_ID" || exit 1
+fi
+if [[ -n "$LAFIYA_ATTESTER_REGISTRY_ID" && -z "$LAFIYA_ATTESTATION_REGISTRY_ID" ]] ||
+   [[ -z "$LAFIYA_ATTESTER_REGISTRY_ID" && -n "$LAFIYA_ATTESTATION_REGISTRY_ID" ]]; then
+    echo "WARNING: network '$NETWORK' is partially deployed in $CONFIG_PATH." >&2
+    echo "         Only one registry ID is recorded; this run will deploy both and you must" >&2
+    echo "         update both entries under [$NETWORK.contracts] afterwards." >&2
+fi
 
 if [[ "$DRY_RUN" == "true" ]]; then
     echo "[DRY RUN] Would deploy to $NETWORK"
@@ -155,11 +196,14 @@ if [[ -z "$ADMIN_ADDRESS" ]]; then
         echo "Provide --admin G... or ensure --source resolves to an address." >&2
         # For dry-run, use placeholder
         if [[ "$DRY_RUN" == "true" ]]; then
-            ADMIN_ADDRESS="GADMINADDRESSPLACEHOLDERFORDRYRUNXXXXXXXXXXXXXXXXXX"
+            ADMIN_ADDRESS="<admin-address-placeholder-for-dry-run>"
         else
-            echo "ERROR: Could not resolve admin address. Provide --admin" >&2
+            echo "ERROR: Could not resolve admin address. Provide --admin G... or set ADMIN_ADDRESS" >&2
             exit 1
         fi
+    elif [[ "$DRY_RUN" != "true" ]]; then
+        # Address came back from `stellar keys address`; make sure it is usable.
+        lafiya_validate_account_address "admin address (resolved from --source)" "$ADMIN_ADDRESS" || exit 1
     fi
 fi
 
@@ -234,6 +278,12 @@ echo "    attester-registry ID: $ATTESTER_ID"
 ATTESTATION_ID="$(deploy_contract "$ATTESTATION_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attestation-registry")"
 ATTESTATION_ID="$(echo "$ATTESTATION_ID" | tr -d '\n' | xargs)"
 echo "    attestation-registry ID: $ATTESTATION_ID"
+
+# Guard against a truncated or noisy deploy output being written back to config.
+if [[ "$DRY_RUN" != "true" ]]; then
+    lafiya_validate_contract_id "deployed attester_registry id" "$ATTESTER_ID" || exit 1
+    lafiya_validate_contract_id "deployed attestation_registry id" "$ATTESTATION_ID" || exit 1
+fi
 
 # Initialize contracts
 echo "==> Initializing attester-registry with admin $ADMIN_ADDRESS"

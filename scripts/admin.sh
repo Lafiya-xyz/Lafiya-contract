@@ -24,6 +24,8 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 source "$SCRIPT_DIR/lib/config.sh"
+# shellcheck source=./lib/validate.sh
+source "$SCRIPT_DIR/lib/validate.sh"
 
 NETWORK="testnet"
 CONFIG_PATH="$REPO_ROOT/config/networks.toml"
@@ -108,6 +110,16 @@ if [[ -z "$COMMAND" ]]; then
     exit 1
 fi
 
+# Validate operator input before any contract call is attempted.
+lafiya_validate_network_name "$NETWORK" || exit 1
+if [[ -n "$SOURCE_ACCOUNT" ]]; then
+    lafiya_validate_source_account "$SOURCE_ACCOUNT" || exit 1
+fi
+if [[ ! -f "$CONFIG_PATH" ]]; then
+    echo "ERROR: config file not found: $CONFIG_PATH" >&2
+    exit 1
+fi
+
 # For config list, we don't need full load
 if [[ "$COMMAND" == "config" && "$SUBCOMMAND" == "list" ]]; then
     echo "Available networks in $CONFIG_PATH:"
@@ -126,14 +138,23 @@ check_stellar_cli() {
     fi
 }
 
+# Ensure the registry a command needs is deployed and its recorded ID is well formed.
+# Partially deployed profiles are reported explicitly by lafiya_require_deployment.
 require_contract_id() {
     local kind="$1"
-    local id="$2"
-    if [[ -z "$id" ]]; then
-        echo "ERROR: $kind contract ID not set for network '$NETWORK' in $CONFIG_PATH" >&2
-        echo "Deploy first: ./scripts/deploy.sh --network $NETWORK" >&2
+    lafiya_require_deployment \
+        "$NETWORK" "$CONFIG_PATH" \
+        "$LAFIYA_ATTESTER_REGISTRY_ID" "$LAFIYA_ATTESTATION_REGISTRY_ID" \
+        "$kind" || exit 1
+}
+
+require_address() {
+    local value="${1:-}"
+    if [[ -z "$value" ]]; then
+        echo "$2" >&2
         exit 1
     fi
+    lafiya_validate_address "attester address" "$value" || exit 1
 }
 
 stellar_source_args=()
@@ -156,14 +177,11 @@ case "$COMMAND" in
         ;;
 
     attester)
-        require_contract_id "attester-registry" "$LAFIYA_ATTESTER_REGISTRY_ID"
+        require_contract_id "attester"
         check_stellar_cli
         case "$SUBCOMMAND" in
             is)
-                if [[ -z "$ARG1" ]]; then
-                    echo "Usage: $0 --network $NETWORK attester is <address>" >&2
-                    exit 1
-                fi
+                require_address "$ARG1" "Usage: $0 --network $NETWORK attester is <address>"
                 echo "==> Checking is_attester for $ARG1 on $LAFIYA_ATTESTER_REGISTRY_ID"
                 stellar contract invoke \
                     --id "$LAFIYA_ATTESTER_REGISTRY_ID" \
@@ -172,10 +190,7 @@ case "$COMMAND" in
                     -- is_attester --attester "$ARG1"
                 ;;
             add)
-                if [[ -z "$ARG1" ]]; then
-                    echo "Usage: $0 --network $NETWORK --source admin attester add <address>" >&2
-                    exit 1
-                fi
+                require_address "$ARG1" "Usage: $0 --network $NETWORK --source admin attester add <address>"
                 echo "==> Adding attester $ARG1 (admin auth via ${SOURCE_ACCOUNT:-default})"
                 stellar contract invoke \
                     --id "$LAFIYA_ATTESTER_REGISTRY_ID" \
@@ -185,10 +200,7 @@ case "$COMMAND" in
                     -- add_attester --attester "$ARG1"
                 ;;
             remove)
-                if [[ -z "$ARG1" ]]; then
-                    echo "Usage: $0 --network $NETWORK --source admin attester remove <address>" >&2
-                    exit 1
-                fi
+                require_address "$ARG1" "Usage: $0 --network $NETWORK --source admin attester remove <address>"
                 echo "==> Removing attester $ARG1"
                 stellar contract invoke \
                     --id "$LAFIYA_ATTESTER_REGISTRY_ID" \
@@ -212,7 +224,7 @@ case "$COMMAND" in
         ;;
 
     attestation)
-        require_contract_id "attestation-registry" "$LAFIYA_ATTESTATION_REGISTRY_ID"
+        require_contract_id "attestation"
         check_stellar_cli
         case "$SUBCOMMAND" in
             get)
@@ -221,6 +233,7 @@ case "$COMMAND" in
                     exit 1
                 fi
                 # ARG1 is hex string for BytesN<32>
+                lafiya_validate_record_hash "$ARG1" || exit 1
                 echo "==> Getting attestation for hash $ARG1 on $LAFIYA_ATTESTATION_REGISTRY_ID"
                 stellar contract invoke \
                     --id "$LAFIYA_ATTESTATION_REGISTRY_ID" \
