@@ -4,6 +4,7 @@ import type { u64, Option } from "@stellar/stellar-sdk/contract";
 export * from "@stellar/stellar-sdk";
 export * as contract from "@stellar/stellar-sdk/contract";
 export * as rpc from "@stellar/stellar-sdk/rpc";
+export * from "./record.js";
 export declare const Errors: {
     1: {
         message: string;
