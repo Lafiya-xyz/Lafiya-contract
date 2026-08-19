@@ -1,0 +1,472 @@
+[
+  {
+    "kind": "function_v0",
+    "name": "accept_admin",
+    "spec": {
+      "inputs": [],
+      "name": "accept_admin",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "attest",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "attest",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": {
+              "udt": {
+                "name": "Attestation"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_admin",
+    "spec": {
+      "inputs": [],
+      "name": "get_admin",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "address"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_attestation",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "udt": {
+                "name": "Attestation"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attestation_history",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_attestation_history",
+      "outputs": [
+        {
+          "vec": {
+            "element_type": {
+              "udt": {
+                "name": "Attestation"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attester_registry",
+    "spec": {
+      "inputs": [],
+      "name": "get_attester_registry",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "address"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "initialize",
+    "spec": {
+      "inputs": [
+        {
+          "name": "admin",
+          "type_": "address"
+        },
+        {
+          "name": "attester_registry",
+          "type_": "address"
+        }
+      ],
+      "name": "initialize",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "is_paused",
+    "spec": {
+      "inputs": [],
+      "name": "is_paused",
+      "outputs": [
+        "bool"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "pause",
+    "spec": {
+      "inputs": [],
+      "name": "pause",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "propose_admin",
+    "spec": {
+      "inputs": [
+        {
+          "name": "new_admin",
+          "type_": "address"
+        }
+      ],
+      "name": "propose_admin",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "revoke_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "revoke_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "set_attester_registry",
+    "spec": {
+      "inputs": [
+        {
+          "name": "new_registry",
+          "type_": "address"
+        }
+      ],
+      "name": "set_attester_registry",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "unpause",
+    "spec": {
+      "inputs": [],
+      "name": "unpause",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "udt_error_enum_v0",
+    "name": "Error",
+    "spec": {
+      "cases": [
+        {
+          "name": "NotInitialized",
+          "value": 1
+        },
+        {
+          "name": "AlreadyInitialized",
+          "value": 2
+        },
+        {
+          "name": "AttesterNotAllowlisted",
+          "value": 3
+        },
+        {
+          "name": "NoPendingTransfer",
+          "value": 4
+        },
+        {
+          "name": "InvalidRegistryWiring",
+          "value": 5
+        },
+        {
+          "name": "AttestationNotFound",
+          "value": 6
+        },
+        {
+          "name": "ContractPaused",
+          "value": 7
+        }
+      ],
+      "lib": "",
+      "name": "Error"
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AdminTransferred",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AdminTransferred",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "previous_admin",
+          "type_": "address"
+        },
+        {
+          "location": "topic_list",
+          "name": "new_admin",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "admin_transferred"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttestationRecorded",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttestationRecorded",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "data",
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "timestamp",
+          "type_": "u64"
+        }
+      ],
+      "prefix_topics": [
+        "attestation_recorded"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttestationRevoked",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttestationRevoked",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "prefix_topics": [
+        "attestation_revoked"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttesterRegistryRepointed",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttesterRegistryRepointed",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "previous",
+          "type_": "address"
+        },
+        {
+          "location": "topic_list",
+          "name": "new",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attester_registry_repointed"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "Paused",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "Paused",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "by",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "paused"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "Unpaused",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "Unpaused",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "by",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "unpaused"
+      ]
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "Attestation",
+    "spec": {
+      "fields": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "timestamp",
+          "type_": "u64"
+        }
+      ],
+      "lib": "",
+      "name": "Attestation"
+    }
+  }
+]

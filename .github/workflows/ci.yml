@@ -48,7 +48,11 @@ jobs:
         with:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build -p attester-registry -p attestation-registry -p multisig-account --release --locked --target wasm32v1-none
+      # Only the Soroban contract crates target wasm32v1-none; the other
+      # workspace members (lafiya-cli, lafiya-config, lafiya-commitment) are
+      # std binaries/libs that can't build for this no_std-only target.
+      - name: Build contract crates
+        run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
       - name: Check README contract tables
         run: python .github/scripts/check_readme_contracts.py
 

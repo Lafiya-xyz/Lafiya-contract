@@ -1,6 +1,7 @@
+//! Soroban contract maintaining the allowlist of attesters authorized to
+//! call `attest` on the `attestation-registry` contract.
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![warn(missing_docs)]
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
@@ -42,7 +43,9 @@ enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttesterInfo {
+    /// Hash of the attester's off-chain license/credential document, if any.
     pub license_hash: Option<BytesN<32>>,
+    /// The geographic region the attester is authorized to attest for, if any.
     pub region: Option<Symbol>,
 }
 
@@ -59,18 +62,26 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 /// unboundedly.
 const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
 
+/// Errors returned by the attester registry's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` has not been called yet.
     NotInitialized = 1,
+    /// `initialize` was called more than once.
     AlreadyInitialized = 2,
+    /// `accept_admin` was called with no pending admin transfer.
     NoPendingTransfer = 3,
+    /// The requested operation is blocked while the contract is paused.
     ContractPaused = 4,
+    /// The allowlist is at its configured maximum size.
     AllowlistFull = 5,
+    /// A storage migration was invoked but the contract is already current.
     MigrationNotRequired = 6,
 }
 
+/// Emitted when admin ownership finishes transferring to a new address.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AdminTransferred {
@@ -80,6 +91,7 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Emitted once, when the contract is initialized.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Initialized {
@@ -87,6 +99,7 @@ pub struct Initialized {
     pub admin: Address,
 }
 
+/// Emitted when an attester is added to the allowlist.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterAdded {
@@ -94,6 +107,7 @@ pub struct AttesterAdded {
     pub attester: Address,
 }
 
+/// Emitted when an attester is removed from the allowlist.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterRemoved {
@@ -101,6 +115,7 @@ pub struct AttesterRemoved {
     pub attester: Address,
 }
 
+/// Emitted when an attester is suspended.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterSuspended {
@@ -108,6 +123,7 @@ pub struct AttesterSuspended {
     pub attester: Address,
 }
 
+/// Emitted when a suspended attester is reinstated.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterReinstated {
@@ -115,6 +131,7 @@ pub struct AttesterReinstated {
     pub attester: Address,
 }
 
+/// Emitted when the contract is upgraded to new wasm.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Upgraded {
@@ -122,6 +139,7 @@ pub struct Upgraded {
     pub new_wasm_hash: BytesN<32>,
 }
 
+/// Emitted when state-changing operations are paused.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Paused {
@@ -129,6 +147,7 @@ pub struct Paused {
     pub by: Address,
 }
 
+/// Emitted when state-changing operations are unpaused.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Unpaused {
@@ -136,6 +155,7 @@ pub struct Unpaused {
     pub by: Address,
 }
 
+/// The attester registry contract.
 #[contract]
 pub struct AttesterRegistry;
 

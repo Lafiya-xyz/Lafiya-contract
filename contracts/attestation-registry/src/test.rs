@@ -582,7 +582,15 @@ fn test_initialize_auth_matrix() {
         let admin = Address::generate(&env);
         let wrong_user = Address::generate(&env);
         let attester = Address::generate(&env);
+
+        // Must be a real attester-registry contract, not a bare generated
+        // address: `initialize` does a best-effort `is_attester` interface
+        // check on it before the admin auth even matters for the happy path.
         let attester_registry = env.register(attester_registry::AttesterRegistry, ());
+        let attester_registry_client =
+            attester_registry::AttesterRegistryClient::new(&env, &attester_registry);
+        env.mock_all_auths();
+        attester_registry_client.initialize(&admin);
 
         let auth_address = match case.auth_role {
             "admin" => Some(admin.clone()),

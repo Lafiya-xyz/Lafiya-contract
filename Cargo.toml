@@ -6,6 +6,7 @@ members = [
     "contracts/attestation-registry",
     "crates/lafiya-config",
     "crates/lafiya-cli",
+    "crates/lafiya-commitment",
 ]
 
 [workspace.package]

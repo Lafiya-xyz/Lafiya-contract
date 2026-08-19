@@ -1,0 +1,623 @@
+[
+  {
+    "kind": "function_v0",
+    "name": "accept_admin",
+    "spec": {
+      "inputs": [],
+      "name": "accept_admin",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "add_attester",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "add_attester",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "add_attester_with_info",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "license_hash",
+          "type_": {
+            "option": {
+              "value_type": {
+                "bytes_n": {
+                  "n": 32
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "region",
+          "type_": {
+            "option": {
+              "value_type": "symbol"
+            }
+          }
+        }
+      ],
+      "name": "add_attester_with_info",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_admin",
+    "spec": {
+      "inputs": [],
+      "name": "get_admin",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "address"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attester_count",
+    "spec": {
+      "inputs": [],
+      "name": "get_attester_count",
+      "outputs": [
+        "u32"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attester_info",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "get_attester_info",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "udt": {
+                "name": "AttesterInfo"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_max_attesters",
+    "spec": {
+      "inputs": [],
+      "name": "get_max_attesters",
+      "outputs": [
+        "u32"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_schema_version",
+    "spec": {
+      "inputs": [],
+      "name": "get_schema_version",
+      "outputs": [
+        "u32"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "initialize",
+    "spec": {
+      "inputs": [
+        {
+          "name": "admin",
+          "type_": "address"
+        }
+      ],
+      "name": "initialize",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "is_attester",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "is_attester",
+      "outputs": [
+        "bool"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "is_paused",
+    "spec": {
+      "inputs": [],
+      "name": "is_paused",
+      "outputs": [
+        "bool"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "migrate",
+    "spec": {
+      "inputs": [],
+      "name": "migrate",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "pause",
+    "spec": {
+      "inputs": [],
+      "name": "pause",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "propose_admin",
+    "spec": {
+      "inputs": [
+        {
+          "name": "new_admin",
+          "type_": "address"
+        }
+      ],
+      "name": "propose_admin",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "reinstate_attester",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "reinstate_attester",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "remove_attester",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "remove_attester",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "set_max_attesters",
+    "spec": {
+      "inputs": [
+        {
+          "name": "max_attesters",
+          "type_": "u32"
+        }
+      ],
+      "name": "set_max_attesters",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "suspend_attester",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "suspend_attester",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "unpause",
+    "spec": {
+      "inputs": [],
+      "name": "unpause",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "upgrade",
+    "spec": {
+      "inputs": [
+        {
+          "name": "new_wasm_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "upgrade",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "udt_error_enum_v0",
+    "name": "Error",
+    "spec": {
+      "cases": [
+        {
+          "name": "NotInitialized",
+          "value": 1
+        },
+        {
+          "name": "AlreadyInitialized",
+          "value": 2
+        },
+        {
+          "name": "NoPendingTransfer",
+          "value": 3
+        },
+        {
+          "name": "ContractPaused",
+          "value": 4
+        },
+        {
+          "name": "AllowlistFull",
+          "value": 5
+        },
+        {
+          "name": "MigrationNotRequired",
+          "value": 6
+        }
+      ],
+      "lib": "",
+      "name": "Error"
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AdminTransferred",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AdminTransferred",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "previous_admin",
+          "type_": "address"
+        },
+        {
+          "location": "topic_list",
+          "name": "new_admin",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "admin_transferred"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttesterAdded",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttesterAdded",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attester_added"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttesterReinstated",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttesterReinstated",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attester_reinstated"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttesterRemoved",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttesterRemoved",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attester_removed"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttesterSuspended",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttesterSuspended",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attester_suspended"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "Initialized",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "Initialized",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "admin",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "initialized"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "Paused",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "Paused",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "by",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "paused"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "Unpaused",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "Unpaused",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "by",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "unpaused"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "Upgraded",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "Upgraded",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "new_wasm_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "prefix_topics": [
+        "upgraded"
+      ]
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "AttesterInfo",
+    "spec": {
+      "fields": [
+        {
+          "name": "license_hash",
+          "type_": {
+            "option": {
+              "value_type": {
+                "bytes_n": {
+                  "n": 32
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "region",
+          "type_": {
+            "option": {
+              "value_type": "symbol"
+            }
+          }
+        }
+      ],
+      "lib": "",
+      "name": "AttesterInfo"
+    }
+  }
+]

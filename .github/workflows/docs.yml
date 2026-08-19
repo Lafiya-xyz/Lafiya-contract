@@ -20,8 +20,11 @@ jobs:
       - name: Install wasm target
         run: rustup target add wasm32-unknown-unknown
       - name: Build docs
-        run: cargo doc --workspace --no-deps -D warnings
+        run: cargo doc --workspace --no-deps
+        env:
+          RUSTDOCFLAGS: -D warnings
       - name: Deploy to GitHub Pages
+        if: github.event_name == 'push'
         uses: peaceiris/actions-gh-pages@v3
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}

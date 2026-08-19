@@ -33,4 +33,5 @@ administrative trust models generally do.
 | [ADR-0002](0002-contractclient-boundary.md) | Use a local `#[contractclient]` interface for registry-to-registry calls | Accepted |
 | [ADR-0003](0003-single-admin-initial-model.md) | Use a single admin address for the pre-alpha contracts | Accepted |
 | [ADR-0007](0007-unscoped-multisig-authorization.md) | Keep multisig authorization unscoped during pre-alpha | Proposed |
-| [ADR-0008](0008-record-commitment-protocol.md) | Define a versioned, domain-separated record-hash protocol | Accepted |
+| [ADR-0008](0008-record-commitment-canonicalization.md) | Record commitment canonicalization and domain separation (LRC-1) | Proposed |
+| [ADR-0009](0009-treasury-asset-custody-model.md) | Stellar asset, treasury, and custody model for the USDC incentive layer | Proposed |

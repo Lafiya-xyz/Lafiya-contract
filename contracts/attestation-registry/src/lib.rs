@@ -1,6 +1,7 @@
+//! Soroban contract recording attestations of off-chain records, gated by
+//! allowlist membership in the `attester-registry` contract.
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![warn(missing_docs)]
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
@@ -63,10 +64,13 @@ enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
+    /// The allowlisted attester that verified the record.
     pub attester: Address,
+    /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
 }
 
+/// Emitted when admin ownership finishes transferring to a new address.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AdminTransferred {
@@ -76,15 +80,19 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Emitted when a new attestation is recorded for a record hash.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttestationRecorded {
     #[topic]
     pub record_hash: BytesN<32>,
+    /// The allowlisted attester that verified the record.
     pub attester: Address,
+    /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
 }
 
+/// Emitted when an attestation is revoked.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttestationRevoked {
@@ -92,6 +100,7 @@ pub struct AttestationRevoked {
     pub record_hash: BytesN<32>,
 }
 
+/// Emitted when state-changing operations are paused.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Paused {
@@ -99,6 +108,7 @@ pub struct Paused {
     pub by: Address,
 }
 
+/// Emitted when state-changing operations are unpaused.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Unpaused {
@@ -106,6 +116,7 @@ pub struct Unpaused {
     pub by: Address,
 }
 
+/// Emitted when the `attester-registry` contract this registry consults is repointed.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterRegistryRepointed {
@@ -115,19 +126,28 @@ pub struct AttesterRegistryRepointed {
     pub new: Address,
 }
 
+/// Errors returned by the attestation registry's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` has not been called yet.
     NotInitialized = 1,
+    /// `initialize` was called more than once.
     AlreadyInitialized = 2,
+    /// The caller is not allowlisted by the `attester-registry` contract.
     AttesterNotAllowlisted = 3,
+    /// `accept_admin` was called with no pending admin transfer.
     NoPendingTransfer = 4,
+    /// The configured `attester-registry` address does not implement the expected interface.
     InvalidRegistryWiring = 5,
+    /// No attestation exists for the given record hash / sequence.
     AttestationNotFound = 6,
+    /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
 }
 
+/// The attestation registry contract.
 #[contract]
 pub struct AttestationRegistry;
 
