@@ -35,3 +35,4 @@ administrative trust models generally do.
 | [ADR-0007](0007-unscoped-multisig-authorization.md) | Keep multisig authorization unscoped during pre-alpha | Proposed |
 | [ADR-0008](0008-record-commitment-canonicalization.md) | Record commitment canonicalization and domain separation (LRC-1) | Proposed |
 | [ADR-0009](0009-treasury-asset-custody-model.md) | Stellar asset, treasury, and custody model for the USDC incentive layer | Proposed |
+| [ADR-0010](0010-attester-enumeration-strategy.md) | Derive the attester directory from events plus a mutation cursor, not on-chain enumeration storage | Proposed |
