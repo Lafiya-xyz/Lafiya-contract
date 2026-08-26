@@ -26,6 +26,8 @@ pub struct Signature {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// The threshold supplied to `__constructor` was invalid: it must be
+    /// greater than zero and no larger than the number of signers provided.
     InvalidThreshold = 1,
     DuplicateSigner = 2,
     NotEnoughSigners = 3,

@@ -357,7 +357,8 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Tiny which implementation to avoid extra dep if not available, but we add which crate feature? We'll implement simple check
+/// Minimal `PATH`-based executable lookup, kept in-tree instead of pulling in
+/// the `which` crate as a dependency for this single use site.
 mod which {
     use std::path::Path;
 

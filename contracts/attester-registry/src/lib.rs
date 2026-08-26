@@ -88,7 +88,10 @@ pub enum Error {
     ContractPaused = 4,
     /// The allowlist is at its configured maximum size.
     AllowlistFull = 5,
-    /// A storage migration was invoked but the contract is already current.
+    /// `migrate()` was called while the stored schema version is already
+    /// `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a
+    /// build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal
+    /// that there is nothing pending, not a failure to react to.
     MigrationNotRequired = 6,
     /// The referenced attester is not currently allowlisted (never added,
     /// or since removed).
