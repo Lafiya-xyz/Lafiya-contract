@@ -40,15 +40,24 @@ Obviously you need to adjust the above command based on the actual command you u
 
 Now that you have your library up-to-date and added to your project, you can import it in a file and see inline documentation for all of its exported methods:
 
-```js
-import { Contract, networks } from "attester-registry"
+## Usage
 
-const contract = new Contract({
-  ...networks.futurenet, // for example; check which networks this library exports
-  rpcUrl: '...', // use your own, or find one for testing at https://soroban.stellar.org/docs/reference/rpc#public-rpc-providers
-})
+The generated client can be used to check whether an address is allowlisted:
 
-contract.|
+```typescript
+import { Client } from "attester-registry";
+
+const client = new Client({
+  contractId: "PLACEHOLDER_CONTRACT_ID",
+  rpcUrl: "PLACEHOLDER_RPC_URL",
+  networkPassphrase: "PLACEHOLDER_NETWORK_PASSPHRASE",
+});
+
+const result = await client.is_attester({
+  attester: "PLACEHOLDER_ADDRESS",
+});
+
+console.log(result.result);
 ```
 
 As long as your editor is configured to show JavaScript/TypeScript documentation, you can pause your typing at that `|` to get a list of all exports and inline-documentation for each. It exports a separate [async](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function) function for each method in the smart contract, with documentation for each generated from the comments the contract's author included in the original source code.
