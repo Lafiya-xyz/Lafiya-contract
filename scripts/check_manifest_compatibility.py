@@ -107,8 +107,8 @@ def check(manifest, requirements):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("requirements", type=Path)
+    parser.add_argument("manifest", type=Path, help="path to the release manifest JSON to check")
+    parser.add_argument("requirements", type=Path, help="path to the consumer's requirements JSON")
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
