@@ -1,5 +1,11 @@
 #![no_std]
 
+// Unlike `attester-registry` and `attestation-registry`, this crate does not set
+// `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`. `__constructor`
+// cannot return a `Result` (Soroban constructors return `()`), so it deliberately uses
+// `panic_with_error!` to reject invalid construction parameters with a contract error
+// code, which the blanket deny would flag despite being the correct pattern here.
+
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
     contract, contracterror, contractimpl, contracttype,

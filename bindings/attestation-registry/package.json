@@ -1,6 +1,7 @@
 {
   "version": "0.0.0",
   "name": "attestation-registry",
+  "license": "MIT",
   "type": "module",
   "exports": "./dist/index.js",
   "typings": "dist/index.d.ts",

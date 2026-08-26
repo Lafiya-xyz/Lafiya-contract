@@ -137,7 +137,11 @@ pub enum Error {
     AlreadyInitialized = 2,
     /// The caller is not allowlisted by the `attester-registry` contract.
     AttesterNotAllowlisted = 3,
-    /// `accept_admin` was called with no pending admin transfer.
+    /// `accept_admin` was called with no pending admin transfer. Admin transfer is a
+    /// two-step flow: the current admin must first call `propose_admin` to nominate a
+    /// successor, then the nominated address must call `accept_admin` to complete the
+    /// transfer. This error is returned when `accept_admin` is called before a
+    /// corresponding `propose_admin` call has set a pending admin.
     NoPendingTransfer = 4,
     /// The configured `attester-registry` address does not implement the expected interface.
     InvalidRegistryWiring = 5,
