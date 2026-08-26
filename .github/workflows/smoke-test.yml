@@ -33,12 +33,20 @@ jobs:
           toolchain: stable
           override: true
 
+      # stellar-cli has no maintained GitHub Action or crates.io-published install
+      # path for a pinned release, so we pull the binary tarball directly. The
+      # version is intentionally pinned to v0.8.0 for reproducible smoke-test
+      # runs; bump it by updating the URL below after validating the new CLI
+      # version against scripts/smoke-test.sh.
       - name: Install Stellar CLI
         run: |
           curl -L https://github.com/stellar/stellar-cli/releases/download/v0.8.0/stellar-cli-linux-amd64.tar.gz -o stellar-cli.tar.gz
           tar -xzf stellar-cli.tar.gz stellar-cli
           sudo mv stellar-cli /usr/local/bin/
           stellar-cli version
+
+      - name: Mask admin secret
+        run: echo "::add-mask::${{ inputs.admin_secret }}"
 
       - name: Run smoke test script
         env:
