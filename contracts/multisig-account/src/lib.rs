@@ -25,16 +25,24 @@ pub struct Signature {
     pub signature: BytesN<64>,
 }
 
+/// Errors returned by the multisig-account contract's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// The configured threshold is zero or exceeds the signer count.
     InvalidThreshold = 1,
+    /// The signer configuration contains duplicate public keys.
     DuplicateSigner = 2,
+    /// The supplied signature count is below the configured threshold.
     NotEnoughSigners = 3,
+    /// Signatures are not strictly ordered by ascending public key.
     BadSignatureOrder = 4,
+    /// A signature corresponds to a public key that is not a configured signer.
     UnknownSigner = 5,
+    /// The contract has not been initialized; threshold or signer count is unavailable.
     NotInitialized = 6,
+    /// The supplied signature count exceeds the configured signer count.
     TooManySigners = 7,
 }
 
