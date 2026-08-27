@@ -357,7 +357,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Tiny which implementation to avoid extra dep if not available, but we add which crate feature? We'll implement simple check
 mod which {
     use std::path::Path;
 
@@ -384,5 +383,47 @@ mod which {
             }
         }
         Err(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_config_list_succeeds() {
+        let args = vec!["lafiya-cli", "config", "list"];
+        let result = Cli::try_parse_from(args);
+
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert_eq!(cli.network, "testnet");
+        assert!(cli.config.is_none());
+        match cli.command {
+            Commands::Config { sub: ConfigSub::List } => {}
+            _ => panic!("Expected Config List command"),
+        }
+    }
+
+    #[test]
+    fn parse_config_list_with_explicit_network_succeeds() {
+        let args = vec!["lafiya-cli", "--network", "mainnet", "config", "list"];
+        let result = Cli::try_parse_from(args);
+
+        assert!(result.is_ok());
+        let cli = result.unwrap();
+        assert_eq!(cli.network, "mainnet");
+        match cli.command {
+            Commands::Config { sub: ConfigSub::List } => {}
+            _ => panic!("Expected Config List command"),
+        }
+    }
+
+    #[test]
+    fn parse_missing_subcommand_fails() {
+        let args = vec!["lafiya-cli"];
+        let result = Cli::try_parse_from(args);
+
+        assert!(result.is_err());
     }
 }
