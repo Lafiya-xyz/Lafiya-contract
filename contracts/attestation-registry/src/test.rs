@@ -827,3 +827,18 @@ fn set_attester_registry_before_initialize_fails() {
     let result = client.try_set_attester_registry(&new_registry);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
+
+#[test]
+fn revoke_attestation_happy_path() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[11u8; 32]);
+    client.attest(&attester, &record_hash);
+    assert_eq!(client.get_attestation(&record_hash).is_some(), true);
+
+    client.revoke_attestation(&record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
