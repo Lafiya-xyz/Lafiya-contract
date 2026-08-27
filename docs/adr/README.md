@@ -18,6 +18,12 @@ Small implementation details that do not constrain future work do not need an AD
 Security boundaries, privacy assumptions, contract interfaces, storage models, and
 administrative trust models generally do.
 
+## Terminology
+
+Terms used throughout these ADRs — *attester*, *CHW*, *record hash* / *record commitment*,
+*schema version*, and related vocabulary — are defined canonically in the
+[glossary](../glossary.md). Link to it instead of redefining a shared term in an ADR.
+
 ## Status values
 
 - **Proposed** — under discussion and not yet binding.
