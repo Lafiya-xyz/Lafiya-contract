@@ -872,3 +872,64 @@ fn set_attester_registry_before_initialize_fails() {
     let result = client.try_set_attester_registry(&new_registry);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
+
+#[test]
+fn multi_attester_same_record_hash_behavior() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester_a = Address::generate(&env);
+    let attester_b = Address::generate(&env);
+    attester_registry.add_attester(&attester_a);
+    attester_registry.add_attester(&attester_b);
+
+    let record_hash = BytesN::from_array(&env, &[12u8; 32]);
+
+    // Attester A attests to the record hash first.
+    let attestation_a = client.attest(&attester_a, &record_hash);
+    assert_eq!(attestation_a.attester, attester_a);
+
+    // Attester B attests to the same record hash.
+    // This creates a second attestation sequence for the same hash,
+    // not an overwrite of the first.
+    let attestation_b = client.attest(&attester_b, &record_hash);
+    assert_eq!(attestation_b.attester, attester_b);
+
+    // get_attestation returns the latest attestation (from attester B).
+    let latest = client.get_attestation(&record_hash).unwrap();
+    assert_eq!(
+        latest.attester, attester_b,
+        "Latest attestation should be from attester B"
+    );
+    assert_eq!(
+        latest.timestamp, attestation_b.timestamp,
+        "Latest attestation timestamp should match attester B's"
+    );
+
+    // get_attestation_history returns all attestations in sequence order (oldest first).
+    // Since we have two attestations, both should be present, each with its correct attester.
+    let history = client.get_attestation_history(&record_hash);
+    assert_eq!(history.len(), 2, "History should contain both attestations");
+
+    // First entry (oldest) should be from attester A.
+    assert_eq!(
+        history.get(0).unwrap().attester,
+        attester_a,
+        "First history entry should be from attester A"
+    );
+    assert_eq!(
+        history.get(0).unwrap().timestamp,
+        attestation_a.timestamp,
+        "First history entry timestamp should match attester A's attestation"
+    );
+
+    // Second entry (newest) should be from attester B.
+    assert_eq!(
+        history.get(1).unwrap().attester,
+        attester_b,
+        "Second history entry should be from attester B"
+    );
+    assert_eq!(
+        history.get(1).unwrap().timestamp,
+        attestation_b.timestamp,
+        "Second history entry timestamp should match attester B's attestation"
+    );
+}
