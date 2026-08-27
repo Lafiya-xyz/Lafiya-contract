@@ -205,6 +205,7 @@ impl AttesterRegistry {
     }
 
     /// Propose a new admin address. The caller must authorize as the current admin.
+    /// Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let current_admin = Self::admin(&env)?;
         current_admin.require_auth();

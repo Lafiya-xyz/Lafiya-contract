@@ -540,3 +540,45 @@ fn contract_address_can_be_added_as_attester() {
     client.add_attester(&client.address);
     assert!(client.is_attester(&client.address));
 }
+
+#[test]
+fn second_propose_admin_call_overwrites_pending_proposal() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let address1 = Address::generate(&env);
+    let address2 = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    client.propose_admin(&address1);
+    client.propose_admin(&address2);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address1,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_accept_admin();
+    assert_eq!(result, Ok(()));
+}
