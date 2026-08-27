@@ -389,6 +389,8 @@ mod which {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
+    use tempfile::NamedTempFile;
 
     #[test]
     fn parse_config_list_succeeds() {
@@ -425,5 +427,36 @@ mod tests {
         let result = Cli::try_parse_from(args);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn load_networks_from_missing_file_returns_handled_error() {
+        let nonexistent_path = std::path::PathBuf::from("/nonexistent/path/networks.toml");
+        let result = load_networks(Some(&nonexistent_path));
+
+        assert!(result.is_err());
+        match result {
+            Err(lafiya_config::ConfigError::NotFound(path)) => {
+                assert_eq!(path, nonexistent_path);
+            }
+            other => panic!("Expected ConfigError::NotFound, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn load_networks_from_malformed_toml_returns_handled_error() {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(b"[invalid\nthis is not valid toml").unwrap();
+        file.flush().unwrap();
+
+        let result = load_networks(Some(file.path()));
+
+        assert!(result.is_err());
+        match result {
+            Err(lafiya_config::ConfigError::ParseError { path, .. }) => {
+                assert_eq!(path, file.path());
+            }
+            other => panic!("Expected ConfigError::ParseError, got: {:?}", other),
+        }
     }
 }
