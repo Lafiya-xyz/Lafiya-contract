@@ -150,6 +150,16 @@ fn zero_threshold_is_rejected() {
 
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
+fn zero_signers_and_zero_threshold_is_rejected() {
+    // When both signers is empty and threshold is 0, the threshold check
+    // (line 50: `if threshold == 0 || threshold > signers.len()`) fires first.
+    let env = Env::default();
+    let keys: &[SigningKey] = &[];
+    register_account(&env, keys, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn threshold_above_signer_count_is_rejected() {
     let env = Env::default();
     let keys = signing_keys();
