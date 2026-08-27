@@ -101,10 +101,17 @@ fn re_attest_overwrites_previous_attestation() {
     attester_registry.add_attester(&attester_b);
 
     let record_hash = BytesN::from_array(&env, &[3u8; 32]);
-    client.attest(&attester_a, &record_hash);
+    let first = client.attest(&attester_a, &record_hash);
     let second = client.attest(&attester_b, &record_hash);
 
-    assert_eq!(client.get_attestation(&record_hash), Some(second));
+    assert_eq!(client.get_attestation(&record_hash), Some(second.clone()));
+
+    // The overwritten attestation must not be dropped: it should remain in
+    // the history as the older entry, with the new one appended after it.
+    let history = client.get_attestation_history(&record_hash);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0), Some(first));
+    assert_eq!(history.get(1), Some(second));
 }
 
 #[test]
