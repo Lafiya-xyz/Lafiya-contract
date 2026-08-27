@@ -55,6 +55,17 @@ fn check_auth(
 }
 
 #[test]
+fn one_of_one_signer_authorizes() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..1], 1);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures = signatures_for(&env, &keys[..1], &payload.to_array());
+
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
 fn two_of_three_signers_authorize() {
     let env = Env::default();
     let keys = signing_keys();
@@ -63,6 +74,20 @@ fn two_of_three_signers_authorize() {
     let signatures = signatures_for(&env, &keys[..2], &payload.to_array());
 
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
+fn one_of_one_with_zero_signatures_is_rejected() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..1], 1);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures: Vec<Signature> = Vec::new(&env);
+
+    assert_eq!(
+        check_auth(&env, &account, &payload, signatures),
+        Err(Ok(Error::NotEnoughSigners))
+    );
 }
 
 #[test]
