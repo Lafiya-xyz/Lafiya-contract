@@ -18,8 +18,11 @@ use soroban_sdk::{
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
+    /// The minimum number of signatures required to authorize a transaction.
     Threshold,
+    /// Presence of this key (mapped to `()`) indicates the public key is a registered signer.
     Signer(BytesN<32>),
+    /// The total number of registered signers.
     SignerCount,
 }
 
