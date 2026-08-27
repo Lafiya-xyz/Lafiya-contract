@@ -1,3 +1,11 @@
+//! Soroban custom account contract implementing N-of-M multisig authorization.
+//!
+//! This contract enforces that transactions requiring approval must be signed
+//! by at least a configured threshold of registered signers (N-of-M multisig).
+//! It implements Soroban's `CustomAccountInterface` to integrate with the
+//! protocol's authentication system, enabling use as a custom account for
+//! administrative operations on the `attester-registry` and
+//! `attestation-registry` contracts.
 #![no_std]
 
 use soroban_sdk::{
