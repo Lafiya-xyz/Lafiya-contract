@@ -880,3 +880,33 @@ fn revoke_attestation_for_unknown_hash_returns_not_initialized() {
     // the actual current behavior, not the intended behavior.
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
+
+#[test]
+fn revoke_attestation_clears_get_attestation_history() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester_a = Address::generate(&env);
+    let attester_b = Address::generate(&env);
+    let attester_c = Address::generate(&env);
+    attester_registry.add_attester(&attester_a);
+    attester_registry.add_attester(&attester_b);
+    attester_registry.add_attester(&attester_c);
+
+    let record_hash = BytesN::from_array(&env, &[14u8; 32]);
+    let first = client.attest(&attester_a, &record_hash);
+    let second = client.attest(&attester_b, &record_hash);
+    let third = client.attest(&attester_c, &record_hash);
+
+    let history_before = client.get_attestation_history(&record_hash);
+    assert_eq!(history_before.len(), 3);
+    assert_eq!(history_before.get(0), Some(first));
+    assert_eq!(history_before.get(1), Some(second));
+    assert_eq!(history_before.get(2), Some(third));
+
+    assert_eq!(client.get_attestation(&record_hash), Some(third));
+
+    client.revoke_attestation(&record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), None);
+    let history_after = client.get_attestation_history(&record_hash);
+    assert_eq!(history_after.len(), 0);
+}
