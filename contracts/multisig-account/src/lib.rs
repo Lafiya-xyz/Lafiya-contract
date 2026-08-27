@@ -57,6 +57,11 @@ pub struct MultisigAccount;
 
 #[contractimpl]
 impl MultisigAccount {
+    /// Initialize the multisig account with a set of authorized signers and a signature threshold.
+    ///
+    /// # Arguments
+    /// * `signers` — A vector of ed25519 public keys (32 bytes each) authorized to sign transactions.
+    /// * `threshold` — The minimum number of signatures required to authorize a transaction; must be > 0 and ≤ the signer count.
     pub fn __constructor(env: Env, signers: Vec<BytesN<32>>, threshold: u32) {
         if threshold == 0 || threshold > signers.len() {
             panic_with_error!(&env, Error::InvalidThreshold);
@@ -84,6 +89,15 @@ impl CustomAccountInterface for MultisigAccount {
     type Signature = Vec<Signature>;
     type Error = Error;
 
+    /// Verify the authorization of a transaction by checking N-of-M ed25519 signatures.
+    ///
+    /// Verifies that the supplied signatures meet the configured threshold and each belongs to
+    /// an authorized signer, with signatures ordered in ascending public-key order.
+    ///
+    /// # Arguments
+    /// * `signature_payload` — A 32-byte hash of the transaction to authorize.
+    /// * `signatures` — A vector of ed25519 signatures, each with a public key and signature bytes, ordered by ascending public key.
+    /// * `_auth_contexts` — Intentionally unused; see [ADR-0007](../adr/0007-unscoped-multisig-authorization.md) for why this account does not scope authorization to specific contracts or functions during pre-alpha.
     fn __check_auth(
         env: Env,
         signature_payload: Hash<32>,
