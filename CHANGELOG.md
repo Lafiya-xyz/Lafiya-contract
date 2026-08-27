@@ -32,3 +32,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `attester-registry`: `get_attester_status`, a combined read returning an
   attester's metadata together with its current suspension state in one
   call.
+- `attester-registry`: `set_max_attesters` and `get_max_attesters`, an
+  admin-configurable soft cap on the number of allowlisted attesters
+  (defaulting to 50,000). `add_attester`/`add_attester_with_info` fail with
+  the new `Error::AllowlistFull` when the allowlist is at capacity and the
+  attester is not already present; lowering the cap never evicts existing
+  attesters, it only blocks further additions.
+- `attester-registry`: `suspend_attester` and `reinstate_attester`, admin-
+  authorized entry points for temporarily blocking an allowlisted attester
+  from attesting without removing it. Suspended attesters fail
+  `is_attester` until reinstated; emits `AttesterSuspended` and
+  `AttesterReinstated` respectively.
