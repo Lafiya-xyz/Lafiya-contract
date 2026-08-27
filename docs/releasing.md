@@ -65,7 +65,7 @@ every `v*.*.*` tag; see ADR-0009 "Follow-up" for what remains before it is load-
 
 Because Soroban smart contracts are immutable once deployed (unless an upgrade path is explicitly programmed), deploying a new version generally requires deploying new WASM bytecode and updating the contract addresses referenced by downstream consumers (such as the frontend app `lafiya-web`).
 
-For details on the redeployment, initialization, and upgrade state migration processes, please cross-reference the **upgrade-runbook issue** on GitHub:
-- [Upgrade Runbook Issue #48 (GitHub)](https://github.com/Lafiya-xyz/Lafiya-contract/issues/48)
+For details on the redeployment, initialization, and upgrade state migration processes, please cross-reference the upgrade runbook:
+- [Contract Upgrade Runbook](runbooks/contract-upgrade.md)
 
 Always follow the instructions in the runbook when performing redeployments to ensure that downstream services are not interrupted.
