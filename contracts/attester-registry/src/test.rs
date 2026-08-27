@@ -15,6 +15,11 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 
 #[test]
 fn get_schema_version_succeeds() {
+    // Asserts the literal current schema version, not just that the call
+    // succeeds. Any change to this expected value is a schema version bump
+    // and must be deliberate, paired with a migration plan (see
+    // `needs_migration`/`migrate` in lib.rs), and not an accidental side
+    // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     client.initialize(&admin);
