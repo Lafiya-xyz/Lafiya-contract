@@ -11,7 +11,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 |---|---|---|
 | `1` | `NotInitialized` | The contract has not been initialized yet. |
 | `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
-| `3` | `NoPendingTransfer` | No admin transfer is pending. |
+| `3` | `NoPendingTransfer` | No admin transfer is pending; `accept_admin` was called before `propose_admin` nominated a successor (admin transfer is a two-step flow: `propose_admin` then `accept_admin`). |
 | `4` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
 | `5` | `AllowlistFull` | The allowlist has reached its configured soft cap (`set_max_attesters`). |
 | `6` | `MigrationNotRequired` | No pending storage migration; `SchemaVersion` is already current. |
