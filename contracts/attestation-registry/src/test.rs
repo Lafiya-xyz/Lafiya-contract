@@ -891,3 +891,60 @@ fn re_attest_after_revoke_resets_history() {
     assert_eq!(final_history.len(), 1);
     assert_eq!(final_history.get(0), Some(attest_b.clone()));
 }
+
+#[test]
+fn attest_while_paused_fails() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[13u8; 32]);
+
+    client.pause();
+
+    let result = client.try_attest(&attester, &record_hash);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn pause_by_non_admin_fails() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let malicious = Address::generate(&env);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "pause",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_pause();
+    assert!(result.is_err());
+    assert_eq!(client.is_paused(), false);
+}
+
+#[test]
+fn unpause_by_non_admin_fails() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let malicious = Address::generate(&env);
+
+    client.pause();
+    assert_eq!(client.is_paused(), true);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "unpause",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_unpause();
+    assert!(result.is_err());
+    assert_eq!(client.is_paused(), true);
+}
