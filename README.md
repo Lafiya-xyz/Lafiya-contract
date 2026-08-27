@@ -220,7 +220,10 @@ cd ../attestation-registry && npm install && npm run build
 The generated bindings are committed directly to this repository under the `bindings/` directory. `lafiya-web` (or any other consumer) can consume them via:
 - Direct git path dependency in `package.json` pointing to the repo or subdirectory.
 - A git submodule in the consuming project.
-- Alternatively, CI/CD can be configured to publish these directories as packages to the `@lafiya` npm organization.
+
+Publishing these directories as packages to the `@lafiya` npm organization is a planned, but
+not yet implemented, secondary option. See [`PUBLISHING.md`](PUBLISHING.md) for the full
+strategy and the follow-up work required before that's live.
 
 
 ## Tech Stack
