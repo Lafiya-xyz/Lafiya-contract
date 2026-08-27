@@ -59,6 +59,16 @@ fn get_admin_before_initialize_fails() {
 }
 
 #[test]
+fn get_attester_registry_before_initialize_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+
+    let result = client.try_get_attester_registry();
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
 fn attest_by_allowlisted_attester_succeeds() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
