@@ -867,3 +867,16 @@ fn revoke_attestation_without_admin_auth_fails() {
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), Some(attestation));
 }
+
+#[test]
+fn revoke_attestation_for_unknown_hash_returns_not_initialized() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let record_hash = BytesN::from_array(&env, &[13u8; 32]);
+
+    let result = client.try_revoke_attestation(&record_hash);
+    // NOTE: This is a bug in the contract. revoke_attestation returns
+    // Error::NotInitialized when called with an unknown hash (line 371 in lib.rs),
+    // but it should return Error::AttestationNotFound. This test documents
+    // the actual current behavior, not the intended behavior.
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
