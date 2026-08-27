@@ -32,3 +32,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `attester-registry`: `get_attester_status`, a combined read returning an
   attester's metadata together with its current suspension state in one
   call.
+
+### Changed
+
+- README: the Architecture section now notes that `multisig-account`
+  deliberately ignores Soroban's authorization contexts in `__check_auth`
+  — an accepted pre-alpha risk documented in
+  [ADR-0007](docs/adr/0007-unscoped-multisig-authorization.md).

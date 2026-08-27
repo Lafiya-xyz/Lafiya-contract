@@ -82,7 +82,7 @@ graph TB
 
 - **`attester-registry`** — the on-chain allowlist of health workers authorized to write attestations
 - **`attestation-registry`** — the on-chain record of which attester verified which record hash, and when; calls into `attester-registry` on every write
-- **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization
+- **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization. It deliberately ignores Soroban's authorization contexts in `__check_auth` — an accepted pre-alpha risk documented in [ADR-0007](docs/adr/0007-unscoped-multisig-authorization.md) — so a valid signer quorum's authority is not scoped to the registries
 
 All three are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); none has been deployed to testnet yet.
 
