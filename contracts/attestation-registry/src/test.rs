@@ -842,3 +842,28 @@ fn revoke_attestation_happy_path() {
 
     assert_eq!(client.get_attestation(&record_hash), None);
 }
+
+#[test]
+fn revoke_attestation_without_admin_auth_fails() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let malicious = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[12u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "revoke_attestation",
+            args: (record_hash.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_revoke_attestation(&record_hash);
+    assert!(result.is_err());
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
