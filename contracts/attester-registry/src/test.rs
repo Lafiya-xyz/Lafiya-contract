@@ -520,3 +520,23 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     );
     assert!(client.is_attester(&attester));
 }
+
+#[test]
+fn admin_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The admin's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&admin);
+    assert!(client.is_attester(&admin));
+}
+
+#[test]
+fn contract_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The contract's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&client.address);
+    assert!(client.is_attester(&client.address));
+}
