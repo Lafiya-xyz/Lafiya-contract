@@ -86,7 +86,7 @@ pub enum Error {
     NoPendingTransfer = 3,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 4,
-    /// The allowlist is at its configured maximum size.
+    /// The allowlist is at its configured maximum size. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`.
     AllowlistFull = 5,
     /// A storage migration was invoked but the contract is already current.
     MigrationNotRequired = 6,

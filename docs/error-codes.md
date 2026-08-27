@@ -13,7 +13,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
 | `3` | `NoPendingTransfer` | No admin transfer is pending. |
 | `4` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
-| `5` | `AllowlistFull` | The allowlist has reached its configured soft cap (`set_max_attesters`). |
+| `5` | `AllowlistFull` | The allowlist has reached its configured soft cap. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`. |
 | `6` | `MigrationNotRequired` | No pending storage migration; `SchemaVersion` is already current. |
 | `7` | `AttesterNotFound` | `update_attester_info` was called for an address that is not currently allowlisted (never added, or since removed). |
 
