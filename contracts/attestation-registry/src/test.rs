@@ -853,3 +853,41 @@ fn revoke_attestation_emits_event() {
     };
     assert_eq!(events.get(1), Some(expected_revoke.to_xdr(&env, &client.address)));
 }
+
+#[test]
+fn re_attest_after_revoke_resets_history() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester_a = Address::generate(&env);
+    let attester_b = Address::generate(&env);
+    attester_registry.add_attester(&attester_a);
+    attester_registry.add_attester(&attester_b);
+
+    let record_hash = BytesN::from_array(&env, &[12u8; 32]);
+
+    // First attestation
+    let attest_a = client.attest(&attester_a, &record_hash);
+
+    let history_before = client.get_attestation_history(&record_hash);
+    assert_eq!(history_before.len(), 1);
+    assert_eq!(history_before.get(0), Some(attest_a.clone()));
+
+    // Revoke all attestations for this hash
+    client.revoke_attestation(&record_hash);
+
+    let history_after_revoke = client.get_attestation_history(&record_hash);
+    assert_eq!(history_after_revoke.len(), 0);
+
+    // Re-attest the same hash with a different attester
+    let attest_b = client.attest(&attester_b, &record_hash);
+
+    // Verify the re-attestation succeeds and becomes the new "latest"
+    let final_attestation = client.get_attestation(&record_hash);
+    assert_eq!(final_attestation, Some(attest_b.clone()));
+
+    // IMPORTANT: The history is completely reset. The new attestation is at sequence 1 again,
+    // and no prior history from attest_a is preserved. This is the current behavior:
+    // revoke_attestation clears the sequence and count keys, so re-attestation starts fresh.
+    let final_history = client.get_attestation_history(&record_hash);
+    assert_eq!(final_history.len(), 1);
+    assert_eq!(final_history.get(0), Some(attest_b.clone()));
+}
