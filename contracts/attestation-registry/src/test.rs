@@ -948,3 +948,20 @@ fn unpause_by_non_admin_fails() {
     assert!(result.is_err());
     assert_eq!(client.is_paused(), true);
 }
+
+#[test]
+fn set_attester_registry_emits_event_with_previous_and_new_addresses() {
+    let (env, client, attester_registry, _admin) = setup();
+    let new_registry = Address::generate(&env);
+
+    client.set_attester_registry(&new_registry);
+
+    let expected_event = AttesterRegistryRepointed {
+        previous: attester_registry.address.clone(),
+        new: new_registry.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+}
