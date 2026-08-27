@@ -15,10 +15,13 @@ enum DataKey {
     SignerCount,
 }
 
+/// A single ed25519 signature from one signer in the multisig set.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Signature {
+    /// The public key of the signer who created this signature.
     pub public_key: BytesN<32>,
+    /// The ed25519 signature bytes.
     pub signature: BytesN<64>,
 }
 
