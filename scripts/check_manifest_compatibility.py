@@ -4,7 +4,7 @@
 This is the "consumer compatibility check" a downstream repo (e.g. lafiya-web)
 runs in its own CI against a Lafiya-contract release manifest before bumping
 its pinned contract/binding version, per
-docs/adr/0009-release-manifest-and-compatibility.md.
+docs/adr/0010-release-manifest-and-compatibility.md.
 
 A requirements file (see docs/release-manifest/examples/lafiya-web.requirements.json)
 declares, per contract, the minimum storage schema version and binding

@@ -4,7 +4,7 @@
 Reads the workspace version, per-contract storage schema version, built wasm
 artifacts (if present), generated TypeScript bindings, contract event
 definitions, and config/networks.toml, and emits one JSON document that binds
-them together for a release. See docs/adr/0009-release-manifest-and-compatibility.md.
+them together for a release. See docs/adr/0010-release-manifest-and-compatibility.md.
 
 Usage:
     scripts/generate_release_manifest.py [--previous PATH] [--pretty] [-o PATH]
@@ -188,7 +188,7 @@ def build_deployments(contracts_by_name):
                     "contract": name,
                     "contract_id": contract_id or None,
                     # networks.toml only records the current contract ID, not
-                    # the wasm hash or when it was deployed — see ADR-0009
+                    # the wasm hash or when it was deployed — see ADR-0010
                     # Follow-up for the proposed append-only deployment ledger
                     # that would let this be populated automatically.
                     "wasm_sha256": None,
@@ -205,7 +205,7 @@ def build_deployments(contracts_by_name):
 
 def build_compatibility():
     return {
-        "policy_ref": "docs/adr/0009-release-manifest-and-compatibility.md#compatibility-policy",
+        "policy_ref": "docs/adr/0010-release-manifest-and-compatibility.md#compatibility-policy",
         "consumers": [
             {
                 "repo": "lafiya-web",
