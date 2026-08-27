@@ -200,6 +200,18 @@ fn duplicate_configured_signer_is_rejected() {
 }
 
 #[test]
+fn check_auth_extends_ttl_on_success() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures = signatures_for(&env, &keys[..2], &payload.to_array());
+
+    // Successful __check_auth call triggers extend_ttl on SignerCount/Threshold
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
 fn too_many_signatures_is_rejected() {
     let env = Env::default();
     let keys = signing_keys();
