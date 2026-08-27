@@ -9,6 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Automated `--help` regression test for `lafiya-cli`: the top-level
+  command and every subcommand must print usage text and exit successfully
+  (`crates/lafiya-cli/tests/cli_help.rs`).
 - ADR-0009 and a prototype release manifest: `scripts/generate_release_manifest.py`
   binds contract wasm hashes, storage schema versions, generated bindings, event
   schemas, and per-network deployment state into one JSON document
