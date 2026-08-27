@@ -179,3 +179,22 @@ fn too_many_signatures_is_rejected() {
         Err(Ok(Error::TooManySigners))
     );
 }
+
+#[test]
+fn three_of_five_signers_authorize() {
+    let env = Env::default();
+    let mut keys = std::vec![
+        SigningKey::from_bytes(&[1; 32]),
+        SigningKey::from_bytes(&[2; 32]),
+        SigningKey::from_bytes(&[3; 32]),
+        SigningKey::from_bytes(&[4; 32]),
+        SigningKey::from_bytes(&[5; 32]),
+    ];
+    keys.sort_by_key(|key| key.verifying_key().to_bytes());
+    let account = register_account(&env, &keys, 3);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    // Supply exactly 3 signatures from the 5 signers in correct order
+    let signatures = signatures_for(&env, &keys[..3], &payload.to_array());
+
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
