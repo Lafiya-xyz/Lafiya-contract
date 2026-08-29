@@ -664,3 +664,40 @@ fn update_attester_info_can_clear_previously_set_fields() {
     // Attester is still active — clearing metadata does not remove them.
     assert!(client.is_attester(&attester));
 }
+
+#[test]
+fn migrate_on_fresh_contract_returns_migration_not_required() {
+    let (_, client, admin) = setup();
+    client.initialize(&admin);
+
+    // A freshly initialized contract already stores SCHEMA_VERSION (1), so
+    // there is nothing to migrate and migrate() must return MigrationNotRequired.
+    let result = client.try_migrate();
+    assert_eq!(result, Err(Ok(Error::MigrationNotRequired)));
+}
+
+#[test]
+fn migrate_without_admin_auth_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    // Mock auth as a non-admin address — migrate requires admin auth.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &non_admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "migrate",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_migrate();
+    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
+}
