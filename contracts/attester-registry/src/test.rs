@@ -588,3 +588,79 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     );
     assert!(client.is_attester(&attester));
 }
+
+#[test]
+fn add_attester_with_info_without_admin_auth_fails() {
+    // No mock_all_auths(): calls must present a real, matching auth entry.
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let attester = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    // Mock auth as the attester rather than the admin — should be rejected.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attester,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "add_attester_with_info",
+            args: (attester.clone(), None::<BytesN<32>>, None::<Symbol>).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_add_attester_with_info(&attester, &None, &None);
+    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn add_attester_with_info_accepts_none_fields() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    // Both optional metadata fields are None.
+    client.add_attester_with_info(&attester, &None, &None);
+
+    assert!(client.is_attester(&attester));
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: None,
+            region: None,
+        }),
+    );
+}
+
+#[test]
+fn update_attester_info_can_clear_previously_set_fields() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[5u8; 32]);
+    let region = Symbol::new(&env, "south");
+
+    // Enroll with metadata.
+    client.add_attester_with_info(&attester, &Some(license_hash), &Some(region));
+    let info = client.get_attester_info(&attester).unwrap();
+    assert!(info.license_hash.is_some());
+    assert!(info.region.is_some());
+
+    // Clear both fields by passing None.
+    client.update_attester_info(&attester, &None, &None);
+
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: None,
+            region: None,
+        }),
+    );
+    // Attester is still active — clearing metadata does not remove them.
+    assert!(client.is_attester(&attester));
+}
