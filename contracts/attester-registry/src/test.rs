@@ -468,6 +468,37 @@ fn get_attester_status_for_removed_attester_is_none() {
     assert_eq!(client.get_attester_status(&attester), None);
 }
 
+#[test]
+fn lowering_max_attesters_below_current_count_does_not_evict() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // Add 3 attesters with no cap restriction.
+    let attester1 = Address::generate(&env);
+    let attester2 = Address::generate(&env);
+    let attester3 = Address::generate(&env);
+    client.add_attester(&attester1);
+    client.add_attester(&attester2);
+    client.add_attester(&attester3);
+    assert_eq!(client.get_attester_count(), 3);
+
+    // Lower the cap to 1 — well below the current count of 3.
+    client.set_max_attesters(&1);
+    assert_eq!(client.get_max_attesters(), 1);
+
+    // All previously-added attesters must still be active — no eviction.
+    assert!(client.is_attester(&attester1));
+    assert!(client.is_attester(&attester2));
+    assert!(client.is_attester(&attester3));
+    assert_eq!(client.get_attester_count(), 3);
+
+    // Adding a new attester must fail with AllowlistFull because count >= cap.
+    let new_attester = Address::generate(&env);
+    let result = client.try_add_attester(&new_attester);
+    assert_eq!(result, Err(Ok(Error::AllowlistFull)));
+    assert!(!client.is_attester(&new_attester));
+}
+
 /// Calling `suspend_attester` on an address that was never allowlisted is a
 /// no-op from an access-control perspective: the `Suspended` key is written
 /// for that address and `AttesterSuspended` is emitted, but `is_attester`
