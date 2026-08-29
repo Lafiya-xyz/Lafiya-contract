@@ -426,6 +426,17 @@ impl AttesterRegistry {
     }
 
     /// Suspend an allowlisted attester. Requires the admin's authorization.
+    ///
+    /// **Note:** this function does **not** check whether `attester` was ever
+    /// added via `add_attester`. If called on an address that is not in the
+    /// allowlist, it silently sets the `Suspended` storage key and emits
+    /// `AttesterSuspended` for that address — a no-op from an access-control
+    /// perspective because `is_attester` also checks for an `Attester` storage
+    /// entry, so the phantom suspension has no effect on allowlist queries.
+    /// This diverges from `update_attester_info`, which returns
+    /// `Error::AttesterNotFound` for unknown addresses. The inconsistency is
+    /// known and documented here rather than silently changed; a follow-up
+    /// issue should decide whether to align both functions.
     pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;

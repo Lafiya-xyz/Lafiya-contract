@@ -468,6 +468,43 @@ fn get_attester_status_for_removed_attester_is_none() {
     assert_eq!(client.get_attester_status(&attester), None);
 }
 
+/// Calling `suspend_attester` on an address that was never allowlisted is a
+/// no-op from an access-control perspective: the `Suspended` key is written
+/// for that address and `AttesterSuspended` is emitted, but `is_attester`
+/// still returns `false` because there is no matching `Attester` storage
+/// entry. This inconsistency with `update_attester_info` (which returns
+/// `Error::AttesterNotFound`) is documented on the function and tracked as a
+/// known issue.
+#[test]
+fn suspend_unknown_attester_behavior() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let never_added = Address::generate(&env);
+
+    // Precondition: the address has never been allowlisted.
+    assert!(!client.is_attester(&never_added));
+
+    // suspend_attester succeeds (no error) even though the address was never added.
+    client.suspend_attester(&never_added);
+
+    // The AttesterSuspended event was still emitted, confirming the call succeeded.
+    let expected_event = AttesterSuspended {
+        attester: never_added.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    // The phantom suspension has no effect on allowlist queries because
+    // is_attester also checks for the Attester storage entry.
+    assert!(!client.is_attester(&never_added));
+
+    // get_attester_status returns None because there is no Attester entry.
+    assert_eq!(client.get_attester_status(&never_added), None);
+}
+
 #[test]
 fn get_attester_status_reports_metadata_and_suspension_consistently() {
     let (env, client, admin) = setup();
