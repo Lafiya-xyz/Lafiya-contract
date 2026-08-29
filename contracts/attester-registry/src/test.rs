@@ -520,3 +520,89 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     );
     assert!(client.is_attester(&attester));
 }
+
+#[test]
+fn suspend_attester_without_admin_auth_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let attester = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    // Only mock an auth entry for `attester`, not `admin`, so the
+    // contract's `admin.require_auth()` has nothing to satisfy it.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attester,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "suspend_attester",
+            args: (attester.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_suspend_attester(&attester);
+    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn reinstate_attester_without_admin_auth_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let attester = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    // Only mock an auth entry for `attester`, not `admin`, so the
+    // contract's `admin.require_auth()` has nothing to satisfy it.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attester,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "reinstate_attester",
+            args: (attester.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_reinstate_attester(&attester);
+    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn suspend_already_suspended_is_idempotent() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+
+    client.suspend_attester(&attester);
+    assert!(!client.is_attester(&attester));
+
+    // Suspending an already-suspended attester is a no-op that still succeeds.
+    let result = client.try_suspend_attester(&attester);
+    assert!(result.is_ok());
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn reinstate_non_suspended_is_idempotent() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    assert!(client.is_attester(&attester));
+
+    // Reinstating an attester that is not suspended is a no-op that still succeeds.
+    let result = client.try_reinstate_attester(&attester);
+    assert!(result.is_ok());
+    assert!(client.is_attester(&attester));
+}
