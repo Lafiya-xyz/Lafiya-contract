@@ -2,7 +2,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{BytesN, Env, Event, IntoVal};
+use soroban_sdk::{Env, Event, IntoVal};
 
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -337,4 +337,246 @@ fn re_adding_an_existing_attester_does_not_consume_cap() {
     client.add_attester(&attester);
     client.add_attester(&attester);
     assert_eq!(client.get_attester_count(), 1);
+}
+
+#[test]
+fn update_attester_info_on_unknown_attester_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let region = Symbol::new(&env, "west");
+    let result = client.try_update_attester_info(&attester, &Some(license_hash), &Some(region));
+    assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
+}
+
+#[test]
+fn update_attester_info_on_removed_attester_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    client.remove_attester(&attester);
+
+    let result = client.try_update_attester_info(&attester, &None, &None);
+    assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
+}
+
+#[test]
+fn update_attester_info_updates_metadata_and_emits_distinct_event() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    let initial_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let initial_region = Symbol::new(&env, "west");
+    client.add_attester_with_info(&attester, &Some(initial_hash), &Some(initial_region));
+
+    // Check event was emitted before any other call clears it.
+    let expected_added_event = AttesterAdded {
+        attester: attester.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_added_event.to_xdr(&env, &client.address)],
+    );
+
+    let updated_hash = BytesN::from_array(&env, &[2u8; 32]);
+    let updated_region = Symbol::new(&env, "east");
+    client.update_attester_info(
+        &attester,
+        &Some(updated_hash.clone()),
+        &Some(updated_region.clone()),
+    );
+
+    let expected_updated_event = AttesterInfoUpdated {
+        attester: attester.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_updated_event.to_xdr(&env, &client.address)],
+    );
+
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: Some(updated_hash),
+            region: Some(updated_region),
+        }),
+    );
+}
+
+#[test]
+fn update_attester_info_without_admin_auth_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let attester = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+    client.add_attester(&attester);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attester,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "update_attester_info",
+            args: (attester.clone(), None::<BytesN<32>>, None::<Symbol>).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_update_attester_info(&attester, &None, &None);
+    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
+}
+
+#[test]
+fn update_attester_info_while_paused_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    client.pause();
+
+    let result = client.try_update_attester_info(&attester, &None, &None);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn get_attester_status_for_unknown_attester_is_none() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    assert_eq!(client.get_attester_status(&attester), None);
+}
+
+#[test]
+fn get_attester_status_for_removed_attester_is_none() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    client.remove_attester(&attester);
+
+    assert_eq!(client.get_attester_status(&attester), None);
+}
+
+#[test]
+fn get_attester_status_reports_metadata_and_suspension_consistently() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[3u8; 32]);
+    let region = Symbol::new(&env, "north");
+    client.add_attester_with_info(
+        &attester,
+        &Some(license_hash.clone()),
+        &Some(region.clone()),
+    );
+
+    assert_eq!(
+        client.get_attester_status(&attester),
+        Some(AttesterStatus {
+            info: AttesterInfo {
+                license_hash: Some(license_hash.clone()),
+                region: Some(region.clone()),
+            },
+            suspended: false,
+        }),
+    );
+    assert!(client.is_attester(&attester));
+
+    client.suspend_attester(&attester);
+    assert_eq!(
+        client.get_attester_status(&attester),
+        Some(AttesterStatus {
+            info: AttesterInfo {
+                license_hash: Some(license_hash.clone()),
+                region: Some(region.clone()),
+            },
+            suspended: true,
+        }),
+    );
+    assert!(!client.is_attester(&attester));
+
+    client.reinstate_attester(&attester);
+    assert_eq!(
+        client.get_attester_status(&attester),
+        Some(AttesterStatus {
+            info: AttesterInfo {
+                license_hash: Some(license_hash),
+                region: Some(region),
+            },
+            suspended: false,
+        }),
+    );
+    assert!(client.is_attester(&attester));
+}
+
+// ─── Issue #158: set_max_attesters authorization test ───────────────
+
+#[test]
+fn set_max_attesters_requires_admin_auth() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    client.set_max_attesters(&10);
+
+    // Verify admin auth was required
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "set_max_attesters"),
+                    (10u32,).into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+}
+
+#[test]
+fn set_max_attesters_without_admin_auth_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    // Only authorize non_admin, not admin
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &non_admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "set_max_attesters",
+            args: (5u32,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_set_max_attesters(&5);
+    assert!(result.is_err());
+}
+
+#[test]
+fn set_max_attesters_before_initialize_fails() {
+    let (_env, client, _admin) = setup();
+
+    let result = client.try_set_max_attesters(&10);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
