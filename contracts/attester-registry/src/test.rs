@@ -520,3 +520,177 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     );
     assert!(client.is_attester(&attester));
 }
+
+#[test]
+fn batch_add_attesters_success() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester1 = Address::generate(&env);
+    let attester2 = Address::generate(&env);
+    let attester3 = Address::generate(&env);
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back(attester1.clone());
+    batch.push_back(attester2.clone());
+    batch.push_back(attester3.clone());
+
+    client.add_attesters(&batch);
+
+    assert!(client.is_attester(&attester1));
+    assert!(client.is_attester(&attester2));
+    assert!(client.is_attester(&attester3));
+    assert_eq!(client.get_attester_count(), 3);
+}
+
+#[test]
+fn batch_remove_attesters_success() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester1 = Address::generate(&env);
+    let attester2 = Address::generate(&env);
+    let attester3 = Address::generate(&env);
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back(attester1.clone());
+    batch.push_back(attester2.clone());
+    batch.push_back(attester3.clone());
+
+    client.add_attesters(&batch);
+    assert_eq!(client.get_attester_count(), 3);
+
+    let mut remove_batch = soroban_sdk::Vec::new(&env);
+    remove_batch.push_back(attester1.clone());
+    remove_batch.push_back(attester2.clone());
+
+    client.remove_attesters(&remove_batch);
+
+    assert!(!client.is_attester(&attester1));
+    assert!(!client.is_attester(&attester2));
+    assert!(client.is_attester(&attester3));
+    assert_eq!(client.get_attester_count(), 1);
+}
+
+#[test]
+fn batch_add_attesters_idempotent_for_duplicates() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    assert_eq!(client.get_attester_count(), 1);
+
+    // Adding the same attester again in a batch should be a no-op.
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back(attester.clone());
+
+    client.add_attesters(&batch);
+
+    assert!(client.is_attester(&attester));
+    // Count must not increase for the duplicate.
+    assert_eq!(client.get_attester_count(), 1);
+}
+
+#[test]
+fn batch_remove_attesters_idempotent_for_absent() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    // Removing an attester that was never added should be a no-op (no error).
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back(attester.clone());
+
+    client.remove_attesters(&batch);
+
+    assert!(!client.is_attester(&attester));
+    assert_eq!(client.get_attester_count(), 0);
+}
+
+#[test]
+fn batch_add_attesters_exceeding_limit_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // BATCH_LIMIT + 1 addresses — must be rejected.
+    let mut batch = soroban_sdk::Vec::new(&env);
+    for _ in 0..=BATCH_LIMIT {
+        batch.push_back(Address::generate(&env));
+    }
+
+    let result = client.try_add_attesters(&batch);
+    assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
+}
+
+#[test]
+fn batch_remove_attesters_exceeding_limit_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    for _ in 0..=BATCH_LIMIT {
+        batch.push_back(Address::generate(&env));
+    }
+
+    let result = client.try_remove_attesters(&batch);
+    assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
+}
+
+#[test]
+fn batch_add_attesters_without_admin_auth_fails() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let non_admin = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    // Now mock only the non-admin's auth — the call should be rejected.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &non_admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "add_attesters",
+            args: (soroban_sdk::Vec::<Address>::new(&env),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back(Address::generate(&env));
+
+    let result = client.try_add_attesters(&batch);
+    assert!(result.is_err());
+}
+
+#[test]
+fn batch_add_attesters_while_paused_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+    client.pause();
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back(Address::generate(&env));
+
+    let result = client.try_add_attesters(&batch);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn batch_remove_attesters_while_paused_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    client.pause();
+
+    let mut batch = soroban_sdk::Vec::new(&env);
+    batch.push_back(attester);
+
+    let result = client.try_remove_attesters(&batch);
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}

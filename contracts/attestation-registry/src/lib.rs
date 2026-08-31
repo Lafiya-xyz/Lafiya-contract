@@ -345,6 +345,14 @@ impl AttestationRegistry {
             .persistent()
             .set(&DataKey::AttestationCount(record_hash.clone()), &new_count);
 
+        // Extend TTL on the specific attestation entry just written, so it is
+        // not subject to state-archival independently of the instance storage.
+        env.storage().persistent().extend_ttl(
+            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);

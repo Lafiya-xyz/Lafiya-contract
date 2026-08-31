@@ -9,6 +9,34 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `attester-registry`: `add_attesters(Vec<Address>)` and
+  `remove_attesters(Vec<Address>)` — admin-gated batch operations re-landing the
+  feature from commit `5a93edd` that was silently dropped in the PR #94 merge
+  (PROC-01 / issue #103). Both functions enforce `BATCH_LIMIT = 40` to stay
+  within Soroban's per-transaction write-entry budget, skip already-present
+  (add) or already-absent (remove) addresses idempotently, and emit one
+  `AttesterAdded` / `AttesterRemoved` event per address actually changed.
+  `Error::BatchTooLarge` (code `8`) is added and documented in
+  `docs/error-codes.md`.
+- `docs/adr/0006-attestation-revocation-semantics.md`: Decision section filled
+  in and status moved to Accepted. Explicit choice: attestations are immutable
+  historical records; responders independently check current attester status via
+  `is_attester`; `revoke_attestation` is available for surgical per-record
+  admin removal (ARCH-02 / issue #105).
+
+### Fixed
+
+- `attester-registry`: added missing `extend_ttl` calls to all state-mutating
+  functions (`initialize`, `propose_admin`, `accept_admin`, `pause`, `unpause`,
+  `remove_attester`, `set_max_attesters`, `suspend_attester`,
+  `reinstate_attester`, `upgrade`, `migrate`) so that instance storage TTL is
+  bumped on every write path, not only on `add_attester` /
+  `add_attester_with_info` / `update_attester_info` (ARCH-01 / issue #104).
+- `attestation-registry`: `attest()` now also extends the TTL of the specific
+  `Attestation(record_hash, sequence)` persistent entry it writes, preventing
+  archival of individual attestation records independently of instance storage
+  (ARCH-01 / issue #104).
+
 - ADR-0009 and a prototype release manifest: `scripts/generate_release_manifest.py`
   binds contract wasm hashes, storage schema versions, generated bindings, event
   schemas, and per-network deployment state into one JSON document
