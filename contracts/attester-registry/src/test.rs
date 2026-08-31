@@ -694,3 +694,54 @@ fn batch_remove_attesters_while_paused_fails() {
     let result = client.try_remove_attesters(&batch);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
+
+#[test]
+fn get_attester_count_stays_accurate_through_mixed_operations() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let a1 = Address::generate(&env);
+    let a2 = Address::generate(&env);
+    let a3 = Address::generate(&env);
+    let a4 = Address::generate(&env);
+    let a5 = Address::generate(&env);
+
+    client.add_attester(&a1);
+    assert_eq!(client.get_attester_count(), 1);
+
+    client.add_attester(&a2);
+    assert_eq!(client.get_attester_count(), 2);
+
+    client.add_attester(&a3);
+    assert_eq!(client.get_attester_count(), 3);
+
+    client.remove_attester(&a2);
+    assert_eq!(client.get_attester_count(), 2);
+
+    client.add_attester(&a4);
+    assert_eq!(client.get_attester_count(), 3);
+
+    client.add_attester(&a5);
+    assert_eq!(client.get_attester_count(), 4);
+
+    client.remove_attester(&a3);
+    assert_eq!(client.get_attester_count(), 3);
+}
+
+#[test]
+fn get_attester_info_returns_empty_metadata_for_plain_add() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+
+    let info = client.get_attester_info(&attester);
+    assert_eq!(
+        info,
+        Some(AttesterInfo {
+            license_hash: None,
+            region: None,
+        })
+    );
+}
