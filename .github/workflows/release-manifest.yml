@@ -1,9 +1,9 @@
 name: Release Manifest (prototype)
 
-# Prototype from the [Spike] issue #135 / ADR-0009: generates and validates a
+# Prototype from the [Spike] issue #135 / ADR-0010: generates and validates a
 # release manifest binding contract wasm, bindings, events, and deployment
 # state into one verifiable record. Not yet a required check — see
-# docs/adr/0009-release-manifest-and-compatibility.md "Follow-up" before
+# docs/adr/0010-release-manifest-and-compatibility.md "Follow-up" before
 # wiring this into the release process for real.
 
 on:

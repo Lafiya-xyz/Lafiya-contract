@@ -1,6 +1,6 @@
 //! Reference prototype for RPC provider failover, retry classification, and
 //! transaction-recovery polling produced for the RPC failover spike (see
-//! `docs/adr/0009-rpc-provider-failover-and-transaction-recovery.md`).
+//! `docs/adr/0011-rpc-provider-failover-and-transaction-recovery.md`).
 //!
 //! # Problem this models
 //!

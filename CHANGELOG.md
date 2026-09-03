@@ -9,13 +9,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- ADR-0009 and a prototype release manifest: `scripts/generate_release_manifest.py`
+- ADR-0010 and a prototype release manifest: `scripts/generate_release_manifest.py`
   binds contract wasm hashes, storage schema versions, generated bindings, event
   schemas, and per-network deployment state into one JSON document
   (`docs/release-manifest/schema.json`), with `scripts/validate_release_manifest.py`
   and `scripts/check_manifest_compatibility.py` to validate it and let downstream
   repositories check compatibility before pinning a release. See
-  `docs/adr/0009-release-manifest-and-compatibility.md`.
+  `docs/adr/0010-release-manifest-and-compatibility.md`.
 - GitHub issue templates: bug report, feature request, and a security
   report template that directs reporters to `SECURITY.md` instead of
   accepting inline disclosures.
