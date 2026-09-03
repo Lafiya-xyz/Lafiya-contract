@@ -9,11 +9,25 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
+  shell-lint:
+    name: Shell lint (smoke-test.sh)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Syntax check (bash -n)
+        run: |
+          bash -n scripts/smoke-test.sh
+          bash -n scripts/smoke-test.test.sh
+      - name: ShellCheck
+        run: shellcheck scripts/smoke-test.sh scripts/smoke-test.test.sh
+      - name: Run smoke-test.sh regression test
+        run: bash scripts/smoke-test.test.sh
+
   fmt:
     name: Format
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -23,7 +37,7 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
@@ -34,21 +48,26 @@ jobs:
     name: Test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      - run: cargo test --workspace --all-features --locked
 
   build-wasm:
     name: Build (wasm32v1-none)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
         with:
           targets: wasm32v1-none
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --workspace --release --locked --target wasm32v1-none
+      # Only the Soroban contract crates target wasm32v1-none; the other
+      # workspace members (lafiya-cli, lafiya-config, lafiya-commitment) are
+      # std binaries/libs that can't build for this no_std-only target.
+      - name: Build contract crates
+        run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
       - name: Check README contract tables
         run: python .github/scripts/check_readme_contracts.py
 
@@ -57,7 +76,7 @@ jobs:
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked fuzz_test -- --nocapture

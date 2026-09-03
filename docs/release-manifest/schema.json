@@ -1,0 +1,162 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/Lafiya-xyz/Lafiya-contract/blob/main/docs/release-manifest/schema.json",
+  "title": "Lafiya release manifest",
+  "description": "Binds a Lafiya contract release, its generated bindings, its event schemas, and its per-network deployment state into one verifiable, versioned record. See docs/adr/0010-release-manifest-and-compatibility.md.",
+  "type": "object",
+  "required": ["manifest_version", "release", "contracts", "bindings", "events", "deployments", "compatibility"],
+  "additionalProperties": false,
+  "properties": {
+    "manifest_version": {
+      "description": "Version of this manifest FORMAT (not of the release it describes). Bump only when the schema below changes.",
+      "type": "integer",
+      "const": 1
+    },
+    "release": {
+      "type": "object",
+      "required": ["workspace_version", "git_commit", "git_tag", "generated_at"],
+      "additionalProperties": false,
+      "properties": {
+        "workspace_version": {
+          "description": "[workspace.package].version from the root Cargo.toml at git_commit.",
+          "type": "string",
+          "pattern": "^\\d+\\.\\d+\\.\\d+(-[0-9A-Za-z.-]+)?$"
+        },
+        "git_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "git_tag": {
+          "description": "Annotated release tag pointing at git_commit, e.g. v0.1.0. Null for an untagged/dev build.",
+          "type": ["string", "null"]
+        },
+        "generated_at": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "contracts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["name", "crate_path", "package_version", "storage_schema_version", "wasm"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string" },
+          "crate_path": { "type": "string" },
+          "package_version": { "type": "string" },
+          "storage_schema_version": {
+            "description": "The contract's SCHEMA_VERSION const, i.e. what get_schema_version() returns after initialize/migrate. Null if the contract has no versioned storage yet.",
+            "type": ["integer", "null"],
+            "minimum": 0
+          },
+          "wasm": {
+            "type": "object",
+            "required": ["target", "optimize", "sha256", "size_bytes"],
+            "additionalProperties": false,
+            "properties": {
+              "target": { "type": "string", "const": "wasm32v1-none" },
+              "optimize": {
+                "description": "Whether the hashed artifact was built with stellar-cli wasm optimization. Must be false for the artifact that governs upgrade-hash verification (see docs/runbooks/contract-upgrade.md #3).",
+                "type": "boolean"
+              },
+              "sha256": {
+                "description": "SHA-256 of the built .wasm file. Null when the manifest was generated without a fresh build (see release.generated_at and CI provenance instead).",
+                "type": ["string", "null"],
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "size_bytes": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "bindings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["contract", "language", "package_name", "package_version", "path", "generated_from_wasm_sha256"],
+        "additionalProperties": false,
+        "properties": {
+          "contract": { "type": "string" },
+          "language": { "type": "string", "enum": ["typescript"] },
+          "package_name": { "type": "string" },
+          "package_version": { "type": "string" },
+          "path": { "type": "string" },
+          "generated_from_wasm_sha256": {
+            "description": "sha256 of the .wasm this binding was generated from (`stellar contract bindings typescript --wasm ...`). Must equal contracts[].wasm.sha256 for the matching contract, or the binding is stale relative to this manifest.",
+            "type": ["string", "null"],
+            "pattern": "^[0-9a-f]{64}$"
+          }
+        }
+      }
+    },
+    "events": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["contract", "name", "topic_fields", "data_fields", "compatibility"],
+        "additionalProperties": false,
+        "properties": {
+          "contract": { "type": "string" },
+          "name": { "type": "string" },
+          "topic_fields": { "type": "array", "items": { "type": "string" } },
+          "data_fields": { "type": "array", "items": { "type": "string" } },
+          "compatibility": {
+            "description": "Result of diffing this event's field set against the previous manifest (see --previous). 'unclassified' when no previous manifest was supplied.",
+            "type": "string",
+            "enum": ["new", "compatible", "breaking", "removed", "unclassified"]
+          }
+        }
+      }
+    },
+    "deployments": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["network", "contract", "contract_id", "wasm_sha256", "storage_schema_version", "status", "source"],
+        "additionalProperties": false,
+        "properties": {
+          "network": { "type": "string", "enum": ["local", "standalone", "testnet", "futurenet", "mainnet"] },
+          "contract": { "type": "string" },
+          "contract_id": { "type": ["string", "null"] },
+          "wasm_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+          "storage_schema_version": { "type": ["integer", "null"], "minimum": 0 },
+          "deployed_at": { "type": ["string", "null"], "format": "date-time" },
+          "upgrade_tx": { "type": ["string", "null"] },
+          "previous_wasm_sha256": { "type": ["string", "null"], "pattern": "^[0-9a-f]{64}$" },
+          "status": { "type": "string", "enum": ["not_deployed", "deployed", "superseded"] },
+          "source": {
+            "description": "Where this record came from, so a reader can judge how much to trust it (e.g. config/networks.toml current-pointer only, vs. an append-only deployment ledger entry).",
+            "type": "string"
+          }
+        }
+      }
+    },
+    "compatibility": {
+      "type": "object",
+      "required": ["policy_ref", "consumers"],
+      "additionalProperties": false,
+      "properties": {
+        "policy_ref": {
+          "description": "Pointer to the compatibility policy this manifest was classified against.",
+          "type": "string"
+        },
+        "consumers": {
+          "description": "Known downstream repositories and the compatibility requirement they've declared. See docs/release-manifest/examples/*.requirements.json.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["repo", "requirements_ref"],
+            "additionalProperties": false,
+            "properties": {
+              "repo": { "type": "string" },
+              "requirements_ref": { "type": "string" }
+            }
+          }
+        }
+      }
+    }
+  }
+}

@@ -49,6 +49,11 @@ RUN_MIGRATE=0
 EXPECTED_SCHEMA_VERSION="${EXPECTED_SCHEMA_VERSION:-}"
 MAX_WASM_BYTES="${MAX_WASM_BYTES:-65536}"
 
+UPLOAD_LOG=""
+VERSION_LOG=""
+TMP_WASM=""
+trap 'rm -f "$UPLOAD_LOG" "$VERSION_LOG" "$TMP_WASM"' EXIT
+
 die() { echo "ERROR: $*" >&2; exit 1; }
 say() { echo "==> $*"; }
 
@@ -176,10 +181,9 @@ say "step 4/7: uploading wasm (--optimize=false so bytes stay identical to the r
 UPLOAD_LOG="$(mktemp -t lafiya-upload-log-XXXXXX)"
 if ! upload_out="$(stellar contract upload --wasm "$WASM_PATH" --optimize=false \
         --source-account "$SOURCE_ACCOUNT" --network "$NETWORK" 2>"$UPLOAD_LOG")"; then
-    cat "$UPLOAD_LOG" >&2; rm -f "$UPLOAD_LOG"
+    cat "$UPLOAD_LOG" >&2
     die "wasm upload failed"
 fi
-rm -f "$UPLOAD_LOG"
 UPLOADED_HASH="$(printf '%s' "$upload_out" | grep -Eom1 '[0-9a-f]{64}' || true)"
 [ -n "$UPLOADED_HASH" ] || die "could not parse wasm hash from upload output: $upload_out"
 say "          network-reported hash:    $UPLOADED_HASH"
@@ -209,10 +213,9 @@ VERSION_LOG="$(mktemp -t lafiya-version-log-XXXXXX)"
 if ! version_out="$(stellar contract invoke --id "$CONTRACT_ID" \
         --source-account "$SOURCE_ACCOUNT" --network "$NETWORK" --send no \
         -- get_schema_version 2>"$VERSION_LOG")"; then
-    cat "$VERSION_LOG" >&2; rm -f "$VERSION_LOG"
+    cat "$VERSION_LOG" >&2
     die "could not read get_schema_version post-upgrade"
 fi
-rm -f "$VERSION_LOG"
 POST_VERSION="$(echo "$version_out" | grep -Eo '[0-9]+' | tail -1 || true)"
 [ -n "$POST_VERSION" ] || die "could not parse schema version post-upgrade: $version_out"
 say "          get_schema_version: ${PRE_VERSION:-LEGACY/unknown} -> $POST_VERSION"
@@ -223,7 +226,6 @@ if [ -n "$EXPECTED_SCHEMA_VERSION" ]; then
 fi
 
 TMP_WASM="$(mktemp -t lafiya-post-upgrade-XXXXXX.wasm)"
-trap 'rm -f "$TMP_WASM"' EXIT
 stellar contract fetch --id "$CONTRACT_ID" --network "$NETWORK" --out-file "$TMP_WASM" >/dev/null 2>&1 \
     || die "could not fetch on-chain wasm for verification"
 ONCHAIN_HASH="$(SHA256 "$TMP_WASM")"

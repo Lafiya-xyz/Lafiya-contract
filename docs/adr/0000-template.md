@@ -4,6 +4,9 @@
 - **Date:** YYYY-MM-DD
 - **Deciders:** Maintainers and relevant reviewers
 
+> **Terminology:** shared terms (*attester*, *record commitment*, *schema version*, …) are
+> defined canonically in the [glossary](../glossary.md). Link there rather than redefining them.
+
 ## Context
 
 Describe the problem, constraints, security or privacy considerations, and why a durable

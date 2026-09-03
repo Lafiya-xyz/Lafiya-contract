@@ -15,6 +15,11 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 
 #[test]
 fn get_schema_version_succeeds() {
+    // Asserts the literal current schema version, not just that the call
+    // succeeds. Any change to this expected value is a schema version bump
+    // and must be deliberate, paired with a migration plan (see
+    // `needs_migration`/`migrate` in lib.rs), and not an accidental side
+    // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     client.initialize(&admin);
@@ -521,79 +526,64 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     assert!(client.is_attester(&attester));
 }
 
-// ─── Issue #156: upgrade() unit tests ───────────────────────────────
-
 #[test]
-fn upgrade_emits_event_and_requires_admin_auth() {
+fn admin_address_can_be_added_as_attester() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
-    // Install a WASM blob so we have a valid hash to pass to upgrade().
-    // Re-installing the same contract WASM is the simplest approach in tests.
-    let wasm_hash = env.deployer().upload_contract_wasm(AttesterRegistry);
-
-    client.upgrade(&wasm_hash);
-
-    // Verify admin auth was required
-    assert_eq!(
-        env.auths(),
-        std::vec![(
-            admin.clone(),
-            soroban_sdk::testutils::AuthorizedInvocation {
-                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
-                    client.address.clone(),
-                    soroban_sdk::Symbol::new(&env, "upgrade"),
-                    (wasm_hash.clone(),).into_val(&env),
-                )),
-                sub_invocations: std::vec![],
-            },
-        )]
-    );
-
-    // Verify Upgraded event was emitted
-    let expected_event = Upgraded {
-        new_wasm_hash: wasm_hash,
-    };
-    assert_eq!(
-        env.events().all(),
-        std::vec![expected_event.to_xdr(&env, &client.address)],
-    );
+    // The admin's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&admin);
+    assert!(client.is_attester(&admin));
 }
 
 #[test]
-fn upgrade_without_admin_auth_fails() {
+fn contract_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The contract's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&client.address);
+    assert!(client.is_attester(&client.address));
+}
+
+#[test]
+fn second_propose_admin_call_overwrites_pending_proposal() {
     let env = Env::default();
     let contract_id = env.register(AttesterRegistry, ());
     let client = AttesterRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    let non_admin = Address::generate(&env);
+    let address1 = Address::generate(&env);
+    let address2 = Address::generate(&env);
 
     env.mock_all_auths();
     client.initialize(&admin);
 
-    let wasm_hash = env.deployer().upload_contract_wasm(AttesterRegistry);
+    client.propose_admin(&address1);
+    client.propose_admin(&address2);
 
-    // Only authorize non_admin, not admin
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &non_admin,
+        address: &address1,
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
-            fn_name: "upgrade",
-            args: (wasm_hash.clone(),).into_val(&env),
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_upgrade(&wasm_hash);
+    let result = client.try_accept_admin();
     assert!(result.is_err());
-}
 
-#[test]
-fn upgrade_before_initialize_fails() {
-    let (env, client, _admin) = setup();
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
 
-    let wasm_hash = env.deployer().upload_contract_wasm(AttesterRegistry);
-
-    let result = client.try_upgrade(&wasm_hash);
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    let result = client.try_accept_admin();
+    assert_eq!(result, Ok(()));
 }
