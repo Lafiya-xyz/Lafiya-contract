@@ -91,7 +91,7 @@ pub enum Error {
     NoPendingTransfer = 3,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 4,
-    /// The allowlist is at its configured maximum size.
+    /// The allowlist is at its configured maximum size. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`.
     AllowlistFull = 5,
     /// A storage migration was invoked but the contract is already current.
     MigrationNotRequired = 6,
@@ -210,6 +210,7 @@ impl AttesterRegistry {
     }
 
     /// Propose a new admin address. The caller must authorize as the current admin.
+    /// Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let current_admin = Self::admin(&env)?;
         current_admin.require_auth();
