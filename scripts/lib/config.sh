@@ -25,6 +25,19 @@ _LAFIYA_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _LAFIYA_REPO_ROOT="$(cd "$_LAFIYA_LIB_DIR/../.." && pwd)"
 _LAFIYA_DEFAULT_CONFIG="$_LAFIYA_REPO_ROOT/config/networks.toml"
 
+# Fail fast with a clear message if python3 or a TOML parser isn't available,
+# instead of letting callers hit an opaque "command not found" or traceback.
+if ! command -v python3 >/dev/null 2>&1; then
+    echo "ERROR: python3 is required to parse config/networks.toml but was not found on PATH." >&2
+    echo "Install Python 3 (e.g. 'apt install python3' or https://www.python.org/downloads/) and try again." >&2
+    exit 1
+fi
+if ! python3 -c 'import tomllib' >/dev/null 2>&1 && ! python3 -c 'import tomli' >/dev/null 2>&1; then
+    echo "ERROR: No TOML parser found for $(python3 --version 2>&1)." >&2
+    echo "Python 3.11+ includes 'tomllib' built in. For older versions, install it with: pip install tomli" >&2
+    exit 1
+fi
+
 # Internal: use python3 to parse TOML robustly
 _lafiya_parse_toml() {
     local network="$1"
