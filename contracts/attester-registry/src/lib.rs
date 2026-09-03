@@ -82,7 +82,11 @@ pub enum Error {
     NotInitialized = 1,
     /// `initialize` was called more than once.
     AlreadyInitialized = 2,
-    /// `accept_admin` was called with no pending admin transfer.
+    /// `accept_admin` was called with no pending admin transfer. Admin transfer is a
+    /// two-step flow: the current admin must first call `propose_admin` to nominate a
+    /// successor, then the nominated address must call `accept_admin` to complete the
+    /// transfer. This error is returned when `accept_admin` is called before a
+    /// corresponding `propose_admin` call has set a pending admin.
     NoPendingTransfer = 3,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 4,
