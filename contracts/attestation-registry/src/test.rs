@@ -101,10 +101,17 @@ fn re_attest_overwrites_previous_attestation() {
     attester_registry.add_attester(&attester_b);
 
     let record_hash = BytesN::from_array(&env, &[3u8; 32]);
-    client.attest(&attester_a, &record_hash);
+    let first = client.attest(&attester_a, &record_hash);
     let second = client.attest(&attester_b, &record_hash);
 
-    assert_eq!(client.get_attestation(&record_hash), Some(second));
+    assert_eq!(client.get_attestation(&record_hash), Some(second.clone()));
+
+    // The overwritten attestation must not be dropped: it should remain in
+    // the history as the older entry, with the new one appended after it.
+    let history = client.get_attestation_history(&record_hash);
+    assert_eq!(history.len(), 2);
+    assert_eq!(history.get(0), Some(first));
+    assert_eq!(history.get(1), Some(second));
 }
 
 #[test]
@@ -333,6 +340,60 @@ fn successful_admin_transfer_flow() {
     assert!(result.is_err());
 }
 
+#[test]
+fn initialize_rejects_non_contract_address() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    // A non-contract address (just a generated address, never deployed)
+    let non_contract = Address::generate(&env);
+
+    let result = client.try_initialize(&admin, &non_contract);
+    // Same `Error::InvalidRegistryWiring` variant as
+    // `initialize_rejects_unrelated_contract_without_is_attester` below —
+    // the contract does not distinguish "not a contract at all" from "a
+    // contract, but missing `is_attester`"; both are one generic wiring error.
+    assert_eq!(result, Err(Ok(Error::InvalidRegistryWiring)));
+}
+
+#[test]
+fn initialize_rejects_unrelated_contract_without_is_attester() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    // Use the attestation-registry contract itself as the "attester registry"
+    // address — it's a valid deployed contract but does NOT implement
+    // the is_attester interface, so the sanity check should reject it.
+    let result = client.try_initialize(&admin, &contract_id);
+    // Same `Error::InvalidRegistryWiring` variant as
+    // `initialize_rejects_non_contract_address` above — see that test's
+    // comment for why the two rejection paths are not distinguished.
+    assert_eq!(result, Err(Ok(Error::InvalidRegistryWiring)));
+}
+
+#[test]
+fn initialize_accepts_real_attester_registry() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+
+    let attester_registry_id = env.register(attester_registry::AttesterRegistry, ());
+    let attester_registry_client =
+        attester_registry::AttesterRegistryClient::new(&env, &attester_registry_id);
+    attester_registry_client.initialize(&admin);
+
+    let result = client.try_initialize(&admin, &attester_registry_id);
+    assert_eq!(result, Ok(Ok(())));
+    assert_eq!(client.get_attester_registry(), attester_registry_id);
+}
+
 fn parse_error_variants(content: &str) -> std::vec::Vec<std::string::String> {
     let mut variants = std::vec::Vec::new();
     if let Some(start_idx) = content.find("pub enum Error") {
@@ -535,7 +596,15 @@ fn test_initialize_auth_matrix() {
         let admin = Address::generate(&env);
         let wrong_user = Address::generate(&env);
         let attester = Address::generate(&env);
-        let attester_registry = Address::generate(&env);
+
+        // Must be a real attester-registry contract, not a bare generated
+        // address: `initialize` does a best-effort `is_attester` interface
+        // check on it before the admin auth even matters for the happy path.
+        let attester_registry = env.register(attester_registry::AttesterRegistry, ());
+        let attester_registry_client =
+            attester_registry::AttesterRegistryClient::new(&env, &attester_registry);
+        env.mock_all_auths();
+        attester_registry_client.initialize(&admin);
 
         let auth_address = match case.auth_role {
             "admin" => Some(admin.clone()),
@@ -700,4 +769,158 @@ fn test_attest_auth_matrix() {
             ),
         }
     }
+}
+
+#[test]
+fn set_attester_registry_by_admin_succeeds() {
+    let (env, client, attester_registry, admin) = setup();
+
+    let new_registry = Address::generate(&env);
+    assert_eq!(client.get_attester_registry(), attester_registry.address);
+
+    client.set_attester_registry(&new_registry);
+
+    // Check event was emitted before any other call clears it
+    let expected_event = AttesterRegistryRepointed {
+        previous: attester_registry.address.clone(),
+        new: new_registry.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    assert_eq!(
+        env.auths(),
+        std::vec![(
+            admin.clone(),
+            soroban_sdk::testutils::AuthorizedInvocation {
+                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
+                    client.address.clone(),
+                    soroban_sdk::Symbol::new(&env, "set_attester_registry"),
+                    (new_registry.clone(),).into_val(&env),
+                )),
+                sub_invocations: std::vec![],
+            },
+        )]
+    );
+
+    assert_eq!(client.get_attester_registry(), new_registry);
+}
+
+#[test]
+fn set_attester_registry_by_non_admin_fails() {
+    let (env, client, attester_registry, _admin) = setup();
+    let malicious = Address::generate(&env);
+    let new_registry = Address::generate(&env);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "set_attester_registry",
+            args: (new_registry.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_set_attester_registry(&new_registry);
+    assert!(result.is_err());
+    // Registry should be unchanged
+    assert_eq!(client.get_attester_registry(), attester_registry.address);
+}
+
+#[test]
+fn set_attester_registry_before_initialize_fails() {
+    let env = Env::default();
+    env.mock_all_auths();
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let new_registry = Address::generate(&env);
+
+    let result = client.try_set_attester_registry(&new_registry);
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn revoke_attestation_happy_path() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[11u8; 32]);
+    client.attest(&attester, &record_hash);
+    assert_eq!(client.get_attestation(&record_hash).is_some(), true);
+
+    client.revoke_attestation(&record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn revoke_attestation_without_admin_auth_fails() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let malicious = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[12u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "revoke_attestation",
+            args: (record_hash.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_revoke_attestation(&record_hash);
+    assert!(result.is_err());
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn revoke_attestation_for_unknown_hash_returns_not_initialized() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let record_hash = BytesN::from_array(&env, &[13u8; 32]);
+
+    let result = client.try_revoke_attestation(&record_hash);
+    // NOTE: This is a bug in the contract. revoke_attestation returns
+    // Error::NotInitialized when called with an unknown hash (line 371 in lib.rs),
+    // but it should return Error::AttestationNotFound. This test documents
+    // the actual current behavior, not the intended behavior.
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn revoke_attestation_clears_get_attestation_history() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester_a = Address::generate(&env);
+    let attester_b = Address::generate(&env);
+    let attester_c = Address::generate(&env);
+    attester_registry.add_attester(&attester_a);
+    attester_registry.add_attester(&attester_b);
+    attester_registry.add_attester(&attester_c);
+
+    let record_hash = BytesN::from_array(&env, &[14u8; 32]);
+    let first = client.attest(&attester_a, &record_hash);
+    let second = client.attest(&attester_b, &record_hash);
+    let third = client.attest(&attester_c, &record_hash);
+
+    let history_before = client.get_attestation_history(&record_hash);
+    assert_eq!(history_before.len(), 3);
+    assert_eq!(history_before.get(0), Some(first));
+    assert_eq!(history_before.get(1), Some(second));
+    assert_eq!(history_before.get(2), Some(third));
+
+    assert_eq!(client.get_attestation(&record_hash), Some(third));
+
+    client.revoke_attestation(&record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), None);
+    let history_after = client.get_attestation_history(&record_hash);
+    assert_eq!(history_after.len(), 0);
 }

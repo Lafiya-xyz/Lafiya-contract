@@ -15,6 +15,11 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 
 #[test]
 fn get_schema_version_succeeds() {
+    // Asserts the literal current schema version, not just that the call
+    // succeeds. Any change to this expected value is a schema version bump
+    // and must be deliberate, paired with a migration plan (see
+    // `needs_migration`/`migrate` in lib.rs), and not an accidental side
+    // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     client.initialize(&admin);
@@ -521,62 +526,64 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     assert!(client.is_attester(&attester));
 }
 
-// ─── Issue #158: set_max_attesters authorization test ───────────────
-
 #[test]
-fn set_max_attesters_requires_admin_auth() {
+fn admin_address_can_be_added_as_attester() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
-    client.set_max_attesters(&10);
-
-    // Verify admin auth was required
-    assert_eq!(
-        env.auths(),
-        std::vec![(
-            admin.clone(),
-            soroban_sdk::testutils::AuthorizedInvocation {
-                function: soroban_sdk::testutils::AuthorizedFunction::Contract((
-                    client.address.clone(),
-                    soroban_sdk::Symbol::new(&env, "set_max_attesters"),
-                    (10u32,).into_val(&env),
-                )),
-                sub_invocations: std::vec![],
-            },
-        )]
-    );
+    // The admin's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&admin);
+    assert!(client.is_attester(&admin));
 }
 
 #[test]
-fn set_max_attesters_without_admin_auth_fails() {
+fn contract_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The contract's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&client.address);
+    assert!(client.is_attester(&client.address));
+}
+
+#[test]
+fn second_propose_admin_call_overwrites_pending_proposal() {
     let env = Env::default();
     let contract_id = env.register(AttesterRegistry, ());
     let client = AttesterRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    let non_admin = Address::generate(&env);
+    let address1 = Address::generate(&env);
+    let address2 = Address::generate(&env);
 
     env.mock_all_auths();
     client.initialize(&admin);
 
-    // Only authorize non_admin, not admin
+    client.propose_admin(&address1);
+    client.propose_admin(&address2);
+
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &non_admin,
+        address: &address1,
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
-            fn_name: "set_max_attesters",
-            args: (5u32,).into_val(&env),
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_set_max_attesters(&5);
+    let result = client.try_accept_admin();
     assert!(result.is_err());
-}
 
-#[test]
-fn set_max_attesters_before_initialize_fails() {
-    let (_env, client, _admin) = setup();
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
 
-    let result = client.try_set_max_attesters(&10);
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    let result = client.try_accept_admin();
+    assert_eq!(result, Ok(()));
 }

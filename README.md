@@ -6,6 +6,7 @@
 [![Network](https://img.shields.io/badge/network-testnet-lightgrey)]()
 [![CI](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/ci.yml/badge.svg)](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+[![Docs](https://github.com/Lafiya-xyz/Lafiya-contract/actions/workflows/docs.yml/badge.svg)](https://Lafiya-xyz.github.io/Lafiya-contract/)
 
 Soroban smart contracts for Lafiya's on-chain trust layer — an attestation registry and attester allowlist that let a health worker's verification of an emergency health record be checked cryptographically, without the underlying health data ever touching the blockchain.
 
@@ -16,6 +17,10 @@ Soroban smart contracts for Lafiya's on-chain trust layer — an attestation reg
 > **Status:** Pre-alpha · Stellar **testnet** · not yet audited · not a medical device. See [Disclaimer](#disclaimer).
 
 ## Overview
+
+🔗 Documentation: https://Lafiya-xyz.github.io/Lafiya-contract/
+📖 Glossary: [docs/glossary.md](docs/glossary.md) — canonical definitions of core terms used across this repo (`attester`, `CHW`, `record hash`/`record commitment`, `schema version`, …)
+
 
 Lafiya is a free, patient-owned emergency health card: the handful of facts that change how you are treated in an emergency — blood group, genotype, allergies, current medications, chronic conditions — travel with you as a scannable QR code and can be **cryptographically verified** by a health worker so a first responder can trust them on the spot.
 
@@ -93,34 +98,52 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | Function | Description |
 | --- | --- |
 | `initialize(admin: Address)` | Sets the admin. Callable once. |
+| `get_admin() -> Address` | Returns the current admin address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
 | `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
+| `add_attester_with_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>)` | Allowlists `attester` with optional metadata. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
+| `update_attester_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>)` | Updates metadata for an already-allowlisted `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Fails with `Error::AttesterNotFound` if `attester` isn't currently allowlisted. Emits `AttesterInfoUpdated`, distinguishable from enrollment's `AttesterAdded`. |
 | `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
-| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted. Open to any caller, including other contracts. Callable while paused. |
+| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted (and not suspended). Open to any caller, including other contracts. Callable while paused. |
 | `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
+| `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns `attester`'s metadata together with its current suspension state in one call. `None` if `attester` isn't currently allowlisted (never added, or since removed). Callable while paused. |
+| `suspend_attester(attester: Address)` | Suspends an allowlisted attester without removing it. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterSuspended`. |
+| `reinstate_attester(attester: Address)` | Reinstates a suspended attester. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterReinstated`. |
+| `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Does not evict existing attesters if lowered below the current count. |
+| `get_max_attesters() -> u32` | The current soft cap on the number of allowlisted attesters. |
+| `get_attester_count() -> u32` | The current number of allowlisted attesters. |
 | `pause()` | Blocks `add_attester`, `add_attester_with_info`, `remove_attester`, `suspend_attester`, and `reinstate_attester` until unpaused. Requires admin auth. Emits `Paused`. |
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
+| `get_schema_version() -> u32` | Storage schema version recorded for the instance. Open to any caller. |
+| `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
+| `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
 
 ### `attestation-registry`
 
 | Function | Description |
 | --- | --- |
 | `initialize(admin: Address, attester_registry: Address)` | Sets the admin and the `attester-registry` contract to consult. Callable once. |
+| `get_admin() -> Address` | Returns the current admin address. |
+| `get_attester_registry() -> Address` | Returns the configured `attester-registry` contract address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, overwriting any prior attestation for that hash. Emits `AttestationRecorded`. |
+| `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for allowlist checks. Requires admin auth. Emits `AttesterRegistryRepointed`. |
+| `pause()` | Blocks `attest` until unpaused. Requires admin auth. Emits `Paused`. |
+| `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
+| `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
+| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
+| `revoke_attestation(record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires admin auth. Emits `AttestationRevoked`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
-| `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
-| `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
-| `get_schema_version() -> u32` | Storage schema version recorded for the instance (`0` = legacy pre-versioning or uninitialized). Open to any caller. |
+| `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |
 
 ### Contract upgrades
 
-Both contracts are upgradeable by their admin (`upgrade`/`migrate`/`get_schema_version`
+`attester-registry` is upgradeable by its admin (`upgrade`/`migrate`/`get_schema_version`
 above), with storage schema versioning (`SCHEMA_VERSION` starts at `1`) to make
-schema-changing upgrades explicit and verifiable. **Operators** must follow
+schema-changing upgrades explicit and verifiable. `attestation-registry` does not
+currently expose an `upgrade`/`migrate` path. **Operators** must follow
 [docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the
 pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
 reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
@@ -198,7 +221,10 @@ cd ../attestation-registry && npm install && npm run build
 The generated bindings are committed directly to this repository under the `bindings/` directory. `lafiya-web` (or any other consumer) can consume them via:
 - Direct git path dependency in `package.json` pointing to the repo or subdirectory.
 - A git submodule in the consuming project.
-- Alternatively, CI/CD can be configured to publish these directories as packages to the `@lafiya` npm organization.
+
+Publishing these directories as packages to the `@lafiya` npm organization is a planned, but
+not yet implemented, secondary option. See [`PUBLISHING.md`](PUBLISHING.md) for the full
+strategy and the follow-up work required before that's live.
 
 
 ## Tech Stack
@@ -259,7 +285,10 @@ Not yet deployed to testnet — deployment scripts and instructions land with th
 
 - **M0 — Public card (testnet).** One patient can create a profile and expose a working read-only emergency page via QR. *(`lafiya-web`)*
 - **M1 — Attestation.** Soroban registry lets an allowlisted attester verify a record; the card shows a verified indicator. **← this repo** — contracts implemented and unit-tested; testnet deployment and `lafiya-web` integration still open.
-- **M2 — Incentives.** USDC-on-Stellar payout to a CHW per verified registration.
+- **M2 — Incentives.** USDC-on-Stellar payout to a CHW per verified registration. Target
+  custody architecture (separate treasury from registry admin, bounded payout contract)
+  specified in [ADR-0009](docs/adr/0009-treasury-asset-custody-model.md); no payment
+  contract implemented yet.
 - **M3 — Pilot.** Small supervised field pilot; measure verified cards created and scan events.
 - **M4 — Mainnet + funding.** Launch on mainnet; open transparent funding pool.
 

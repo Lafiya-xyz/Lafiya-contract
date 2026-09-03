@@ -1,4 +1,9 @@
 repos:
+-   repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v4.6.0
+    hooks:
+    -   id: check-yaml
+        name: check YAML syntax (workflows, configs)
 -   repo: local
     hooks:
     -   id: cargo-fmt
@@ -12,4 +17,9 @@ repos:
         entry: cargo clippy --workspace --all-targets -- -D warnings
         language: system
         types: [rust]
+        pass_filenames: false
+    -   id: check-readme-contracts
+        name: check README contract tables
+        entry: python .github/scripts/check_readme_contracts.py
+        language: system
         pass_filenames: false
