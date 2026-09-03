@@ -351,6 +351,10 @@ fn initialize_rejects_non_contract_address() {
     let non_contract = Address::generate(&env);
 
     let result = client.try_initialize(&admin, &non_contract);
+    // Same `Error::InvalidRegistryWiring` variant as
+    // `initialize_rejects_unrelated_contract_without_is_attester` below —
+    // the contract does not distinguish "not a contract at all" from "a
+    // contract, but missing `is_attester`"; both are one generic wiring error.
     assert_eq!(result, Err(Ok(Error::InvalidRegistryWiring)));
 }
 
@@ -366,6 +370,9 @@ fn initialize_rejects_unrelated_contract_without_is_attester() {
     // address — it's a valid deployed contract but does NOT implement
     // the is_attester interface, so the sanity check should reject it.
     let result = client.try_initialize(&admin, &contract_id);
+    // Same `Error::InvalidRegistryWiring` variant as
+    // `initialize_rejects_non_contract_address` above — see that test's
+    // comment for why the two rejection paths are not distinguished.
     assert_eq!(result, Err(Ok(Error::InvalidRegistryWiring)));
 }
 

@@ -114,6 +114,39 @@ fn duplicate_signature_is_rejected() {
 }
 
 #[test]
+fn same_signer_appearing_twice_in_signatures_is_rejected() {
+    // Unlike `duplicate_signature_is_rejected`, which clones one already-built
+    // `Signature` value, this independently invokes `sign` twice for the same
+    // configured signer over the same payload. Ed25519 signing is
+    // deterministic (RFC 8032), so the two independently produced signatures
+    // are byte-identical to each other — confirming the contract rejects a
+    // signer appearing twice regardless of whether the caller submitted a
+    // literal copy or re-signed from scratch.
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signer = &keys[0];
+
+    let first_signature = Signature {
+        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
+    };
+    let second_signature = Signature {
+        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
+    };
+    assert_eq!(first_signature.signature, second_signature.signature);
+
+    let signatures = Vec::from_array(&env, [first_signature, second_signature]);
+
+    assert_eq!(
+        check_auth(&env, &account, &payload, signatures),
+        Err(Ok(Error::BadSignatureOrder))
+    );
+}
+
+#[test]
 fn signatures_out_of_order_are_rejected() {
     let env = Env::default();
     let keys = signing_keys();
