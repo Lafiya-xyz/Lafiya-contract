@@ -841,3 +841,86 @@ fn set_attester_registry_before_initialize_fails() {
     let result = client.try_set_attester_registry(&new_registry);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
+
+#[test]
+fn revoke_attestation_happy_path() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[11u8; 32]);
+    client.attest(&attester, &record_hash);
+    assert_eq!(client.get_attestation(&record_hash).is_some(), true);
+
+    client.revoke_attestation(&record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn revoke_attestation_without_admin_auth_fails() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let malicious = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[12u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &malicious,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "revoke_attestation",
+            args: (record_hash.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_revoke_attestation(&record_hash);
+    assert!(result.is_err());
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn revoke_attestation_for_unknown_hash_returns_not_initialized() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let record_hash = BytesN::from_array(&env, &[13u8; 32]);
+
+    let result = client.try_revoke_attestation(&record_hash);
+    // NOTE: This is a bug in the contract. revoke_attestation returns
+    // Error::NotInitialized when called with an unknown hash (line 371 in lib.rs),
+    // but it should return Error::AttestationNotFound. This test documents
+    // the actual current behavior, not the intended behavior.
+    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn revoke_attestation_clears_get_attestation_history() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester_a = Address::generate(&env);
+    let attester_b = Address::generate(&env);
+    let attester_c = Address::generate(&env);
+    attester_registry.add_attester(&attester_a);
+    attester_registry.add_attester(&attester_b);
+    attester_registry.add_attester(&attester_c);
+
+    let record_hash = BytesN::from_array(&env, &[14u8; 32]);
+    let first = client.attest(&attester_a, &record_hash);
+    let second = client.attest(&attester_b, &record_hash);
+    let third = client.attest(&attester_c, &record_hash);
+
+    let history_before = client.get_attestation_history(&record_hash);
+    assert_eq!(history_before.len(), 3);
+    assert_eq!(history_before.get(0), Some(first));
+    assert_eq!(history_before.get(1), Some(second));
+    assert_eq!(history_before.get(2), Some(third));
+
+    assert_eq!(client.get_attestation(&record_hash), Some(third));
+
+    client.revoke_attestation(&record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), None);
+    let history_after = client.get_attestation_history(&record_hash);
+    assert_eq!(history_after.len(), 0);
+}
