@@ -160,3 +160,5 @@ impl CustomAccountInterface for MultisigAccount {
 mod integration_test;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod fuzz_test;

@@ -55,6 +55,17 @@ fn check_auth(
 }
 
 #[test]
+fn one_of_one_signer_authorizes() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..1], 1);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures = signatures_for(&env, &keys[..1], &payload.to_array());
+
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
 fn two_of_three_signers_authorize() {
     let env = Env::default();
     let keys = signing_keys();
@@ -63,6 +74,20 @@ fn two_of_three_signers_authorize() {
     let signatures = signatures_for(&env, &keys[..2], &payload.to_array());
 
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
+fn one_of_one_with_zero_signatures_is_rejected() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..1], 1);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures: Vec<Signature> = Vec::new(&env);
+
+    assert_eq!(
+        check_auth(&env, &account, &payload, signatures),
+        Err(Ok(Error::NotEnoughSigners))
+    );
 }
 
 #[test]
@@ -183,6 +208,16 @@ fn zero_threshold_is_rejected() {
 
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
+fn zero_signers_and_zero_threshold_is_rejected() {
+    // When both signers is empty and threshold is 0, the threshold check
+    // (line 50: `if threshold == 0 || threshold > signers.len()`) fires first.
+    let env = Env::default();
+    let keys: &[SigningKey] = &[];
+    register_account(&env, keys, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn threshold_above_signer_count_is_rejected() {
     let env = Env::default();
     let keys = signing_keys();
@@ -195,6 +230,18 @@ fn duplicate_configured_signer_is_rejected() {
     let env = Env::default();
     let key = SigningKey::from_bytes(&[1; 32]);
     register_account(&env, &[key.clone(), key], 1);
+}
+
+#[test]
+fn check_auth_extends_ttl_on_success() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures = signatures_for(&env, &keys[..2], &payload.to_array());
+
+    // Successful __check_auth call triggers extend_ttl on SignerCount/Threshold
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
 }
 
 #[test]
