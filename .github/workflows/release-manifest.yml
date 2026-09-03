@@ -31,7 +31,7 @@ jobs:
       - name: Build contract wasm (unoptimized — matches upgrade-hash verification)
         run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install jsonschema
