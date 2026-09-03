@@ -52,6 +52,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - run: cargo test --workspace --locked
+      - run: cargo test --workspace --all-features --locked
 
   build-wasm:
     name: Build (wasm32v1-none)
