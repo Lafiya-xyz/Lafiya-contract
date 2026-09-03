@@ -27,6 +27,15 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Validate network_url input
+        env:
+          NETWORK_URL: ${{ github.event.inputs.network_url }}
+        run: |
+          if ! grep -Fq "\"$NETWORK_URL\"" <(grep '^rpc_url' config/networks.toml); then
+            echo "::error::network_url '$NETWORK_URL' does not match any rpc_url defined in config/networks.toml"
+            exit 1
+          fi
+
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
         with:
