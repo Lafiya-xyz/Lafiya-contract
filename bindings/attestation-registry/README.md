@@ -45,3 +45,27 @@ contract.|
 ```
 
 As long as your editor is configured to show JavaScript/TypeScript documentation, you can pause your typing at that `|` to get a list of all exports and inline-documentation for each. It exports a separate [async](https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function) function for each method in the smart contract, with documentation for each generated from the comments the contract's author included in the original source code.
+
+# Usage
+
+The example below is illustrative — substitute your own network, RPC endpoint, and values:
+
+```ts
+import { Contract, networks } from "attestation-registry";
+
+const contract = new Contract({
+  ...networks.futurenet, // for example; check which networks this library exports
+  rpcUrl: "https://...", // use your own, or find one at https://soroban.stellar.org/docs/reference/rpc#public-rpc-providers
+});
+
+const attester = "G..."; // an allowlisted attester's address
+const recordHash = Buffer.from("abc123...", "hex"); // hash of the off-chain record
+
+// attest() records that `attester` verified the record. It changes contract
+// state, so after simulation you must sign and send the transaction.
+await contract.attest({ attester, record_hash: recordHash }).then((tx) => tx.signAndSend());
+
+// get_attestation() is a read-only lookup, callable by anyone.
+const { result } = await contract.get_attestation({ record_hash: recordHash });
+console.log(result); // the latest Attestation, or null if none
+```
