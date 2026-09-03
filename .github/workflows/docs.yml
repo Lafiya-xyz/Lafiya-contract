@@ -15,10 +15,7 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: stable
-          target: wasm32-unknown-unknown
           override: true
-      - name: Install wasm target
-        run: rustup target add wasm32-unknown-unknown
       - name: Build docs
         run: cargo doc --workspace --no-deps
         env:
