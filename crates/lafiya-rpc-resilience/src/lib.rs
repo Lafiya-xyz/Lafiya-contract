@@ -28,6 +28,8 @@
 use std::fmt;
 use std::time::Duration;
 
+/// A scriptable fake [`RpcProvider`] for deterministically reproducing the
+/// failure sequences described in the ADR.
 pub mod mock;
 
 /// Where a transaction currently stands, as observed via a status query
@@ -171,7 +173,10 @@ pub struct RetryPolicy {
     /// before an ambiguous outcome is treated as still-unresolved and handed
     /// back to the operator.
     pub max_poll_rounds: u32,
+    /// Backoff before the first retry; doubled on each subsequent attempt
+    /// (see [`backoff_schedule`]).
     pub base_backoff: Duration,
+    /// Upper bound the doubled backoff is capped at.
     pub max_backoff: Duration,
 }
 
@@ -194,14 +199,17 @@ impl Default for RetryPolicy {
 pub struct RecoveryLog(Vec<String>);
 
 impl RecoveryLog {
+    /// Start an empty log.
     pub fn new() -> Self {
         RecoveryLog(Vec::new())
     }
 
+    /// Append one line to the log.
     pub fn record(&mut self, line: impl Into<String>) {
         self.0.push(line.into());
     }
 
+    /// The recorded lines, in the order they were added.
     pub fn lines(&self) -> &[String] {
         &self.0
     }
@@ -210,11 +218,15 @@ impl RecoveryLog {
 /// Final outcome of a recovery run.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RecoveryResult {
+    /// A ledger closed with the transaction included and successful.
     Accepted {
         ledger: u32,
         provider: String,
         submit_attempts: u32,
     },
+    /// A ledger closed with the transaction included but it failed on-chain.
+    /// Its sequence number is consumed either way, so it must not be
+    /// resubmitted.
     RejectedOnChain {
         reason: String,
     },
@@ -235,6 +247,8 @@ pub struct FailoverClient {
 }
 
 impl FailoverClient {
+    /// Build a client over an ordered list of providers, tried round-robin
+    /// starting from index 0. Panics if `providers` is empty.
     pub fn new(providers: Vec<Box<dyn RpcProvider>>, policy: RetryPolicy) -> Self {
         assert!(
             !providers.is_empty(),
