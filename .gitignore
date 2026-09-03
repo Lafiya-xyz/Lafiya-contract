@@ -6,3 +6,4 @@
 .env
 .soroban
 test_snapshots/
+__pycache__/

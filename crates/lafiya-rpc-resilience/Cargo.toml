@@ -1,0 +1,9 @@
+[package]
+name = "lafiya-rpc-resilience"
+version = "0.1.0"
+edition = "2021"
+description = "Prototype: multi-provider RPC failover, retry classification, and transaction-recovery polling for Soroban submissions (ADR-0011)"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[dependencies]

@@ -13,7 +13,8 @@ def get_contract_impl_functions(crate_path: pathlib.Path):
         matches = re.finditer(r"pub fn\s+(\w+)\s*\(([^)]*)\)\s*->?\s*[^ {]*", block)
         for m in matches:
             name = m.group(1)
-            args = m.group(2).replace("\n", " ").strip()
+            args = re.sub(r"\s+", " ", m.group(2)).strip()
+            args = re.sub(r"^env\s*:\s*Env\s*,?\s*", "", args).rstrip(",").strip()
             functions.append((name, args))
     return functions
 
@@ -24,13 +25,14 @@ def parse_readme_functions(section_name: str, readme_path: pathlib.Path):
     if not match:
         return []
     table = match.group(0)
-    # extract function names inside backticks
-    funcs = re.findall(r"`([^`]+)`", table)
     signatures = []
-    for f in funcs:
+    # Only the first backticked span of each `| ... |` row is the function
+    # signature; later backticked spans belong to the description column.
+    for row in re.finditer(r"^\|\s*`([^`]+)`\s*\|", table, re.MULTILINE):
+        f = row.group(1)
         if '(' in f:
             name, args = f.split('(', 1)
-            args = args.rstrip(')')
+            args = args.rsplit(')', 1)[0]
             signatures.append((name.strip(), args.strip()))
         else:
             signatures.append((f.strip(), ""))
@@ -42,7 +44,7 @@ def main():
     crates = [repo_root / "contracts" / "attester-registry", repo_root / "contracts" / "attestation-registry"]
     all_ok = True
     for crate in crates:
-        name = crate.name.replace('-', '_')
+        name = crate.name
         impl_funcs = get_contract_impl_functions(crate)
         readme_funcs = parse_readme_functions(name, readme)
         impl_set = set(impl_funcs)

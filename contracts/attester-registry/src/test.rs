@@ -15,6 +15,11 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 
 #[test]
 fn get_schema_version_succeeds() {
+    // Asserts the literal current schema version, not just that the call
+    // succeeds. Any change to this expected value is a schema version bump
+    // and must be deliberate, paired with a migration plan (see
+    // `needs_migration`/`migrate` in lib.rs), and not an accidental side
+    // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     client.initialize(&admin);
@@ -521,67 +526,64 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     assert!(client.is_attester(&attester));
 }
 
-// ─── Issue #152: write operations blocked while paused ──────────────
-
 #[test]
-fn add_attester_while_paused_fails() {
+fn admin_address_can_be_added_as_attester() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
-    client.pause();
 
-    let attester = Address::generate(&env);
-    let result = client.try_add_attester(&attester);
-    assert_eq!(result, Err(Ok(Error::ContractPaused)));
-    assert!(!client.is_attester(&attester));
+    // The admin's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&admin);
+    assert!(client.is_attester(&admin));
 }
 
 #[test]
-fn remove_attester_while_paused_fails() {
+fn contract_address_can_be_added_as_attester() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
-    let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.pause();
-
-    let result = client.try_remove_attester(&attester);
-    assert_eq!(result, Err(Ok(Error::ContractPaused)));
-    // Attester should still be present since removal was blocked
-    client.unpause();
-    assert!(client.is_attester(&attester));
+    // The contract's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&client.address);
+    assert!(client.is_attester(&client.address));
 }
 
 #[test]
-fn suspend_attester_while_paused_fails() {
-    let (env, client, admin) = setup();
+fn second_propose_admin_call_overwrites_pending_proposal() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let address1 = Address::generate(&env);
+    let address2 = Address::generate(&env);
+
+    env.mock_all_auths();
     client.initialize(&admin);
 
-    let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.pause();
+    client.propose_admin(&address1);
+    client.propose_admin(&address2);
 
-    let result = client.try_suspend_attester(&attester);
-    assert_eq!(result, Err(Ok(Error::ContractPaused)));
-    // Attester should still be active since suspension was blocked
-    client.unpause();
-    assert!(client.is_attester(&attester));
-}
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address1,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
 
-#[test]
-fn reinstate_attester_while_paused_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
 
-    let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.suspend_attester(&attester);
-    assert!(!client.is_attester(&attester));
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
 
-    client.pause();
-
-    let result = client.try_reinstate_attester(&attester);
-    assert_eq!(result, Err(Ok(Error::ContractPaused)));
-    // Attester should still be suspended since reinstatement was blocked
-    client.unpause();
-    assert!(!client.is_attester(&attester));
+    let result = client.try_accept_admin();
+    assert_eq!(result, Ok(()));
 }

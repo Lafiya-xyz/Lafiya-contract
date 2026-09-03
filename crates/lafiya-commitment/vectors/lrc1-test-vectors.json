@@ -1,0 +1,195 @@
+[
+  {
+    "name": "value-note",
+    "description": "All fields present, note carries a text value.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "lafiya.emergency_record"
+      },
+      {
+        "kind": "bytes",
+        "value": "0102030405060708090a0b0c0d0e0f10"
+      },
+      {
+        "kind": "bytes",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "text",
+        "value": "allergy"
+      },
+      {
+        "kind": "int64",
+        "value": "1765900800"
+      },
+      {
+        "kind": "text",
+        "value": "penicillin - anaphylaxis"
+      }
+    ],
+    "payload_hex": "10000000176c61666979612e656d657267656e63795f7265636f726413000000100102030405060708090a0b0c0d0e0f101300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1000000007616c6c65726779110000000069418200100000001870656e6963696c6c696e202d20616e617068796c61786973",
+    "commitment_hex": "30c45aa619628b31b5e1bf88ba22850c7eb1de1fc42c17a541a94159df4a40c5"
+  },
+  {
+    "name": "null-note",
+    "description": "Same as value-note but note is explicitly null (present, no value).",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "lafiya.emergency_record"
+      },
+      {
+        "kind": "bytes",
+        "value": "0102030405060708090a0b0c0d0e0f10"
+      },
+      {
+        "kind": "bytes",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "text",
+        "value": "allergy"
+      },
+      {
+        "kind": "int64",
+        "value": "1765900800"
+      },
+      {
+        "kind": "null"
+      }
+    ],
+    "payload_hex": "10000000176c61666979612e656d657267656e63795f7265636f726413000000100102030405060708090a0b0c0d0e0f101300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1000000007616c6c6572677911000000006941820001",
+    "commitment_hex": "87a01c594b575c3b202633494f8fbe57d210b34bc61bc8fbe03c37ff30d0f7bc"
+  },
+  {
+    "name": "absent-note",
+    "description": "Same as value-note but note is omitted entirely from the source record.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "lafiya.emergency_record"
+      },
+      {
+        "kind": "bytes",
+        "value": "0102030405060708090a0b0c0d0e0f10"
+      },
+      {
+        "kind": "bytes",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "text",
+        "value": "allergy"
+      },
+      {
+        "kind": "int64",
+        "value": "1765900800"
+      },
+      {
+        "kind": "absent"
+      }
+    ],
+    "payload_hex": "10000000176c61666979612e656d657267656e63795f7265636f726413000000100102030405060708090a0b0c0d0e0f101300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1000000007616c6c6572677911000000006941820000",
+    "commitment_hex": "12e22f1a09aec5dd6055c20a02ab976af3375736decdf2c7417e803d234c90b5"
+  },
+  {
+    "name": "unicode-note",
+    "description": "note contains multi-byte UTF-8 (precomposed/NFC accents and an em dash).",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "lafiya.emergency_record"
+      },
+      {
+        "kind": "bytes",
+        "value": "0102030405060708090a0b0c0d0e0f10"
+      },
+      {
+        "kind": "bytes",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "text",
+        "value": "allergy"
+      },
+      {
+        "kind": "int64",
+        "value": "1765900800"
+      },
+      {
+        "kind": "text",
+        "value": "José — motif : allergie pénicilline"
+      }
+    ],
+    "payload_hex": "10000000176c61666979612e656d657267656e63795f7265636f726413000000100102030405060708090a0b0c0d0e0f101300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1000000007616c6c6572677911000000006941820010000000274a6f73c3a920e28094206d6f746966203a20616c6c65726769652070c3a96e6963696c6c696e65",
+    "commitment_hex": "8755bf78516f2d7bff68e18ae2678d4e119c17fb811ea8cba77e9c8c28f9e976"
+  },
+  {
+    "name": "reordered-fields",
+    "description": "Same field VALUES as value-note but record_type and note are swapped in position, proving field order is part of the commitment.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "lafiya.emergency_record"
+      },
+      {
+        "kind": "bytes",
+        "value": "0102030405060708090a0b0c0d0e0f10"
+      },
+      {
+        "kind": "bytes",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "text",
+        "value": "penicillin - anaphylaxis"
+      },
+      {
+        "kind": "int64",
+        "value": "1765900800"
+      },
+      {
+        "kind": "text",
+        "value": "allergy"
+      }
+    ],
+    "payload_hex": "10000000176c61666979612e656d657267656e63795f7265636f726413000000100102030405060708090a0b0c0d0e0f101300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa100000001870656e6963696c6c696e202d20616e617068796c617869731100000000694182001000000007616c6c65726779",
+    "commitment_hex": "3422be5a8f6468c3855d4b447d3f2de0d9089697851d27c8766c088edd402f7c"
+  },
+  {
+    "name": "bool-field",
+    "description": "Demonstrates the bool tag with a trailing consent flag.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "lafiya.emergency_record"
+      },
+      {
+        "kind": "bytes",
+        "value": "0102030405060708090a0b0c0d0e0f10"
+      },
+      {
+        "kind": "bytes",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      {
+        "kind": "text",
+        "value": "allergy"
+      },
+      {
+        "kind": "int64",
+        "value": "1765900800"
+      },
+      {
+        "kind": "null"
+      },
+      {
+        "kind": "bool",
+        "value": true
+      }
+    ],
+    "payload_hex": "10000000176c61666979612e656d657267656e63795f7265636f726413000000100102030405060708090a0b0c0d0e0f101300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1000000007616c6c65726779110000000069418200011201",
+    "commitment_hex": "bdf156d6da086690f71d19d76d22ae144273de93e9528c4b46eb54176b0e1908"
+  }
+]
