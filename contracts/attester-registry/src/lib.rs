@@ -78,7 +78,8 @@ const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    /// `initialize` has not been called yet.
+    /// `initialize` has not been called yet; call
+    /// `initialize(admin: Address)` before using the contract.
     NotInitialized = 1,
     /// `initialize` was called more than once.
     AlreadyInitialized = 2,
