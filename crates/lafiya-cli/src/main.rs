@@ -72,12 +72,14 @@ enum AttesterSub {
     },
     /// Add attester (requires admin - will invoke stellar CLI)
     Add {
+        /// Stellar address (G...) to allowlist as an attester
         address: String,
         #[arg(long)]
         source: Option<String>,
     },
     /// Remove attester
     Remove {
+        /// Stellar address (G...) to remove from the allowlist
         address: String,
         #[arg(long)]
         source: Option<String>,
@@ -384,5 +386,37 @@ mod which {
             }
         }
         Err(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // `attester add` requires a positional `address`. Clap's derive-generated
+    // error for a missing required argument must still name it, so a
+    // contributor testing the CLI by hand isn't left guessing which value
+    // they forgot.
+    #[test]
+    fn attester_add_missing_address_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "attester", "add"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("ADDRESS"),
+            "expected error to name the missing `address` argument, got: {message}"
+        );
+    }
+
+    // `attestation get` requires a positional `record_hash`.
+    #[test]
+    fn attestation_get_missing_record_hash_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "attestation", "get"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("RECORD_HASH"),
+            "expected error to name the missing `record_hash` argument, got: {message}"
+        );
     }
 }

@@ -139,7 +139,7 @@ pub enum Error {
     AttesterNotAllowlisted = 3,
     /// `accept_admin` was called with no pending admin transfer.
     NoPendingTransfer = 4,
-    /// The configured `attester-registry` address does not implement the expected interface.
+    /// The configured `attester-registry` address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration.
     InvalidRegistryWiring = 5,
     /// No attestation exists for the given record hash / sequence.
     AttestationNotFound = 6,

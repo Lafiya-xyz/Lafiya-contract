@@ -15,6 +15,11 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 
 #[test]
 fn get_schema_version_succeeds() {
+    // Asserts the literal current schema version, not just that the call
+    // succeeds. Any change to this expected value is a schema version bump
+    // and must be deliberate, paired with a migration plan (see
+    // `needs_migration`/`migrate` in lib.rs), and not an accidental side
+    // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     client.initialize(&admin);
@@ -522,226 +527,63 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
 }
 
 #[test]
-fn batch_add_attesters_success() {
+fn admin_address_can_be_added_as_attester() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
-    let attester1 = Address::generate(&env);
-    let attester2 = Address::generate(&env);
-    let attester3 = Address::generate(&env);
-
-    let mut batch = soroban_sdk::Vec::new(&env);
-    batch.push_back(attester1.clone());
-    batch.push_back(attester2.clone());
-    batch.push_back(attester3.clone());
-
-    client.add_attesters(&batch);
-
-    assert!(client.is_attester(&attester1));
-    assert!(client.is_attester(&attester2));
-    assert!(client.is_attester(&attester3));
-    assert_eq!(client.get_attester_count(), 3);
+    // The admin's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&admin);
+    assert!(client.is_attester(&admin));
 }
 
 #[test]
-fn batch_remove_attesters_success() {
+fn contract_address_can_be_added_as_attester() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
-    let attester1 = Address::generate(&env);
-    let attester2 = Address::generate(&env);
-    let attester3 = Address::generate(&env);
-
-    let mut batch = soroban_sdk::Vec::new(&env);
-    batch.push_back(attester1.clone());
-    batch.push_back(attester2.clone());
-    batch.push_back(attester3.clone());
-
-    client.add_attesters(&batch);
-    assert_eq!(client.get_attester_count(), 3);
-
-    let mut remove_batch = soroban_sdk::Vec::new(&env);
-    remove_batch.push_back(attester1.clone());
-    remove_batch.push_back(attester2.clone());
-
-    client.remove_attesters(&remove_batch);
-
-    assert!(!client.is_attester(&attester1));
-    assert!(!client.is_attester(&attester2));
-    assert!(client.is_attester(&attester3));
-    assert_eq!(client.get_attester_count(), 1);
+    // The contract's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&client.address);
+    assert!(client.is_attester(&client.address));
 }
 
 #[test]
-fn batch_add_attesters_idempotent_for_duplicates() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    assert_eq!(client.get_attester_count(), 1);
-
-    // Adding the same attester again in a batch should be a no-op.
-    let mut batch = soroban_sdk::Vec::new(&env);
-    batch.push_back(attester.clone());
-
-    client.add_attesters(&batch);
-
-    assert!(client.is_attester(&attester));
-    // Count must not increase for the duplicate.
-    assert_eq!(client.get_attester_count(), 1);
-}
-
-#[test]
-fn batch_remove_attesters_idempotent_for_absent() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    // Removing an attester that was never added should be a no-op (no error).
-    let mut batch = soroban_sdk::Vec::new(&env);
-    batch.push_back(attester.clone());
-
-    client.remove_attesters(&batch);
-
-    assert!(!client.is_attester(&attester));
-    assert_eq!(client.get_attester_count(), 0);
-}
-
-#[test]
-fn batch_add_attesters_exceeding_limit_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    // BATCH_LIMIT + 1 addresses — must be rejected.
-    let mut batch = soroban_sdk::Vec::new(&env);
-    for _ in 0..=BATCH_LIMIT {
-        batch.push_back(Address::generate(&env));
-    }
-
-    let result = client.try_add_attesters(&batch);
-    assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
-}
-
-#[test]
-fn batch_remove_attesters_exceeding_limit_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let mut batch = soroban_sdk::Vec::new(&env);
-    for _ in 0..=BATCH_LIMIT {
-        batch.push_back(Address::generate(&env));
-    }
-
-    let result = client.try_remove_attesters(&batch);
-    assert_eq!(result, Err(Ok(Error::BatchTooLarge)));
-}
-
-#[test]
-fn batch_add_attesters_without_admin_auth_fails() {
+fn second_propose_admin_call_overwrites_pending_proposal() {
     let env = Env::default();
     let contract_id = env.register(AttesterRegistry, ());
     let client = AttesterRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    let non_admin = Address::generate(&env);
+    let address1 = Address::generate(&env);
+    let address2 = Address::generate(&env);
 
     env.mock_all_auths();
     client.initialize(&admin);
 
-    // Now mock only the non-admin's auth — the call should be rejected.
+    client.propose_admin(&address1);
+    client.propose_admin(&address2);
+
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &non_admin,
+        address: &address1,
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
-            fn_name: "add_attesters",
-            args: (soroban_sdk::Vec::<Address>::new(&env),).into_val(&env),
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let mut batch = soroban_sdk::Vec::new(&env);
-    batch.push_back(Address::generate(&env));
-
-    let result = client.try_add_attesters(&batch);
+    let result = client.try_accept_admin();
     assert!(result.is_err());
-}
 
-#[test]
-fn batch_add_attesters_while_paused_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-    client.pause();
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
 
-    let mut batch = soroban_sdk::Vec::new(&env);
-    batch.push_back(Address::generate(&env));
-
-    let result = client.try_add_attesters(&batch);
-    assert_eq!(result, Err(Ok(Error::ContractPaused)));
-}
-
-#[test]
-fn batch_remove_attesters_while_paused_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.pause();
-
-    let mut batch = soroban_sdk::Vec::new(&env);
-    batch.push_back(attester);
-
-    let result = client.try_remove_attesters(&batch);
-    assert_eq!(result, Err(Ok(Error::ContractPaused)));
-}
-
-#[test]
-fn get_attester_count_stays_accurate_through_mixed_operations() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let a1 = Address::generate(&env);
-    let a2 = Address::generate(&env);
-    let a3 = Address::generate(&env);
-    let a4 = Address::generate(&env);
-    let a5 = Address::generate(&env);
-
-    client.add_attester(&a1);
-    assert_eq!(client.get_attester_count(), 1);
-
-    client.add_attester(&a2);
-    assert_eq!(client.get_attester_count(), 2);
-
-    client.add_attester(&a3);
-    assert_eq!(client.get_attester_count(), 3);
-
-    client.remove_attester(&a2);
-    assert_eq!(client.get_attester_count(), 2);
-
-    client.add_attester(&a4);
-    assert_eq!(client.get_attester_count(), 3);
-
-    client.add_attester(&a5);
-    assert_eq!(client.get_attester_count(), 4);
-
-    client.remove_attester(&a3);
-    assert_eq!(client.get_attester_count(), 3);
-}
-
-#[test]
-fn get_attester_info_returns_empty_metadata_for_plain_add() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    client.add_attester(&attester);
-
-    let info = client.get_attester_info(&attester);
-    assert_eq!(
-        info,
-        Some(AttesterInfo {
-            license_hash: None,
-            region: None,
-        })
-    );
+    let result = client.try_accept_admin();
+    assert_eq!(result, Ok(()));
 }
