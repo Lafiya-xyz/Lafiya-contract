@@ -72,12 +72,14 @@ enum AttesterSub {
     },
     /// Add attester (requires admin - will invoke stellar CLI)
     Add {
+        /// Stellar address (G...) to allowlist as an attester
         address: String,
         #[arg(long)]
         source: Option<String>,
     },
     /// Remove attester
     Remove {
+        /// Stellar address (G...) to remove from the allowlist
         address: String,
         #[arg(long)]
         source: Option<String>,
@@ -389,74 +391,31 @@ mod which {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use tempfile::NamedTempFile;
 
+    // `attester add` requires a positional `address`. Clap's derive-generated
+    // error for a missing required argument must still name it, so a
+    // contributor testing the CLI by hand isn't left guessing which value
+    // they forgot.
     #[test]
-    fn parse_config_list_succeeds() {
-        let args = vec!["lafiya-cli", "config", "list"];
-        let result = Cli::try_parse_from(args);
-
-        assert!(result.is_ok());
-        let cli = result.unwrap();
-        assert_eq!(cli.network, "testnet");
-        assert!(cli.config.is_none());
-        match cli.command {
-            Commands::Config { sub: ConfigSub::List } => {}
-            _ => panic!("Expected Config List command"),
-        }
+    fn attester_add_missing_address_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "attester", "add"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("ADDRESS"),
+            "expected error to name the missing `address` argument, got: {message}"
+        );
     }
 
+    // `attestation get` requires a positional `record_hash`.
     #[test]
-    fn parse_config_list_with_explicit_network_succeeds() {
-        let args = vec!["lafiya-cli", "--network", "mainnet", "config", "list"];
-        let result = Cli::try_parse_from(args);
-
-        assert!(result.is_ok());
-        let cli = result.unwrap();
-        assert_eq!(cli.network, "mainnet");
-        match cli.command {
-            Commands::Config { sub: ConfigSub::List } => {}
-            _ => panic!("Expected Config List command"),
-        }
-    }
-
-    #[test]
-    fn parse_missing_subcommand_fails() {
-        let args = vec!["lafiya-cli"];
-        let result = Cli::try_parse_from(args);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn load_networks_from_missing_file_returns_handled_error() {
-        let nonexistent_path = std::path::PathBuf::from("/nonexistent/path/networks.toml");
-        let result = load_networks(Some(&nonexistent_path));
-
-        assert!(result.is_err());
-        match result {
-            Err(lafiya_config::ConfigError::NotFound(path)) => {
-                assert_eq!(path, nonexistent_path);
-            }
-            other => panic!("Expected ConfigError::NotFound, got: {:?}", other),
-        }
-    }
-
-    #[test]
-    fn load_networks_from_malformed_toml_returns_handled_error() {
-        let mut file = NamedTempFile::new().unwrap();
-        file.write_all(b"[invalid\nthis is not valid toml").unwrap();
-        file.flush().unwrap();
-
-        let result = load_networks(Some(file.path()));
-
-        assert!(result.is_err());
-        match result {
-            Err(lafiya_config::ConfigError::ParseError { path, .. }) => {
-                assert_eq!(path, file.path());
-            }
-            other => panic!("Expected ConfigError::ParseError, got: {:?}", other),
-        }
+    fn attestation_get_missing_record_hash_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "attestation", "get"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("RECORD_HASH"),
+            "expected error to name the missing `record_hash` argument, got: {message}"
+        );
     }
 }

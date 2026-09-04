@@ -1,4 +1,4 @@
-# ADR-0009: RPC provider failover and transaction-recovery strategy
+# ADR-0011: RPC provider failover and transaction-recovery strategy
 
 - **Status:** Proposed
 - **Date:** 2026-08-18

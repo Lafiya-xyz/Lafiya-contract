@@ -4,7 +4,7 @@
 This is the "consumer compatibility check" a downstream repo (e.g. lafiya-web)
 runs in its own CI against a Lafiya-contract release manifest before bumping
 its pinned contract/binding version, per
-docs/adr/0009-release-manifest-and-compatibility.md.
+docs/adr/0010-release-manifest-and-compatibility.md.
 
 A requirements file (see docs/release-manifest/examples/lafiya-web.requirements.json)
 declares, per contract, the minimum storage schema version and binding
@@ -107,8 +107,8 @@ def check(manifest, requirements):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("manifest", type=Path)
-    parser.add_argument("requirements", type=Path)
+    parser.add_argument("manifest", type=Path, help="path to the release manifest JSON to check")
+    parser.add_argument("requirements", type=Path, help="path to the consumer's requirements JSON")
     args = parser.parse_args()
 
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
