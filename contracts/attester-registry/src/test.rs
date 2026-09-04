@@ -15,6 +15,11 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 
 #[test]
 fn get_schema_version_succeeds() {
+    // Asserts the literal current schema version, not just that the call
+    // succeeds. Any change to this expected value is a schema version bump
+    // and must be deliberate, paired with a migration plan (see
+    // `needs_migration`/`migrate` in lib.rs), and not an accidental side
+    // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     client.initialize(&admin);
@@ -519,4 +524,66 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
         }),
     );
     assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn admin_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The admin's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&admin);
+    assert!(client.is_attester(&admin));
+}
+
+#[test]
+fn contract_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The contract's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&client.address);
+    assert!(client.is_attester(&client.address));
+}
+
+#[test]
+fn second_propose_admin_call_overwrites_pending_proposal() {
+    let env = Env::default();
+    let contract_id = env.register(AttesterRegistry, ());
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    let address1 = Address::generate(&env);
+    let address2 = Address::generate(&env);
+
+    env.mock_all_auths();
+    client.initialize(&admin);
+
+    client.propose_admin(&address1);
+    client.propose_admin(&address2);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address1,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_accept_admin();
+    assert_eq!(result, Ok(()));
 }

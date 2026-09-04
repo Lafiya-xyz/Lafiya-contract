@@ -78,15 +78,20 @@ const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    /// `initialize` has not been called yet.
+    /// `initialize` has not been called yet; call
+    /// `initialize(admin: Address)` before using the contract.
     NotInitialized = 1,
     /// `initialize` was called more than once.
     AlreadyInitialized = 2,
-    /// `accept_admin` was called with no pending admin transfer.
+    /// `accept_admin` was called with no pending admin transfer. Admin transfer is a
+    /// two-step flow: the current admin must first call `propose_admin` to nominate a
+    /// successor, then the nominated address must call `accept_admin` to complete the
+    /// transfer. This error is returned when `accept_admin` is called before a
+    /// corresponding `propose_admin` call has set a pending admin.
     NoPendingTransfer = 3,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 4,
-    /// The allowlist is at its configured maximum size.
+    /// The allowlist is at its configured maximum size. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`.
     AllowlistFull = 5,
     /// A storage migration was invoked but the contract is already current.
     MigrationNotRequired = 6,
@@ -205,6 +210,7 @@ impl AttesterRegistry {
     }
 
     /// Propose a new admin address. The caller must authorize as the current admin.
+    /// Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let current_admin = Self::admin(&env)?;
         current_admin.require_auth();

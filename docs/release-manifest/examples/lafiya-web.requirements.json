@@ -1,6 +1,6 @@
 {
   "repo": "lafiya-web",
-  "description": "Illustrative compatibility requirements a downstream consumer (lafiya-web) would check its pinned Lafiya-contract release manifest against in its own CI, per docs/adr/0009-release-manifest-and-compatibility.md. lafiya-web owns and versions this file in its own repository; the copy here is only a worked example.",
+  "description": "Illustrative compatibility requirements a downstream consumer (lafiya-web) would check its pinned Lafiya-contract release manifest against in its own CI, per docs/adr/0010-release-manifest-and-compatibility.md. lafiya-web owns and versions this file in its own repository; the copy here is only a worked example.",
   "contracts": {
     "attester-registry": {
       "min_storage_schema_version": 1,
