@@ -132,6 +132,8 @@ This runs:
 3. `make test` (all cargo tests)
 4. `make wasm` (building target WASM binaries)
 
+There is no `rustfmt.toml` in this repo — that's intentional, not an oversight. `make fmt` / `cargo fmt --check` run against rustfmt's default settings, and PRs should not introduce a custom formatting config.
+
 
 - Every new contract function needs unit tests covering both the success
   path and the failure/authorization paths (see `contracts/*/src/test.rs`
