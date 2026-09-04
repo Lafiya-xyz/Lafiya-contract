@@ -1,3 +1,5 @@
+//! Soroban contract recording attestations of off-chain records, gated by
+//! allowlist membership in the `attester-registry` contract.
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
@@ -62,10 +64,13 @@ enum DataKey {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Attestation {
+    /// The allowlisted attester that verified the record.
     pub attester: Address,
+    /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
 }
 
+/// Emitted when admin ownership finishes transferring to a new address.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AdminTransferred {
@@ -75,15 +80,19 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Emitted when a new attestation is recorded for a record hash.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttestationRecorded {
     #[topic]
     pub record_hash: BytesN<32>,
+    /// The allowlisted attester that verified the record.
     pub attester: Address,
+    /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
 }
 
+/// Emitted when an attestation is revoked.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttestationRevoked {
@@ -91,6 +100,7 @@ pub struct AttestationRevoked {
     pub record_hash: BytesN<32>,
 }
 
+/// Emitted when state-changing operations are paused.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Paused {
@@ -98,6 +108,7 @@ pub struct Paused {
     pub by: Address,
 }
 
+/// Emitted when state-changing operations are unpaused.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Unpaused {
@@ -105,19 +116,38 @@ pub struct Unpaused {
     pub by: Address,
 }
 
+/// Emitted when the `attester-registry` contract this registry consults is repointed.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterRegistryRepointed {
+    #[topic]
+    pub previous: Address,
+    #[topic]
+    pub new: Address,
+}
+
+/// Errors returned by the attestation registry's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` has not been called yet.
     NotInitialized = 1,
+    /// `initialize` was called more than once.
     AlreadyInitialized = 2,
+    /// The caller is not allowlisted by the `attester-registry` contract.
     AttesterNotAllowlisted = 3,
+    /// `accept_admin` was called with no pending admin transfer.
     NoPendingTransfer = 4,
+    /// The configured `attester-registry` address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration.
     InvalidRegistryWiring = 5,
+    /// No attestation exists for the given record hash / sequence.
     AttestationNotFound = 6,
+    /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
 }
 
+/// The attestation registry contract.
 #[contract]
 pub struct AttestationRegistry;
 
@@ -126,11 +156,32 @@ impl AttestationRegistry {
     /// Set the admin and the `attester-registry` contract this registry
     /// consults for allowlist checks. Can only be called once; the caller
     /// must authorize as the given `admin`.
+    ///
+    /// ## Best-effort interface check
+    ///
+    /// This function performs a lightweight sanity check against
+    /// `attester_registry`: it calls `is_attester` with a throwaway address
+    /// and confirms the call does not trap. This confirms the address
+    /// implements the expected interface — it does **not** prove the address
+    /// is the canonical, trusted `attester-registry` deployment. A malicious
+    /// contract that happens to expose `is_attester` would pass this check.
     pub fn initialize(env: Env, admin: Address, attester_registry: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
         admin.require_auth();
+
+        // Best-effort sanity check: verify attester_registry implements
+        // the is_attester interface by calling it with a throwaway address.
+        let registry = AttesterRegistryClient::new(&env, &attester_registry);
+        // Use the current contract's own address as the throwaway — it's a
+        // valid Address but won't be an allowlisted attester, so a real
+        // attester-registry will return `false` (not trap).
+        let throwaway = env.current_contract_address();
+        if registry.try_is_attester(&throwaway).is_err() {
+            return Err(Error::InvalidRegistryWiring);
+        }
+
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
             .instance()
@@ -186,6 +237,28 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Change the attester-registry contract this registry consults for
+    /// allowlist checks. Requires the admin's authorization. Emits
+    /// `AttesterRegistryRepointed` for indexer/audit visibility.
+    pub fn set_attester_registry(env: Env, new_registry: Address) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+
+        let previous = Self::attester_registry(&env)?;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AttesterRegistry, &new_registry);
+
+        AttesterRegistryRepointed {
+            previous,
+            new: new_registry,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
     /// Pause the contract, blocking `attest` until `unpause` is called.
     /// Requires the admin's authorization.
     pub fn pause(env: Env) -> Result<(), Error> {
@@ -211,16 +284,6 @@ impl AttestationRegistry {
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
-    }
-
-    /// Query the current admin address.
-    pub fn get_admin(env: Env) -> Result<Address, Error> {
-        Self::admin(&env)
-    }
-
-    /// Query the configured `attester-registry` contract address.
-    pub fn get_attester_registry(env: Env) -> Result<Address, Error> {
-        Self::attester_registry(&env)
     }
 
     /// Record that `attester` verified the record hashing to `record_hash`.
@@ -281,6 +344,14 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::AttestationCount(record_hash.clone()), &new_count);
+
+        // Extend TTL on the specific attestation entry just written, so it is
+        // not subject to state-archival independently of the instance storage.
+        env.storage().persistent().extend_ttl(
+            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
 
         env.storage()
             .instance()
@@ -400,6 +471,18 @@ impl AttestationRegistry {
             .instance()
             .get(&DataKey::AttesterRegistry)
             .ok_or(Error::NotInitialized)
+    }
+
+    fn require_not_paused(env: &Env) -> Result<(), Error> {
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused {
+            return Err(Error::ContractPaused);
+        }
+        Ok(())
     }
 }
 

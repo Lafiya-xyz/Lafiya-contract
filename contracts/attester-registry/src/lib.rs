@@ -1,9 +1,11 @@
+//! Soroban contract maintaining the allowlist of attesters authorized to
+//! call `attest` on the `attestation-registry` contract.
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
-    Symbol,
+    Symbol, Vec,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -31,14 +33,31 @@ enum DataKey {
     SchemaVersion,
     /// Whether state-changing operations are currently paused.
     Paused,
+    /// Soft cap on the number of allowlisted attesters.
+    MaxAttesters,
+    /// Current count of allowlisted attesters.
+    AttesterCount,
 }
 
 /// Metadata associated with an allowlisted attester.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct AttesterInfo {
+    /// Hash of the attester's off-chain license/credential document, if any.
     pub license_hash: Option<BytesN<32>>,
+    /// The geographic region the attester is authorized to attest for, if any.
     pub region: Option<Symbol>,
+}
+
+/// An allowlisted attester's metadata together with its current suspension
+/// state, as returned by `get_attester_status`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttesterStatus {
+    /// The attester's stored metadata.
+    pub info: AttesterInfo,
+    /// Whether the attester is currently suspended.
+    pub suspended: bool,
 }
 
 /// Instance storage TTL policy:
@@ -54,16 +73,47 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 /// unboundedly.
 const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
 
+/// Maximum number of addresses that may be processed in a single
+/// `add_attesters` / `remove_attesters` call.
+///
+/// Rationale: each address in the batch is one persistent-storage write entry.
+/// Soroban's per-transaction write-entry limit is 50, so a ceiling of 40 gives
+/// headroom for the instance-storage writes (AttesterCount, Paused, etc.) that
+/// happen in the same transaction. Batches larger than this are rejected with
+/// `Error::BatchTooLarge` — an early, deterministic error rather than a silent
+/// resource-limit abort at the network layer.
+pub const BATCH_LIMIT: u32 = 40;
+
+/// Errors returned by the attester registry's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// `initialize` has not been called yet; call
+    /// `initialize(admin: Address)` before using the contract.
     NotInitialized = 1,
+    /// `initialize` was called more than once.
     AlreadyInitialized = 2,
+    /// `accept_admin` was called with no pending admin transfer. Admin transfer is a
+    /// two-step flow: the current admin must first call `propose_admin` to nominate a
+    /// successor, then the nominated address must call `accept_admin` to complete the
+    /// transfer. This error is returned when `accept_admin` is called before a
+    /// corresponding `propose_admin` call has set a pending admin.
     NoPendingTransfer = 3,
+    /// The requested operation is blocked while the contract is paused.
     ContractPaused = 4,
+    /// The allowlist is at its configured maximum size. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`.
+    AllowlistFull = 5,
+    /// A storage migration was invoked but the contract is already current.
+    MigrationNotRequired = 6,
+    /// The referenced attester is not currently allowlisted (never added,
+    /// or since removed).
+    AttesterNotFound = 7,
+    /// The supplied batch exceeds `BATCH_LIMIT` addresses.
+    BatchTooLarge = 8,
 }
 
+/// Emitted when admin ownership finishes transferring to a new address.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AdminTransferred {
@@ -73,6 +123,7 @@ pub struct AdminTransferred {
     pub new_admin: Address,
 }
 
+/// Emitted once, when the contract is initialized.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Initialized {
@@ -80,6 +131,7 @@ pub struct Initialized {
     pub admin: Address,
 }
 
+/// Emitted when an attester is added to the allowlist.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterAdded {
@@ -87,6 +139,17 @@ pub struct AttesterAdded {
     pub attester: Address,
 }
 
+/// Emitted when an already-allowlisted attester's metadata is updated via
+/// `update_attester_info`. Distinguishable from `AttesterAdded`, which is
+/// only emitted on initial enrollment.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterInfoUpdated {
+    #[topic]
+    pub attester: Address,
+}
+
+/// Emitted when an attester is removed from the allowlist.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterRemoved {
@@ -94,6 +157,7 @@ pub struct AttesterRemoved {
     pub attester: Address,
 }
 
+/// Emitted when an attester is suspended.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterSuspended {
@@ -101,6 +165,7 @@ pub struct AttesterSuspended {
     pub attester: Address,
 }
 
+/// Emitted when a suspended attester is reinstated.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterReinstated {
@@ -108,6 +173,7 @@ pub struct AttesterReinstated {
     pub attester: Address,
 }
 
+/// Emitted when the contract is upgraded to new wasm.
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct Upgraded {
@@ -115,6 +181,23 @@ pub struct Upgraded {
     pub new_wasm_hash: BytesN<32>,
 }
 
+/// Emitted when state-changing operations are paused.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Paused {
+    #[topic]
+    pub by: Address,
+}
+
+/// Emitted when state-changing operations are unpaused.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Unpaused {
+    #[topic]
+    pub by: Address,
+}
+
+/// The attester registry contract.
 #[contract]
 pub struct AttesterRegistry;
 
@@ -131,6 +214,9 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -140,12 +226,16 @@ impl AttesterRegistry {
     }
 
     /// Propose a new admin address. The caller must authorize as the current admin.
+    /// Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let current_admin = Self::admin(&env)?;
         current_admin.require_auth();
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -171,17 +261,25 @@ impl AttesterRegistry {
         }
         .publish(&env);
 
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
         Ok(())
     }
 
     /// Pause the contract, blocking `add_attester`, `add_attester_with_info`,
-    /// `remove_attester`, `suspend_attester`, and `reinstate_attester` until
-    /// `unpause` is called. Requires the admin's authorization.
+    /// `update_attester_info`, `remove_attester`, `suspend_attester`, and
+    /// `reinstate_attester` until `unpause` is called. Requires the admin's
+    /// authorization.
     pub fn pause(env: Env) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
         Paused { by: admin }.publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -191,6 +289,9 @@ impl AttesterRegistry {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
         Unpaused { by: admin }.publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -208,6 +309,20 @@ impl AttesterRegistry {
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        let already_present = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester.clone()));
+        if !already_present {
+            let count = Self::attester_count(&env);
+            let max = Self::max_attesters(&env);
+            if count >= max {
+                return Err(Error::AllowlistFull);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::AttesterCount, &(count + 1));
+        }
         let info = AttesterInfo {
             license_hash: None,
             region: None,
@@ -233,6 +348,20 @@ impl AttesterRegistry {
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        let already_present = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester.clone()));
+        if !already_present {
+            let count = Self::attester_count(&env);
+            let max = Self::max_attesters(&env);
+            if count >= max {
+                return Err(Error::AllowlistFull);
+            }
+            env.storage()
+                .instance()
+                .set(&DataKey::AttesterCount, &(count + 1));
+        }
         let info = AttesterInfo {
             license_hash,
             region,
@@ -247,18 +376,164 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Update the metadata of an already-allowlisted `attester`. Requires
+    /// the admin's authorization. Unlike `add_attester_with_info`, this
+    /// never enrolls a new attester: it fails with `Error::AttesterNotFound`
+    /// if `attester` is not currently allowlisted (never added, or since
+    /// removed), and always emits `AttesterInfoUpdated` rather than
+    /// `AttesterAdded`, so profile changes are distinguishable from
+    /// enrollment.
+    pub fn update_attester_info(
+        env: Env,
+        attester: Address,
+        license_hash: Option<BytesN<32>>,
+        region: Option<Symbol>,
+    ) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
+        if !env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester.clone()))
+        {
+            return Err(Error::AttesterNotFound);
+        }
+        let info = AttesterInfo {
+            license_hash,
+            region,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::Attester(attester.clone()), &info);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        AttesterInfoUpdated { attester }.publish(&env);
+        Ok(())
+    }
+
+    /// Add multiple attesters to the allowlist in a single transaction.
+    ///
+    /// Requires the admin's authorization. Blocked while the contract is paused.
+    /// Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+    /// Returns `Error::AllowlistFull` if adding the new (non-duplicate)
+    /// addresses would exceed the configured `max_attesters` cap. Addresses
+    /// that are already allowlisted are silently skipped (idempotent), so the
+    /// call never fails due to duplicates in the batch and no duplicate events
+    /// are emitted. Exactly one `AttesterAdded` event is emitted per newly
+    /// added address.
+    pub fn add_attesters(env: Env, attesters: Vec<Address>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if attesters.len() > BATCH_LIMIT {
+            return Err(Error::BatchTooLarge);
+        }
+
+        let max = Self::max_attesters(&env);
+        let mut count = Self::attester_count(&env);
+
+        for attester in attesters.iter() {
+            let key = DataKey::Attester(attester.clone());
+            if !env.storage().persistent().has(&key) {
+                if count >= max {
+                    return Err(Error::AllowlistFull);
+                }
+                let info = AttesterInfo {
+                    license_hash: None,
+                    region: None,
+                };
+                env.storage().persistent().set(&key, &info);
+                count += 1;
+                AttesterAdded {
+                    attester: attester.clone(),
+                }
+                .publish(&env);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AttesterCount, &count);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(())
+    }
+
+    /// Remove multiple attesters from the allowlist in a single transaction.
+    ///
+    /// Requires the admin's authorization. Blocked while the contract is paused.
+    /// Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+    /// Addresses that are not currently allowlisted are silently skipped
+    /// (idempotent), so the call never fails if an address was already removed
+    /// and no spurious events are emitted. Exactly one `AttesterRemoved` event
+    /// is emitted per address that was actually removed.
+    pub fn remove_attesters(env: Env, attesters: Vec<Address>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if attesters.len() > BATCH_LIMIT {
+            return Err(Error::BatchTooLarge);
+        }
+
+        let mut count = Self::attester_count(&env);
+
+        for attester in attesters.iter() {
+            let key = DataKey::Attester(attester.clone());
+            if env.storage().persistent().has(&key) {
+                env.storage().persistent().remove(&key);
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::Suspended(attester.clone()));
+                if count > 0 {
+                    count -= 1;
+                }
+                AttesterRemoved {
+                    attester: attester.clone(),
+                }
+                .publish(&env);
+            }
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::AttesterCount, &count);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(())
+    }
+
     /// Remove `attester` from the allowlist. Requires the admin's
     /// authorization. A no-op if the attester was never allowlisted.
     pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        let was_present = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester.clone()));
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
         env.storage()
             .persistent()
             .remove(&DataKey::Suspended(attester.clone()));
+        if was_present {
+            let count = Self::attester_count(&env);
+            if count > 0 {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AttesterCount, &(count - 1));
+            }
+        }
         AttesterRemoved { attester }.publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -270,6 +545,9 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .set(&DataKey::MaxAttesters, &max_attesters);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -291,6 +569,9 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Suspended(attester.clone()), &true);
         AttesterSuspended { attester }.publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -302,6 +583,9 @@ impl AttesterRegistry {
             .persistent()
             .remove(&DataKey::Suspended(attester.clone()));
         AttesterReinstated { attester }.publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -323,6 +607,21 @@ impl AttesterRegistry {
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
         env.storage().persistent().get(&DataKey::Attester(attester))
+    }
+
+    /// Get `attester`'s metadata together with its current suspension state
+    /// in a single call. Returns `None` if `attester` is not currently
+    /// allowlisted (never added, or since removed).
+    pub fn get_attester_status(env: Env, attester: Address) -> Option<AttesterStatus> {
+        let info: AttesterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(attester.clone()))?;
+        let suspended = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Suspended(attester));
+        Some(AttesterStatus { info, suspended })
     }
 
     /// Query the current storage schema version of the contract.
@@ -348,32 +647,9 @@ impl AttesterRegistry {
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
         Upgraded { new_wasm_hash }.publish(&env);
-        Ok(())
-    }
-
-    /// The storage schema version recorded for this instance. `0` means no
-    /// version has been recorded: the instance was deployed before schema
-    /// versioning landed (legacy) or was never initialized.
-    pub fn get_schema_version(env: Env) -> u32 {
         env.storage()
             .instance()
-            .get(&DataKey::SchemaVersion)
-            .unwrap_or(0)
-    }
-
-    /// Replace this contract's code with the wasm blob identified by
-    /// `new_wasm_hash`. The blob must already have been uploaded to the
-    /// ledger (e.g. `stellar contract upload`); otherwise the ledger rejects
-    /// the update. Requires the admin's authorization. Instance and
-    /// persistent storage are untouched — the new code starts exactly where
-    /// the old code left off. The swap itself takes effect once this
-    /// invocation finishes successfully. See
-    /// `docs/runbooks/contract-upgrade.md` for the full production
-    /// procedure, including how reviewers verify `new_wasm_hash` against
-    /// the audited source before this call is signed.
-    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
-        env.deployer().update_current_contract_wasm(new_wasm_hash);
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -406,6 +682,9 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -427,9 +706,24 @@ impl AttesterRegistry {
         }
         Ok(())
     }
+
+    fn max_attesters(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAttesters)
+            .unwrap_or(DEFAULT_MAX_ATTESTERS)
+    }
+
+    fn attester_count(env: &Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::AttesterCount)
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod large_test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
