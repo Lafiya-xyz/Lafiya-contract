@@ -183,6 +183,51 @@ fn attestation_history_is_bounded() {
 }
 
 #[test]
+fn get_attestation_history_boundary_at_max_history() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[11u8; 32]);
+
+    // Attest exactly MAX_HISTORY times (10), then once more (11 total).
+    // This tests the boundary where the oldest entry should be evicted.
+    let mut attestations = std::vec![];
+    for _ in 0..11 {
+        attestations.push(client.attest(&attester, &record_hash));
+    }
+
+    let history = client.get_attestation_history(&record_hash);
+
+    // History should contain exactly MAX_HISTORY entries (10).
+    // The first attestation (oldest) should have been evicted.
+    assert_eq!(history.len(), 10, "Expected exactly MAX_HISTORY entries in history");
+
+    // The oldest entry in history should be the second attestation.
+    assert_eq!(
+        history.get(0).unwrap().timestamp,
+        attestations[1].timestamp,
+        "Oldest entry in history should be the 2nd attestation (1st was evicted)"
+    );
+
+    // The newest entry in history should be the last (11th) attestation.
+    assert_eq!(
+        history.get(9).unwrap().timestamp,
+        attestations[10].timestamp,
+        "Newest entry in history should be the 11th attestation"
+    );
+
+    // Verify all 10 entries are from attestations 2-11 (in order).
+    for i in 0..10 {
+        assert_eq!(
+            history.get(i).unwrap().timestamp,
+            attestations[i + 1].timestamp,
+            "History entry {} should match attestation {}", i, i + 1
+        );
+    }
+}
+
+#[test]
 fn attest_emits_event() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
