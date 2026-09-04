@@ -47,12 +47,15 @@ Commands:
   attester is <addr>  Check if address is allowlisted (calls contract)
   attester add <addr> Add attester to allowlist (admin auth required)
   attester remove <addr> Remove attester
+  attester list       Show attester-registry contract ID (no on-chain enumeration)
   attestation get <hex64>  Get attestation for record hash (hex 32-byte)
-  
+
 Examples:
   $0 --network testnet config show
+  $0 --network testnet config list
   $0 --network testnet attester is GABC...
   $0 --network testnet --source admin attester add GABC...
+  $0 --network testnet attester list
   $0 --network local attestation get 0f8a...
 
 Config file ($CONFIG_PATH) never holds secrets, only public RPC/passphrase/IDs.

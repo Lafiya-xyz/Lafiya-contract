@@ -139,7 +139,7 @@ pub enum Error {
     AttesterNotAllowlisted = 3,
     /// `accept_admin` was called with no pending admin transfer.
     NoPendingTransfer = 4,
-    /// The configured `attester-registry` address does not implement the expected interface.
+    /// The configured `attester-registry` address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration.
     InvalidRegistryWiring = 5,
     /// No attestation exists for the given record hash / sequence.
     AttestationNotFound = 6,
@@ -344,6 +344,14 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::AttestationCount(record_hash.clone()), &new_count);
+
+        // Extend TTL on the specific attestation entry just written, so it is
+        // not subject to state-archival independently of the instance storage.
+        env.storage().persistent().extend_ttl(
+            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
 
         env.storage()
             .instance()

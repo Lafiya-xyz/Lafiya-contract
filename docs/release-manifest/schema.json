@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://github.com/Lafiya-xyz/Lafiya-contract/blob/main/docs/release-manifest/schema.json",
   "title": "Lafiya release manifest",
-  "description": "Binds a Lafiya contract release, its generated bindings, its event schemas, and its per-network deployment state into one verifiable, versioned record. See docs/adr/0009-release-manifest-and-compatibility.md.",
+  "description": "Binds a Lafiya contract release, its generated bindings, its event schemas, and its per-network deployment state into one verifiable, versioned record. See docs/adr/0010-release-manifest-and-compatibility.md.",
   "type": "object",
   "required": ["manifest_version", "release", "contracts", "bindings", "events", "deployments", "compatibility"],
   "additionalProperties": false,

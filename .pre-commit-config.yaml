@@ -18,3 +18,8 @@ repos:
         language: system
         types: [rust]
         pass_filenames: false
+    -   id: check-readme-contracts
+        name: check README contract tables
+        entry: python .github/scripts/check_readme_contracts.py
+        language: system
+        pass_filenames: false

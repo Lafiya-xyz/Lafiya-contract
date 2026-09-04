@@ -1,5 +1,5 @@
 //! Failure-injection scenarios for the RPC failover spike (issue #132,
-//! `docs/adr/0009-rpc-provider-failover-and-transaction-recovery.md`).
+//! `docs/adr/0011-rpc-provider-failover-and-transaction-recovery.md`).
 //!
 //! Each test reproduces one named failure mode from the ADR's evaluation
 //! and asserts both the final [`RecoveryResult`] and the exact number of
