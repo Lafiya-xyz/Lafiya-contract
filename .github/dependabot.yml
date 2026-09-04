@@ -10,12 +10,7 @@ updates:
           - "soroban-sdk"
           - "soroban-*"
 
-  - package-ecosystem: "npm"
-    directory: "/bindings/attester-registry"
-    schedule:
-      interval: "weekly"
-
-  - package-ecosystem: "npm"
-    directory: "/bindings/attestation-registry"
+  - package-ecosystem: "github-actions"
+    directory: "/"
     schedule:
       interval: "weekly"

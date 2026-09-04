@@ -153,7 +153,9 @@ if [[ -z "$ADMIN_ADDRESS" ]]; then
     if [[ -z "$ADMIN_ADDRESS" ]]; then
         echo "WARNING: --admin not provided. Contracts will need an admin address at initialization." >&2
         echo "Provide --admin G... or ensure --source resolves to an address." >&2
-        # For dry-run, use placeholder
+        # For dry-run, use placeholder. This is NOT a real Stellar address --
+        # it must never be used to fund, invoke, or otherwise interact with
+        # an actual account.
         if [[ "$DRY_RUN" == "true" ]]; then
             ADMIN_ADDRESS="GADMINADDRESSPLACEHOLDERFORDRYRUNXXXXXXXXXXXXXXXXXX"
         else
@@ -194,6 +196,7 @@ deploy_contract() {
         echo "  --wasm $wasm_path \\" >&2
         echo "  --rpc-url $rpc_url \\" >&2
         echo "  --network-passphrase \"$passphrase\" ${STELLAR_SOURCE_ARGS[*]}" >&2
+        # Fake contract ID, dry-run only -- never a real deployed address.
         echo "CPLACEHOLDER${label}XXX" # placeholder ID
         return
     fi
