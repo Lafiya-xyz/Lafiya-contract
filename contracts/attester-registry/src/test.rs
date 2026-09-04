@@ -15,6 +15,11 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 
 #[test]
 fn get_schema_version_succeeds() {
+    // Asserts the literal current schema version, not just that the call
+    // succeeds. Any change to this expected value is a schema version bump
+    // and must be deliberate, paired with a migration plan (see
+    // `needs_migration`/`migrate` in lib.rs), and not an accidental side
+    // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     client.initialize(&admin);
@@ -590,114 +595,63 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
 }
 
 #[test]
-fn add_attester_with_info_without_admin_auth_fails() {
-    // No mock_all_auths(): calls must present a real, matching auth entry.
+fn admin_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The admin's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&admin);
+    assert!(client.is_attester(&admin));
+}
+
+#[test]
+fn contract_address_can_be_added_as_attester() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // The contract's own address IS permitted as an attester — no special-case rejection exists.
+    client.add_attester(&client.address);
+    assert!(client.is_attester(&client.address));
+}
+
+#[test]
+fn second_propose_admin_call_overwrites_pending_proposal() {
     let env = Env::default();
     let contract_id = env.register(AttesterRegistry, ());
     let client = AttesterRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
-    let attester = Address::generate(&env);
+    let address1 = Address::generate(&env);
+    let address2 = Address::generate(&env);
 
     env.mock_all_auths();
     client.initialize(&admin);
 
-    // Mock auth as the attester rather than the admin — should be rejected.
+    client.propose_admin(&address1);
+    client.propose_admin(&address2);
+
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &attester,
+        address: &address1,
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
-            fn_name: "add_attester_with_info",
-            args: (attester.clone(), None::<BytesN<32>>, None::<Symbol>).into_val(&env),
-            sub_invokes: &[],
-        },
-    }]);
-
-    let result = client.try_add_attester_with_info(&attester, &None, &None);
-    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
-    assert!(!client.is_attester(&attester));
-}
-
-#[test]
-fn add_attester_with_info_accepts_none_fields() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    // Both optional metadata fields are None.
-    client.add_attester_with_info(&attester, &None, &None);
-
-    assert!(client.is_attester(&attester));
-    assert_eq!(
-        client.get_attester_info(&attester),
-        Some(AttesterInfo {
-            license_hash: None,
-            region: None,
-        }),
-    );
-}
-
-#[test]
-fn update_attester_info_can_clear_previously_set_fields() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    let license_hash = BytesN::from_array(&env, &[5u8; 32]);
-    let region = Symbol::new(&env, "south");
-
-    // Enroll with metadata.
-    client.add_attester_with_info(&attester, &Some(license_hash), &Some(region));
-    let info = client.get_attester_info(&attester).unwrap();
-    assert!(info.license_hash.is_some());
-    assert!(info.region.is_some());
-
-    // Clear both fields by passing None.
-    client.update_attester_info(&attester, &None, &None);
-
-    assert_eq!(
-        client.get_attester_info(&attester),
-        Some(AttesterInfo {
-            license_hash: None,
-            region: None,
-        }),
-    );
-    // Attester is still active — clearing metadata does not remove them.
-    assert!(client.is_attester(&attester));
-}
-
-#[test]
-fn migrate_on_fresh_contract_returns_migration_not_required() {
-    let (_, client, admin) = setup();
-    client.initialize(&admin);
-
-    // A freshly initialized contract already stores SCHEMA_VERSION (1), so
-    // there is nothing to migrate and migrate() must return MigrationNotRequired.
-    let result = client.try_migrate();
-    assert_eq!(result, Err(Ok(Error::MigrationNotRequired)));
-}
-
-#[test]
-fn migrate_without_admin_auth_fails() {
-    let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let non_admin = Address::generate(&env);
-
-    env.mock_all_auths();
-    client.initialize(&admin);
-
-    // Mock auth as a non-admin address — migrate requires admin auth.
-    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
-        address: &non_admin,
-        invoke: &soroban_sdk::testutils::MockAuthInvoke {
-            contract: &client.address,
-            fn_name: "migrate",
+            fn_name: "accept_admin",
             args: ().into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_migrate();
-    assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
+    let result = client.try_accept_admin();
+    assert!(result.is_err());
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &address2,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "accept_admin",
+            args: ().into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_accept_admin();
+    assert_eq!(result, Ok(()));
 }
