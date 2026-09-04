@@ -3,7 +3,7 @@
 Prototype produced for the RPC provider failover and transaction-recovery
 spike ([issue #132](https://github.com/Lafiya-xyz/Lafiya-contract/issues/132)).
 The decision record is
-[`docs/adr/0009-rpc-provider-failover-and-transaction-recovery.md`](../../docs/adr/0009-rpc-provider-failover-and-transaction-recovery.md);
+[`docs/adr/0011-rpc-provider-failover-and-transaction-recovery.md`](../../docs/adr/0011-rpc-provider-failover-and-transaction-recovery.md);
 this crate is that ADR's failure-injection prototype and transaction-state
 model, expressed as runnable code instead of prose.
 

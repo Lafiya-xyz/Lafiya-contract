@@ -1,0 +1,7 @@
+# Code owners for review routing.
+# NOTE: mappings below default to @Coredevjay pending maintainer confirmation
+# of the actual owning usernames/teams for each area (see issue #238).
+/contracts/ @Coredevjay
+/crates/    @Coredevjay
+/scripts/   @Coredevjay
+/docs/      @Coredevjay
