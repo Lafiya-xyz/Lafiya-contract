@@ -55,6 +55,17 @@ fn check_auth(
 }
 
 #[test]
+fn one_of_one_signer_authorizes() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..1], 1);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures = signatures_for(&env, &keys[..1], &payload.to_array());
+
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
 fn two_of_three_signers_authorize() {
     let env = Env::default();
     let keys = signing_keys();
@@ -63,6 +74,20 @@ fn two_of_three_signers_authorize() {
     let signatures = signatures_for(&env, &keys[..2], &payload.to_array());
 
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
+fn one_of_one_with_zero_signatures_is_rejected() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..1], 1);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures: Vec<Signature> = Vec::new(&env);
+
+    assert_eq!(
+        check_auth(&env, &account, &payload, signatures),
+        Err(Ok(Error::NotEnoughSigners))
+    );
 }
 
 #[test]
@@ -114,6 +139,39 @@ fn duplicate_signature_is_rejected() {
 }
 
 #[test]
+fn same_signer_appearing_twice_in_signatures_is_rejected() {
+    // Unlike `duplicate_signature_is_rejected`, which clones one already-built
+    // `Signature` value, this independently invokes `sign` twice for the same
+    // configured signer over the same payload. Ed25519 signing is
+    // deterministic (RFC 8032), so the two independently produced signatures
+    // are byte-identical to each other — confirming the contract rejects a
+    // signer appearing twice regardless of whether the caller submitted a
+    // literal copy or re-signed from scratch.
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signer = &keys[0];
+
+    let first_signature = Signature {
+        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
+    };
+    let second_signature = Signature {
+        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
+    };
+    assert_eq!(first_signature.signature, second_signature.signature);
+
+    let signatures = Vec::from_array(&env, [first_signature, second_signature]);
+
+    assert_eq!(
+        check_auth(&env, &account, &payload, signatures),
+        Err(Ok(Error::BadSignatureOrder))
+    );
+}
+
+#[test]
 fn signatures_out_of_order_are_rejected() {
     let env = Env::default();
     let keys = signing_keys();
@@ -150,6 +208,16 @@ fn zero_threshold_is_rejected() {
 
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
+fn zero_signers_and_zero_threshold_is_rejected() {
+    // When both signers is empty and threshold is 0, the threshold check
+    // (line 50: `if threshold == 0 || threshold > signers.len()`) fires first.
+    let env = Env::default();
+    let keys: &[SigningKey] = &[];
+    register_account(&env, keys, 0);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")]
 fn threshold_above_signer_count_is_rejected() {
     let env = Env::default();
     let keys = signing_keys();
@@ -162,6 +230,18 @@ fn duplicate_configured_signer_is_rejected() {
     let env = Env::default();
     let key = SigningKey::from_bytes(&[1; 32]);
     register_account(&env, &[key.clone(), key], 1);
+}
+
+#[test]
+fn check_auth_extends_ttl_on_success() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures = signatures_for(&env, &keys[..2], &payload.to_array());
+
+    // Successful __check_auth call triggers extend_ttl on SignerCount/Threshold
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
 }
 
 #[test]
@@ -178,4 +258,23 @@ fn too_many_signatures_is_rejected() {
         check_auth(&env, &account, &payload, signatures),
         Err(Ok(Error::TooManySigners))
     );
+}
+
+#[test]
+fn three_of_five_signers_authorize() {
+    let env = Env::default();
+    let mut keys = std::vec![
+        SigningKey::from_bytes(&[1; 32]),
+        SigningKey::from_bytes(&[2; 32]),
+        SigningKey::from_bytes(&[3; 32]),
+        SigningKey::from_bytes(&[4; 32]),
+        SigningKey::from_bytes(&[5; 32]),
+    ];
+    keys.sort_by_key(|key| key.verifying_key().to_bytes());
+    let account = register_account(&env, &keys, 3);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    // Supply exactly 3 signatures from the 5 signers in correct order
+    let signatures = signatures_for(&env, &keys[..3], &payload.to_array());
+
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
 }

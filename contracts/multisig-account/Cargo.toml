@@ -19,6 +19,7 @@ attestation-registry = { path = "../attestation-registry", features = ["testutil
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 ed25519-dalek = "3.0.0"
 sha2 = "0.10.9"
+proptest = "1"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
