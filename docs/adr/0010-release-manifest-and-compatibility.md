@@ -1,4 +1,4 @@
-# ADR-0009: Versioned release manifest for contracts, bindings, events, and deployments
+# ADR-0010: Versioned release manifest for contracts, bindings, events, and deployments
 
 - **Status:** Proposed
 - **Date:** 2026-08-18

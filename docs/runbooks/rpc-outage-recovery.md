@@ -9,7 +9,7 @@ configure networks (see `config/README.md`) or how to upgrade a contract (see
 [`contract-upgrade.md`](contract-upgrade.md)).
 
 **Background:** see
-[ADR-0009](../adr/0009-rpc-provider-failover-and-transaction-recovery.md) for the full
+[ADR-0011](../adr/0011-rpc-provider-failover-and-transaction-recovery.md) for the full
 retry-classification model and the failure-injection prototype this runbook mirrors
 (`crates/lafiya-rpc-resilience`). The one fact this whole runbook hangs off:
 
@@ -45,7 +45,7 @@ If you have a hash, keep it — every remaining step in this runbook is keyed on
 
 ## 3. Classify the failure
 
-| What you saw | Class (see ADR-0009) | What to do |
+| What you saw | Class (see ADR-0011) | What to do |
 | --- | --- | --- |
 | Connection refused, DNS failure, or an error *before* any hash was printed | **Safe to retry** | Re-run the exact same command. |
 | HTTP 429 / "rate limited" | **Safe to retry, after waiting** | Wait (start at a few seconds, double if it recurs), then re-run the exact same command. |
@@ -89,11 +89,11 @@ Read `result.status`:
 
 ## 4. If the provider itself is down
 
-`config/networks.toml` currently defines one `rpc_url` per network (ADR-0009 proposes
+`config/networks.toml` currently defines one `rpc_url` per network (ADR-0011 proposes
 extending this to a list; until that lands, do this manually):
 
 1. Get a second known-good RPC URL for the same network (a different SDF endpoint, a
-   self-hosted node, or a third-party provider — see ADR-0009's provider comparison matrix
+   self-hosted node, or a third-party provider — see ADR-0011's provider comparison matrix
    for the trade-offs of each).
 2. Re-run §3a's `getTransaction` query against that second URL before doing anything else —
    a provider-specific outage does not mean the transaction failed, only that *this*

@@ -1,9 +1,9 @@
 name: Release Manifest (prototype)
 
-# Prototype from the [Spike] issue #135 / ADR-0009: generates and validates a
+# Prototype from the [Spike] issue #135 / ADR-0010: generates and validates a
 # release manifest binding contract wasm, bindings, events, and deployment
 # state into one verifiable record. Not yet a required check — see
-# docs/adr/0009-release-manifest-and-compatibility.md "Follow-up" before
+# docs/adr/0010-release-manifest-and-compatibility.md "Follow-up" before
 # wiring this into the release process for real.
 
 on:
@@ -20,7 +20,7 @@ jobs:
     name: Generate & validate release manifest
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - uses: dtolnay/rust-toolchain@stable
         with:
@@ -31,7 +31,7 @@ jobs:
       - name: Build contract wasm (unoptimized — matches upgrade-hash verification)
         run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v7
         with:
           python-version: "3.12"
       - run: pip install jsonschema
@@ -49,7 +49,7 @@ jobs:
             release-manifest.json \
             docs/release-manifest/examples/lafiya-web.requirements.json
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-manifest
           path: release-manifest.json
