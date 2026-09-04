@@ -5,7 +5,7 @@
 //! ```
 //!
 //! Prints the recovery-log trace for each scenario in
-//! `docs/adr/0009-rpc-provider-failover-and-transaction-recovery.md`'s
+//! `docs/adr/0011-rpc-provider-failover-and-transaction-recovery.md`'s
 //! evaluation, so the timeout / ambiguous-submit / failover behavior can be
 //! inspected without standing up a Soroban RPC endpoint. The same scenarios
 //! are asserted precisely (final result + call counts) in

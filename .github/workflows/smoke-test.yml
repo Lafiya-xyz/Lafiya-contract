@@ -25,7 +25,16 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
+
+      - name: Validate network_url input
+        env:
+          NETWORK_URL: ${{ github.event.inputs.network_url }}
+        run: |
+          if ! grep -Fq "\"$NETWORK_URL\"" <(grep '^rpc_url' config/networks.toml); then
+            echo "::error::network_url '$NETWORK_URL' does not match any rpc_url defined in config/networks.toml"
+            exit 1
+          fi
 
       - name: Install Rust toolchain
         uses: actions-rs/toolchain@v1
@@ -33,12 +42,20 @@ jobs:
           toolchain: stable
           override: true
 
+      # stellar-cli has no maintained GitHub Action or crates.io-published install
+      # path for a pinned release, so we pull the binary tarball directly. The
+      # version is intentionally pinned to v0.8.0 for reproducible smoke-test
+      # runs; bump it by updating the URL below after validating the new CLI
+      # version against scripts/smoke-test.sh.
       - name: Install Stellar CLI
         run: |
           curl -L https://github.com/stellar/stellar-cli/releases/download/v0.8.0/stellar-cli-linux-amd64.tar.gz -o stellar-cli.tar.gz
           tar -xzf stellar-cli.tar.gz stellar-cli
           sudo mv stellar-cli /usr/local/bin/
           stellar-cli version
+
+      - name: Mask admin secret
+        run: echo "::add-mask::${{ inputs.admin_secret }}"
 
       - name: Run smoke test script
         env:

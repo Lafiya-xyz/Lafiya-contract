@@ -19,6 +19,7 @@ Soroban smart contracts for Lafiya's on-chain trust layer — an attestation reg
 ## Overview
 
 🔗 Documentation: https://Lafiya-xyz.github.io/Lafiya-contract/
+📖 Glossary: [docs/glossary.md](docs/glossary.md) — canonical definitions of core terms used across this repo (`attester`, `CHW`, `record hash`/`record commitment`, `schema version`, …)
 
 
 Lafiya is a free, patient-owned emergency health card: the handful of facts that change how you are treated in an emergency — blood group, genotype, allergies, current medications, chronic conditions — travel with you as a scannable QR code and can be **cryptographically verified** by a health worker so a first responder can trust them on the spot.
@@ -82,7 +83,7 @@ graph TB
 
 - **`attester-registry`** — the on-chain allowlist of health workers authorized to write attestations
 - **`attestation-registry`** — the on-chain record of which attester verified which record hash, and when; calls into `attester-registry` on every write
-- **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization
+- **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization. It deliberately ignores Soroban's authorization contexts in `__check_auth` — an accepted pre-alpha risk documented in [ADR-0007](docs/adr/0007-unscoped-multisig-authorization.md) — so a valid signer quorum's authority is not scoped to the registries
 
 All three are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); none has been deployed to testnet yet.
 
@@ -220,7 +221,10 @@ cd ../attestation-registry && npm install && npm run build
 The generated bindings are committed directly to this repository under the `bindings/` directory. `lafiya-web` (or any other consumer) can consume them via:
 - Direct git path dependency in `package.json` pointing to the repo or subdirectory.
 - A git submodule in the consuming project.
-- Alternatively, CI/CD can be configured to publish these directories as packages to the `@lafiya` npm organization.
+
+Publishing these directories as packages to the `@lafiya` npm organization is a planned, but
+not yet implemented, secondary option. See [`PUBLISHING.md`](PUBLISHING.md) for the full
+strategy and the follow-up work required before that's live.
 
 
 ## Tech Stack

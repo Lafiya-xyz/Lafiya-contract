@@ -1,3 +1,11 @@
+//! Soroban custom account contract implementing N-of-M multisig authorization.
+//!
+//! This contract enforces that transactions requiring approval must be signed
+//! by at least a configured threshold of registered signers (N-of-M multisig).
+//! It implements Soroban's `CustomAccountInterface` to integrate with the
+//! protocol's authentication system, enabling use as a custom account for
+//! administrative operations on the `attester-registry` and
+//! `attestation-registry` contracts.
 #![no_std]
 
 // Unlike `attester-registry` and `attestation-registry`, this crate does not set
@@ -16,28 +24,42 @@ use soroban_sdk::{
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
+    /// The minimum number of signatures required to authorize a transaction.
     Threshold,
+    /// Presence of this key (mapped to `()`) indicates the public key is a registered signer.
     Signer(BytesN<32>),
+    /// The total number of registered signers.
     SignerCount,
 }
 
+/// A single ed25519 signature from one signer in the multisig set.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Signature {
+    /// The public key of the signer who created this signature.
     pub public_key: BytesN<32>,
+    /// The ed25519 signature bytes.
     pub signature: BytesN<64>,
 }
 
+/// Errors returned by the multisig-account contract's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
+    /// The configured threshold is zero or exceeds the signer count.
     InvalidThreshold = 1,
+    /// The signer configuration contains duplicate public keys.
     DuplicateSigner = 2,
+    /// The supplied signature count is below the configured threshold.
     NotEnoughSigners = 3,
+    /// Signatures are not strictly ordered by ascending public key.
     BadSignatureOrder = 4,
+    /// A signature corresponds to a public key that is not a configured signer.
     UnknownSigner = 5,
+    /// The contract has not been initialized; threshold or signer count is unavailable.
     NotInitialized = 6,
+    /// The supplied signature count exceeds the configured signer count.
     TooManySigners = 7,
 }
 
@@ -52,6 +74,11 @@ pub struct MultisigAccount;
 
 #[contractimpl]
 impl MultisigAccount {
+    /// Initialize the multisig account with a set of authorized signers and a signature threshold.
+    ///
+    /// # Arguments
+    /// * `signers` — A vector of ed25519 public keys (32 bytes each) authorized to sign transactions.
+    /// * `threshold` — The minimum number of signatures required to authorize a transaction; must be > 0 and ≤ the signer count.
     pub fn __constructor(env: Env, signers: Vec<BytesN<32>>, threshold: u32) {
         if threshold == 0 || threshold > signers.len() {
             panic_with_error!(&env, Error::InvalidThreshold);
@@ -79,6 +106,15 @@ impl CustomAccountInterface for MultisigAccount {
     type Signature = Vec<Signature>;
     type Error = Error;
 
+    /// Verify the authorization of a transaction by checking N-of-M ed25519 signatures.
+    ///
+    /// Verifies that the supplied signatures meet the configured threshold and each belongs to
+    /// an authorized signer, with signatures ordered in ascending public-key order.
+    ///
+    /// # Arguments
+    /// * `signature_payload` — A 32-byte hash of the transaction to authorize.
+    /// * `signatures` — A vector of ed25519 signatures, each with a public key and signature bytes, ordered by ascending public key.
+    /// * `_auth_contexts` — Intentionally unused; see [ADR-0007](../adr/0007-unscoped-multisig-authorization.md) for why this account does not scope authorization to specific contracts or functions during pre-alpha.
     fn __check_auth(
         env: Env,
         signature_payload: Hash<32>,
@@ -141,3 +177,5 @@ impl CustomAccountInterface for MultisigAccount {
 mod integration_test;
 #[cfg(test)]
 mod test;
+#[cfg(test)]
+mod fuzz_test;
