@@ -49,3 +49,15 @@ clean:
 
 bench:
 	cargo test -p attester-registry large_attester_allowlist_load -- --nocapture
+
+NETWORK ?= testnet
+
+config-check:
+	./scripts/admin.sh --network $(NETWORK) config show
+	cargo test -p lafiya-config
+
+config-list:
+	./scripts/admin.sh --network $(NETWORK) config list
+
+deploy:
+	./scripts/deploy.sh --network $(NETWORK)

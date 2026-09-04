@@ -328,7 +328,7 @@
     }
   ],
   "compatibility": {
-    "policy_ref": "docs/adr/0009-release-manifest-and-compatibility.md#compatibility-policy",
+    "policy_ref": "docs/adr/0010-release-manifest-and-compatibility.md#compatibility-policy",
     "consumers": [
       {
         "repo": "lafiya-web",

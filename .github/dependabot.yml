@@ -9,3 +9,8 @@ updates:
         patterns:
           - "soroban-sdk"
           - "soroban-*"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
