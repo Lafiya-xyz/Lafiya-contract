@@ -359,7 +359,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// Tiny which implementation to avoid extra dep if not available, but we add which crate feature? We'll implement simple check
 mod which {
     use std::path::Path;
 
