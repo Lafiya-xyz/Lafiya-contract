@@ -474,6 +474,74 @@ fn get_attester_status_for_removed_attester_is_none() {
 }
 
 #[test]
+fn lowering_max_attesters_below_current_count_does_not_evict() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    // Add 3 attesters with no cap restriction.
+    let attester1 = Address::generate(&env);
+    let attester2 = Address::generate(&env);
+    let attester3 = Address::generate(&env);
+    client.add_attester(&attester1);
+    client.add_attester(&attester2);
+    client.add_attester(&attester3);
+    assert_eq!(client.get_attester_count(), 3);
+
+    // Lower the cap to 1 — well below the current count of 3.
+    client.set_max_attesters(&1);
+    assert_eq!(client.get_max_attesters(), 1);
+
+    // All previously-added attesters must still be active — no eviction.
+    assert!(client.is_attester(&attester1));
+    assert!(client.is_attester(&attester2));
+    assert!(client.is_attester(&attester3));
+    assert_eq!(client.get_attester_count(), 3);
+
+    // Adding a new attester must fail with AllowlistFull because count >= cap.
+    let new_attester = Address::generate(&env);
+    let result = client.try_add_attester(&new_attester);
+    assert_eq!(result, Err(Ok(Error::AllowlistFull)));
+    assert!(!client.is_attester(&new_attester));
+}
+
+/// Calling `suspend_attester` on an address that was never allowlisted is a
+/// no-op from an access-control perspective: the `Suspended` key is written
+/// for that address and `AttesterSuspended` is emitted, but `is_attester`
+/// still returns `false` because there is no matching `Attester` storage
+/// entry. This inconsistency with `update_attester_info` (which returns
+/// `Error::AttesterNotFound`) is documented on the function and tracked as a
+/// known issue.
+#[test]
+fn suspend_unknown_attester_behavior() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let never_added = Address::generate(&env);
+
+    // Precondition: the address has never been allowlisted.
+    assert!(!client.is_attester(&never_added));
+
+    // suspend_attester succeeds (no error) even though the address was never added.
+    client.suspend_attester(&never_added);
+
+    // The AttesterSuspended event was still emitted, confirming the call succeeded.
+    let expected_event = AttesterSuspended {
+        attester: never_added.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    // The phantom suspension has no effect on allowlist queries because
+    // is_attester also checks for the Attester storage entry.
+    assert!(!client.is_attester(&never_added));
+
+    // get_attester_status returns None because there is no Attester entry.
+    assert_eq!(client.get_attester_status(&never_added), None);
+}
+
+#[test]
 fn get_attester_status_reports_metadata_and_suspension_consistently() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
