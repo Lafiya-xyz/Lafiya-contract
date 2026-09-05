@@ -1,0 +1,55 @@
+name: Release Manifest (prototype)
+
+# Prototype from the [Spike] issue #135 / ADR-0010: generates and validates a
+# release manifest binding contract wasm, bindings, events, and deployment
+# state into one verifiable record. Not yet a required check — see
+# docs/adr/0010-release-manifest-and-compatibility.md "Follow-up" before
+# wiring this into the release process for real.
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*.*.*"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release-manifest:
+    name: Generate & validate release manifest
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+
+      # Only the Soroban contract crates target wasm32v1-none; see ci.yml.
+      - name: Build contract wasm (unoptimized — matches upgrade-hash verification)
+        run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install jsonschema
+
+      - name: Generate manifest
+        run: |
+          python3 scripts/generate_release_manifest.py --pretty -o release-manifest.json
+
+      - name: Validate manifest against schema + internal consistency
+        run: python3 scripts/validate_release_manifest.py release-manifest.json
+
+      - name: Demonstrate a consumer compatibility check
+        run: |
+          python3 scripts/check_manifest_compatibility.py \
+            release-manifest.json \
+            docs/release-manifest/examples/lafiya-web.requirements.json
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-manifest
+          path: release-manifest.json

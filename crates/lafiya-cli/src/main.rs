@@ -91,12 +91,14 @@ enum AttesterSub {
     },
     /// Add attester (requires admin - will invoke stellar CLI)
     Add {
+        /// Stellar address (G...) to allowlist as an attester
         address: String,
         #[arg(long)]
         source: Option<String>,
     },
     /// Remove attester
     Remove {
+        /// Stellar address (G...) to remove from the allowlist
         address: String,
         #[arg(long)]
         source: Option<String>,
@@ -356,163 +358,6 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-/// What a `deploy` invocation is actually allowed to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum DeployMode {
-    /// Builds WASM only, never touches a network.
-    BuildOnly,
-    /// Prints the plan, never touches a network.
-    DryRun,
-    /// Would submit transactions, so identity configuration is mandatory.
-    Live,
-}
-
-impl DeployMode {
-    fn new(build_only: bool, dry_run: bool) -> Self {
-        // build-only and dry-run are both offline; neither needs credentials.
-        if build_only {
-            DeployMode::BuildOnly
-        } else if dry_run {
-            DeployMode::DryRun
-        } else {
-            DeployMode::Live
-        }
-    }
-
-    fn requires_identity(self) -> bool {
-        matches!(self, DeployMode::Live)
-    }
-}
-
-/// Admin / source values resolved from flags then environment.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DeployIdentity {
-    admin: Option<String>,
-    source: Option<String>,
-}
-
-impl DeployIdentity {
-    /// Resolve and validate deployment identity.
-    ///
-    /// Flags win over environment. Outside dry-run/build-only a live deployment
-    /// refuses to start without both an admin address and a transaction source,
-    /// because a half-configured deployment leaves contracts uninitialized.
-    fn resolve(
-        admin_flag: Option<String>,
-        source_flag: Option<String>,
-        admin_env: Option<String>,
-        source_env: Option<String>,
-        mode: DeployMode,
-    ) -> anyhow::Result<Self> {
-        let admin = first_non_empty(admin_flag, admin_env);
-        let source = first_non_empty(source_flag, source_env);
-
-        if let Some(admin) = &admin {
-            validate_account_address("admin", admin)
-                .context("invalid --admin value (expected a G... account address)")?;
-        }
-        if let Some(source) = &source {
-            validate_source_account(source).context(
-                "invalid --source value (expected a stellar identity name or G... address)",
-            )?;
-        }
-
-        if mode.requires_identity() {
-            if source.is_none() {
-                anyhow::bail!(
-                    "deployment requires a transaction source: pass --source <identity> or set {ENV_SOURCE} (use --dry-run to preview without credentials)"
-                );
-            }
-            if admin.is_none() {
-                anyhow::bail!(
-                    "deployment requires an admin address: pass --admin <G...> or set {ENV_ADMIN} (use --dry-run to preview without credentials)"
-                );
-            }
-        }
-
-        Ok(Self { admin, source })
-    }
-}
-
-fn first_non_empty(primary: Option<String>, fallback: Option<String>) -> Option<String> {
-    primary
-        .into_iter()
-        .chain(fallback)
-        .map(|v| v.trim().to_string())
-        .find(|v| !v.is_empty())
-}
-
-/// Validate an optional `--source` before it reaches the stellar CLI.
-fn validated_source(source: Option<String>) -> anyhow::Result<Option<String>> {
-    match first_non_empty(source, None) {
-        Some(src) => {
-            validate_source_account(&src).context(
-                "invalid --source value (expected a stellar identity name or G... address)",
-            )?;
-            Ok(Some(src))
-        }
-        None => Ok(None),
-    }
-}
-
-/// Build a `stellar contract invoke` argument list for the given network profile.
-fn invoke_args(
-    cfg: &NetworkConfig,
-    contract_id: &str,
-    source: Option<&str>,
-    function: &str,
-    function_args: &[&str],
-) -> Vec<String> {
-    let mut args = vec![
-        "contract".to_string(),
-        "invoke".to_string(),
-        "--id".to_string(),
-        contract_id.to_string(),
-        "--rpc-url".to_string(),
-        cfg.rpc_url.clone(),
-        "--network-passphrase".to_string(),
-        cfg.network_passphrase.clone(),
-    ];
-    if let Some(src) = source {
-        args.push("--source".to_string());
-        args.push(src.to_string());
-    }
-    args.push("--".to_string());
-    args.push(function.to_string());
-    args.extend(function_args.iter().map(|a| a.to_string()));
-    args
-}
-
-/// Print and run a stellar CLI invocation, failing loudly if it is unavailable.
-fn run_stellar(args: Vec<String>) -> anyhow::Result<()> {
-    println!("> stellar {}", args.join(" "));
-    if which::which("stellar").is_err() {
-        anyhow::bail!("stellar CLI not found");
-    }
-    let status = std::process::Command::new("stellar").args(args).status()?;
-    if !status.success() {
-        anyhow::bail!("stellar CLI failed");
-    }
-    Ok(())
-}
-
-/// Human readable deployment state, including partially deployed profiles.
-fn deployment_summary(cfg: &NetworkConfig) -> String {
-    match cfg.deployment_state() {
-        DeploymentState::Deployed => "fully deployed".to_string(),
-        DeploymentState::NotDeployed => "not deployed".to_string(),
-        DeploymentState::Partial { missing } => {
-            let missing = missing
-                .iter()
-                .map(|k| k.key())
-                .collect::<Vec<_>>()
-                .join(", ");
-            format!("PARTIALLY DEPLOYED - missing contract id(s): {missing}")
-        }
-    }
-}
-
-// Tiny which implementation to avoid extra dep if not available, but we add which crate feature? We'll implement simple check
 mod which {
     use std::path::Path;
 
@@ -545,174 +390,31 @@ mod which {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use lafiya_config::ContractIds;
 
-    const ADMIN: &str = "GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ";
-    const ATTESTER_ID: &str = "CBCRV4OYENAUXO2OXWU3JMKDXD7NGVLGXSHOXC55P7XUSHM2MD6JTFZA";
-    const ATTESTATION_ID: &str = "CCWPKEVBYEEDBMX2T4AKBOTTPXCGWNTZQXBOQWOHLVJ7JOWAMX3G6EAX";
-
-    fn cfg(attester: &str, attestation: &str) -> NetworkConfig {
-        NetworkConfig {
-            rpc_url: "https://soroban-testnet.stellar.org".to_string(),
-            network_passphrase: "Test SDF Network ; September 2015".to_string(),
-            contracts: ContractIds {
-                attester_registry: attester.to_string(),
-                attestation_registry: attestation.to_string(),
-            },
-        }
-    }
-
+    // `attester add` requires a positional `address`. Clap's derive-generated
+    // error for a missing required argument must still name it, so a
+    // contributor testing the CLI by hand isn't left guessing which value
+    // they forgot.
     #[test]
-    fn invoke_args_include_source_only_when_provided() {
-        let cfg = cfg(ATTESTER_ID, ATTESTATION_ID);
-        let without = invoke_args(
-            &cfg,
-            ATTESTER_ID,
-            None,
-            "is_attester",
-            &["--attester", ADMIN],
+    fn attester_add_missing_address_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "attester", "add"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("ADDRESS"),
+            "expected error to name the missing `address` argument, got: {message}"
         );
-        assert!(!without.contains(&"--source".to_string()));
-        assert_eq!(
-            without,
-            vec![
-                "contract",
-                "invoke",
-                "--id",
-                ATTESTER_ID,
-                "--rpc-url",
-                "https://soroban-testnet.stellar.org",
-                "--network-passphrase",
-                "Test SDF Network ; September 2015",
-                "--",
-                "is_attester",
-                "--attester",
-                ADMIN,
-            ]
+    }
+
+    // `attestation get` requires a positional `record_hash`.
+    #[test]
+    fn attestation_get_missing_record_hash_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "attestation", "get"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("RECORD_HASH"),
+            "expected error to name the missing `record_hash` argument, got: {message}"
         );
-
-        let with = invoke_args(
-            &cfg,
-            ATTESTER_ID,
-            Some("deployer"),
-            "add_attester",
-            &["--attester", ADMIN],
-        );
-        let source_pos = with.iter().position(|a| a == "--source").unwrap();
-        assert_eq!(with[source_pos + 1], "deployer");
-        // The source flag belongs to stellar, before the `--` separator.
-        assert!(source_pos < with.iter().position(|a| a == "--").unwrap());
-    }
-
-    #[test]
-    fn deployment_summary_reports_partial_profiles() {
-        assert_eq!(
-            deployment_summary(&cfg(ATTESTER_ID, ATTESTATION_ID)),
-            "fully deployed"
-        );
-        assert_eq!(deployment_summary(&cfg("", "")), "not deployed");
-        let partial = deployment_summary(&cfg(ATTESTER_ID, ""));
-        assert!(partial.contains("PARTIALLY DEPLOYED"), "{partial}");
-        assert!(partial.contains("attestation_registry"), "{partial}");
-    }
-
-    #[test]
-    fn live_deploy_requires_admin_and_source() {
-        let err = DeployIdentity::resolve(None, None, None, None, DeployMode::Live)
-            .unwrap_err()
-            .to_string();
-        assert!(err.contains("transaction source"), "{err}");
-
-        let err =
-            DeployIdentity::resolve(None, Some("deployer".into()), None, None, DeployMode::Live)
-                .unwrap_err()
-                .to_string();
-        assert!(err.contains("admin address"), "{err}");
-
-        let ok = DeployIdentity::resolve(
-            Some(ADMIN.into()),
-            Some("deployer".into()),
-            None,
-            None,
-            DeployMode::Live,
-        )
-        .unwrap();
-        assert_eq!(ok.admin.as_deref(), Some(ADMIN));
-        assert_eq!(ok.source.as_deref(), Some("deployer"));
-    }
-
-    #[test]
-    fn dry_run_and_build_only_do_not_require_identity() {
-        for mode in [DeployMode::DryRun, DeployMode::BuildOnly] {
-            let identity = DeployIdentity::resolve(None, None, None, None, mode).unwrap();
-            assert_eq!(
-                identity,
-                DeployIdentity {
-                    admin: None,
-                    source: None
-                }
-            );
-        }
-    }
-
-    #[test]
-    fn deploy_identity_falls_back_to_environment_and_ignores_blanks() {
-        let identity = DeployIdentity::resolve(
-            None,
-            Some("   ".into()),
-            Some(ADMIN.into()),
-            Some("env-deployer".into()),
-            DeployMode::Live,
-        )
-        .unwrap();
-        assert_eq!(identity.admin.as_deref(), Some(ADMIN));
-        assert_eq!(identity.source.as_deref(), Some("env-deployer"));
-    }
-
-    #[test]
-    fn deploy_identity_rejects_malformed_values_even_in_dry_run() {
-        let err = DeployIdentity::resolve(
-            Some(ATTESTER_ID.into()),
-            None,
-            None,
-            None,
-            DeployMode::DryRun,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("--admin"), "{err}");
-
-        let err = DeployIdentity::resolve(
-            Some(ADMIN.into()),
-            Some("deployer; curl evil.example".into()),
-            None,
-            None,
-            DeployMode::DryRun,
-        )
-        .unwrap_err()
-        .to_string();
-        assert!(err.contains("--source"), "{err}");
-    }
-
-    #[test]
-    fn validated_source_accepts_none_and_rejects_malformed() {
-        assert_eq!(validated_source(None).unwrap(), None);
-        assert_eq!(validated_source(Some("  ".into())).unwrap(), None);
-        assert_eq!(
-            validated_source(Some("deployer".into()))
-                .unwrap()
-                .as_deref(),
-            Some("deployer")
-        );
-        assert!(validated_source(Some("bad source".into())).is_err());
-    }
-
-    #[test]
-    fn deploy_mode_classification() {
-        assert_eq!(DeployMode::new(true, false), DeployMode::BuildOnly);
-        assert_eq!(DeployMode::new(false, true), DeployMode::DryRun);
-        assert_eq!(DeployMode::new(false, false), DeployMode::Live);
-        // build-only wins: nothing is submitted, so no credentials are needed.
-        assert_eq!(DeployMode::new(true, true), DeployMode::BuildOnly);
     }
 }

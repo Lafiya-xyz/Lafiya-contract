@@ -4,9 +4,7 @@ Thank you for your interest in contributing to Lafiya! Lafiya is an open-source 
 
 This repository holds the Soroban (Stellar) smart contracts. Because Lafiya is a multi-repo ecosystem, contributions here often have ripple effects across other repositories. This guide outlines the setup, conventions, and workflows required to contribute safely.
 
-- Rust (stable), installed via [rustup](https://rustup.rs)
-- The `wasm32v1-none` target: `rustup target add wasm32v1-none`
-- `pre-commit` (required for local git hooks): Install via `pip install pre-commit` or `brew install pre-commit`, then run `pre-commit install` in the repository root.
+See [Local Setup > Prerequisites](#prerequisites) for the tools you'll need before contributing.
 
 ## Table of Contents
 - [Local Setup](#local-setup)
@@ -133,6 +131,8 @@ This runs:
 2. `make clippy` (linter checks; warnings are treated as errors)
 3. `make test` (all cargo tests)
 4. `make wasm` (building target WASM binaries)
+
+There is no `rustfmt.toml` in this repo — that's intentional, not an oversight. `make fmt` / `cargo fmt --check` run against rustfmt's default settings, and PRs should not introduce a custom formatting config.
 
 
 - Every new contract function needs unit tests covering both the success

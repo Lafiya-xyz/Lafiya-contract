@@ -7,6 +7,7 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AdminTransferred` (`attester-registry` and `attestation-registry`)
 - `Initialized`
 - `AttesterAdded`
+- `AttesterInfoUpdated` (`attester-registry`)
 - `AttesterRemoved`
 - `AttesterSuspended`
 - `AttesterReinstated`

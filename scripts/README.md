@@ -64,6 +64,7 @@ cargo run -p lafiya-cli -- --network local config env
 |--------|---------|--------------|
 | `lib/config.sh` | Shared loader, parses TOML via python3 `tomllib`/`tomli`, exports `LAFIYA_*` vars | Source of truth |
 | `deploy.sh` | Builds WASM and deploys both contracts via `stellar contract deploy`, then `initialize`, updates `networks.toml` | `--network` flag, no hardcoded RPC/passphrase |
+| `deploy-testnet.sh` | Simpler deploy: relies on the `stellar` CLI's own configured networks (not `networks.toml`), writes results to `deployments/<network>.json` instead of updating the config | `--network`/`-n` flag, does **not** read `networks.toml` |
 | `admin.sh` | Bash admin CLI: attester allowlist mgmt, attestation queries | `--network` flag, same loader |
 | `crates/lafiya-cli` | Rust admin CLI (preferred, more robust) | Uses `lafiya-config` crate reading same TOML |
 
@@ -79,6 +80,18 @@ cargo run -p lafiya-cli -- --network local config env
 - Deploys via `stellar contract deploy --rpc-url $LAFIYA_RPC_URL --network-passphrase ...`
 - Initializes with admin and links contracts
 - Prompts to update `config/networks.toml` with new IDs
+
+### deploy-testnet.sh vs deploy.sh
+
+Both deploy `attester-registry` and `attestation-registry` and initialize them, but they are **not interchangeable**:
+
+- **`deploy.sh`** (preferred) — reads RPC URL/passphrase from `config/networks.toml`, supports `--dry-run`/`--build-only`, and can auto-update `networks.toml` with the new contract IDs. Use this for any network already defined in `networks.toml`.
+- **`deploy-testnet.sh`** — relies on the `stellar` CLI's own pre-configured network (via `stellar network add`), skips `networks.toml` entirely, and instead writes a `deployments/<network>.json` record. Use this only if you manage networks directly through the `stellar` CLI rather than `config/networks.toml`.
+
+```bash
+./scripts/deploy-testnet.sh --identity my-testnet-account
+./scripts/deploy-testnet.sh --identity my-testnet-account --network futurenet -y
+```
 
 ### admin.sh
 
