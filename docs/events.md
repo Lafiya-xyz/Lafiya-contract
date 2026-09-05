@@ -93,6 +93,15 @@ for how these events are consumed.
 |---|---|---|
 | `attester` | `Address` | topic_list |
 
+### `AttesterInfoUpdated`
+
+- **Prefix topics:** `attester_info_updated`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+
 ### `AttesterReinstated`
 
 - **Prefix topics:** `attester_reinstated`

@@ -19,6 +19,7 @@ Soroban smart contracts for Lafiya's on-chain trust layer — an attestation reg
 ## Overview
 
 🔗 Documentation: https://Lafiya-xyz.github.io/Lafiya-contract/
+📖 Glossary: [docs/glossary.md](docs/glossary.md) — canonical definitions of core terms used across this repo (`attester`, `CHW`, `record hash`/`record commitment`, `schema version`, …)
 
 
 Lafiya is a free, patient-owned emergency health card: the handful of facts that change how you are treated in an emergency — blood group, genotype, allergies, current medications, chronic conditions — travel with you as a scannable QR code and can be **cryptographically verified** by a health worker so a first responder can trust them on the spot.
@@ -82,7 +83,7 @@ graph TB
 
 - **`attester-registry`** — the on-chain allowlist of health workers authorized to write attestations
 - **`attestation-registry`** — the on-chain record of which attester verified which record hash, and when; calls into `attester-registry` on every write
-- **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization
+- **`multisig-account`** — a reusable N-of-M Soroban account contract that secures both registries' admin authorization. It deliberately ignores Soroban's authorization contexts in `__check_auth` — an accepted pre-alpha risk documented in [ADR-0007](docs/adr/0007-unscoped-multisig-authorization.md) — so a valid signer quorum's authority is not scoped to the registries
 
 All three are implemented and unit-tested (target milestone **M1**, see [Roadmap](#roadmap)); none has been deployed to testnet yet.
 
@@ -102,9 +103,11 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
 | `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
 | `add_attester_with_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>)` | Allowlists `attester` with optional metadata. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
+| `update_attester_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>)` | Updates metadata for an already-allowlisted `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Fails with `Error::AttesterNotFound` if `attester` isn't currently allowlisted. Emits `AttesterInfoUpdated`, distinguishable from enrollment's `AttesterAdded`. |
 | `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
 | `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted (and not suspended). Open to any caller, including other contracts. Callable while paused. |
 | `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
+| `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns `attester`'s metadata together with its current suspension state in one call. `None` if `attester` isn't currently allowlisted (never added, or since removed). Callable while paused. |
 | `suspend_attester(attester: Address)` | Suspends an allowlisted attester without removing it. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterSuspended`. |
 | `reinstate_attester(attester: Address)` | Reinstates a suspended attester. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterReinstated`. |
 | `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Does not evict existing attesters if lowered below the current count. |
@@ -218,7 +221,10 @@ cd ../attestation-registry && npm install && npm run build
 The generated bindings are committed directly to this repository under the `bindings/` directory. `lafiya-web` (or any other consumer) can consume them via:
 - Direct git path dependency in `package.json` pointing to the repo or subdirectory.
 - A git submodule in the consuming project.
-- Alternatively, CI/CD can be configured to publish these directories as packages to the `@lafiya` npm organization.
+
+Publishing these directories as packages to the `@lafiya` npm organization is a planned, but
+not yet implemented, secondary option. See [`PUBLISHING.md`](PUBLISHING.md) for the full
+strategy and the follow-up work required before that's live.
 
 
 ## Tech Stack

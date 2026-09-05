@@ -130,6 +130,30 @@
   },
   {
     "kind": "function_v0",
+    "name": "get_attester_status",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "get_attester_status",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "udt": {
+                "name": "AttesterStatus"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_max_attesters",
     "spec": {
       "inputs": [],
@@ -353,6 +377,47 @@
   },
   {
     "kind": "function_v0",
+    "name": "update_attester_info",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "license_hash",
+          "type_": {
+            "option": {
+              "value_type": {
+                "bytes_n": {
+                  "n": 32
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "region",
+          "type_": {
+            "option": {
+              "value_type": "symbol"
+            }
+          }
+        }
+      ],
+      "name": "update_attester_info",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "upgrade",
     "spec": {
       "inputs": [
@@ -404,6 +469,10 @@
         {
           "name": "MigrationNotRequired",
           "value": 6
+        },
+        {
+          "name": "AttesterNotFound",
+          "value": 7
         }
       ],
       "lib": "",
@@ -450,6 +519,25 @@
       ],
       "prefix_topics": [
         "attester_added"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttesterInfoUpdated",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttesterInfoUpdated",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attester_info_updated"
       ]
     }
   },
@@ -618,6 +706,28 @@
       ],
       "lib": "",
       "name": "AttesterInfo"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "AttesterStatus",
+    "spec": {
+      "fields": [
+        {
+          "name": "info",
+          "type_": {
+            "udt": {
+              "name": "AttesterInfo"
+            }
+          }
+        },
+        {
+          "name": "suspended",
+          "type_": "bool"
+        }
+      ],
+      "lib": "",
+      "name": "AttesterStatus"
     }
   }
 ]

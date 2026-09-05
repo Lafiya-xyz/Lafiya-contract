@@ -42,11 +42,30 @@ When a release is ready to be finalized:
 
 ---
 
+## Release Manifest
+
+A release also generates a **release manifest**: one JSON document binding the contract
+wasm hashes, storage schema versions, generated TypeScript bindings, event schemas, and
+per-network deployment state for that release into a single, machine-checkable record.
+See [ADR-0010](adr/0010-release-manifest-and-compatibility.md) for the schema, the
+compatibility policy it encodes, and how downstream repositories (`lafiya-web`,
+`lafiya-verifier`) use it to check compatibility before pinning a release:
+
+```bash
+python3 scripts/generate_release_manifest.py --pretty -o release-manifest.json
+python3 scripts/validate_release_manifest.py release-manifest.json
+```
+
+`.github/workflows/release-manifest.yml` is a prototype CI workflow that does this on
+every `v*.*.*` tag; see ADR-0010 "Follow-up" for what remains before it is load-bearing.
+
+---
+
 ## Testnet & Mainnet Redeployment
 
 Because Soroban smart contracts are immutable once deployed (unless an upgrade path is explicitly programmed), deploying a new version generally requires deploying new WASM bytecode and updating the contract addresses referenced by downstream consumers (such as the frontend app `lafiya-web`).
 
-For details on the redeployment, initialization, and upgrade state migration processes, please cross-reference the **upgrade-runbook issue** on GitHub:
-- [Upgrade Runbook Issue #48 (GitHub)](https://github.com/Lafiya-xyz/Lafiya-contract/issues/48)
+For details on the redeployment, initialization, and upgrade state migration processes, please cross-reference the upgrade runbook:
+- [Contract Upgrade Runbook](runbooks/contract-upgrade.md)
 
 Always follow the instructions in the runbook when performing redeployments to ensure that downstream services are not interrupted.

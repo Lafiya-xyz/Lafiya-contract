@@ -1,0 +1,339 @@
+{
+  "manifest_version": 1,
+  "release": {
+    "workspace_version": "0.1.0",
+    "git_commit": "db9d4f8e5fa4e0d68385cc0af1d2697dbdfe702f",
+    "git_tag": null,
+    "generated_at": "2026-08-18T22:58:49Z"
+  },
+  "contracts": [
+    {
+      "name": "attester-registry",
+      "crate_path": "contracts/attester-registry",
+      "package_version": "0.1.0",
+      "storage_schema_version": 1,
+      "wasm": {
+        "target": "wasm32v1-none",
+        "optimize": false,
+        "sha256": null,
+        "size_bytes": null
+      }
+    },
+    {
+      "name": "attestation-registry",
+      "crate_path": "contracts/attestation-registry",
+      "package_version": "0.1.0",
+      "storage_schema_version": 1,
+      "wasm": {
+        "target": "wasm32v1-none",
+        "optimize": false,
+        "sha256": null,
+        "size_bytes": null
+      }
+    },
+    {
+      "name": "multisig-account",
+      "crate_path": "contracts/multisig-account",
+      "package_version": "0.1.0",
+      "storage_schema_version": null,
+      "wasm": {
+        "target": "wasm32v1-none",
+        "optimize": false,
+        "sha256": null,
+        "size_bytes": null
+      }
+    }
+  ],
+  "bindings": [
+    {
+      "contract": "attestation-registry",
+      "language": "typescript",
+      "package_name": "attestation-registry",
+      "package_version": "0.0.0",
+      "path": "bindings/attestation-registry",
+      "generated_from_wasm_sha256": null
+    },
+    {
+      "contract": "attester-registry",
+      "language": "typescript",
+      "package_name": "attester-registry",
+      "package_version": "0.0.0",
+      "path": "bindings/attester-registry",
+      "generated_from_wasm_sha256": null
+    }
+  ],
+  "events": [
+    {
+      "contract": "attester-registry",
+      "name": "AdminTransferred",
+      "topic_fields": [
+        "previous_admin",
+        "new_admin"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Initialized",
+      "topic_fields": [
+        "admin"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterAdded",
+      "topic_fields": [
+        "attester"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterRemoved",
+      "topic_fields": [
+        "attester"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterSuspended",
+      "topic_fields": [
+        "attester"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterReinstated",
+      "topic_fields": [
+        "attester"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Upgraded",
+      "topic_fields": [
+        "new_wasm_hash"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Paused",
+      "topic_fields": [
+        "by"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Unpaused",
+      "topic_fields": [
+        "by"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AdminTransferred",
+      "topic_fields": [
+        "previous_admin",
+        "new_admin"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttestationRecorded",
+      "topic_fields": [
+        "record_hash"
+      ],
+      "data_fields": [
+        "attester",
+        "timestamp"
+      ],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttestationRevoked",
+      "topic_fields": [
+        "record_hash"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "Paused",
+      "topic_fields": [
+        "by"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "Unpaused",
+      "topic_fields": [
+        "by"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttesterRegistryRepointed",
+      "topic_fields": [
+        "previous",
+        "new"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    }
+  ],
+  "deployments": [
+    {
+      "network": "local",
+      "contract": "attester-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "local",
+      "contract": "attestation-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "standalone",
+      "contract": "attester-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "standalone",
+      "contract": "attestation-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "testnet",
+      "contract": "attester-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "testnet",
+      "contract": "attestation-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "futurenet",
+      "contract": "attester-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "futurenet",
+      "contract": "attestation-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "mainnet",
+      "contract": "attester-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    },
+    {
+      "network": "mainnet",
+      "contract": "attestation-registry",
+      "contract_id": null,
+      "wasm_sha256": null,
+      "storage_schema_version": 1,
+      "deployed_at": null,
+      "upgrade_tx": null,
+      "previous_wasm_sha256": null,
+      "status": "not_deployed",
+      "source": "config/networks.toml (current pointer only, no historical ledger yet)"
+    }
+  ],
+  "compatibility": {
+    "policy_ref": "docs/adr/0010-release-manifest-and-compatibility.md#compatibility-policy",
+    "consumers": [
+      {
+        "repo": "lafiya-web",
+        "requirements_ref": "docs/release-manifest/examples/lafiya-web.requirements.json"
+      }
+    ]
+  }
+}
