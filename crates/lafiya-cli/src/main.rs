@@ -2,10 +2,23 @@
 //! Reads config/networks.toml for RPC, passphrase, contract IDs.
 //! Switching networks is one flag: --network testnet
 //! Secrets are never read from config, only via stellar CLI identities or env.
+//!
+//! Every operator supplied value (network name, address, contract id, record
+//! hash, admin/source account) is validated locally before the stellar CLI is
+//! invoked, so malformed input fails fast with an actionable message.
 
+use anyhow::Context;
 use clap::{Parser, Subcommand};
-use lafiya_config::{get_network, load_networks};
+use lafiya_config::{
+    get_network, load_networks, validate_account_address, validate_address, validate_network_name,
+    validate_record_hash, validate_source_account, ContractKind, DeploymentState, NetworkConfig,
+};
 use std::path::PathBuf;
+
+/// Env var holding the stellar CLI identity used as transaction source.
+const ENV_SOURCE: &str = "STELLAR_ACCOUNT";
+/// Env var holding the contract admin address.
+const ENV_ADMIN: &str = "ADMIN_ADDRESS";
 
 #[derive(Parser, Debug)]
 #[command(
@@ -50,6 +63,12 @@ enum Commands {
         /// Dry run
         #[arg(long, default_value_t = false)]
         dry_run: bool,
+        /// Stellar identity or G... address used as transaction source (or STELLAR_ACCOUNT)
+        #[arg(long)]
+        source: Option<String>,
+        /// Admin address (G...) for contract initialization (or ADMIN_ADDRESS)
+        #[arg(long)]
+        admin: Option<String>,
     },
 }
 
@@ -98,6 +117,10 @@ enum AttestationSub {
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
+    // Validate the network name before it is used as a config key.
+    validate_network_name(&cli.network)
+        .map_err(|e| anyhow::anyhow!("invalid --network value: {e}"))?;
+
     let config_path_opt = cli.config.as_deref();
     let networks = load_networks(config_path_opt)?;
 
@@ -123,6 +146,23 @@ fn main() -> anyhow::Result<()> {
     }
 
     let network_cfg = get_network(&networks, &cli.network).map_err(|e| anyhow::anyhow!(e))?;
+
+    // `config show` reports config problems instead of refusing to print, so an
+    // operator can see exactly which value needs fixing. Every other command
+    // requires a valid profile before touching the network.
+    let is_config_show = matches!(
+        cli.command,
+        Commands::Config {
+            sub: ConfigSub::Show
+        }
+    );
+    if let Err(e) = network_cfg.validate(&cli.network) {
+        if is_config_show {
+            eprintln!("WARNING: {e}");
+        } else {
+            return Err(anyhow::anyhow!(e));
+        }
+    }
 
     match cli.command {
         Commands::Config { sub } => {
@@ -153,6 +193,7 @@ fn main() -> anyhow::Result<()> {
                         }
                     );
                     println!("Deployed: {}", network_cfg.is_deployed());
+                    println!("Deployment status: {}", deployment_summary(&network_cfg));
                     println!("\nSecrets: NEVER stored in networks.toml. Use stellar identities or env vars.");
                 }
                 ConfigSub::List => {} // handled above
@@ -180,136 +221,81 @@ fn main() -> anyhow::Result<()> {
         }
         Commands::Attester { sub } => match sub {
             AttesterSub::Is { address } => {
-                if network_cfg.contracts.attester_registry.is_empty() {
-                    anyhow::bail!(
-                        "attester_registry not deployed for network '{}'. Deploy first with --network {}",
-                        cli.network,
-                        cli.network
-                    );
-                }
-                println!(
-                    "Checking is_attester for {} on {}",
-                    address, network_cfg.contracts.attester_registry
-                );
+                let contract_id = network_cfg
+                    .require_contract_id(&cli.network, ContractKind::AttesterRegistry)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                validate_address("attester address", &address)
+                    .context("invalid attester address")?;
+
+                println!("Checking is_attester for {} on {}", address, contract_id);
                 println!("RPC: {}", network_cfg.rpc_url);
-                // We print the stellar CLI command that would be run
-                // To actually invoke, we'd need stellar CLI integration; for now print guidance
-                // and attempt if stellar is installed.
-                let stellar_args = [
-                    "contract",
-                    "invoke",
-                    "--id",
-                    &network_cfg.contracts.attester_registry,
-                    "--rpc-url",
-                    &network_cfg.rpc_url,
-                    "--network-passphrase",
-                    &network_cfg.network_passphrase,
-                    "--",
+                let args = invoke_args(
+                    &network_cfg,
+                    contract_id,
+                    None,
                     "is_attester",
-                    "--attester",
-                    &address,
-                ];
-                println!("> stellar {}", stellar_args.join(" "));
-                // Try executing if stellar exists
+                    &["--attester", &address],
+                );
+                println!("> stellar {}", args.join(" "));
+                // Read-only query: report a missing/failing CLI without aborting hard.
                 if which::which("stellar").is_ok() {
-                    let status = std::process::Command::new("stellar")
-                        .args(stellar_args)
-                        .status();
-                    if let Err(e) = status {
+                    if let Err(e) = std::process::Command::new("stellar").args(args).status() {
                         eprintln!("Failed to run stellar CLI: {e}. Install with: cargo install --locked stellar-cli");
                     }
                 } else {
-                    eprintln!("stellar CLI not found — showing command only. Install with: cargo install --locked stellar-cli");
+                    eprintln!("stellar CLI not found - showing command only. Install with: cargo install --locked stellar-cli");
                 }
             }
             AttesterSub::Add { address, source } => {
-                if network_cfg.contracts.attester_registry.is_empty() {
-                    anyhow::bail!("attester_registry not deployed for '{}'", cli.network);
-                }
-                let mut args = vec![
-                    "contract".to_string(),
-                    "invoke".to_string(),
-                    "--id".to_string(),
-                    network_cfg.contracts.attester_registry.clone(),
-                    "--rpc-url".to_string(),
-                    network_cfg.rpc_url.clone(),
-                    "--network-passphrase".to_string(),
-                    network_cfg.network_passphrase.clone(),
-                ];
-                if let Some(src) = source {
-                    args.push("--source".to_string());
-                    args.push(src);
-                }
-                args.push("--".to_string());
-                args.push("add_attester".to_string());
-                args.push("--attester".to_string());
-                args.push(address.clone());
-                println!("> stellar {}", args.join(" "));
-                if which::which("stellar").is_ok() {
-                    let status = std::process::Command::new("stellar").args(args).status()?;
-                    if !status.success() {
-                        anyhow::bail!("stellar CLI failed");
-                    }
-                } else {
-                    anyhow::bail!("stellar CLI not found");
-                }
+                let contract_id = network_cfg
+                    .require_contract_id(&cli.network, ContractKind::AttesterRegistry)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                validate_address("attester address", &address)
+                    .context("invalid attester address")?;
+                let source = validated_source(source)?;
+
+                let args = invoke_args(
+                    &network_cfg,
+                    contract_id,
+                    source.as_deref(),
+                    "add_attester",
+                    &["--attester", &address],
+                );
+                run_stellar(args)?;
             }
             AttesterSub::Remove { address, source } => {
-                if network_cfg.contracts.attester_registry.is_empty() {
-                    anyhow::bail!("attester_registry not deployed for '{}'", cli.network);
-                }
-                let mut args = vec![
-                    "contract".to_string(),
-                    "invoke".to_string(),
-                    "--id".to_string(),
-                    network_cfg.contracts.attester_registry.clone(),
-                    "--rpc-url".to_string(),
-                    network_cfg.rpc_url.clone(),
-                    "--network-passphrase".to_string(),
-                    network_cfg.network_passphrase.clone(),
-                ];
-                if let Some(src) = source {
-                    args.push("--source".to_string());
-                    args.push(src);
-                }
-                args.push("--".to_string());
-                args.push("remove_attester".to_string());
-                args.push("--attester".to_string());
-                args.push(address.clone());
-                println!("> stellar {}", args.join(" "));
-                if which::which("stellar").is_ok() {
-                    let status = std::process::Command::new("stellar").args(args).status()?;
-                    if !status.success() {
-                        anyhow::bail!("stellar CLI failed");
-                    }
-                } else {
-                    anyhow::bail!("stellar CLI not found");
-                }
+                let contract_id = network_cfg
+                    .require_contract_id(&cli.network, ContractKind::AttesterRegistry)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                validate_address("attester address", &address)
+                    .context("invalid attester address")?;
+                let source = validated_source(source)?;
+
+                let args = invoke_args(
+                    &network_cfg,
+                    contract_id,
+                    source.as_deref(),
+                    "remove_attester",
+                    &["--attester", &address],
+                );
+                run_stellar(args)?;
             }
         },
         Commands::Attestation { sub } => match sub {
             AttestationSub::Get { record_hash } => {
-                if network_cfg.contracts.attestation_registry.is_empty() {
-                    anyhow::bail!("attestation_registry not deployed for '{}'", cli.network);
-                }
-                // Basic validation for hex length
-                if record_hash.len() != 64 || !record_hash.chars().all(|c| c.is_ascii_hexdigit()) {
-                    anyhow::bail!("record_hash must be 64 hex chars (32-byte hash)");
-                }
-                let args = [
-                    "contract",
-                    "invoke",
-                    "--id",
-                    &network_cfg.contracts.attestation_registry,
-                    "--rpc-url",
-                    &network_cfg.rpc_url,
-                    "--network-passphrase",
-                    &network_cfg.network_passphrase,
-                    "--",
+                let contract_id = network_cfg
+                    .require_contract_id(&cli.network, ContractKind::AttestationRegistry)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                validate_record_hash("record_hash", &record_hash)
+                    .context("invalid record hash (expected a hex encoded 32-byte hash)")?;
+
+                let args = invoke_args(
+                    &network_cfg,
+                    contract_id,
+                    None,
                     "get_attestation",
-                    "--record_hash",
-                    &record_hash,
-                ];
+                    &["--record_hash", &record_hash],
+                );
                 println!("> stellar {}", args.join(" "));
                 if which::which("stellar").is_ok() {
                     let status = std::process::Command::new("stellar").args(args).status()?;
@@ -318,7 +304,7 @@ fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     eprintln!(
-                        "stellar CLI not found — install with cargo install --locked stellar-cli"
+                        "stellar CLI not found - install with cargo install --locked stellar-cli"
                     );
                 }
             }
@@ -326,11 +312,24 @@ fn main() -> anyhow::Result<()> {
         Commands::Deploy {
             build_only,
             dry_run,
+            source,
+            admin,
         } => {
+            let identity = DeployIdentity::resolve(
+                admin,
+                source,
+                std::env::var(ENV_ADMIN).ok(),
+                std::env::var(ENV_SOURCE).ok(),
+                DeployMode::new(build_only, dry_run),
+            )?;
+
             println!("Deploy flow for network: {}", cli.network);
             println!("RPC: {}", network_cfg.rpc_url);
             println!("Passphrase: {}", network_cfg.network_passphrase);
-            println!("This command is a wrapper— for full deploy use:");
+            println!("Current deployment: {}", deployment_summary(&network_cfg));
+            println!("Source: {}", identity.source.as_deref().unwrap_or("<none>"));
+            println!("Admin: {}", identity.admin.as_deref().unwrap_or("<none>"));
+            println!("This command is a wrapper- for full deploy use:");
             println!("  ./scripts/deploy.sh --network {}", cli.network);
             if build_only {
                 println!("Building WASM...");
