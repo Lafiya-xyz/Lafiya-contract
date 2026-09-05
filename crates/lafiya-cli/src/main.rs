@@ -93,6 +93,16 @@ enum AttestationSub {
         /// Hex string of 32-byte record hash (64 chars)
         record_hash: String,
     },
+    /// Compute the versioned, domain-separated hash of a local record JSON file
+    Hash {
+        /// Path to the record JSON file
+        record: PathBuf,
+    },
+    /// Verify a local record JSON file against its on-chain attestation
+    Verify {
+        /// Path to the record JSON file
+        record: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -309,6 +319,49 @@ fn main() -> anyhow::Result<()> {
                     "get_attestation",
                     "--record_hash",
                     &record_hash,
+                ];
+                println!("> stellar {}", args.join(" "));
+                if which::which("stellar").is_ok() {
+                    let status = std::process::Command::new("stellar").args(args).status()?;
+                    if !status.success() {
+                        anyhow::bail!("stellar CLI failed");
+                    }
+                } else {
+                    eprintln!(
+                        "stellar CLI not found — install with cargo install --locked stellar-cli"
+                    );
+                }
+            }
+            AttestationSub::Hash { record } => {
+                let content = std::fs::read_to_string(&record)?;
+                let rec: lafiya_config::record::EmergencyRecord = serde_json::from_str(&content)?;
+                let hash_bytes = rec.hash()?;
+                let hash_hex: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                println!("Canonicalized JSON: {}", rec.canonicalize()?);
+                println!("Computed Hash (hex): {}", hash_hex);
+            }
+            AttestationSub::Verify { record } => {
+                if network_cfg.contracts.attestation_registry.is_empty() {
+                    anyhow::bail!("attestation_registry not deployed for '{}'", cli.network);
+                }
+                let content = std::fs::read_to_string(&record)?;
+                let rec: lafiya_config::record::EmergencyRecord = serde_json::from_str(&content)?;
+                let hash_bytes = rec.hash()?;
+                let hash_hex: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                println!("Verifying record hash: {}", hash_hex);
+                let args = [
+                    "contract",
+                    "invoke",
+                    "--id",
+                    &network_cfg.contracts.attestation_registry,
+                    "--rpc-url",
+                    &network_cfg.rpc_url,
+                    "--network-passphrase",
+                    &network_cfg.network_passphrase,
+                    "--",
+                    "get_attestation",
+                    "--record_hash",
+                    &hash_hex,
                 ];
                 println!("> stellar {}", args.join(" "));
                 if which::which("stellar").is_ok() {

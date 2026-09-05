@@ -16,7 +16,7 @@ clippy:
 	cargo clippy --workspace --all-targets -- -D warnings
 
 wasm:
-	cargo build --workspace --release --target wasm32v1-none
+	cargo build -p attester-registry -p attestation-registry -p multisig-account --release --target wasm32v1-none
 
 # Builds only the Soroban contract crates for wasm32v1-none. Unlike `wasm`,
 # this doesn't try (and fail) to cross-compile the std-only workspace
