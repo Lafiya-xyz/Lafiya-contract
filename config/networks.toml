@@ -1,3 +1,4 @@
+#:schema ./networks.schema.json
 # Lafiya - Network Configuration
 # This file centralizes public network parameters and contract IDs.
 # NEVER store private keys, mnemonics, or secrets here.
@@ -7,6 +8,9 @@
 #   - Deploy script: ./scripts/deploy.sh --network testnet
 #   - Admin CLI (bash): ./scripts/admin.sh --network testnet <command>
 #   - Admin CLI (rust): cargo run -p lafiya-cli -- --network testnet <command>
+#
+# Optional per network: rpc_urls = ["<primary>", "<secondary>", ...] lists RPC
+# endpoints in failover order for lafiya-cli; it falls back to rpc_url when unset.
 #
 # Contract IDs are empty until deployed. After deployment, update the relevant
 # network section with the deployed contract IDs.

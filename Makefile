@@ -1,4 +1,4 @@
-.PHONY: build test fmt fmt-check clippy wasm wasm-contracts check clean config-check config-list deploy bench conformance conformance-update
+.PHONY: build test fmt fmt-check clippy wasm wasm-contracts check clean config-check config-list config-schema stellar-toml deploy bench conformance conformance-update
 
 build:
 	cargo build --workspace
@@ -55,6 +55,12 @@ NETWORK ?= testnet
 config-check:
 	./scripts/admin.sh --network $(NETWORK) config show
 	cargo test -p lafiya-config
+
+config-schema:
+	cargo run --quiet -p lafiya-cli -- config schema > config/networks.schema.json
+
+stellar-toml:
+	python3 scripts/generate_stellar_toml.py
 
 config-list:
 	./scripts/admin.sh --network $(NETWORK) config list

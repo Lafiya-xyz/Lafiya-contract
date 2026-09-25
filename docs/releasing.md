@@ -59,6 +59,32 @@ python3 scripts/validate_release_manifest.py release-manifest.json
 `.github/workflows/release-manifest.yml` is a prototype CI workflow that does this on
 every `v*.*.*` tag; see ADR-0010 "Follow-up" for what remains before it is load-bearing.
 
+## Publishing `stellar.toml`
+
+Lafiya's SEP-1 `stellar.toml` ([spec](specs/stellar-toml.md)) tells verifiers which contract
+IDs and signing key are legitimately Lafiya's. Update it whenever a release changes a
+contract ID on any network (deploy or redeploy), or when the org metadata or `SIGNING_KEY`
+changes:
+
+1. Record the new contract IDs in `config/networks.toml` (see
+   [Redeployment](#testnet--mainnet-redeployment)).
+2. Regenerate from the manifest of the release that was deployed:
+   ```bash
+   python3 scripts/generate_stellar_toml.py --manifest release-manifest.json
+   ```
+   Metadata-only changes: edit `config/stellar-toml.meta.toml`, then `make stellar-toml`.
+3. Commit `config/stellar.toml` with the `networks.toml` change. CI
+   (`scripts/generate_stellar_toml.py --check`) rejects a stale file.
+4. Publish the committed file byte-for-byte at `https://lafiya.xyz/.well-known/stellar.toml`,
+   served over HTTPS with `Content-Type: text/plain` and
+   `Access-Control-Allow-Origin: *` (required by SEP-1).
+5. Verify the published file against the repository and the chain for every network that
+   changed:
+   ```bash
+   cargo run -p lafiya-cli -- --network testnet trust verify --domain lafiya.xyz
+   ```
+   Do not announce the release until this passes.
+
 ---
 
 ## Testnet & Mainnet Redeployment

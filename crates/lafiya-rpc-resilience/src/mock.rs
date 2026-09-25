@@ -6,7 +6,7 @@
 //! [`RecoveryResult`](crate::RecoveryResult) and the number of calls made to
 //! each provider (to prove a duplicate submission never happened).
 
-use crate::{RpcError, RpcProvider, SubmitOutcome, TxState};
+use crate::{RpcError, RpcProvider, SignedTx, SubmitOutcome, TxState};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -51,7 +51,7 @@ impl RpcProvider for ScriptedProvider {
     /// Falls back to `ProviderUnavailable` once the script runs out, rather
     /// than panicking -- a test that under-scripts a provider gets a clear,
     /// on-brand failure instead of an unrelated `unwrap` panic.
-    fn submit(&mut self, _tx_hash: &str) -> SubmitOutcome {
+    fn submit(&mut self, _tx: &SignedTx) -> SubmitOutcome {
         self.submit_calls += 1;
         self.submit_script
             .pop_front()
@@ -91,8 +91,8 @@ impl<P: RpcProvider> RpcProvider for Shared<P> {
         &self.label
     }
 
-    fn submit(&mut self, tx_hash: &str) -> SubmitOutcome {
-        self.inner.borrow_mut().submit(tx_hash)
+    fn submit(&mut self, tx: &SignedTx) -> SubmitOutcome {
+        self.inner.borrow_mut().submit(tx)
     }
 
     fn get_transaction(&mut self, tx_hash: &str) -> Result<TxState, RpcError> {

@@ -7,3 +7,4 @@
 .soroban
 test_snapshots/
 __pycache__/
+config/networks.local.toml
