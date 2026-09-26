@@ -104,6 +104,16 @@ fn remove_attester_revokes_allowlisting() {
 
     client.remove_attester(&attester);
     assert!(!client.is_attester(&attester));
+    let expected_event = AttesterRemoved {
+        attester: attester.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    client.remove_attester(&attester);
+    assert!(env.events().all().is_empty());
 }
 
 #[test]
@@ -114,6 +124,10 @@ fn remove_attester_never_added_is_a_no_op() {
     let attester = Address::generate(&env);
     client.remove_attester(&attester);
     assert!(!client.is_attester(&attester));
+    assert!(env.events().all().is_empty());
+
+    client.remove_attester(&attester);
+    assert!(env.events().all().is_empty());
 }
 
 #[test]

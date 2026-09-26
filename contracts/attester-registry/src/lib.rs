@@ -542,8 +542,11 @@ impl AttesterRegistry {
                     .instance()
                     .set(&DataKey::AttesterCount, &(count - 1));
             }
+            AttesterRemoved {
+                attester: attester.clone(),
+            }
+            .publish(&env);
         }
-        AttesterRemoved { attester }.publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
