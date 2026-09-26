@@ -129,7 +129,7 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `get_attester_registry() -> Address` | Returns the configured `attester-registry` contract address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for allowlist checks. Requires admin auth. Emits `AttesterRegistryRepointed`. |
+| `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for allowlist checks. Requires admin auth and checks that the new address responds to `is_attester` (this does not establish that it is a trusted deployment). Emits `AttesterRegistryRepointed`. |
 | `pause()` | Blocks `attest` until unpaused. Requires admin auth. Emits `Paused`. |
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |

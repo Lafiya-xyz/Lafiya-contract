@@ -213,16 +213,7 @@ impl AttestationRegistry {
         }
         admin.require_auth();
 
-        // Best-effort sanity check: verify attester_registry implements
-        // the is_attester interface by calling it with a throwaway address.
-        let registry = AttesterRegistryClient::new(&env, &attester_registry);
-        // Use the current contract's own address as the throwaway — it's a
-        // valid Address but won't be an allowlisted attester, so a real
-        // attester-registry will return `false` (not trap).
-        let throwaway = env.current_contract_address();
-        if registry.try_is_attester(&throwaway).is_err() {
-            return Err(Error::InvalidRegistryWiring);
-        }
+        Self::validate_attester_registry(&env, &attester_registry)?;
 
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -280,12 +271,15 @@ impl AttestationRegistry {
     }
 
     /// Change the attester-registry contract this registry consults for
-    /// allowlist checks. Requires the admin's authorization. Emits
+    /// allowlist checks. Requires the admin's authorization and verifies the
+    /// new address responds to `is_attester`. This is an interface check, not
+    /// proof that the address is a trusted registry deployment. Emits
     /// `AttesterRegistryRepointed` for indexer/audit visibility.
     pub fn set_attester_registry(env: Env, new_registry: Address) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
 
+        Self::validate_attester_registry(&env, &new_registry)?;
         let previous = Self::attester_registry(&env)?;
 
         env.storage()
@@ -433,6 +427,15 @@ impl AttestationRegistry {
         .publish(env);
 
         Ok(attestation)
+    }
+
+    fn validate_attester_registry(env: &Env, registry_id: &Address) -> Result<(), Error> {
+        let registry = AttesterRegistryClient::new(env, registry_id);
+        let throwaway = env.current_contract_address();
+        if registry.try_is_attester(&throwaway).is_err() {
+            return Err(Error::InvalidRegistryWiring);
+        }
+        Ok(())
     }
 
     /// Anchor a Merkle root containing multiple record commitments.

@@ -926,7 +926,7 @@ fn test_attest_auth_matrix() {
 fn set_attester_registry_by_admin_succeeds() {
     let (env, client, attester_registry, admin) = setup();
 
-    let new_registry = Address::generate(&env);
+    let new_registry = env.register(attester_registry::AttesterRegistry, ());
     assert_eq!(client.get_attester_registry(), attester_registry.address);
 
     client.set_attester_registry(&new_registry);
@@ -957,6 +957,18 @@ fn set_attester_registry_by_admin_succeeds() {
     );
 
     assert_eq!(client.get_attester_registry(), new_registry);
+}
+
+#[test]
+fn set_attester_registry_rejects_address_without_registry_interface() {
+    let (env, client, attester_registry, _admin) = setup();
+    let invalid_registry = Address::generate(&env);
+
+    assert_eq!(
+        client.try_set_attester_registry(&invalid_registry),
+        Err(Ok(Error::InvalidRegistryWiring))
+    );
+    assert_eq!(client.get_attester_registry(), attester_registry.address);
 }
 
 #[test]
