@@ -70,6 +70,8 @@ pub struct Attestation {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+    /// Commitment scheme version: `0` is legacy/unversioned, `1` is LRC-1.
+    pub commitment_version: u32,
 }
 
 /// Metadata for a batch of record commitments anchored by one attester.
@@ -104,6 +106,8 @@ pub struct AttestationRecorded {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+    /// Commitment scheme version recorded with the attestation.
+    pub commitment_version: u32,
 }
 
 /// Emitted when an attestation is revoked.
@@ -181,6 +185,8 @@ pub enum Error {
     EmptyBatch = 8,
     /// The Merkle root has already been anchored.
     BatchAlreadyAnchored = 9,
+    /// Commitment versions are encoded as a single byte and must be in `0..=255`.
+    InvalidCommitmentVersion = 10,
 }
 
 /// The attestation registry contract.
@@ -332,11 +338,35 @@ impl AttestationRegistry {
         attester: Address,
         record_hash: BytesN<32>,
     ) -> Result<Attestation, Error> {
-        attester.require_auth();
-        Self::require_not_paused(&env)?;
+        Self::record_attestation(&env, attester, record_hash, 0)
+    }
 
-        let registry_id = Self::attester_registry(&env)?;
-        let registry = AttesterRegistryClient::new(&env, &registry_id);
+    /// Record an attestation with an explicit one-byte commitment scheme
+    /// version. `0` is reserved for legacy/unversioned commitments, `1` is
+    /// LRC-1, and future values may identify later schemes.
+    pub fn attest_versioned(
+        env: Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+        commitment_version: u32,
+    ) -> Result<Attestation, Error> {
+        if commitment_version > u8::MAX as u32 {
+            return Err(Error::InvalidCommitmentVersion);
+        }
+        Self::record_attestation(&env, attester, record_hash, commitment_version)
+    }
+
+    fn record_attestation(
+        env: &Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+        commitment_version: u32,
+    ) -> Result<Attestation, Error> {
+        attester.require_auth();
+        Self::require_not_paused(env)?;
+
+        let registry_id = Self::attester_registry(env)?;
+        let registry = AttesterRegistryClient::new(env, &registry_id);
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
         }
@@ -344,6 +374,7 @@ impl AttestationRegistry {
         let attestation = Attestation {
             attester: attester.clone(),
             timestamp: env.ledger().timestamp(),
+            commitment_version,
         };
 
         let sequence: u64 = env
@@ -397,8 +428,9 @@ impl AttestationRegistry {
             record_hash,
             attester,
             timestamp: attestation.timestamp,
+            commitment_version,
         }
-        .publish(&env);
+        .publish(env);
 
         Ok(attestation)
     }

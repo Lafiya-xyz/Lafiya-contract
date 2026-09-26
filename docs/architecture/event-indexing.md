@@ -12,6 +12,7 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AttesterSuspended`
 - `AttesterReinstated`
 - `AttestationRecorded`
+- `AttestationBatchAnchored` (`attestation-registry`)
 - `AttestationRevoked`
 - `Upgraded` (`attester-registry`)
 - `Paused` (`attester-registry` and `attestation-registry`)

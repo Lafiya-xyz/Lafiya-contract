@@ -78,7 +78,35 @@ fn attest_by_allowlisted_attester_succeeds() {
     let attestation = client.attest(&attester, &record_hash);
 
     assert_eq!(attestation.attester, attester);
+    assert_eq!(attestation.commitment_version, 0);
     assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn attest_versioned_records_commitment_version() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[25u8; 32]);
+
+    let attestation = client.attest_versioned(&attester, &record_hash, &1);
+
+    assert_eq!(attestation.commitment_version, 1);
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn attest_versioned_rejects_values_outside_one_byte_range() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[26u8; 32]);
+
+    assert_eq!(
+        client.try_attest_versioned(&attester, &record_hash, &256),
+        Err(Ok(Error::InvalidCommitmentVersion))
+    );
+    assert_eq!(client.get_attestation(&record_hash), None);
 }
 
 #[test]
@@ -274,10 +302,11 @@ fn get_attestation_history_boundary_at_max_history() {
 
     // Verify all 10 entries are from attestations 2-11 (in order).
     for i in 0..10 {
+        let idx = i as usize + 1;
         assert_eq!(
             history.get(i).unwrap().timestamp,
-            attestations[i + 1].timestamp,
-            "History entry {} should match attestation {}", i, i + 1
+            attestations[idx].timestamp,
+            "History entry {} should match attestation {}", i, idx
         );
     }
 }
@@ -295,6 +324,7 @@ fn attest_emits_event() {
         record_hash: record_hash.clone(),
         attester: attestation.attester.clone(),
         timestamp: attestation.timestamp,
+        commitment_version: attestation.commitment_version,
     };
     assert_eq!(
         env.events().all(),
@@ -778,6 +808,7 @@ fn test_attest_auth_matrix() {
             expected_result: Ok(Ok(Attestation {
                 attester: Address::generate(&Env::default()), // will be overwritten in comparison/check
                 timestamp: 0,
+                commitment_version: 0,
             })),
         },
         TestCase {
@@ -1032,11 +1063,11 @@ fn revoke_attestation_clears_get_attestation_history() {
 
     let history_before = client.get_attestation_history(&record_hash);
     assert_eq!(history_before.len(), 3);
-    assert_eq!(history_before.get(0), Some(first));
-    assert_eq!(history_before.get(1), Some(second));
-    assert_eq!(history_before.get(2), Some(third));
+    assert_eq!(history_before.get(0), Some(first.clone()));
+    assert_eq!(history_before.get(1), Some(second.clone()));
+    assert_eq!(history_before.get(2), Some(third.clone()));
 
-    assert_eq!(client.get_attestation(&record_hash), Some(third));
+    assert_eq!(client.get_attestation(&record_hash), Some(third.clone()));
 
     client.revoke_attestation(&record_hash);
 

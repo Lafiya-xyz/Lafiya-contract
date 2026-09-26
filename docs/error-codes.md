@@ -31,6 +31,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `7` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
 | `8` | `EmptyBatch` | A Merkle batch must contain at least one record. |
 | `9` | `BatchAlreadyAnchored` | The Merkle root has already been anchored. |
+| `10` | `InvalidCommitmentVersion` | The commitment version must fit in one byte (`0x00` through `0xFF`). |
 
 ## `multisig-account`
 

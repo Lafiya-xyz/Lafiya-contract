@@ -38,8 +38,10 @@ source of truth for who may attest. See `contracts/attester-registry/src/lib.rs`
 ### Attestation
 
 The on-chain record written by the *attestation registry* when an *attester* verifies a
-record: `{ attester: Address, timestamp: u64 }`, stored keyed by the *record hash* with a
-bounded per-hash history (10 entries). Written by `attest()`, removed by
+record: `{ attester: Address, timestamp: u64, commitment_version: u32 }`, stored keyed by
+the *record hash* with a bounded per-hash history (10 entries). The legacy `attest()` path
+writes version `0x00`; `attest_versioned()` records the explicitly supplied version.
+Written by `attest()` or `attest_versioned()`, removed by
 `revoke_attestation()`. See [ADR-0006](adr/0006-attestation-revocation-semantics.md).
 
 ### Attestation registry (`attestation-registry`)
