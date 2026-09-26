@@ -39,8 +39,9 @@ model and threat model, including canonical serialization, domain separation, an
 entropy or another hiding construction where required.
 
 The contracts treat the commitment as an identifier only. A one-time consent grant proves that
-the patient authorized the selected attester to attest that exact commitment; it does not prove
-that the underlying health information is accurate, available, or current.
+the patient authorized the selected attester to attest that exact commitment and select when the
+verification becomes stale; it does not prove that the underlying health information is accurate,
+available, or medically current.
 
 ## Alternatives considered
 

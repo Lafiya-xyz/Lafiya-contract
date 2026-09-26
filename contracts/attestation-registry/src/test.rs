@@ -1,7 +1,7 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Events as _};
+use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 use soroban_sdk::{BytesN, Env, Event, IntoVal};
 
 fn setup() -> (
@@ -34,7 +34,8 @@ fn attest_with_consent(
     record_hash: &BytesN<32>,
 ) -> Attestation {
     let patient = Address::generate(env);
-    client.consent_attestation(&patient, attester, record_hash);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, attester, record_hash, &expires_at);
     client.attest(attester, &patient, record_hash)
 }
 
@@ -103,7 +104,8 @@ fn attest_requires_matching_patient_consent() {
     let result = client.try_attest(&attester, &patient, &record_hash);
     assert_eq!(result, Err(Ok(Error::PatientConsentRequired)));
 
-    client.consent_attestation(&patient, &attester, &record_hash);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
     let other_patient = Address::generate(&env);
     let mismatched = client.try_attest(&attester, &other_patient, &record_hash);
     assert_eq!(mismatched, Err(Ok(Error::PatientConsentRequired)));
@@ -124,7 +126,8 @@ fn patient_consent_requires_patient_authorization() {
     let record_hash = BytesN::from_array(&env, &[72u8; 32]);
 
     env.mock_auths(&[]);
-    let result = client.try_consent_attestation(&patient, &attester, &record_hash);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    let result = client.try_consent_attestation(&patient, &attester, &record_hash, &expires_at);
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), None);
 }
@@ -160,6 +163,7 @@ fn get_attestation_returns_none_for_unknown_hash() {
     let (env, client, _attester_registry, _admin) = setup();
     let record_hash = BytesN::from_array(&env, &[9u8; 32]);
     assert_eq!(client.get_attestation(&record_hash), None);
+    assert_eq!(client.get_attestation_status(&record_hash), None);
 }
 
 #[test]
@@ -244,18 +248,57 @@ fn get_attestation_history_boundary_at_max_history() {
     let history = client.get_attestation_history(&record_hash);
     assert_eq!(history.len(), 10);
 
-    assert_eq!(history.get(0).unwrap().timestamp, attestations[1].timestamp);
-    assert_eq!(
-        history.get(9).unwrap().timestamp,
-        attestations[10].timestamp
-    );
-
     for i in 0..10 {
         assert_eq!(
             history.get(i).unwrap().timestamp,
             attestations[(i + 1) as usize].timestamp
         );
     }
+    assert_eq!(
+        client.get_attestation(&record_hash),
+        Some(attestations[10].clone())
+    );
+}
+
+#[test]
+fn patient_selected_expiry_marks_attestation_stale() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let record_hash = BytesN::from_array(&env, &[15u8; 32]);
+    attester_registry.add_attester(&attester);
+
+    let expires_at = env.ledger().timestamp() + 10;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    let attestation = client.attest(&attester, &patient, &record_hash);
+
+    let fresh = client.get_attestation_status(&record_hash).unwrap();
+    assert_eq!(fresh.attestation, attestation);
+    assert_eq!(fresh.expires_at, Some(expires_at));
+    assert!(!fresh.is_expired);
+
+    env.ledger()
+        .with_mut(|ledger| ledger.timestamp = expires_at);
+    let stale = client.get_attestation_status(&record_hash).unwrap();
+    assert!(stale.is_expired);
+    let history = client.get_attestation_history_status(&record_hash);
+    assert_eq!(history.len(), 1);
+    assert!(history.get(0).unwrap().is_expired);
+}
+
+#[test]
+fn patient_cannot_grant_already_expired_attestation() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let patient = Address::generate(&env);
+    let record_hash = BytesN::from_array(&env, &[16u8; 32]);
+    attester_registry.add_attester(&attester);
+
+    let expires_at = env.ledger().timestamp();
+    assert_eq!(
+        client.try_consent_attestation(&patient, &attester, &record_hash, &expires_at),
+        Err(Ok(Error::InvalidAttestationExpiry))
+    );
 }
 
 #[test]
@@ -271,6 +314,7 @@ fn attest_emits_event() {
         record_hash: record_hash.clone(),
         attester: attestation.attester.clone(),
         timestamp: attestation.timestamp,
+        expires_at: env.ledger().timestamp() + 10_000,
     };
     assert_eq!(
         env.events().all(),
@@ -286,7 +330,8 @@ fn attest_without_attester_auth_fails() {
     let record_hash = BytesN::from_array(&env, &[5u8; 32]);
 
     let patient = Address::generate(&env);
-    client.consent_attestation(&patient, &attester, &record_hash);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
     env.mock_auths(&[]);
     let result = client.try_attest(&attester, &patient, &record_hash);
     assert!(result.is_err());
@@ -809,7 +854,8 @@ fn test_attest_auth_matrix() {
 
         if case.allowlisted {
             attester_registry_client.add_attester(&attester);
-            client.consent_attestation(&patient, &attester, &record_hash);
+            let expires_at = env.ledger().timestamp() + 10_000;
+            client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
         }
 
         // Determine which addresses are used for call vs auth

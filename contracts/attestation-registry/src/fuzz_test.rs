@@ -37,7 +37,8 @@ proptest! {
 
         let record_hash = BytesN::from_array(&env, &bytes);
         let patient = Address::generate(&env);
-        client.consent_attestation(&patient, &attester, &record_hash);
+        let expires_at = env.ledger().timestamp() + 10_000;
+        client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
         let result = client.try_attest(&attester, &patient, &record_hash);
         prop_assert!(result.is_ok());
         prop_assert!(client.get_attestation(&record_hash).is_some());
@@ -82,7 +83,8 @@ proptest! {
             let attester = Address::generate(&env);
             attester_registry_client.add_attester(&attester);
             let patient = Address::generate(&env);
-            client.consent_attestation(&patient, &attester, &record_hash);
+            let expires_at = env.ledger().timestamp() + 10_000;
+            client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
             let result = client.try_attest(&attester, &patient, &record_hash);
             prop_assert!(result.is_ok());
             last_attester = Some(attester);

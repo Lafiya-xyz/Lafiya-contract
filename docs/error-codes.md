@@ -32,6 +32,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `8` | `PatientConsentRequired` | No one-time patient consent grant exists for this patient, attester, and record hash. |
 | `9` | `PatientConsentExpired` | The matching one-time patient consent grant has expired. |
 | `10` | `TimestampOverflow` | The current ledger timestamp cannot be safely advanced to calculate a consent expiry. |
+| `11` | `InvalidAttestationExpiry` | The patient-selected attestation expiry is not in the future, or has passed before the attestation was recorded. |
 
 ## `multisig-account`
 
