@@ -347,6 +347,31 @@ fn attest_without_attester_auth_fails() {
 }
 
 #[test]
+fn attest_accepts_attester_authorization_entry_for_sponsored_submission() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[27u8; 32]);
+
+    // The only authorization supplied is for the attester's exact contract
+    // invocation; a relayer/source-account authorization is not required here.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attester,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "attest",
+            args: (attester.clone(), record_hash.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let attestation = client.attest(&attester, &record_hash);
+
+    assert_eq!(attestation.attester, attester);
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
 fn propose_admin_by_non_admin_fails() {
     let env = Env::default();
     let contract_id = env.register(AttestationRegistry, ());

@@ -325,6 +325,9 @@ impl AttestationRegistry {
     /// Record that `attester` verified the record hashing to `record_hash`.
     /// Requires `attester`'s authorization and that `attester` is
     /// currently allowlisted in the configured `attester-registry`.
+    /// A relayer may submit the transaction and pay its fees using an
+    /// authorization entry signed by `attester`; the transaction source
+    /// need not be `attester`.
     /// Stores the attestation with an incrementing sequence number,
     /// maintaining a bounded history (MAX_HISTORY entries per hash).
     pub fn attest(
@@ -337,7 +340,9 @@ impl AttestationRegistry {
 
     /// Record an attestation with an explicit one-byte commitment scheme
     /// version. `0` is reserved for legacy/unversioned commitments, `1` is
-    /// LRC-1, and future values may identify later schemes.
+    /// LRC-1, and future values may identify later schemes. As with `attest`,
+    /// a relayer may submit the transaction and pay its fees using an
+    /// authorization entry signed by `attester`.
     pub fn attest_versioned(
         env: Env,
         attester: Address,
