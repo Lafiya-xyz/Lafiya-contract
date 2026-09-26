@@ -101,16 +101,18 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `get_admin() -> Address` | Returns the current admin address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
-| `add_attester_with_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>)` | Allowlists `attester` with optional metadata. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
-| `update_attester_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>)` | Updates metadata for an already-allowlisted `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Fails with `Error::AttesterNotFound` if `attester` isn't currently allowlisted. Emits `AttesterInfoUpdated`, distinguishable from enrollment's `AttesterAdded`. |
-| `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
-| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted (and not suspended). Open to any caller, including other contracts. Callable while paused. |
+| `add_attester(registrar: Address, attester: Address)` | Allowlists `attester`. Requires the Registrar role. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
+| `add_attester_with_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>, valid_from: Option<u64>, valid_until: Option<u64>)` | Allowlists `attester` with optional credential metadata and an inclusive-start/exclusive-end validity window. Requires the Registrar role. |
+| `update_attester_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>, valid_from: Option<u64>, valid_until: Option<u64>)` | Updates metadata and validity for an already-allowlisted attester. Requires the Registrar role; fails with `Error::AttesterNotFound` if absent and `Error::InvalidValidityWindow` if the start is not earlier than the end. |
+| `remove_attester(registrar: Address, attester: Address)` | Removes `attester` from the allowlist. Requires the Registrar role. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
+| `is_attester(attester: Address) -> bool` | Whether `attester` is allowlisted, not suspended, and within its validity window. Open to any caller, including other contracts. |
 | `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
-| `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns `attester`'s metadata together with its current suspension state in one call. `None` if `attester` isn't currently allowlisted (never added, or since removed). Callable while paused. |
-| `suspend_attester(attester: Address)` | Suspends an allowlisted attester without removing it. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterSuspended`. |
-| `reinstate_attester(attester: Address)` | Reinstates a suspended attester. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterReinstated`. |
+| `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns metadata, suspension, and computed `Active`, `Suspended`, `NotYetValid`, or `Expired` status. `None` if not allowlisted. |
+| `suspend_attester(registrar: Address, attester: Address)` | Suspends an allowlisted attester without removing it. Requires the Registrar role. Blocked while paused. |
+| `reinstate_attester(registrar: Address, attester: Address)` | Reinstates a suspended attester. Requires the Registrar role. Blocked while paused. |
 | `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Does not evict existing attesters if lowered below the current count. |
+| `grant_role(role: Role, account: Address)` / `revoke_role(role: Role, account: Address)` | Grants or revokes a Registrar or Guardian role. Owner-only. |
+| `pause(guardian: Address)` / `unpause()` | A Guardian can pause; only the owner can resume operation. |
 | `get_max_attesters() -> u32` | The current soft cap on the number of allowlisted attesters. |
 | `get_attester_count() -> u32` | The current number of allowlisted attesters. |
 | `pause()` | Blocks `add_attester`, `add_attester_with_info`, `remove_attester`, `suspend_attester`, and `reinstate_attester` until unpaused. Requires admin auth. Emits `Paused`. |
@@ -130,11 +132,13 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
 | `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for allowlist checks. Requires admin auth. Emits `AttesterRegistryRepointed`. |
-| `pause()` | Blocks `attest` until unpaused. Requires admin auth. Emits `Paused`. |
-| `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
+| `pause(guardian: Address)` | Blocks `attest` until unpaused. Requires the Guardian role. Emits `Paused`. |
+| `unpause()` | Restores normal operation after `pause`. Requires owner auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
-| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
-| `revoke_attestation(record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires admin auth. Emits `AttestationRevoked`. |
+| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and active allowlist status (checked via `attester-registry::is_attester`). Stores `{ attester, timestamp }` with bounded history. |
+| `revoke_attestation(revoker: Address, record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires the Revoker role. Emits `AttestationRevoked`. |
+| `grant_role(role: Role, account: Address)` / `revoke_role(role: Role, account: Address)` | Grants or revokes a Guardian or Revoker role. Owner-only. |
+| `upgrade(new_wasm_hash: BytesN<32>)` / `migrate()` | Upgrades code and records pending schema migrations. Owner-only. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
 | `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |
 

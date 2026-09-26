@@ -18,6 +18,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `7` | `AttesterNotFound` | `update_attester_info` was called for an address that is not currently allowlisted (never added, or since removed). |
 | `8` | `BatchTooLarge` | The batch supplied to `add_attesters` or `remove_attesters` exceeds `BATCH_LIMIT` (40) addresses. |
 | `9` | `RoleNotGranted` | The supplied address does not hold the required owner-managed role. |
+| `10` | `InvalidValidityWindow` | The supplied inclusive start is not earlier than the exclusive end. |
 
 ## `attestation-registry`
 

@@ -29,7 +29,7 @@ fn get_schema_version_succeeds() {
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     initialize_for_tests(&client, &admin);
-    assert_eq!(client.get_schema_version(), 2);
+    assert_eq!(client.get_schema_version(), 3);
 }
 
 #[test]
@@ -360,8 +360,14 @@ fn update_attester_info_on_unknown_attester_fails() {
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[1u8; 32]);
     let region = Symbol::new(&env, "west");
-    let result =
-        client.try_update_attester_info(&admin, &attester, &Some(license_hash), &Some(region));
+    let result = client.try_update_attester_info(
+        &admin,
+        &attester,
+        &Some(license_hash),
+        &Some(region),
+        &None,
+        &None,
+    );
     assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
 }
 
@@ -374,7 +380,7 @@ fn update_attester_info_on_removed_attester_fails() {
     client.add_attester(&admin, &attester);
     client.remove_attester(&admin, &attester);
 
-    let result = client.try_update_attester_info(&admin, &attester, &None, &None);
+    let result = client.try_update_attester_info(&admin, &attester, &None, &None, &None, &None);
     assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
 }
 
@@ -391,6 +397,8 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         &attester,
         &Some(initial_hash),
         &Some(initial_region),
+        &None,
+        &None,
     );
 
     // Check event was emitted before any other call clears it.
@@ -409,6 +417,8 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         &attester,
         &Some(updated_hash.clone()),
         &Some(updated_region.clone()),
+        &Some(100),
+        &Some(200),
     );
 
     let expected_updated_event = AttesterInfoUpdated {
@@ -424,6 +434,8 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         Some(AttesterInfo {
             license_hash: Some(updated_hash),
             region: Some(updated_region),
+            valid_from: Some(100),
+            valid_until: Some(200),
         }),
     );
 }
@@ -450,13 +462,15 @@ fn update_attester_info_without_admin_auth_fails() {
                 attester.clone(),
                 None::<BytesN<32>>,
                 None::<Symbol>,
+                None::<u64>,
+                None::<u64>,
             )
                 .into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_update_attester_info(&admin, &attester, &None, &None);
+    let result = client.try_update_attester_info(&admin, &attester, &None, &None, &None, &None);
     assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
 }
 
@@ -469,7 +483,7 @@ fn update_attester_info_while_paused_fails() {
     client.add_attester(&admin, &attester);
     client.pause(&admin);
 
-    let result = client.try_update_attester_info(&admin, &attester, &None, &None);
+    let result = client.try_update_attester_info(&admin, &attester, &None, &None, &None, &None);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
 
@@ -575,6 +589,8 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
         &attester,
         &Some(license_hash.clone()),
         &Some(region.clone()),
+        &Some(0),
+        &Some(1),
     );
 
     assert_eq!(
@@ -583,8 +599,11 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                valid_from: Some(0),
+                valid_until: Some(1),
             },
             suspended: false,
+            status: AttesterStatusKind::Active,
         }),
     );
     assert!(client.is_attester(&attester));
@@ -596,8 +615,11 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                valid_from: Some(0),
+                valid_until: Some(1),
             },
             suspended: true,
+            status: AttesterStatusKind::Suspended,
         }),
     );
     assert!(!client.is_attester(&attester));
@@ -609,11 +631,119 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash),
                 region: Some(region),
+                valid_from: Some(0),
+                valid_until: Some(1),
             },
             suspended: false,
+            status: AttesterStatusKind::Active,
         }),
     );
     assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn validity_window_controls_authorization_and_status() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let future_attester = Address::generate(&env);
+    client.add_attester_with_info(
+        &admin,
+        &future_attester,
+        &None,
+        &Some(Symbol::new(&env, "lagos")),
+        &Some(1),
+        &Some(2),
+    );
+    assert!(!client.is_attester(&future_attester));
+    assert_eq!(
+        client.get_attester_status(&future_attester).unwrap().status,
+        AttesterStatusKind::NotYetValid
+    );
+
+    let active_attester = Address::generate(&env);
+    client.add_attester_with_info(
+        &admin,
+        &active_attester,
+        &None,
+        &None,
+        &Some(0),
+        &Some(1),
+    );
+    assert!(client.is_attester(&active_attester));
+    assert_eq!(
+        client.get_attester_status(&active_attester).unwrap().status,
+        AttesterStatusKind::Active
+    );
+
+    let expired_attester = Address::generate(&env);
+    client.add_attester_with_info(
+        &admin,
+        &expired_attester,
+        &None,
+        &None,
+        &None,
+        &Some(0),
+    );
+    assert!(!client.is_attester(&expired_attester));
+    assert_eq!(
+        client.get_attester_status(&expired_attester).unwrap().status,
+        AttesterStatusKind::Expired
+    );
+}
+
+#[test]
+fn invalid_validity_window_is_rejected() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    assert_eq!(
+        client.try_add_attester_with_info(
+            &admin,
+            &attester,
+            &None,
+            &None,
+            &Some(10),
+            &Some(10),
+        ),
+        Err(Ok(Error::InvalidValidityWindow))
+    );
+    assert_eq!(client.get_attester_info(&attester), None);
+}
+
+#[test]
+fn validity_schema_migration_preserves_legacy_attester_records() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[9u8; 32]);
+    let region = Symbol::new(&env, "west");
+    env.as_contract(&client.address, || {
+        env.storage().persistent().set(
+            &DataKey::Attester(attester.clone()),
+            &StoredAttesterInfo {
+                license_hash: Some(license_hash.clone()),
+                region: Some(region.clone()),
+            },
+        );
+        env.storage().instance().set(&DataKey::SchemaVersion, &2u32);
+    });
+
+    client.migrate();
+
+    assert_eq!(client.get_schema_version(), 3);
+    assert!(client.is_attester(&attester));
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: Some(license_hash),
+            region: Some(region),
+            valid_from: None,
+            valid_until: None,
+        })
+    );
 }
 
 #[test]

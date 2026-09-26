@@ -90,7 +90,8 @@ Hashes recorded before LRC-1 are treated as legacy/unversioned (version `0x00`).
 ### Schema version
 
 The version number of a contract's on-chain storage schema. Every contract carries
-`const SCHEMA_VERSION: u32` (currently `1` for both registries), writes it to instance
+`const SCHEMA_VERSION: u32` (currently `3` for `attester-registry` and `2` for
+`attestation-registry`), writes it to instance
 storage during `initialize()`, and exposes it via `get_schema_version()`. `0` means no
 version recorded (legacy pre-versioning deployment or uninitialized contract). Bumping
 `SCHEMA_VERSION` signals a schema-changing upgrade that requires `migrate()` to run the

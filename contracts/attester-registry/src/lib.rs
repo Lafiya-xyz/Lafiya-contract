@@ -8,7 +8,7 @@ use soroban_sdk::{
     Symbol, Vec,
 };
 
-const SCHEMA_VERSION: u32 = 2;
+const SCHEMA_VERSION: u32 = 3;
 
 /// Storage keys for the attester registry.
 ///
@@ -39,6 +39,9 @@ enum DataKey {
     AttesterCount,
     /// Explicit capabilities granted by the owner.
     Role(Role, Address),
+    /// Optional validity bounds for an attester; kept separate so existing
+    /// two-field attester records remain readable across upgrades.
+    AttesterValidity(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -57,6 +60,27 @@ pub struct AttesterInfo {
     pub license_hash: Option<BytesN<32>>,
     /// The geographic region the attester is authorized to attest for, if any.
     pub region: Option<Symbol>,
+    /// Ledger timestamp when the authorization becomes valid, inclusive.
+    pub valid_from: Option<u64>,
+    /// Ledger timestamp when the authorization expires, exclusive.
+    pub valid_until: Option<u64>,
+}
+
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct StoredAttesterInfo {
+    license_hash: Option<BytesN<32>>,
+    region: Option<Symbol>,
+}
+
+/// Computed authorization state for an allowlisted attester.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttesterStatusKind {
+    Active,
+    Suspended,
+    NotYetValid,
+    Expired,
 }
 
 /// An allowlisted attester's metadata together with its current suspension
@@ -68,6 +92,8 @@ pub struct AttesterStatus {
     pub info: AttesterInfo,
     /// Whether the attester is currently suspended.
     pub suspended: bool,
+    /// Computed status using the current ledger timestamp.
+    pub status: AttesterStatusKind,
 }
 
 /// Instance storage TTL policy:
@@ -126,6 +152,8 @@ pub enum Error {
     BatchTooLarge = 8,
     /// The supplied address has not been granted the required role.
     RoleNotGranted = 9,
+    /// The attester validity window is empty or reversed.
+    InvalidValidityWindow = 10,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -366,7 +394,7 @@ impl AttesterRegistry {
                 .instance()
                 .set(&DataKey::AttesterCount, &(count + 1));
         }
-        let info = AttesterInfo {
+        let info = StoredAttesterInfo {
             license_hash: None,
             region: None,
         };
@@ -389,9 +417,12 @@ impl AttesterRegistry {
         attester: Address,
         license_hash: Option<BytesN<32>>,
         region: Option<Symbol>,
+        valid_from: Option<u64>,
+        valid_until: Option<u64>,
     ) -> Result<(), Error> {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
+        Self::validate_validity_window(valid_from, valid_until)?;
         let already_present = env
             .storage()
             .persistent()
@@ -406,13 +437,14 @@ impl AttesterRegistry {
                 .instance()
                 .set(&DataKey::AttesterCount, &(count + 1));
         }
-        let info = AttesterInfo {
+        let info = StoredAttesterInfo {
             license_hash,
             region,
         };
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        Self::set_validity(&env, &attester, valid_from, valid_until);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -433,9 +465,12 @@ impl AttesterRegistry {
         attester: Address,
         license_hash: Option<BytesN<32>>,
         region: Option<Symbol>,
+        valid_from: Option<u64>,
+        valid_until: Option<u64>,
     ) -> Result<(), Error> {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
+        Self::validate_validity_window(valid_from, valid_until)?;
         if !env
             .storage()
             .persistent()
@@ -443,13 +478,14 @@ impl AttesterRegistry {
         {
             return Err(Error::AttesterNotFound);
         }
-        let info = AttesterInfo {
+        let info = StoredAttesterInfo {
             license_hash,
             region,
         };
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        Self::set_validity(&env, &attester, valid_from, valid_until);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -488,7 +524,7 @@ impl AttesterRegistry {
                 if count >= max {
                     return Err(Error::AllowlistFull);
                 }
-                let info = AttesterInfo {
+                let info = StoredAttesterInfo {
                     license_hash: None,
                     region: None,
                 };
@@ -540,6 +576,9 @@ impl AttesterRegistry {
                 env.storage()
                     .persistent()
                     .remove(&DataKey::Suspended(attester.clone()));
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::AttesterValidity(attester.clone()));
                 if count > 0 {
                     count -= 1;
                 }
@@ -575,6 +614,9 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::Suspended(attester.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AttesterValidity(attester.clone()));
         if was_present {
             let count = Self::attester_count(&env);
             if count > 0 {
@@ -669,27 +711,30 @@ impl AttesterRegistry {
         }
         !env.storage()
             .persistent()
-            .has(&DataKey::Suspended(attester))
+            .has(&DataKey::Suspended(attester.clone()))
+            && Self::valid_at(Self::validity(&env, &attester), env.ledger().timestamp())
     }
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
-        env.storage().persistent().get(&DataKey::Attester(attester))
+        Self::attester_info(&env, &attester)
     }
 
     /// Get `attester`'s metadata together with its current suspension state
     /// in a single call. Returns `None` if `attester` is not currently
     /// allowlisted (never added, or since removed).
     pub fn get_attester_status(env: Env, attester: Address) -> Option<AttesterStatus> {
-        let info: AttesterInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Attester(attester.clone()))?;
+        let info = Self::attester_info(&env, &attester)?;
         let suspended = env
             .storage()
             .persistent()
             .has(&DataKey::Suspended(attester));
-        Some(AttesterStatus { info, suspended })
+        let status = Self::status(&info, suspended, env.ledger().timestamp());
+        Some(AttesterStatus {
+            info,
+            suspended,
+            status,
+        })
     }
 
     /// Query the current storage schema version of the contract.
@@ -738,8 +783,8 @@ impl AttesterRegistry {
             return Err(Error::MigrationNotRequired);
         }
 
-        // Existing admin state remains the owner; newly introduced role
-        // storage is empty until the owner grants capabilities.
+        // Validity bounds use a separate key, so legacy attester records
+        // remain readable and need no bulk rewrite.
         let _ = stored;
 
         env.storage()
@@ -749,6 +794,77 @@ impl AttesterRegistry {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
+    }
+
+    fn validate_validity_window(
+        valid_from: Option<u64>,
+        valid_until: Option<u64>,
+    ) -> Result<(), Error> {
+        if let (Some(valid_from), Some(valid_until)) = (valid_from, valid_until) {
+            if valid_from >= valid_until {
+                return Err(Error::InvalidValidityWindow);
+            }
+        }
+        Ok(())
+    }
+
+    fn validity(env: &Env, attester: &Address) -> (Option<u64>, Option<u64>) {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttesterValidity(attester.clone()))
+            .unwrap_or((None, None))
+    }
+
+    fn set_validity(
+        env: &Env,
+        attester: &Address,
+        valid_from: Option<u64>,
+        valid_until: Option<u64>,
+    ) {
+        let key = DataKey::AttesterValidity(attester.clone());
+        if valid_from.is_none() && valid_until.is_none() {
+            env.storage().persistent().remove(&key);
+        } else {
+            env.storage()
+                .persistent()
+                .set(&key, &(valid_from, valid_until));
+        }
+    }
+
+    fn attester_info(env: &Env, attester: &Address) -> Option<AttesterInfo> {
+        let stored: StoredAttesterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(attester.clone()))?;
+        let (valid_from, valid_until) = Self::validity(env, attester);
+        Some(AttesterInfo {
+            license_hash: stored.license_hash,
+            region: stored.region,
+            valid_from,
+            valid_until,
+        })
+    }
+
+    fn valid_at(validity: (Option<u64>, Option<u64>), timestamp: u64) -> bool {
+        let (valid_from, valid_until) = validity;
+        valid_from.is_none_or(|start| timestamp >= start)
+            && valid_until.is_none_or(|end| timestamp < end)
+    }
+
+    fn status(
+        info: &AttesterInfo,
+        suspended: bool,
+        timestamp: u64,
+    ) -> AttesterStatusKind {
+        if suspended {
+            AttesterStatusKind::Suspended
+        } else if info.valid_from.is_some_and(|start| timestamp < start) {
+            AttesterStatusKind::NotYetValid
+        } else if info.valid_until.is_some_and(|end| timestamp >= end) {
+            AttesterStatusKind::Expired
+        } else {
+            AttesterStatusKind::Active
+        }
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
