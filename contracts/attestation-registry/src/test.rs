@@ -126,6 +126,53 @@ fn get_attestation_returns_none_for_unknown_hash() {
 }
 
 #[test]
+fn is_verified_applies_age_and_current_attester_status() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let record_hash = BytesN::from_array(&env, &[13u8; 32]);
+
+    assert!(!client.is_verified(&record_hash));
+    assert_eq!(client.get_max_attestation_age(), DEFAULT_MAX_ATTESTATION_AGE);
+
+    attester_registry.add_attester(&attester);
+    let attestation = client.attest(&attester, &record_hash);
+    assert!(client.is_verified(&record_hash));
+
+    attester_registry.suspend_attester(&attester);
+    assert!(!client.is_verified(&record_hash));
+    attester_registry.reinstate_attester(&attester);
+    assert!(client.is_verified(&record_hash));
+
+    client.set_max_attestation_age(&0);
+    assert_eq!(client.get_max_attestation_age(), 0);
+    env.ledger()
+        .set_timestamp(attestation.timestamp.saturating_add(1));
+    assert!(!client.is_verified(&record_hash));
+
+    client.set_max_attestation_age(&DEFAULT_MAX_ATTESTATION_AGE);
+    attester_registry.remove_attester(&attester);
+    assert!(!client.is_verified(&record_hash));
+
+    client.revoke_attestation(&record_hash);
+    assert!(!client.is_verified(&record_hash));
+}
+
+#[test]
+fn is_verified_reports_broken_registry_call() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[14u8; 32]);
+    client.attest(&attester, &record_hash);
+    client.set_attester_registry(&Address::generate(&env));
+
+    assert_eq!(
+        client.try_is_verified(&record_hash),
+        Err(Ok(Error::AttesterRegistryUnavailable))
+    );
+}
+
+#[test]
 fn re_attest_overwrites_previous_attestation() {
     let (env, client, attester_registry, _admin) = setup();
     let attester_a = Address::generate(&env);

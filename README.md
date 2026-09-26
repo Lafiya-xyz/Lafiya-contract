@@ -133,9 +133,12 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `pause()` | Blocks `attest` until unpaused. Requires admin auth. Emits `Paused`. |
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
+| `set_max_attestation_age(max_age: u64)` | Sets, in seconds, how long an attestation remains current. Requires admin auth. The initial default is 365 days. |
+| `get_max_attestation_age() -> u64` | Returns the maximum age used by `is_verified`. |
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
 | `revoke_attestation(record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires admin auth. Emits `AttestationRevoked`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
+| `is_verified(record_hash: BytesN<32>) -> Result<bool, Error>` | Applies one shared verification rule: a non-revoked latest attestation within the configured age limit, made by an attester who remains allowlisted and unsuspended. Returns `AttesterRegistryUnavailable` if its status cannot be checked. |
 | `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |
 
 ### Contract upgrades

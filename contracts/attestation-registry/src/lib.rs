@@ -21,6 +21,7 @@ pub trait AttesterRegistryInterface {
 /// This bounds storage growth per re-attestation. When exceeded,
 /// the oldest attestation is removed (FIFO eviction).
 const MAX_HISTORY: u64 = 10;
+const DEFAULT_MAX_ATTESTATION_AGE: u64 = 31_536_000;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -56,6 +57,8 @@ enum DataKey {
     SchemaVersion,
     /// Whether state-changing operations are currently paused.
     Paused,
+    /// Maximum age of an attestation that may be reported as verified.
+    MaxAttestationAge,
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -284,12 +287,57 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Set the maximum age in seconds for which an attestation is considered
+    /// current. Requires the admin's authorization.
+    pub fn set_max_attestation_age(env: Env, max_age: u64) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAttestationAge, &max_age);
+        Ok(())
+    }
+
+    /// Return the maximum age in seconds for which an attestation is
+    /// considered current. Defaults to 365 days.
+    pub fn get_max_attestation_age(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAttestationAge)
+            .unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
+    }
+
     /// Whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
             .instance()
             .get(&DataKey::Paused)
             .unwrap_or(false)
+    }
+
+    /// Return whether the latest attestation is current and backed by an
+    /// attester who remains allowlisted and unsuspended.
+    ///
+    /// An attestation is verified only when it exists, has not been revoked,
+    /// is no older than `get_max_attestation_age`, and its attester is
+    /// currently active in the configured attester-registry. A registry call
+    /// failure returns `AttesterRegistryUnavailable`.
+    pub fn is_verified(env: Env, record_hash: BytesN<32>) -> Result<bool, Error> {
+        let Some(attestation) = Self::latest_attestation(&env, record_hash) else {
+            return Ok(false);
+        };
+        let now = env.ledger().timestamp();
+        if attestation.timestamp > now
+            || now - attestation.timestamp > Self::max_attestation_age(&env)
+        {
+            return Ok(false);
+        }
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        registry
+            .try_is_attester(&attestation.attester)
+            .map_err(|_| Error::AttesterRegistryUnavailable)
     }
 
     /// Record that `attester` verified the record hashing to `record_hash`.
@@ -420,13 +468,7 @@ impl AttestationRegistry {
     /// by anyone — this is what lets a responder's QR scan independently
     /// check a card without an external oracle.
     pub fn get_attestation(env: Env, record_hash: BytesN<32>) -> Option<Attestation> {
-        let sequence: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
-        env.storage()
-            .persistent()
-            .get(&DataKey::Attestation(record_hash, sequence))
+        Self::latest_attestation(&env, record_hash)
     }
 
     /// Look up the full attestation history for `record_hash`, if any.
@@ -480,6 +522,23 @@ impl AttestationRegistry {
             .instance()
             .get(&DataKey::AttesterRegistry)
             .ok_or(Error::NotInitialized)
+    }
+
+    fn max_attestation_age(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAttestationAge)
+            .unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
+    }
+
+    fn latest_attestation(env: &Env, record_hash: BytesN<32>) -> Option<Attestation> {
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
+        env.storage()
+            .persistent()
+            .get(&DataKey::Attestation(record_hash, sequence))
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {
