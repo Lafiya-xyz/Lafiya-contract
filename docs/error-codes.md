@@ -32,6 +32,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `8` | `AttestationNotOwned` | The caller has no active attestation for the given record hash to withdraw. |
 | `9` | `InvalidRecordVersion` | The previous hash is unknown, is the same as the new hash, or conflicts with an existing version link. |
 | `10` | `BatchTooLarge` | The attestation batch exceeds the limit of 50 requests. |
+| `11` | `MigrationNotRequired` | The contract instance already uses the current storage schema version. |
 
 ## `multisig-account`
 

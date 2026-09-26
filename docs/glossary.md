@@ -39,8 +39,18 @@ source of truth for who may attest. See `contracts/attester-registry/src/lib.rs`
 
 The on-chain record written by the *attestation registry* when an *attester* verifies a
 record: `{ attester: Address, timestamp: u64 }`, stored keyed by the *record hash* with a
-bounded per-hash history (10 entries). Written by `attest()`, removed by
-`revoke_attestation()`. See [ADR-0006](adr/0006-attestation-revocation-semantics.md).
+bounded per-hash history (10 entries). `withdraw_attestation()` marks that attester's
+active verifications as withdrawn without affecting other attesters. Admin
+`revoke_attestation()` marks the hash revoked but retains its history;
+`get_attestation_status()` distinguishes `NeverAttested`, `Verified`, `Withdrawn`, and
+`Revoked`, while `get_attester_attestation_status()` reports one attester's state.
+See [ADR-0006](adr/0006-attestation-revocation-semantics.md).
+
+### Record version
+
+A new record hash explicitly linked to its predecessor by `attest_version()` or a batch
+request's optional `previous_record_hash`. The contracts treat hashes as opaque values and
+do not infer which records belong to the same patient.
 
 ### Attestation registry (`attestation-registry`)
 

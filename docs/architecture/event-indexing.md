@@ -13,6 +13,8 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AttesterReinstated`
 - `AttestationRecorded`
 - `AttestationRevoked`
+- `AttestationWithdrawn`
+- `RecordVersionLinked`
 - `Upgraded` (`attester-registry`)
 - `Paused` (`attester-registry` and `attestation-registry`)
 - `Unpaused` (`attester-registry` and `attestation-registry`)
@@ -60,7 +62,9 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
    - Writes a row to a new `event_log` table in Supabase for auditability.
 2. **Profile Updater**
    - For `AttestationRecorded`, update the `profiles` table (e.g., set `verified = true`, store attestation metadata).
-   - For `AttestationRevoked`, remove the indexed attestation and set the corresponding profile's `verified` state to false.
+   - For `AttestationRevoked`, retain the indexed history and set the record status to `revoked`.
+   - For `AttestationWithdrawn`, mark the matching attester's verifications as withdrawn; other attestations for the hash remain valid.
+   - For `RecordVersionLinked`, connect the new record hash to its previous version in the index.
    - For `AttesterAdded` / `AttesterRemoved`, add or remove the account in a secondary `attesters` table.
    - For `AttesterSuspended` / `AttesterReinstated`, update the account's active status without losing its allowlist history.
    - Record `AdminTransferred` as a contract-administration audit event; it does not directly change profile verification state.

@@ -50,6 +50,84 @@
   },
   {
     "kind": "function_v0",
+    "name": "attest_version",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "name": "previous_record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "attest_version",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": {
+              "udt": {
+                "name": "Attestation"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "batch_attest",
+    "spec": {
+      "inputs": [
+        {
+          "name": "requests",
+          "type_": {
+            "vec": {
+              "element_type": {
+                "udt": {
+                  "name": "AttestationRequest"
+                }
+              }
+            }
+          }
+        }
+      ],
+      "name": "batch_attest",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": {
+              "vec": {
+                "element_type": {
+                  "udt": {
+                    "name": "Attestation"
+                  }
+                }
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_admin",
     "spec": {
       "inputs": [],
@@ -122,6 +200,58 @@
   },
   {
     "kind": "function_v0",
+    "name": "get_attestation_status",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_attestation_status",
+      "outputs": [
+        {
+          "udt": {
+            "name": "AttestationStatus"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attester_attestation_status",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "name": "get_attester_attestation_status",
+      "outputs": [
+        {
+          "udt": {
+            "name": "AttesterAttestationStatus"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_attester_registry",
     "spec": {
       "inputs": [],
@@ -133,6 +263,73 @@
             "ok_type": "address"
           }
         }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_next_record_hash",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_next_record_hash",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "bytes_n": {
+                "n": 32
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_previous_record_hash",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_previous_record_hash",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "bytes_n": {
+                "n": 32
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_schema_version",
+    "spec": {
+      "inputs": [],
+      "name": "get_schema_version",
+      "outputs": [
+        "u32"
       ]
     }
   },
@@ -169,6 +366,22 @@
       "name": "is_paused",
       "outputs": [
         "bool"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "migrate",
+    "spec": {
+      "inputs": [],
+      "name": "migrate",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
       ]
     }
   },
@@ -272,6 +485,35 @@
     }
   },
   {
+    "kind": "function_v0",
+    "name": "withdraw_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "withdraw_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
     "kind": "udt_error_enum_v0",
     "name": "Error",
     "spec": {
@@ -303,6 +545,22 @@
         {
           "name": "ContractPaused",
           "value": 7
+        },
+        {
+          "name": "AttestationNotOwned",
+          "value": 8
+        },
+        {
+          "name": "InvalidRecordVersion",
+          "value": 9
+        },
+        {
+          "name": "BatchTooLarge",
+          "value": 10
+        },
+        {
+          "name": "MigrationNotRequired",
+          "value": 11
         }
       ],
       "lib": "",
@@ -391,6 +649,34 @@
   },
   {
     "kind": "event_v0",
+    "name": "AttestationWithdrawn",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttestationWithdrawn",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attestation_withdrawn"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
     "name": "AttesterRegistryRepointed",
     "spec": {
       "data_format": "map",
@@ -434,6 +720,38 @@
   },
   {
     "kind": "event_v0",
+    "name": "RecordVersionLinked",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "RecordVersionLinked",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "previous_record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "prefix_topics": [
+        "record_version_linked"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
     "name": "Unpaused",
     "spec": {
       "data_format": "map",
@@ -467,6 +785,100 @@
       ],
       "lib": "",
       "name": "Attestation"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "AttestationRequest",
+    "spec": {
+      "fields": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "previous_record_hash",
+          "type_": {
+            "option": {
+              "value_type": {
+                "bytes_n": {
+                  "n": 32
+                }
+              }
+            }
+          }
+        },
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "lib": "",
+      "name": "AttestationRequest"
+    }
+  },
+  {
+    "kind": "udt_union_v0",
+    "name": "AttestationStatus",
+    "spec": {
+      "cases": [
+        {
+          "void_v0": {
+            "name": "NeverAttested"
+          }
+        },
+        {
+          "void_v0": {
+            "name": "Verified"
+          }
+        },
+        {
+          "void_v0": {
+            "name": "Withdrawn"
+          }
+        },
+        {
+          "void_v0": {
+            "name": "Revoked"
+          }
+        }
+      ],
+      "lib": "",
+      "name": "AttestationStatus"
+    }
+  },
+  {
+    "kind": "udt_union_v0",
+    "name": "AttesterAttestationStatus",
+    "spec": {
+      "cases": [
+        {
+          "void_v0": {
+            "name": "NeverAttested"
+          }
+        },
+        {
+          "void_v0": {
+            "name": "Active"
+          }
+        },
+        {
+          "void_v0": {
+            "name": "Withdrawn"
+          }
+        },
+        {
+          "void_v0": {
+            "name": "Revoked"
+          }
+        }
+      ],
+      "lib": "",
+      "name": "AttesterAttestationStatus"
     }
   }
 ]

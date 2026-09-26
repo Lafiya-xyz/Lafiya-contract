@@ -33,6 +33,25 @@ fn configuration_getters_return_initialized_addresses() {
 
     assert_eq!(client.get_admin(), admin);
     assert_eq!(client.get_attester_registry(), attester_registry.address);
+    assert_eq!(client.get_schema_version(), SCHEMA_VERSION);
+}
+
+#[test]
+fn migrate_updates_a_legacy_storage_version() {
+    let (env, client, _attester_registry, _admin) = setup();
+    env.as_contract(&client.address, || {
+        env.storage().instance().set(&DataKey::SchemaVersion, &1u32);
+    });
+
+    assert_eq!(client.get_schema_version(), 1);
+    client.migrate();
+    assert_eq!(client.get_schema_version(), SCHEMA_VERSION);
+}
+
+#[test]
+fn migrate_rejects_current_schema_version() {
+    let (_env, client, _attester_registry, _admin) = setup();
+    assert_eq!(client.try_migrate(), Err(Ok(Error::MigrationNotRequired)));
 }
 
 #[test]
@@ -92,6 +111,23 @@ fn attest_version_links_hashes_in_both_directions() {
 
     let attestation = client.attest_version(&attester, &record_hash, &previous_hash);
 
+    let expected_event = RecordVersionLinked {
+        previous_record_hash: previous_hash.clone(),
+        record_hash: record_hash.clone(),
+    };
+    let expected_xdr = expected_event.to_xdr(&env, &client.address);
+    assert_eq!(
+        env.events().all(),
+        std::vec![
+            expected_xdr,
+            AttestationRecorded {
+                record_hash: record_hash.clone(),
+                attester: attester.clone(),
+                timestamp: attestation.timestamp,
+            }
+            .to_xdr(&env, &client.address),
+        ]
+    );
     assert_eq!(client.get_attestation(&record_hash), Some(attestation));
     assert_eq!(
         client.get_previous_record_hash(&record_hash),
@@ -101,14 +137,6 @@ fn attest_version_links_hashes_in_both_directions() {
         client.get_next_record_hash(&previous_hash),
         Some(record_hash.clone())
     );
-    let expected_event = RecordVersionLinked {
-        previous_record_hash: previous_hash,
-        record_hash,
-    };
-    assert!(env
-        .events()
-        .all()
-        .contains(&expected_event.to_xdr(&env, &client.address)));
 }
 
 #[test]
@@ -291,6 +319,11 @@ fn get_attestation_returns_none_for_unknown_hash() {
         client.get_attestation_status(&record_hash),
         AttestationStatus::NeverAttested
     );
+    let attester = Address::generate(&env);
+    assert_eq!(
+        client.get_attester_attestation_status(&record_hash, &attester),
+        AttesterAttestationStatus::NeverAttested
+    );
 }
 
 #[test]
@@ -347,29 +380,42 @@ fn attester_can_withdraw_only_their_own_attestation() {
 
     let record_hash = BytesN::from_array(&env, &[42u8; 32]);
     let first = client.attest(&attester_a, &record_hash);
+    let first_again = client.attest(&attester_a, &record_hash);
     let second = client.attest(&attester_b, &record_hash);
 
     client.withdraw_attestation(&attester_a, &record_hash);
 
+    let expected_event = AttestationWithdrawn {
+        record_hash: record_hash.clone(),
+        attester: attester_a.clone(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)]
+    );
     assert_eq!(client.get_attestation(&record_hash), Some(second));
     assert_eq!(
         client.get_attestation_status(&record_hash),
         AttestationStatus::Verified
     );
-    assert_eq!(client.get_attestation_history(&record_hash).len(), 2);
-    let expected_event = AttestationWithdrawn {
-        record_hash: record_hash.clone(),
-        attester: attester_a.clone(),
-    };
-    let expected_xdr = expected_event.to_xdr(&env, &client.address);
-    let events = env.events().all();
     assert_eq!(
-        events.last(),
-        Some(&expected_xdr)
+        client.get_attester_attestation_status(&record_hash, &attester_a),
+        AttesterAttestationStatus::Withdrawn
     );
-
+    assert_eq!(
+        client.get_attester_attestation_status(&record_hash, &attester_b),
+        AttesterAttestationStatus::Active
+    );
+    assert_eq!(client.get_attestation_history(&record_hash).len(), 3);
     // The attestation is retained as an immutable historical record.
-    assert_eq!(client.get_attestation_history(&record_hash).get(0), Some(first));
+    assert_eq!(
+        client.get_attestation_history(&record_hash).get(0),
+        Some(first)
+    );
+    assert_eq!(
+        client.get_attestation_history(&record_hash).get(1),
+        Some(first_again)
+    );
 }
 
 #[test]
@@ -396,9 +442,11 @@ fn withdrawing_the_only_attestation_reports_withdrawn() {
 
     let record_hash = BytesN::from_array(&env, &[45u8; 32]);
     client.attest(&attester, &record_hash);
+    client.attest(&attester, &record_hash);
     client.withdraw_attestation(&attester, &record_hash);
 
     assert_eq!(client.get_attestation(&record_hash), None);
+    assert_eq!(client.get_attestation_history(&record_hash).len(), 2);
     assert_eq!(
         client.get_attestation_status(&record_hash),
         AttestationStatus::Withdrawn
@@ -1190,6 +1238,10 @@ fn revoke_attestation_happy_path() {
     assert_eq!(
         client.get_attestation_status(&record_hash),
         AttestationStatus::Revoked
+    );
+    assert_eq!(
+        client.get_attester_attestation_status(&record_hash, &attester),
+        AttesterAttestationStatus::Revoked
     );
     assert_eq!(client.get_attestation_history(&record_hash).len(), 1);
 

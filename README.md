@@ -136,19 +136,22 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
 | `attest_version(attester: Address, record_hash: BytesN<32>, previous_record_hash: BytesN<32>) -> Attestation` | Records a verification and links a new hash to its previously attested version. Rejects self-links, unknown previous hashes, and conflicting links (`Error::InvalidRecordVersion`). Emits `RecordVersionLinked` alongside `AttestationRecorded`. |
 | `batch_attest(requests: Vec<AttestationRequest>) -> Vec<Attestation>` | Records up to 50 verifications in one transaction. Each request carries its attester, record hash, and optional previous version hash; each attester authorizes their own request, and allowlist status is checked once per distinct attester. |
-| `withdraw_attestation(attester: Address, record_hash: BytesN<32>)` | Lets an attester withdraw their latest active attestation for a hash without affecting other attestations. Requires the attester's auth. Emits `AttestationWithdrawn`. |
+| `withdraw_attestation(attester: Address, record_hash: BytesN<32>)` | Lets an attester withdraw all of their active attestations for a hash without affecting other attesters' records. Requires the attester's auth. Emits `AttestationWithdrawn`. |
 | `revoke_attestation(record_hash: BytesN<32>)` | Marks all attestations for `record_hash` administratively revoked while retaining history. Requires admin auth. Emits `AttestationRevoked`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest active attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
 | `get_attestation_status(record_hash: BytesN<32>) -> AttestationStatus` | Distinguishes `NeverAttested`, `Verified`, `Withdrawn`, and `Revoked`, so an explicitly revoked card does not appear never verified. |
+| `get_attester_attestation_status(record_hash: BytesN<32>, attester: Address) -> AttesterAttestationStatus` | Reports whether a specific attester's verification is `NeverAttested`, `Active`, `Withdrawn`, or `Revoked`. |
 | `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |
 | `get_previous_record_hash(record_hash: BytesN<32>) -> Option<BytesN<32>>` / `get_next_record_hash(record_hash: BytesN<32>) -> Option<BytesN<32>>` | Read the explicitly linked predecessor or successor hash for a record version. |
+| `get_schema_version() -> u32` / `migrate()` | Query the storage schema version and advance legacy v1 instances to v2 after upgrading the contract. Migration requires admin auth; new storage keys are additive and need no data reshaping. |
 
 ### Contract upgrades
 
 `attester-registry` is upgradeable by its admin (`upgrade`/`migrate`/`get_schema_version`
-above), with storage schema versioning (`SCHEMA_VERSION` starts at `1`) to make
-schema-changing upgrades explicit and verifiable. `attestation-registry` does not
-currently expose an `upgrade`/`migrate` path. **Operators** must follow
+above), with storage schema versioning to make schema-changing upgrades explicit
+and verifiable. `attestation-registry` now exposes `get_schema_version` and
+`migrate` for its additive v1-to-v2 storage change, but still has no in-contract
+`upgrade` entry point. **Operators** must follow
 [docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the
 pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
 reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
