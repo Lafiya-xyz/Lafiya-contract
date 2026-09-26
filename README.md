@@ -101,22 +101,24 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `get_admin() -> Address` | Returns the current admin address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `add_attester(registrar: Address, attester: Address)` | Allowlists `attester`. Requires the Registrar role. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
-| `add_attester_with_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>, valid_from: Option<u64>, valid_until: Option<u64>)` | Allowlists `attester` with optional credential metadata and an inclusive-start/exclusive-end validity window. Requires the Registrar role. |
+| `add_attester(registrar: Address, attester: Address)` | Allowlists `attester`. Global Registrars can enroll any region; regional registrars inherit their assigned region and quota. Blocked while paused. |
+| `add_attester_with_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>, valid_from: Option<u64>, valid_until: Option<u64>)` | Allowlists `attester` with credential metadata and an inclusive-start/exclusive-end validity window. Regional registrars can only enroll their assigned region. |
 | `update_attester_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>, valid_from: Option<u64>, valid_until: Option<u64>)` | Updates metadata and validity for an already-allowlisted attester. Requires the Registrar role; fails with `Error::AttesterNotFound` if absent and `Error::InvalidValidityWindow` if the start is not earlier than the end. |
 | `remove_attester(registrar: Address, attester: Address)` | Removes `attester` from the allowlist. Requires the Registrar role. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
+| `add_attesters(registrar: Address, attesters: Vec<Address>)` / `remove_attesters(registrar: Address, attesters: Vec<Address>)` | Batch enrollment/removal. Regional enrollment batches are limited to 20 entries to bound quota accounting; removals require a global Registrar. |
+| `set_regional_registrar(registrar: Address, region: Symbol, quota: u32)` | Owner-only assignment of a regional registrar and its maximum concurrent enrollment count. |
+| `revoke_regional_registrar(registrar: Address)` / `get_regional_registrar(registrar: Address)` | Revoke or inspect a regional assignment. Existing enrollments remain attributed until removed. |
+| `get_regional_registrar_count(registrar: Address) -> u32` | Number of currently enrolled attesters attributed to the regional registrar. |
 | `is_attester(attester: Address) -> bool` | Whether `attester` is allowlisted, not suspended, and within its validity window. Open to any caller, including other contracts. |
 | `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
 | `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns metadata, suspension, and computed `Active`, `Suspended`, `NotYetValid`, or `Expired` status. `None` if not allowlisted. |
-| `suspend_attester(registrar: Address, attester: Address)` | Suspends an allowlisted attester without removing it. Requires the Registrar role. Blocked while paused. |
+| `suspend_attester(registrar: Address, attester: Address)` | Suspends an allowlisted attester without removing it. Regional registrars may only suspend their region. Blocked while paused. |
 | `reinstate_attester(registrar: Address, attester: Address)` | Reinstates a suspended attester. Requires the Registrar role. Blocked while paused. |
 | `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Does not evict existing attesters if lowered below the current count. |
-| `grant_role(role: Role, account: Address)` / `revoke_role(role: Role, account: Address)` | Grants or revokes a Registrar or Guardian role. Owner-only. |
+| `grant_role(role: Role, account: Address)` / `revoke_role(role: Role, account: Address)` | Grants or revokes a global Registrar or Guardian role. Owner-only. |
 | `pause(guardian: Address)` / `unpause()` | A Guardian can pause; only the owner can resume operation. |
 | `get_max_attesters() -> u32` | The current soft cap on the number of allowlisted attesters. |
 | `get_attester_count() -> u32` | The current number of allowlisted attesters. |
-| `pause()` | Blocks `add_attester`, `add_attester_with_info`, `remove_attester`, `suspend_attester`, and `reinstate_attester` until unpaused. Requires admin auth. Emits `Paused`. |
-| `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
 | `get_schema_version() -> u32` | Storage schema version recorded for the instance. Open to any caller. |
 | `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
@@ -144,8 +146,8 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 
 ### Contract upgrades
 
-`attester-registry` is upgradeable by its admin (`upgrade`/`migrate`/`get_schema_version`
-above), with storage schema versioning (`SCHEMA_VERSION` starts at `1`) to make
+`attester-registry` is upgradeable by its owner (`upgrade`/`migrate`/`get_schema_version`
+above), with storage schema versioning (`SCHEMA_VERSION` is currently `4`) to make
 schema-changing upgrades explicit and verifiable. `attestation-registry` does not
 currently expose an `upgrade`/`migrate` path. **Operators** must follow
 [docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the

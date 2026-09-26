@@ -29,7 +29,7 @@ fn get_schema_version_succeeds() {
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     initialize_for_tests(&client, &admin);
-    assert_eq!(client.get_schema_version(), 3);
+    assert_eq!(client.get_schema_version(), 4);
 }
 
 #[test]
@@ -662,14 +662,7 @@ fn validity_window_controls_authorization_and_status() {
     );
 
     let active_attester = Address::generate(&env);
-    client.add_attester_with_info(
-        &admin,
-        &active_attester,
-        &None,
-        &None,
-        &Some(0),
-        &Some(1),
-    );
+    client.add_attester_with_info(&admin, &active_attester, &None, &None, &Some(0), &Some(1));
     assert!(client.is_attester(&active_attester));
     assert_eq!(
         client.get_attester_status(&active_attester).unwrap().status,
@@ -677,17 +670,13 @@ fn validity_window_controls_authorization_and_status() {
     );
 
     let expired_attester = Address::generate(&env);
-    client.add_attester_with_info(
-        &admin,
-        &expired_attester,
-        &None,
-        &None,
-        &None,
-        &Some(0),
-    );
+    client.add_attester_with_info(&admin, &expired_attester, &None, &None, &None, &Some(0));
     assert!(!client.is_attester(&expired_attester));
     assert_eq!(
-        client.get_attester_status(&expired_attester).unwrap().status,
+        client
+            .get_attester_status(&expired_attester)
+            .unwrap()
+            .status,
         AttesterStatusKind::Expired
     );
 }
@@ -699,17 +688,138 @@ fn invalid_validity_window_is_rejected() {
 
     let attester = Address::generate(&env);
     assert_eq!(
-        client.try_add_attester_with_info(
-            &admin,
-            &attester,
-            &None,
-            &None,
-            &Some(10),
-            &Some(10),
-        ),
+        client.try_add_attester_with_info(&admin, &attester, &None, &None, &Some(10), &Some(10),),
         Err(Ok(Error::InvalidValidityWindow))
     );
     assert_eq!(client.get_attester_info(&attester), None);
+}
+
+#[test]
+fn regional_registrar_is_limited_to_its_region_and_quota() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    let lagos = Symbol::new(&env, "lagos");
+    client.set_regional_registrar(&registrar, &lagos, &1);
+
+    let first = Address::generate(&env);
+    client.add_attester(&registrar, &first);
+    assert!(client.is_attester(&first));
+    assert_eq!(
+        client.get_attester_info(&first).unwrap().region,
+        Some(lagos.clone())
+    );
+    assert_eq!(client.get_regional_registrar_count(&registrar), 1);
+
+    let second = Address::generate(&env);
+    assert_eq!(
+        client.try_add_attester(&registrar, &second),
+        Err(Ok(Error::RegionalQuotaExceeded))
+    );
+
+    client.remove_attester(&admin, &first);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 0);
+    client.add_attester(&registrar, &second);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 1);
+
+    assert_eq!(
+        client.try_set_regional_registrar(&registrar, &Symbol::new(&env, "abuja"), &2),
+        Err(Ok(Error::RegionalAttestersRemain))
+    );
+    assert_eq!(
+        client.get_regional_registrar(&registrar).unwrap().region,
+        lagos
+    );
+
+    client.remove_attester(&admin, &second);
+    client.set_regional_registrar(&registrar, &Symbol::new(&env, "abuja"), &2);
+    assert_eq!(
+        client.get_regional_registrar(&registrar).unwrap().region,
+        Symbol::new(&env, "abuja")
+    );
+
+    let third = Address::generate(&env);
+    let fourth = Address::generate(&env);
+    client.add_attesters(
+        &registrar,
+        &Vec::from_array(&env, [third.clone(), fourth.clone()]),
+    );
+    assert_eq!(client.get_regional_registrar_count(&registrar), 2);
+    client.remove_attesters(&admin, &Vec::from_array(&env, [third, fourth]));
+    assert_eq!(client.get_regional_registrar_count(&registrar), 0);
+
+    client.revoke_regional_registrar(&registrar);
+    assert_eq!(client.get_regional_registrar(&registrar), None);
+    assert_eq!(
+        client.try_add_attester(&registrar, &Address::generate(&env)),
+        Err(Ok(Error::RoleNotGranted))
+    );
+}
+
+#[test]
+fn regional_registrar_cannot_assign_a_different_region() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &2);
+    let attester = Address::generate(&env);
+
+    assert_eq!(
+        client.try_add_attester_with_info(
+            &registrar,
+            &attester,
+            &None,
+            &Some(Symbol::new(&env, "abuja")),
+            &None,
+            &None,
+        ),
+        Err(Ok(Error::RegionMismatch))
+    );
+    assert_eq!(client.get_attester_info(&attester), None);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 0);
+
+    client.add_attester(&registrar, &attester);
+    assert_eq!(
+        client.get_attester_info(&attester).unwrap().region,
+        Some(Symbol::new(&env, "lagos"))
+    );
+    assert_eq!(
+        client.try_add_attesters(
+            &registrar,
+            &Vec::from_array(&env, [Address::generate(&env), Address::generate(&env)]),
+        ),
+        Err(Ok(Error::RegionalQuotaExceeded))
+    );
+    assert_eq!(client.get_regional_registrar_count(&registrar), 1);
+}
+
+#[test]
+fn regional_registrar_can_suspend_only_its_region() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &2);
+    let lagos_attester = Address::generate(&env);
+    let abuja_attester = Address::generate(&env);
+    client.add_attester(&registrar, &lagos_attester);
+    client.add_attester_with_info(
+        &admin,
+        &abuja_attester,
+        &None,
+        &Some(Symbol::new(&env, "abuja")),
+        &None,
+        &None,
+    );
+
+    client.suspend_attester(&registrar, &lagos_attester);
+    assert!(!client.is_attester(&lagos_attester));
+    assert_eq!(
+        client.try_suspend_attester(&registrar, &abuja_attester),
+        Err(Ok(Error::RegionMismatch))
+    );
 }
 
 #[test]
@@ -728,12 +838,12 @@ fn validity_schema_migration_preserves_legacy_attester_records() {
                 region: Some(region.clone()),
             },
         );
-        env.storage().instance().set(&DataKey::SchemaVersion, &2u32);
+        env.storage().instance().set(&DataKey::SchemaVersion, &3u32);
     });
 
     client.migrate();
 
-    assert_eq!(client.get_schema_version(), 3);
+    assert_eq!(client.get_schema_version(), 4);
     assert!(client.is_attester(&attester));
     assert_eq!(
         client.get_attester_info(&attester),

@@ -19,6 +19,9 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `8` | `BatchTooLarge` | The batch supplied to `add_attesters` or `remove_attesters` exceeds `BATCH_LIMIT` (40) addresses. |
 | `9` | `RoleNotGranted` | The supplied address does not hold the required owner-managed role. |
 | `10` | `InvalidValidityWindow` | The supplied inclusive start is not earlier than the exclusive end. |
+| `11` | `RegionMismatch` | A regional registrar attempted an operation outside its assigned region. |
+| `12` | `RegionalQuotaExceeded` | The regional registrar's concurrent enrollment quota has been reached. |
+| `13` | `RegionalAttestersRemain` | A regional registrar's region cannot change until all attributed attesters are removed. |
 
 ## `attestation-registry`
 
