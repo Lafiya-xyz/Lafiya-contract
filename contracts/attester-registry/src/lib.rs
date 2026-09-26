@@ -74,6 +74,8 @@ pub struct AttesterStatus {
     pub suspension_reason: Option<Symbol>,
     /// Ledger timestamp at which the suspension began.
     pub suspended_since: Option<u64>,
+    /// Earliest timestamp whose attestations are no longer trusted.
+    pub trust_revoked_after: Option<u64>,
 }
 
 /// Instance storage TTL policy:
@@ -598,16 +600,7 @@ impl AttesterRegistry {
 
     /// Suspend an allowlisted attester. Requires the admin's authorization.
     ///
-    /// **Note:** this function does **not** check whether `attester` was ever
-    /// added via `add_attester`. If called on an address that is not in the
-    /// allowlist, it silently sets the `Suspended` storage key and emits
-    /// `AttesterSuspended` for that address — a no-op from an access-control
-    /// perspective because `is_attester` also checks for an `Attester` storage
-    /// entry, so the phantom suspension has no effect on allowlist queries.
-    /// This diverges from `update_attester_info`, which returns
-    /// `Error::AttesterNotFound` for unknown addresses. The inconsistency is
-    /// known and documented here rather than silently changed; a follow-up
-    /// issue should decide whether to align both functions.
+    /// Returns `Error::AttesterNotFound` when the address is not allowlisted.
     pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
         let reason = Symbol::new(&env, "administrative");
         Self::suspend_attester_with_reason(env, attester, reason)
@@ -671,13 +664,6 @@ impl AttesterRegistry {
     /// Whether `attester` is currently allowlisted (and not suspended). Callable by anyone,
     /// including other contracts (e.g. `attestation-registry`).
     pub fn is_attester(env: Env, attester: Address) -> bool {
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Attester(attester.clone()))
-        {
-            return false;
-        }
         env.storage()
             .persistent()
             .get::<_, AttesterInfo>(&DataKey::Attester(attester))
@@ -733,6 +719,7 @@ impl AttesterRegistry {
         Some(AttesterStatus {
             suspension_reason: info.suspension_reason.clone(),
             suspended_since: info.suspended_since,
+            trust_revoked_after: info.trust_revoked_after,
             info,
             suspended,
         })
