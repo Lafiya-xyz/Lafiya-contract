@@ -9,6 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- `attestation-registry`: an attester can withdraw their own verification
+  without removing other attestations; admin revocation now preserves history
+  and exposes `get_attestation_status` (`NeverAttested`, `Verified`,
+  `Withdrawn`, or `Revoked`) so clients can display revoked records distinctly.
 - ADR-0010 and a prototype release manifest: `scripts/generate_release_manifest.py`
   binds contract wasm hashes, storage schema versions, generated bindings, event
   schemas, and per-network deployment state into one JSON document

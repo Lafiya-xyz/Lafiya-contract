@@ -110,6 +110,10 @@ fn get_attestation_returns_none_for_unknown_hash() {
     let (env, client, _attester_registry, _admin) = setup();
     let record_hash = BytesN::from_array(&env, &[9u8; 32]);
     assert_eq!(client.get_attestation(&record_hash), None);
+    assert_eq!(
+        client.get_attestation_status(&record_hash),
+        AttestationStatus::NeverAttested
+    );
 }
 
 #[test]
@@ -171,6 +175,10 @@ fn attester_can_withdraw_only_their_own_attestation() {
     client.withdraw_attestation(&attester_a, &record_hash);
 
     assert_eq!(client.get_attestation(&record_hash), Some(second));
+    assert_eq!(
+        client.get_attestation_status(&record_hash),
+        AttestationStatus::Verified
+    );
     assert_eq!(client.get_attestation_history(&record_hash).len(), 2);
     let expected_event = AttestationWithdrawn {
         record_hash: record_hash.clone(),
@@ -201,6 +209,23 @@ fn attester_cannot_withdraw_another_attesters_attestation() {
     let result = client.try_withdraw_attestation(&other, &record_hash);
     assert_eq!(result, Err(Ok(Error::AttestationNotOwned)));
     assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn withdrawing_the_only_attestation_reports_withdrawn() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let record_hash = BytesN::from_array(&env, &[45u8; 32]);
+    client.attest(&attester, &record_hash);
+    client.withdraw_attestation(&attester, &record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), None);
+    assert_eq!(
+        client.get_attestation_status(&record_hash),
+        AttestationStatus::Withdrawn
+    );
 }
 
 #[test]
@@ -977,10 +1002,26 @@ fn revoke_attestation_happy_path() {
     let record_hash = BytesN::from_array(&env, &[11u8; 32]);
     client.attest(&attester, &record_hash);
     assert_eq!(client.get_attestation(&record_hash).is_some(), true);
+    assert_eq!(
+        client.get_attestation_status(&record_hash),
+        AttestationStatus::Verified
+    );
 
     client.revoke_attestation(&record_hash);
 
     assert_eq!(client.get_attestation(&record_hash), None);
+    assert_eq!(
+        client.get_attestation_status(&record_hash),
+        AttestationStatus::Revoked
+    );
+    assert_eq!(client.get_attestation_history(&record_hash).len(), 1);
+
+    let replacement = client.attest(&attester, &record_hash);
+    assert_eq!(client.get_attestation(&record_hash), Some(replacement));
+    assert_eq!(
+        client.get_attestation_status(&record_hash),
+        AttestationStatus::Verified
+    );
 }
 
 #[test]
@@ -1009,20 +1050,16 @@ fn revoke_attestation_without_admin_auth_fails() {
 }
 
 #[test]
-fn revoke_attestation_for_unknown_hash_returns_not_initialized() {
+fn revoke_attestation_for_unknown_hash_returns_not_found() {
     let (env, client, _attester_registry, _admin) = setup();
     let record_hash = BytesN::from_array(&env, &[13u8; 32]);
 
     let result = client.try_revoke_attestation(&record_hash);
-    // NOTE: This is a bug in the contract. revoke_attestation returns
-    // Error::NotInitialized when called with an unknown hash (line 371 in lib.rs),
-    // but it should return Error::AttestationNotFound. This test documents
-    // the actual current behavior, not the intended behavior.
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    assert_eq!(result, Err(Ok(Error::AttestationNotFound)));
 }
 
 #[test]
-fn revoke_attestation_clears_get_attestation_history() {
+fn revoke_attestation_preserves_get_attestation_history() {
     let (env, client, attester_registry, _admin) = setup();
     let attester_a = Address::generate(&env);
     let attester_b = Address::generate(&env);
@@ -1048,5 +1085,9 @@ fn revoke_attestation_clears_get_attestation_history() {
 
     assert_eq!(client.get_attestation(&record_hash), None);
     let history_after = client.get_attestation_history(&record_hash);
-    assert_eq!(history_after.len(), 0);
+    assert_eq!(history_after.len(), 3);
+    assert_eq!(
+        client.get_attestation_status(&record_hash),
+        AttestationStatus::Revoked
+    );
 }
