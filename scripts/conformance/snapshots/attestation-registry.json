@@ -22,11 +22,15 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
+        },
+        {
+          "name": "patient",
+          "type": "address"
         },
         {
           "name": "record_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -43,6 +47,39 @@
                 "name": "Attestation"
               }
             }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "consent_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "patient",
+          "type": "address"
+        },
+        {
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "consent_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
           }
         }
       ]
@@ -71,7 +108,7 @@
       "inputs": [
         {
           "name": "record_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -99,7 +136,7 @@
       "inputs": [
         {
           "name": "record_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -115,6 +152,30 @@
                 "name": "Attestation"
               }
             }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attestation_valid_until",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_attestation_valid_until",
+      "outputs": [
+        {
+          "option": {
+            "value_type": "u64"
           }
         }
       ]
@@ -143,11 +204,11 @@
       "inputs": [
         {
           "name": "admin",
-          "type_": "address"
+          "type": "address"
         },
         {
           "name": "attester_registry",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "initialize",
@@ -195,7 +256,7 @@
       "inputs": [
         {
           "name": "new_admin",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "propose_admin",
@@ -216,7 +277,7 @@
       "inputs": [
         {
           "name": "record_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -241,7 +302,7 @@
       "inputs": [
         {
           "name": "new_registry",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "set_attester_registry",
@@ -303,6 +364,26 @@
         {
           "name": "ContractPaused",
           "value": 7
+        },
+        {
+          "name": "PatientConsentRequired",
+          "value": 8
+        },
+        {
+          "name": "PatientConsentExpired",
+          "value": 9
+        },
+        {
+          "name": "TimestampOverflow",
+          "value": 10
+        },
+        {
+          "name": "DuplicateAttestation",
+          "value": 11
+        },
+        {
+          "name": "AttestationHistoryFull",
+          "value": 12
         }
       ],
       "lib": "",
@@ -320,12 +401,12 @@
         {
           "location": "topic_list",
           "name": "previous_admin",
-          "type_": "address"
+          "type": "address"
         },
         {
           "location": "topic_list",
           "name": "new_admin",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -344,7 +425,7 @@
         {
           "location": "topic_list",
           "name": "record_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -353,12 +434,12 @@
         {
           "location": "data",
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         },
         {
           "location": "data",
           "name": "timestamp",
-          "type_": "u64"
+          "type": "u64"
         }
       ],
       "prefix_topics": [
@@ -377,7 +458,7 @@
         {
           "location": "topic_list",
           "name": "record_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -400,12 +481,12 @@
         {
           "location": "topic_list",
           "name": "previous",
-          "type_": "address"
+          "type": "address"
         },
         {
           "location": "topic_list",
           "name": "new",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -424,7 +505,7 @@
         {
           "location": "topic_list",
           "name": "by",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -443,7 +524,7 @@
         {
           "location": "topic_list",
           "name": "by",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -458,11 +539,11 @@
       "fields": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         },
         {
           "name": "timestamp",
-          "type_": "u64"
+          "type": "u64"
         }
       ],
       "lib": "",

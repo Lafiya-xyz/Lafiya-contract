@@ -38,8 +38,8 @@ source of truth for who may attest. See `contracts/attester-registry/src/lib.rs`
 ### Attestation
 
 The on-chain record written by the *attestation registry* when an *attester* verifies a
-record: `{ attester: Address, timestamp: u64 }`, stored keyed by the *record hash* with a
-bounded per-hash history (10 entries). Written by `attest()`, removed by
+record with a one-time patient grant: `{ attester: Address, timestamp: u64 }`, stored keyed by
+the *record hash* with a bounded per-hash history (10 entries). Written by `attest()`, removed by
 `revoke_attestation()`. See [ADR-0006](adr/0006-attestation-revocation-semantics.md).
 
 ### Attestation registry (`attestation-registry`)
