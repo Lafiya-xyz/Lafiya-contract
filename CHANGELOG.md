@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   without removing other attestations; admin revocation now preserves history
   and exposes `get_attestation_status` (`NeverAttested`, `Verified`,
   `Withdrawn`, or `Revoked`) so clients can display revoked records distinctly.
+- `attestation-registry`: `attest_version` explicitly links a newly attested
+  record hash to its previously attested version, with read methods for both
+  directions of the version relationship.
 - ADR-0010 and a prototype release manifest: `scripts/generate_release_manifest.py`
   binds contract wasm hashes, storage schema versions, generated bindings, event
   schemas, and per-network deployment state into one JSON document

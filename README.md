@@ -134,9 +134,13 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
-| `revoke_attestation(record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires admin auth. Emits `AttestationRevoked`. |
-| `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
+| `attest_version(attester: Address, record_hash: BytesN<32>, previous_record_hash: BytesN<32>) -> Attestation` | Records a verification and links a new hash to its previously attested version. Rejects self-links, unknown previous hashes, and conflicting links (`Error::InvalidRecordVersion`). Emits `RecordVersionLinked` alongside `AttestationRecorded`. |
+| `withdraw_attestation(attester: Address, record_hash: BytesN<32>)` | Lets an attester withdraw their latest active attestation for a hash without affecting other attestations. Requires the attester's auth. Emits `AttestationWithdrawn`. |
+| `revoke_attestation(record_hash: BytesN<32>)` | Marks all attestations for `record_hash` administratively revoked while retaining history. Requires admin auth. Emits `AttestationRevoked`. |
+| `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest active attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
+| `get_attestation_status(record_hash: BytesN<32>) -> AttestationStatus` | Distinguishes `NeverAttested`, `Verified`, `Withdrawn`, and `Revoked`, so an explicitly revoked card does not appear never verified. |
 | `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |
+| `get_previous_record_hash(record_hash: BytesN<32>) -> Option<BytesN<32>>` / `get_next_record_hash(record_hash: BytesN<32>) -> Option<BytesN<32>>` | Read the explicitly linked predecessor or successor hash for a record version. |
 
 ### Contract upgrades
 

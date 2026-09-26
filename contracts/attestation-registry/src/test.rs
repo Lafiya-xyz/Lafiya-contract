@@ -82,6 +82,77 @@ fn attest_by_allowlisted_attester_succeeds() {
 }
 
 #[test]
+fn attest_version_links_hashes_in_both_directions() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let previous_hash = BytesN::from_array(&env, &[46u8; 32]);
+    let record_hash = BytesN::from_array(&env, &[47u8; 32]);
+    client.attest(&attester, &previous_hash);
+
+    let attestation = client.attest_version(&attester, &record_hash, &previous_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+    assert_eq!(
+        client.get_previous_record_hash(&record_hash),
+        Some(previous_hash.clone())
+    );
+    assert_eq!(
+        client.get_next_record_hash(&previous_hash),
+        Some(record_hash.clone())
+    );
+    let expected_event = RecordVersionLinked {
+        previous_record_hash: previous_hash,
+        record_hash,
+    };
+    assert!(env
+        .events()
+        .all()
+        .contains(&expected_event.to_xdr(&env, &client.address)));
+}
+
+#[test]
+fn attest_version_rejects_unknown_or_self_previous_hash() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[48u8; 32]);
+    let unknown_hash = BytesN::from_array(&env, &[49u8; 32]);
+
+    assert_eq!(
+        client.try_attest_version(&attester, &record_hash, &unknown_hash),
+        Err(Ok(Error::InvalidRecordVersion))
+    );
+    assert_eq!(
+        client.try_attest_version(&attester, &record_hash, &record_hash),
+        Err(Ok(Error::InvalidRecordVersion))
+    );
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn attest_version_rejects_conflicting_lineage() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let previous_a = BytesN::from_array(&env, &[50u8; 32]);
+    let previous_b = BytesN::from_array(&env, &[51u8; 32]);
+    let record_hash = BytesN::from_array(&env, &[52u8; 32]);
+    client.attest(&attester, &previous_a);
+    client.attest(&attester, &previous_b);
+
+    client.attest_version(&attester, &record_hash, &previous_a);
+    assert_eq!(
+        client.try_attest_version(&attester, &record_hash, &previous_b),
+        Err(Ok(Error::InvalidRecordVersion))
+    );
+    assert_eq!(
+        client.get_previous_record_hash(&record_hash),
+        Some(previous_a)
+    );
+}
+
+#[test]
 fn attest_by_non_allowlisted_attester_fails() {
     let (env, client, _attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
