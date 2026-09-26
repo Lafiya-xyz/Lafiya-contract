@@ -57,6 +57,8 @@ pub struct AttesterInfo {
     pub suspension_reason: Option<Symbol>,
     /// Ledger timestamp at which the current suspension began.
     pub suspended_since: Option<u64>,
+    /// Earliest timestamp whose attestations must no longer be trusted.
+    pub trust_revoked_after: Option<u64>,
 }
 
 /// An allowlisted attester's metadata together with its current suspension
@@ -350,6 +352,7 @@ impl AttesterRegistry {
             suspended: false,
             suspension_reason: None,
             suspended_since: None,
+            trust_revoked_after: None,
         };
         env.storage()
             .persistent()
@@ -393,6 +396,7 @@ impl AttesterRegistry {
             suspended: false,
             suspension_reason: None,
             suspended_since: None,
+            trust_revoked_after: None,
         };
         env.storage()
             .persistent()
@@ -433,6 +437,7 @@ impl AttesterRegistry {
             suspended: false,
             suspension_reason: None,
             suspended_since: None,
+            trust_revoked_after: None,
         };
         env.storage()
             .persistent()
@@ -477,6 +482,7 @@ impl AttesterRegistry {
                     suspended: false,
                     suspension_reason: None,
                     suspended_since: None,
+                    trust_revoked_after: None,
                 };
                 env.storage().persistent().set(&key, &info);
                 count += 1;
@@ -624,6 +630,7 @@ impl AttesterRegistry {
         info.suspended = true;
         info.suspension_reason = Some(reason.clone());
         info.suspended_since = Some(since);
+        info.trust_revoked_after = Some(since);
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
@@ -681,6 +688,15 @@ impl AttesterRegistry {
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
         env.storage().persistent().get(&DataKey::Attester(attester))
+    }
+
+    /// Return the first timestamp at which attestations by this attester
+    /// stopped being trusted.
+    pub fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .and_then(|info| info.trust_revoked_after)
     }
 
     fn validate_region(region: &Option<String>) -> Result<(), Error> {

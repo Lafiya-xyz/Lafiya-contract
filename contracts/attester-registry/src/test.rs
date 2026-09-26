@@ -412,6 +412,7 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
             suspended: false,
             suspension_reason: None,
             suspended_since: None,
+            trust_revoked_after: None,
         }),
     );
 }
@@ -548,6 +549,7 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
                 suspended: false,
                 suspension_reason: None,
                 suspended_since: None,
+                trust_revoked_after: None,
             },
             suspended: false,
             suspension_reason: None,
@@ -566,10 +568,12 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
                 suspended: true,
                 suspension_reason: Some(Symbol::new(&env, "administrative")),
                 suspended_since: Some(env.ledger().timestamp()),
+                trust_revoked_after: Some(env.ledger().timestamp()),
             },
             suspended: true,
             suspension_reason: Some(Symbol::new(&env, "administrative")),
             suspended_since: Some(env.ledger().timestamp()),
+            trust_revoked_after: Some(env.ledger().timestamp()),
         }),
     );
     assert!(!client.is_attester(&attester));
@@ -584,10 +588,12 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
                 suspended: false,
                 suspension_reason: None,
                 suspended_since: None,
+                trust_revoked_after: Some(env.ledger().timestamp()),
             },
             suspended: false,
             suspension_reason: None,
             suspended_since: None,
+            trust_revoked_after: Some(env.ledger().timestamp()),
         }),
     );
     assert!(client.is_attester(&attester));
