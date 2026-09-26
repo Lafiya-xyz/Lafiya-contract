@@ -68,4 +68,10 @@ await contract.attest({ attester, record_hash: recordHash }).then((tx) => tx.sig
 // get_attestation() is a read-only lookup, callable by anyone.
 const { result } = await contract.get_attestation({ record_hash: recordHash });
 console.log(result); // the latest Attestation, or null if none
+
+// get_attestations() looks up multiple hashes in one read and preserves order.
+const { result: attestations } = await contract.get_attestations({
+  record_hashes: [recordHash, anotherRecordHash],
+});
+console.log(attestations); // one Attestation-or-null result per input hash
 ```

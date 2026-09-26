@@ -471,6 +471,20 @@ impl AttestationRegistry {
         Self::latest_attestation(&env, record_hash)
     }
 
+    /// Look up the latest attestation for each record hash in input order.
+    /// Each output entry corresponds to the hash at the same input position;
+    /// missing attestations are returned as `None`. Callable by anyone.
+    pub fn get_attestations(
+        env: Env,
+        record_hashes: Vec<BytesN<32>>,
+    ) -> Vec<Option<Attestation>> {
+        let mut attestations = Vec::new(&env);
+        for record_hash in record_hashes {
+            attestations.push_back(Self::latest_attestation(&env, record_hash));
+        }
+        attestations
+    }
+
     /// Look up the full attestation history for `record_hash`, if any.
     /// Returns attestations in chronological order (oldest first).
     /// Callable by anyone.

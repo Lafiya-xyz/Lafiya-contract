@@ -126,6 +126,30 @@ fn get_attestation_returns_none_for_unknown_hash() {
 }
 
 #[test]
+fn get_attestations_returns_results_in_input_order_including_misses() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    let first_hash = BytesN::from_array(&env, &[15u8; 32]);
+    let missing_hash = BytesN::from_array(&env, &[16u8; 32]);
+    let last_hash = BytesN::from_array(&env, &[17u8; 32]);
+    let first = client.attest(&attester, &first_hash);
+    let last = client.attest(&attester, &last_hash);
+
+    let hashes = Vec::from_array(
+        &env,
+        [first_hash.clone(), missing_hash, last_hash.clone()],
+    );
+    let results = client.get_attestations(&hashes);
+
+    assert_eq!(results.len(), 3);
+    assert_eq!(results.get(0), Some(Some(first)));
+    assert_eq!(results.get(1), Some(None));
+    assert_eq!(results.get(2), Some(Some(last)));
+}
+
+#[test]
 fn is_verified_applies_age_and_current_attester_status() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
