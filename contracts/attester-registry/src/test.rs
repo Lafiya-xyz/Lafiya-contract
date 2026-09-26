@@ -541,6 +541,20 @@ fn lowering_max_attesters_below_current_count_does_not_evict() {
     assert!(!client.is_attester(&new_attester));
 }
 
+#[test]
+fn setting_max_attesters_while_paused_fails() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+    let initial_max = client.get_max_attesters();
+
+    client.pause();
+    assert_eq!(
+        client.try_set_max_attesters(&1),
+        Err(Ok(Error::ContractPaused)),
+    );
+    assert_eq!(client.get_max_attesters(), initial_max);
+}
+
 /// Calling `suspend_attester` on an address that was never allowlisted is a
 /// no-op from an access-control perspective: the `Suspended` key is written
 /// for that address and `AttesterSuspended` is emitted, but `is_attester`

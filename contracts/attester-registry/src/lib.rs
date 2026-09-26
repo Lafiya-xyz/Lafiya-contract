@@ -272,9 +272,9 @@ impl AttesterRegistry {
     }
 
     /// Pause the contract, blocking `add_attester`, `add_attester_with_info`,
-    /// `update_attester_info`, `remove_attester`, `suspend_attester`, and
-    /// `reinstate_attester` until `unpause` is called. Requires the admin's
-    /// authorization.
+    /// `update_attester_info`, `remove_attester`, `suspend_attester`,
+    /// `reinstate_attester`, and `set_max_attesters` until `unpause` is called.
+    /// Requires the admin's authorization.
     pub fn pause(env: Env) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
@@ -551,10 +551,12 @@ impl AttesterRegistry {
     }
 
     /// Set the soft cap on the number of allowlisted attesters. Requires the
-    /// admin's authorization. Does not evict existing attesters if lowered
-    /// below the current count; it only blocks further `add_attester` calls.
+    /// admin's authorization. Blocked while the contract is paused. Does not
+    /// evict existing attesters if lowered below the current count; it only
+    /// blocks further `add_attester` calls.
     pub fn set_max_attesters(env: Env, max_attesters: u32) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
         env.storage()
             .instance()
             .set(&DataKey::MaxAttesters, &max_attesters);
