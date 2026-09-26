@@ -5,7 +5,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
-    Symbol, Vec,
+    String, Symbol, Vec,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -28,6 +28,9 @@ enum DataKey {
     /// allowlisted attester.
     Attester(Address),
     /// Presence of this key means the attester is currently suspended.
+    ///
+    /// Kept in the enum for storage compatibility. Suspension state is now
+    /// stored in `AttesterInfo`.
     Suspended(Address),
     /// The storage schema version of the contract.
     SchemaVersion,
@@ -46,7 +49,14 @@ pub struct AttesterInfo {
     /// Hash of the attester's off-chain license/credential document, if any.
     pub license_hash: Option<BytesN<32>>,
     /// The geographic region the attester is authorized to attest for, if any.
-    pub region: Option<Symbol>,
+    /// ISO 3166-2 code, for example `NG-LA`.
+    pub region: Option<String>,
+    /// Whether this attester is currently suspended.
+    pub suspended: bool,
+    /// Why the current suspension was imposed, if any.
+    pub suspension_reason: Option<Symbol>,
+    /// Ledger timestamp at which the current suspension began.
+    pub suspended_since: Option<u64>,
 }
 
 /// An allowlisted attester's metadata together with its current suspension
@@ -58,6 +68,10 @@ pub struct AttesterStatus {
     pub info: AttesterInfo,
     /// Whether the attester is currently suspended.
     pub suspended: bool,
+    /// Why the attester is suspended, if it is suspended.
+    pub suspension_reason: Option<Symbol>,
+    /// Ledger timestamp at which the suspension began.
+    pub suspended_since: Option<u64>,
 }
 
 /// Instance storage TTL policy:
@@ -114,6 +128,8 @@ pub enum Error {
     AttesterNotFound = 7,
     /// The supplied batch exceeds `BATCH_LIMIT` addresses.
     BatchTooLarge = 8,
+    /// The region is not a canonical ISO 3166-2 code.
+    InvalidRegion = 9,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -166,6 +182,8 @@ pub struct AttesterRemoved {
 pub struct AttesterSuspended {
     #[topic]
     pub attester: Address,
+    pub reason: Symbol,
+    pub since: u64,
 }
 
 /// Emitted when a suspended attester is reinstated.
@@ -329,6 +347,9 @@ impl AttesterRegistry {
         let info = AttesterInfo {
             license_hash: None,
             region: None,
+            suspended: false,
+            suspension_reason: None,
+            suspended_since: None,
         };
         env.storage()
             .persistent()
@@ -347,10 +368,11 @@ impl AttesterRegistry {
         env: Env,
         attester: Address,
         license_hash: Option<BytesN<32>>,
-        region: Option<Symbol>,
+        region: Option<String>,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        Self::validate_region(&region)?;
         let already_present = env
             .storage()
             .persistent()
@@ -368,6 +390,9 @@ impl AttesterRegistry {
         let info = AttesterInfo {
             license_hash,
             region,
+            suspended: false,
+            suspension_reason: None,
+            suspended_since: None,
         };
         env.storage()
             .persistent()
@@ -390,10 +415,11 @@ impl AttesterRegistry {
         env: Env,
         attester: Address,
         license_hash: Option<BytesN<32>>,
-        region: Option<Symbol>,
+        region: Option<String>,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        Self::validate_region(&region)?;
         if !env
             .storage()
             .persistent()
@@ -404,6 +430,9 @@ impl AttesterRegistry {
         let info = AttesterInfo {
             license_hash,
             region,
+            suspended: false,
+            suspension_reason: None,
+            suspended_since: None,
         };
         env.storage()
             .persistent()
@@ -445,6 +474,9 @@ impl AttesterRegistry {
                 let info = AttesterInfo {
                     license_hash: None,
                     region: None,
+                    suspended: false,
+                    suspension_reason: None,
+                    suspended_since: None,
                 };
                 env.storage().persistent().set(&key, &info);
                 count += 1;
@@ -487,9 +519,6 @@ impl AttesterRegistry {
             let key = DataKey::Attester(attester.clone());
             if env.storage().persistent().has(&key) {
                 env.storage().persistent().remove(&key);
-                env.storage()
-                    .persistent()
-                    .remove(&DataKey::Suspended(attester.clone()));
                 if count > 0 {
                     count -= 1;
                 }
@@ -522,9 +551,6 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(attester.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Suspended(attester.clone()));
         if was_present {
             let count = Self::attester_count(&env);
             if count > 0 {
@@ -577,12 +603,36 @@ impl AttesterRegistry {
     /// known and documented here rather than silently changed; a follow-up
     /// issue should decide whether to align both functions.
     pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
+        let reason = Symbol::new(&env, "administrative");
+        Self::suspend_attester_with_reason(env, attester, reason)
+    }
+
+    /// Suspend an attester and record the operational reason and cutoff time.
+    pub fn suspend_attester_with_reason(
+        env: Env,
+        attester: Address,
+        reason: Symbol,
+    ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        let mut info: AttesterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(attester.clone()))
+            .ok_or(Error::AttesterNotFound)?;
+        let since = env.ledger().timestamp();
+        info.suspended = true;
+        info.suspension_reason = Some(reason.clone());
+        info.suspended_since = Some(since);
         env.storage()
             .persistent()
-            .set(&DataKey::Suspended(attester.clone()), &true);
-        AttesterSuspended { attester }.publish(&env);
+            .set(&DataKey::Attester(attester.clone()), &info);
+        AttesterSuspended {
+            attester,
+            reason,
+            since,
+        }
+        .publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -593,9 +643,17 @@ impl AttesterRegistry {
     pub fn reinstate_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        let mut info: AttesterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(attester.clone()))
+            .ok_or(Error::AttesterNotFound)?;
+        info.suspended = false;
+        info.suspension_reason = None;
+        info.suspended_since = None;
         env.storage()
             .persistent()
-            .remove(&DataKey::Suspended(attester.clone()));
+            .set(&DataKey::Attester(attester.clone()), &info);
         AttesterReinstated { attester }.publish(&env);
         env.storage()
             .instance()
@@ -613,14 +671,38 @@ impl AttesterRegistry {
         {
             return false;
         }
-        !env.storage()
+        env.storage()
             .persistent()
-            .has(&DataKey::Suspended(attester))
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .map(|info| !info.suspended)
+            .unwrap_or(false)
     }
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
         env.storage().persistent().get(&DataKey::Attester(attester))
+    }
+
+    fn validate_region(region: &Option<String>) -> Result<(), Error> {
+        if let Some(region) = region {
+            let bytes = region.to_bytes();
+            if bytes.len() < 4 || bytes.len() > 7 || bytes.get(2) != Some(b'-') {
+                return Err(Error::InvalidRegion);
+            }
+            for (index, byte) in bytes.iter().enumerate() {
+                let valid = if index == 2 {
+                    byte == b'-'
+                } else if index < 2 {
+                    byte.is_ascii_uppercase()
+                } else {
+                    byte.is_ascii_uppercase() || byte.is_ascii_digit()
+                };
+                if !valid {
+                    return Err(Error::InvalidRegion);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Get `attester`'s metadata together with its current suspension state
@@ -631,11 +713,13 @@ impl AttesterRegistry {
             .storage()
             .persistent()
             .get(&DataKey::Attester(attester.clone()))?;
-        let suspended = env
-            .storage()
-            .persistent()
-            .has(&DataKey::Suspended(attester));
-        Some(AttesterStatus { info, suspended })
+        let suspended = info.suspended;
+        Some(AttesterStatus {
+            suspension_reason: info.suspension_reason.clone(),
+            suspended_since: info.suspended_since,
+            info,
+            suspended,
+        })
     }
 
     /// Query the current storage schema version of the contract.

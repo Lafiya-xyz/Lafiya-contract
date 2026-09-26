@@ -2,7 +2,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{Env, Event, IntoVal};
+use soroban_sdk::{Env, Event, IntoVal, String};
 
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -351,7 +351,7 @@ fn update_attester_info_on_unknown_attester_fails() {
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[1u8; 32]);
-    let region = Symbol::new(&env, "west");
+    let region = String::from_str(&env, "NG-WE");
     let result = client.try_update_attester_info(&attester, &Some(license_hash), &Some(region));
     assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
 }
@@ -376,7 +376,7 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
 
     let attester = Address::generate(&env);
     let initial_hash = BytesN::from_array(&env, &[1u8; 32]);
-    let initial_region = Symbol::new(&env, "west");
+    let initial_region = String::from_str(&env, "NG-WE");
     client.add_attester_with_info(&attester, &Some(initial_hash), &Some(initial_region));
 
     // Check event was emitted before any other call clears it.
@@ -389,7 +389,7 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     );
 
     let updated_hash = BytesN::from_array(&env, &[2u8; 32]);
-    let updated_region = Symbol::new(&env, "east");
+    let updated_region = String::from_str(&env, "NG-EA");
     client.update_attester_info(
         &attester,
         &Some(updated_hash.clone()),
@@ -409,6 +409,9 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         Some(AttesterInfo {
             license_hash: Some(updated_hash),
             region: Some(updated_region),
+            suspended: false,
+            suspension_reason: None,
+            suspended_since: None,
         }),
     );
 }
@@ -504,15 +507,8 @@ fn lowering_max_attesters_below_current_count_does_not_evict() {
     assert!(!client.is_attester(&new_attester));
 }
 
-/// Calling `suspend_attester` on an address that was never allowlisted is a
-/// no-op from an access-control perspective: the `Suspended` key is written
-/// for that address and `AttesterSuspended` is emitted, but `is_attester`
-/// still returns `false` because there is no matching `Attester` storage
-/// entry. This inconsistency with `update_attester_info` (which returns
-/// `Error::AttesterNotFound`) is documented on the function and tracked as a
-/// known issue.
 #[test]
-fn suspend_unknown_attester_behavior() {
+fn suspend_unknown_attester_fails() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
@@ -521,23 +517,11 @@ fn suspend_unknown_attester_behavior() {
     // Precondition: the address has never been allowlisted.
     assert!(!client.is_attester(&never_added));
 
-    // suspend_attester succeeds (no error) even though the address was never added.
-    client.suspend_attester(&never_added);
-
-    // The AttesterSuspended event was still emitted, confirming the call succeeded.
-    let expected_event = AttesterSuspended {
-        attester: never_added.clone(),
-    };
     assert_eq!(
-        env.events().all(),
-        std::vec![expected_event.to_xdr(&env, &client.address)],
+        client.try_suspend_attester(&never_added),
+        Err(Ok(Error::AttesterNotFound))
     );
-
-    // The phantom suspension has no effect on allowlist queries because
-    // is_attester also checks for the Attester storage entry.
     assert!(!client.is_attester(&never_added));
-
-    // get_attester_status returns None because there is no Attester entry.
     assert_eq!(client.get_attester_status(&never_added), None);
 }
 
@@ -548,7 +532,7 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[3u8; 32]);
-    let region = Symbol::new(&env, "north");
+    let region = String::from_str(&env, "NG-NO");
     client.add_attester_with_info(
         &attester,
         &Some(license_hash.clone()),
@@ -561,8 +545,13 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                suspended: false,
+                suspension_reason: None,
+                suspended_since: None,
             },
             suspended: false,
+            suspension_reason: None,
+            suspended_since: None,
         }),
     );
     assert!(client.is_attester(&attester));
@@ -574,8 +563,13 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                suspended: true,
+                suspension_reason: Some(Symbol::new(&env, "administrative")),
+                suspended_since: Some(env.ledger().timestamp()),
             },
             suspended: true,
+            suspension_reason: Some(Symbol::new(&env, "administrative")),
+            suspended_since: Some(env.ledger().timestamp()),
         }),
     );
     assert!(!client.is_attester(&attester));
@@ -587,8 +581,13 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash),
                 region: Some(region),
+                suspended: false,
+                suspension_reason: None,
+                suspended_since: None,
             },
             suspended: false,
+            suspension_reason: None,
+            suspended_since: None,
         }),
     );
     assert!(client.is_attester(&attester));
