@@ -45,6 +45,11 @@ export const Errors = {
 export interface AttesterInfo {
   license_hash: Option<Buffer>;
   region: Option<string>;
+  suspended: boolean;
+  removed: boolean;
+  suspension_reason: Option<string>;
+  suspended_since: Option<bigint>;
+  trust_revoked_after: Option<bigint>;
 }
 
 
@@ -88,7 +93,8 @@ export interface Client {
    * Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
    */
   add_attester_with_info: ({attester, license_hash, region}: {attester: string, license_hash: Option<Buffer>, region: Option<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
+  suspend_attester_with_reason: ({attester, reason}: {attester: string, reason: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  get_attester_trust_revoked_after: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(

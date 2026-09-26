@@ -128,6 +128,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `reason` | `Symbol` | data |
+| `since` | `u64` | data |
 
 ### `Initialized`
 

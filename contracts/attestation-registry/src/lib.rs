@@ -15,6 +15,7 @@ use soroban_sdk::{
 #[contractclient(name = "AttesterRegistryClient")]
 pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
+    fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64>;
 }
 
 /// Maximum number of historical attestations to keep per record hash.
@@ -422,6 +423,25 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Attestation(record_hash, sequence))
+    }
+
+    /// Whether the latest attestation for a record was made before the
+    /// attester's trust cutoff. Raw attestations remain available through
+    /// `get_attestation` for auditability.
+    pub fn is_attestation_trusted(env: Env, record_hash: BytesN<32>) -> bool {
+        let attestation = match Self::get_attestation(env.clone(), record_hash) {
+            Some(attestation) => attestation,
+            None => return false,
+        };
+        let registry_id = match Self::attester_registry(&env) {
+            Ok(registry_id) => registry_id,
+            Err(_) => return false,
+        };
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        registry
+            .get_attester_trust_revoked_after(&attestation.attester)
+            .map(|cutoff| attestation.timestamp < cutoff)
+            .unwrap_or(true)
     }
 
     /// Look up the full attestation history for `record_hash`, if any.
