@@ -78,7 +78,35 @@ fn attest_by_allowlisted_attester_succeeds() {
     let attestation = client.attest(&attester, &record_hash);
 
     assert_eq!(attestation.attester, attester);
+    assert_eq!(attestation.commitment_version, 0);
     assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn attest_versioned_records_commitment_version() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[25u8; 32]);
+
+    let attestation = client.attest_versioned(&attester, &record_hash, &1);
+
+    assert_eq!(attestation.commitment_version, 1);
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn attest_versioned_rejects_values_outside_one_byte_range() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[26u8; 32]);
+
+    assert_eq!(
+        client.try_attest_versioned(&attester, &record_hash, &256),
+        Err(Ok(Error::InvalidCommitmentVersion))
+    );
+    assert_eq!(client.get_attestation(&record_hash), None);
 }
 
 #[test]
@@ -90,6 +118,61 @@ fn attest_by_non_allowlisted_attester_fails() {
     let result = client.try_attest(&attester, &record_hash);
     assert_eq!(result, Err(Ok(Error::AttesterNotAllowlisted)));
     assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn anchor_batch_stores_one_root_and_returns_metadata() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let root = BytesN::from_array(&env, &[21u8; 32]);
+
+    let batch = client.anchor_batch(&attester, &root, &3);
+
+    assert_eq!(batch.attester, attester);
+    assert_eq!(batch.leaf_count, 3);
+    assert_eq!(client.get_attestation_batch(&root), Some(batch));
+}
+
+#[test]
+fn anchor_batch_rejects_empty_batch() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let root = BytesN::from_array(&env, &[22u8; 32]);
+
+    assert_eq!(
+        client.try_anchor_batch(&attester, &root, &0),
+        Err(Ok(Error::EmptyBatch))
+    );
+    assert_eq!(client.get_attestation_batch(&root), None);
+}
+
+#[test]
+fn anchor_batch_rejects_non_allowlisted_attester() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let root = BytesN::from_array(&env, &[23u8; 32]);
+
+    assert_eq!(
+        client.try_anchor_batch(&attester, &root, &2),
+        Err(Ok(Error::AttesterNotAllowlisted))
+    );
+    assert_eq!(client.get_attestation_batch(&root), None);
+}
+
+#[test]
+fn anchor_batch_rejects_reused_root() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let root = BytesN::from_array(&env, &[24u8; 32]);
+    client.anchor_batch(&attester, &root, &2);
+
+    assert_eq!(
+        client.try_anchor_batch(&attester, &root, &2),
+        Err(Ok(Error::BatchAlreadyAnchored))
+    );
 }
 
 #[test]
@@ -219,10 +302,11 @@ fn get_attestation_history_boundary_at_max_history() {
 
     // Verify all 10 entries are from attestations 2-11 (in order).
     for i in 0..10 {
+        let idx = i as usize + 1;
         assert_eq!(
             history.get(i).unwrap().timestamp,
-            attestations[i + 1].timestamp,
-            "History entry {} should match attestation {}", i, i + 1
+            attestations[idx].timestamp,
+            "History entry {} should match attestation {}", i, idx
         );
     }
 }
@@ -240,6 +324,7 @@ fn attest_emits_event() {
         record_hash: record_hash.clone(),
         attester: attestation.attester.clone(),
         timestamp: attestation.timestamp,
+        commitment_version: attestation.commitment_version,
     };
     assert_eq!(
         env.events().all(),
@@ -259,6 +344,31 @@ fn attest_without_attester_auth_fails() {
     let result = client.try_attest(&attester, &record_hash);
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn attest_accepts_attester_authorization_entry_for_sponsored_submission() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[27u8; 32]);
+
+    // The only authorization supplied is for the attester's exact contract
+    // invocation; a relayer/source-account authorization is not required here.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attester,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "attest",
+            args: (attester.clone(), record_hash.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let attestation = client.attest(&attester, &record_hash);
+
+    assert_eq!(attestation.attester, attester);
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
 }
 
 #[test]
@@ -723,6 +833,7 @@ fn test_attest_auth_matrix() {
             expected_result: Ok(Ok(Attestation {
                 attester: Address::generate(&Env::default()), // will be overwritten in comparison/check
                 timestamp: 0,
+                commitment_version: 0,
             })),
         },
         TestCase {
@@ -840,7 +951,7 @@ fn test_attest_auth_matrix() {
 fn set_attester_registry_by_admin_succeeds() {
     let (env, client, attester_registry, admin) = setup();
 
-    let new_registry = Address::generate(&env);
+    let new_registry = env.register(attester_registry::AttesterRegistry, ());
     assert_eq!(client.get_attester_registry(), attester_registry.address);
 
     client.set_attester_registry(&new_registry);
@@ -871,6 +982,18 @@ fn set_attester_registry_by_admin_succeeds() {
     );
 
     assert_eq!(client.get_attester_registry(), new_registry);
+}
+
+#[test]
+fn set_attester_registry_rejects_address_without_registry_interface() {
+    let (env, client, attester_registry, _admin) = setup();
+    let invalid_registry = Address::generate(&env);
+
+    assert_eq!(
+        client.try_set_attester_registry(&invalid_registry),
+        Err(Ok(Error::InvalidRegistryWiring))
+    );
+    assert_eq!(client.get_attester_registry(), attester_registry.address);
 }
 
 #[test]
@@ -977,11 +1100,11 @@ fn revoke_attestation_clears_get_attestation_history() {
 
     let history_before = client.get_attestation_history(&record_hash);
     assert_eq!(history_before.len(), 3);
-    assert_eq!(history_before.get(0), Some(first));
-    assert_eq!(history_before.get(1), Some(second));
-    assert_eq!(history_before.get(2), Some(third));
+    assert_eq!(history_before.get(0), Some(first.clone()));
+    assert_eq!(history_before.get(1), Some(second.clone()));
+    assert_eq!(history_before.get(2), Some(third.clone()));
 
-    assert_eq!(client.get_attestation(&record_hash), Some(third));
+    assert_eq!(client.get_attestation(&record_hash), Some(third.clone()));
 
     client.revoke_attestation(&record_hash);
 

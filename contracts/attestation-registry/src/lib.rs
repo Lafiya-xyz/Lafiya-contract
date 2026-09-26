@@ -56,6 +56,8 @@ enum DataKey {
     SchemaVersion,
     /// Whether state-changing operations are currently paused.
     Paused,
+    /// Metadata for an anchored Merkle batch, keyed by its root.
+    AttestationBatch(BytesN<32>),
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -68,6 +70,20 @@ pub struct Attestation {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+    /// Commitment scheme version: `0` is legacy/unversioned, `1` is LRC-1.
+    pub commitment_version: u32,
+}
+
+/// Metadata for a batch of record commitments anchored by one attester.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationBatch {
+    /// The allowlisted attester authorizing every leaf in the batch.
+    pub attester: Address,
+    /// Ledger timestamp at which the root was anchored.
+    pub timestamp: u64,
+    /// Number of record commitments represented by the Merkle root.
+    pub leaf_count: u32,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -90,6 +106,8 @@ pub struct AttestationRecorded {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+    /// Commitment scheme version recorded with the attestation.
+    pub commitment_version: u32,
 }
 
 /// Emitted when an attestation is revoked.
@@ -98,6 +116,20 @@ pub struct AttestationRecorded {
 pub struct AttestationRevoked {
     #[topic]
     pub record_hash: BytesN<32>,
+}
+
+/// Emitted when an attester anchors a Merkle root for multiple records.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationBatchAnchored {
+    #[topic]
+    pub root: BytesN<32>,
+    /// The allowlisted attester authorizing every leaf in the batch.
+    pub attester: Address,
+    /// Ledger timestamp at which the root was anchored.
+    pub timestamp: u64,
+    /// Number of record commitments represented by the Merkle root.
+    pub leaf_count: u32,
 }
 
 /// Emitted when state-changing operations are paused.
@@ -149,6 +181,12 @@ pub enum Error {
     AttestationNotFound = 6,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
+    /// A Merkle batch must contain at least one record.
+    EmptyBatch = 8,
+    /// The Merkle root has already been anchored.
+    BatchAlreadyAnchored = 9,
+    /// Commitment versions are encoded as a single byte and must be in `0..=255`.
+    InvalidCommitmentVersion = 10,
 }
 
 /// The attestation registry contract.
@@ -175,16 +213,7 @@ impl AttestationRegistry {
         }
         admin.require_auth();
 
-        // Best-effort sanity check: verify attester_registry implements
-        // the is_attester interface by calling it with a throwaway address.
-        let registry = AttesterRegistryClient::new(&env, &attester_registry);
-        // Use the current contract's own address as the throwaway — it's a
-        // valid Address but won't be an allowlisted attester, so a real
-        // attester-registry will return `false` (not trap).
-        let throwaway = env.current_contract_address();
-        if registry.try_is_attester(&throwaway).is_err() {
-            return Err(Error::InvalidRegistryWiring);
-        }
+        Self::validate_attester_registry(&env, &attester_registry)?;
 
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -242,12 +271,15 @@ impl AttestationRegistry {
     }
 
     /// Change the attester-registry contract this registry consults for
-    /// allowlist checks. Requires the admin's authorization. Emits
+    /// allowlist checks. Requires the admin's authorization and verifies the
+    /// new address responds to `is_attester`. This is an interface check, not
+    /// proof that the address is a trusted registry deployment. Emits
     /// `AttesterRegistryRepointed` for indexer/audit visibility.
     pub fn set_attester_registry(env: Env, new_registry: Address) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
 
+        Self::validate_attester_registry(&env, &new_registry)?;
         let previous = Self::attester_registry(&env)?;
 
         env.storage()
@@ -293,6 +325,9 @@ impl AttestationRegistry {
     /// Record that `attester` verified the record hashing to `record_hash`.
     /// Requires `attester`'s authorization and that `attester` is
     /// currently allowlisted in the configured `attester-registry`.
+    /// A relayer may submit the transaction and pay its fees using an
+    /// authorization entry signed by `attester`; the transaction source
+    /// need not be `attester`.
     /// Stores the attestation with an incrementing sequence number,
     /// maintaining a bounded history (MAX_HISTORY entries per hash).
     pub fn attest(
@@ -300,11 +335,37 @@ impl AttestationRegistry {
         attester: Address,
         record_hash: BytesN<32>,
     ) -> Result<Attestation, Error> {
-        attester.require_auth();
-        Self::require_not_paused(&env)?;
+        Self::record_attestation(&env, attester, record_hash, 0)
+    }
 
-        let registry_id = Self::attester_registry(&env)?;
-        let registry = AttesterRegistryClient::new(&env, &registry_id);
+    /// Record an attestation with an explicit one-byte commitment scheme
+    /// version. `0` is reserved for legacy/unversioned commitments, `1` is
+    /// LRC-1, and future values may identify later schemes. As with `attest`,
+    /// a relayer may submit the transaction and pay its fees using an
+    /// authorization entry signed by `attester`.
+    pub fn attest_versioned(
+        env: Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+        commitment_version: u32,
+    ) -> Result<Attestation, Error> {
+        if commitment_version > u8::MAX as u32 {
+            return Err(Error::InvalidCommitmentVersion);
+        }
+        Self::record_attestation(&env, attester, record_hash, commitment_version)
+    }
+
+    fn record_attestation(
+        env: &Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+        commitment_version: u32,
+    ) -> Result<Attestation, Error> {
+        attester.require_auth();
+        Self::require_not_paused(env)?;
+
+        let registry_id = Self::attester_registry(env)?;
+        let registry = AttesterRegistryClient::new(env, &registry_id);
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
         }
@@ -312,6 +373,7 @@ impl AttestationRegistry {
         let attestation = Attestation {
             attester: attester.clone(),
             timestamp: env.ledger().timestamp(),
+            commitment_version,
         };
 
         let sequence: u64 = env
@@ -365,10 +427,83 @@ impl AttestationRegistry {
             record_hash,
             attester,
             timestamp: attestation.timestamp,
+            commitment_version,
+        }
+        .publish(env);
+
+        Ok(attestation)
+    }
+
+    fn validate_attester_registry(env: &Env, registry_id: &Address) -> Result<(), Error> {
+        let registry = AttesterRegistryClient::new(env, registry_id);
+        let throwaway = env.current_contract_address();
+        if registry.try_is_attester(&throwaway).is_err() {
+            return Err(Error::InvalidRegistryWiring);
+        }
+        Ok(())
+    }
+
+    /// Anchor a Merkle root containing multiple record commitments.
+    ///
+    /// The attester authorizes the root and leaf count, while the contract
+    /// stores only one persistent entry for the entire batch. Verifiers
+    /// reconstruct inclusion proofs using the tree format documented in
+    /// `docs/merkle-batch-attestations.md`.
+    pub fn anchor_batch(
+        env: Env,
+        attester: Address,
+        root: BytesN<32>,
+        leaf_count: u32,
+    ) -> Result<AttestationBatch, Error> {
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if leaf_count == 0 {
+            return Err(Error::EmptyBatch);
+        }
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        if !registry.is_attester(&attester) {
+            return Err(Error::AttesterNotAllowlisted);
+        }
+
+        let key = DataKey::AttestationBatch(root.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::BatchAlreadyAnchored);
+        }
+
+        let batch = AttestationBatch {
+            attester: attester.clone(),
+            timestamp: env.ledger().timestamp(),
+            leaf_count,
+        };
+        env.storage().persistent().set(&key, &batch);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        AttestationBatchAnchored {
+            root,
+            attester,
+            timestamp: batch.timestamp,
+            leaf_count,
         }
         .publish(&env);
 
-        Ok(attestation)
+        Ok(batch)
+    }
+
+    /// Look up metadata for a Merkle batch root, if it has been anchored.
+    pub fn get_attestation_batch(env: Env, root: BytesN<32>) -> Option<AttestationBatch> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttestationBatch(root))
     }
 
     /// Revoke all attestations for `record_hash`. Gated by admin authorization.
