@@ -16,7 +16,7 @@ pub use validation::{
 
 #[derive(Debug, Error)]
 pub enum ConfigError {
-    #[error("config/networks.toml not found at {path}")]
+    #[error("config/networks.toml not found at {0}")]
     NotFound(PathBuf),
     #[error("failed to read config {path}: {source}")]
     ReadError {
@@ -493,7 +493,7 @@ attestation_registry = ""
     #[test]
     fn missing_config_error_includes_path() {
         let missing = PathBuf::from("/tmp/lafiya-missing-config/networks.toml");
-        let err = load_networks::<PathBuf>(Some(&missing)).unwrap_err();
+        let err = load_networks::<PathBuf>(Some(missing.clone())).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("config/networks.toml not found at"));
         assert!(msg.contains(&missing.to_string_lossy().to_string()));

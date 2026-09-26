@@ -227,15 +227,11 @@ pub enum RecoveryResult {
     /// A ledger closed with the transaction included but it failed on-chain.
     /// Its sequence number is consumed either way, so it must not be
     /// resubmitted.
-    RejectedOnChain {
-        reason: String,
-    },
+    RejectedOnChain { reason: String },
     /// Every retry/poll budget was spent without a final verdict. This is
     /// the escalate-to-operator case; `last_known` is what to hand the
     /// runbook.
-    ExhaustedNeedsOperator {
-        last_known: TxState,
-    },
+    ExhaustedNeedsOperator { last_known: TxState },
 }
 
 /// Round-robins submission across an ordered list of providers and, on any

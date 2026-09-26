@@ -358,6 +358,130 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
+fn deployment_summary(cfg: &NetworkConfig) -> String {
+    match cfg.deployment_state() {
+        DeploymentState::Deployed => "deployed".to_string(),
+        DeploymentState::NotDeployed => "not deployed".to_string(),
+        DeploymentState::Partial { missing } => {
+            let names = missing
+                .iter()
+                .map(|kind| kind.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("partial (missing: {names})")
+        }
+    }
+}
+
+fn invoke_args(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: Option<&str>,
+    method: &str,
+    args: &[&str],
+) -> Vec<String> {
+    let mut cmd = vec![
+        "contract".to_string(),
+        "invoke".to_string(),
+        "--id".to_string(),
+        contract_id.to_string(),
+        "--rpc-url".to_string(),
+        cfg.rpc_url.clone(),
+        "--network-passphrase".to_string(),
+        cfg.network_passphrase.clone(),
+    ];
+    if let Some(source) = source {
+        cmd.push("--source".to_string());
+        cmd.push(source.to_string());
+    }
+    cmd.push("--".to_string());
+    cmd.push(method.to_string());
+    cmd.extend(args.iter().map(|arg| (*arg).to_string()));
+    cmd
+}
+
+fn validated_source(source: Option<String>) -> anyhow::Result<Option<String>> {
+    match source.or_else(|| std::env::var(ENV_SOURCE).ok()) {
+        Some(value) => {
+            validate_source_account(&value).context("invalid source account")?;
+            Ok(Some(value))
+        }
+        None => Ok(None),
+    }
+}
+
+fn run_stellar(args: Vec<String>) -> anyhow::Result<()> {
+    if which::which("stellar").is_err() {
+        anyhow::bail!("stellar CLI not found - install with: cargo install --locked stellar-cli");
+    }
+    let status = std::process::Command::new("stellar").args(args).status()?;
+    if !status.success() {
+        anyhow::bail!("stellar CLI failed with exit status: {status}");
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct DeployMode {
+    build_only: bool,
+    dry_run: bool,
+}
+
+impl DeployMode {
+    fn new(build_only: bool, dry_run: bool) -> Self {
+        Self {
+            build_only,
+            dry_run,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct DeployIdentity {
+    source: Option<String>,
+    admin: Option<String>,
+}
+
+impl DeployIdentity {
+    fn resolve(
+        admin: Option<String>,
+        source: Option<String>,
+        env_admin: Option<String>,
+        env_source: Option<String>,
+        mode: DeployMode,
+    ) -> anyhow::Result<Self> {
+        let source = source.or(env_source).or_else(|| std::env::var(ENV_SOURCE).ok());
+        let source = match source {
+            Some(value) => {
+                validate_source_account(&value)
+                    .with_context(|| format!("invalid --source or {ENV_SOURCE}: {value}"))?;
+                Some(value)
+            }
+            None => None,
+        };
+
+        let mut admin = admin.or(env_admin);
+        if admin.is_none() && !mode.build_only && !mode.dry_run {
+            if let Some(ref src) = source {
+                if src.starts_with('G') {
+                    admin = Some(src.clone());
+                }
+            }
+        }
+
+        if admin.is_none() && !mode.build_only && !mode.dry_run {
+            anyhow::bail!("missing deploy admin. Provide --admin or set {ENV_ADMIN}");
+        }
+
+        if let Some(ref admin_value) = admin {
+            validate_account_address("admin address", admin_value)
+                .with_context(|| format!("invalid admin address: {admin_value}"))?;
+        }
+
+        Ok(Self { source, admin })
+    }
+}
+
 mod which {
     use std::path::Path;
 
