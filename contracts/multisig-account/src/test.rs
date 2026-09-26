@@ -278,3 +278,63 @@ fn three_of_five_signers_authorize() {
 
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
 }
+
+#[test]
+fn signer_set_and_threshold_can_be_rotated() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let mut replacement = Vec::new(&env);
+    replacement.push_back(BytesN::from_array(
+        &env,
+        &keys[1].verifying_key().to_bytes(),
+    ));
+    replacement.push_back(BytesN::from_array(
+        &env,
+        &keys[2].verifying_key().to_bytes(),
+    ));
+
+    env.mock_all_auths();
+    client.set_signers(&replacement, &2);
+
+    assert_eq!(client.get_signers(), replacement);
+    assert_eq!(client.get_threshold(), 2);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let retained_signatures = signatures_for(&env, &keys[1..], &payload.to_array());
+    assert_eq!(
+        check_auth(&env, &account, &payload, retained_signatures),
+        Ok(())
+    );
+
+    let former_signer_signatures = signatures_for(&env, &keys[..2], &payload.to_array());
+    assert_eq!(
+        check_auth(&env, &account, &payload, former_signer_signatures),
+        Err(Ok(Error::UnknownSigner))
+    );
+}
+
+#[test]
+fn signer_rotation_requires_current_account_authorization() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let original_signers = client.get_signers();
+
+    let mut replacement = Vec::new(&env);
+    replacement.push_back(BytesN::from_array(
+        &env,
+        &keys[1].verifying_key().to_bytes(),
+    ));
+    replacement.push_back(BytesN::from_array(
+        &env,
+        &keys[2].verifying_key().to_bytes(),
+    ));
+
+    env.mock_auths(&[]);
+    assert!(client.try_set_signers(&replacement, &2).is_err());
+    assert_eq!(client.get_signers(), original_signers);
+}

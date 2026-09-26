@@ -30,6 +30,8 @@ enum DataKey {
     Signer(BytesN<32>),
     /// The total number of registered signers.
     SignerCount,
+    /// The ordered list of registered signers, used to safely replace the set.
+    SignerSet,
 }
 
 /// A single ed25519 signature from one signer in the multisig set.
@@ -98,6 +100,73 @@ impl MultisigAccount {
         env.storage()
             .instance()
             .set(&DataKey::SignerCount, &signers.len());
+        env.storage().instance().set(&DataKey::SignerSet, &signers);
+    }
+
+    /// Return the current ordered signer set.
+    pub fn get_signers(env: Env) -> Result<Vec<BytesN<32>>, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::SignerSet)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Return the minimum number of signer approvals required.
+    pub fn get_threshold(env: Env) -> Result<u32, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Threshold)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Atomically replace the signer set and approval threshold.
+    ///
+    /// The account itself must authorize this call under its current
+    /// signer configuration.
+    pub fn set_signers(env: Env, signers: Vec<BytesN<32>>, threshold: u32) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+        Self::validate_signers(&signers, threshold)?;
+
+        let old_signers: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SignerSet)
+            .ok_or(Error::NotInitialized)?;
+
+        for signer in old_signers.iter() {
+            env.storage().instance().remove(&DataKey::Signer(signer));
+        }
+        for signer in signers.iter() {
+            env.storage().instance().set(&DataKey::Signer(signer), &());
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Threshold, &threshold);
+        env.storage()
+            .instance()
+            .set(&DataKey::SignerCount, &signers.len());
+        env.storage().instance().set(&DataKey::SignerSet, &signers);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(())
+    }
+
+    fn validate_signers(signers: &Vec<BytesN<32>>, threshold: u32) -> Result<(), Error> {
+        if threshold == 0 || threshold > signers.len() {
+            return Err(Error::InvalidThreshold);
+        }
+
+        for (index, signer) in signers.iter().enumerate() {
+            for previous in signers.iter().take(index) {
+                if previous == signer {
+                    return Err(Error::DuplicateSigner);
+                }
+            }
+        }
+        Ok(())
     }
 }
 
