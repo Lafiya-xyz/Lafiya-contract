@@ -104,6 +104,27 @@ fn multisig_address_administers_both_registries() {
         Err(Ok(attestation_registry::Error::AlreadyInitialized))
     );
 
+    let grant_registrar = authorization_entry(
+        &env,
+        &account,
+        invocation(
+            &attester_registry_id,
+            "grant_role",
+            Vec::from_array(
+                &env,
+                [
+                    attester_registry::Role::Registrar.into_val(&env),
+                    account.clone().into_val(&env),
+                ],
+            ),
+        ),
+        &keys[..2],
+        3,
+    );
+    attester_registry
+        .set_auths(&[grant_registrar])
+        .grant_role(&attester_registry::Role::Registrar, &account);
+
     let attester = Address::generate(&env);
     let add_attester = authorization_entry(
         &env,
@@ -111,14 +132,20 @@ fn multisig_address_administers_both_registries() {
         invocation(
             &attester_registry_id,
             "add_attester",
-            Vec::from_array(&env, [attester.clone().into_val(&env)]),
+            Vec::from_array(
+                &env,
+                [
+                    account.clone().into_val(&env),
+                    attester.clone().into_val(&env),
+                ],
+            ),
         ),
         &keys[..2],
-        3,
+        4,
     );
     attester_registry
         .set_auths(&[add_attester])
-        .add_attester(&attester);
+        .add_attester(&account, &attester);
     assert!(attester_registry.is_attester(&attester));
 
     let unauthorized_remove = authorization_entry(
@@ -127,14 +154,20 @@ fn multisig_address_administers_both_registries() {
         invocation(
             &attester_registry_id,
             "remove_attester",
-            Vec::from_array(&env, [attester.clone().into_val(&env)]),
+            Vec::from_array(
+                &env,
+                [
+                    account.clone().into_val(&env),
+                    attester.clone().into_val(&env),
+                ],
+            ),
         ),
         &keys[..1],
-        4,
+        5,
     );
     assert!(attester_registry
         .set_auths(&[unauthorized_remove])
-        .try_remove_attester(&attester)
+        .try_remove_attester(&account, &attester)
         .is_err());
     assert!(attester_registry.is_attester(&attester));
 
@@ -144,13 +177,19 @@ fn multisig_address_administers_both_registries() {
         invocation(
             &attester_registry_id,
             "remove_attester",
-            Vec::from_array(&env, [attester.clone().into_val(&env)]),
+            Vec::from_array(
+                &env,
+                [
+                    account.clone().into_val(&env),
+                    attester.clone().into_val(&env),
+                ],
+            ),
         ),
         &keys[..2],
-        5,
+        6,
     );
     attester_registry
         .set_auths(&[remove_attester])
-        .remove_attester(&attester);
+        .remove_attester(&account, &attester);
     assert!(!attester_registry.is_attester(&attester));
 }

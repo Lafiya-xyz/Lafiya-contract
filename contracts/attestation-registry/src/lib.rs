@@ -22,7 +22,7 @@ pub trait AttesterRegistryInterface {
 /// the oldest attestation is removed (FIFO eviction).
 const MAX_HISTORY: u64 = 10;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Instance storage TTL policy:
 /// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
@@ -56,6 +56,16 @@ enum DataKey {
     SchemaVersion,
     /// Whether state-changing operations are currently paused.
     Paused,
+    /// Explicit capabilities granted by the owner.
+    Role(Role, Address),
+}
+
+/// Operational capabilities managed by the owner.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Role {
+    Guardian,
+    Revoker,
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -149,6 +159,18 @@ pub enum Error {
     AttestationNotFound = 6,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
+    /// The supplied address has not been granted the required role.
+    RoleNotGranted = 8,
+    /// `migrate()` was called when no storage migration is pending.
+    MigrationNotRequired = 9,
+}
+
+/// Emitted when the contract is upgraded to new wasm.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Upgraded {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
 }
 
 /// The attestation registry contract.
@@ -199,6 +221,35 @@ impl AttestationRegistry {
     /// Return the current admin address.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         Self::admin(&env)
+    }
+
+    /// Grant a guardian or revoker capability. Only the owner may change roles.
+    pub fn grant_role(env: Env, role: Role, account: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Role(role, account.clone()), &true);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Revoke a guardian or revoker capability. Only the owner may change roles.
+    pub fn revoke_role(env: Env, role: Role, account: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .remove(&DataKey::Role(role, account.clone()));
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Return whether `account` holds `role`.
+    pub fn has_role(env: Env, role: Role, account: Address) -> bool {
+        env.storage().instance().has(&DataKey::Role(role, account))
     }
 
     /// Return the configured attester-registry contract address.
@@ -265,11 +316,10 @@ impl AttestationRegistry {
 
     /// Pause the contract, blocking `attest` until `unpause` is called.
     /// Requires the admin's authorization.
-    pub fn pause(env: Env) -> Result<(), Error> {
-        let admin = Self::admin(&env)?;
-        admin.require_auth();
+    pub fn pause(env: Env, guardian: Address) -> Result<(), Error> {
+        Self::require_role(&env, Role::Guardian, &guardian)?;
         env.storage().instance().set(&DataKey::Paused, &true);
-        Paused { by: admin }.publish(&env);
+        Paused { by: guardian }.publish(&env);
         Ok(())
     }
 
@@ -372,9 +422,12 @@ impl AttestationRegistry {
     }
 
     /// Revoke all attestations for `record_hash`. Gated by admin authorization.
-    pub fn revoke_attestation(env: Env, record_hash: BytesN<32>) -> Result<(), Error> {
-        let admin: Address = Self::admin(&env)?;
-        admin.require_auth();
+    pub fn revoke_attestation(
+        env: Env,
+        revoker: Address,
+        record_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Revoker, &revoker)?;
 
         let sequence: u64 = env
             .storage()
@@ -463,11 +516,58 @@ impl AttestationRegistry {
         history
     }
 
+    /// Upgrade the contract's Wasm code. Only the owner may authorize upgrades.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        Upgraded { new_wasm_hash }.publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Complete a pending storage migration after an upgrade.
+    pub fn migrate(env: Env) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        let stored: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1);
+        if stored >= SCHEMA_VERSION {
+            return Err(Error::MigrationNotRequired);
+        }
+
+        // The owner remains stored at the legacy Admin key. Role entries are
+        // additive and remain empty until explicitly granted.
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
     fn admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
+    }
+
+    fn require_role(env: &Env, role: Role, account: &Address) -> Result<(), Error> {
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Role(role, account.clone()))
+        {
+            return Err(Error::RoleNotGranted);
+        }
+        account.require_auth();
+        Ok(())
     }
 
     fn attester_registry(env: &Env) -> Result<Address, Error> {

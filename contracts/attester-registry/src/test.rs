@@ -13,6 +13,12 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     (env, client, admin)
 }
 
+fn initialize_for_tests(client: &AttesterRegistryClient, admin: &Address) {
+    client.initialize(admin);
+    client.grant_role(&Role::Registrar, admin);
+    client.grant_role(&Role::Guardian, admin);
+}
+
 #[test]
 fn get_schema_version_succeeds() {
     // Asserts the literal current schema version, not just that the call
@@ -22,14 +28,14 @@ fn get_schema_version_succeeds() {
     // effect of an unrelated change.
     let (_, client, admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
-    client.initialize(&admin);
-    assert_eq!(client.get_schema_version(), 1);
+    initialize_for_tests(&client, &admin);
+    assert_eq!(client.get_schema_version(), 2);
 }
 
 #[test]
 fn initialize_sets_admin() {
     let (_, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
     assert_eq!(client.get_admin(), admin);
 }
 
@@ -44,7 +50,7 @@ fn get_admin_before_initialize_fails() {
 #[test]
 fn initialize_twice_fails() {
     let (_, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let result = client.try_initialize(&admin);
     assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
@@ -53,7 +59,7 @@ fn initialize_twice_fails() {
 #[test]
 fn is_attester_false_before_allowlisting() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let someone = Address::generate(&env);
     assert!(!client.is_attester(&someone));
@@ -62,10 +68,10 @@ fn is_attester_false_before_allowlisting() {
 #[test]
 fn add_attester_allowlists_and_emits_event() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
+    client.add_attester(&admin, &attester);
 
     assert_eq!(
         env.auths(),
@@ -75,7 +81,7 @@ fn add_attester_allowlists_and_emits_event() {
                 function: soroban_sdk::testutils::AuthorizedFunction::Contract((
                     client.address.clone(),
                     soroban_sdk::Symbol::new(&env, "add_attester"),
-                    (attester.clone(),).into_val(&env),
+                    (admin.clone(), attester.clone()).into_val(&env),
                 )),
                 sub_invocations: std::vec![],
             },
@@ -96,23 +102,23 @@ fn add_attester_allowlists_and_emits_event() {
 #[test]
 fn remove_attester_revokes_allowlisting() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
+    client.add_attester(&admin, &attester);
     assert!(client.is_attester(&attester));
 
-    client.remove_attester(&attester);
+    client.remove_attester(&admin, &attester);
     assert!(!client.is_attester(&attester));
 }
 
 #[test]
 fn remove_attester_never_added_is_a_no_op() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.remove_attester(&attester);
+    client.remove_attester(&admin, &attester);
     assert!(!client.is_attester(&attester));
 }
 
@@ -121,7 +127,7 @@ fn add_attester_before_initialize_fails() {
     let (env, client, _admin) = setup();
     let attester = Address::generate(&env);
 
-    let result = client.try_add_attester(&attester);
+    let result = client.try_add_attester(&_admin, &attester);
     assert_eq!(result, Err(Ok(Error::NotInitialized)));
 }
 
@@ -135,21 +141,21 @@ fn add_attester_without_admin_auth_fails() {
     let attester = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
-    // Only mock an auth entry for `attester`, not `admin`, so the
-    // contract's `admin.require_auth()` has nothing to satisfy it.
+    // Only mock an auth entry for `attester`, not `admin`, so the registrar's
+    // require_auth() has nothing to satisfy it.
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
         address: &attester,
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
             fn_name: "add_attester",
-            args: (attester.clone(),).into_val(&env),
+            args: (admin.clone(), attester.clone()).into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_add_attester(&attester);
+    let result = client.try_add_attester(&admin, &attester);
     assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
     assert!(!client.is_attester(&attester));
 }
@@ -164,7 +170,7 @@ fn propose_admin_by_non_admin_fails() {
     let malicious = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
         address: &malicious,
@@ -190,7 +196,7 @@ fn accept_admin_by_wrong_address_fails() {
     let malicious = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
     client.propose_admin(&new_admin);
 
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
@@ -210,7 +216,7 @@ fn accept_admin_by_wrong_address_fails() {
 #[test]
 fn accept_admin_with_no_pending_proposal_fails() {
     let (_env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let result = client.try_accept_admin();
     assert_eq!(result, Err(Ok(Error::NoPendingTransfer)));
@@ -219,7 +225,7 @@ fn accept_admin_with_no_pending_proposal_fails() {
 #[test]
 fn successful_admin_transfer_flow() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let new_admin = Address::generate(&env);
 
@@ -266,8 +272,10 @@ fn successful_admin_transfer_flow() {
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
 
+    client.revoke_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Registrar, &new_admin);
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
+    client.add_attester(&new_admin, &attester);
 
     assert_eq!(
         env.auths(),
@@ -277,7 +285,7 @@ fn successful_admin_transfer_flow() {
                 function: soroban_sdk::testutils::AuthorizedFunction::Contract((
                     client.address.clone(),
                     soroban_sdk::Symbol::new(&env, "add_attester"),
-                    (attester.clone(),).into_val(&env),
+                    (new_admin.clone(), attester.clone()).into_val(&env),
                 )),
                 sub_invocations: std::vec![],
             },
@@ -289,26 +297,26 @@ fn successful_admin_transfer_flow() {
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
             fn_name: "add_attester",
-            args: (attester.clone(),).into_val(&env),
+            args: (admin.clone(), attester.clone()).into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_add_attester(&attester);
+    let result = client.try_add_attester(&admin, &attester);
     assert!(result.is_err());
 }
 
 #[test]
 fn add_attester_beyond_cap_fails() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
     client.set_max_attesters(&2);
 
-    client.add_attester(&Address::generate(&env));
-    client.add_attester(&Address::generate(&env));
+    client.add_attester(&admin, &Address::generate(&env));
+    client.add_attester(&admin, &Address::generate(&env));
     assert_eq!(client.get_attester_count(), 2);
 
-    let result = client.try_add_attester(&Address::generate(&env));
+    let result = client.try_add_attester(&admin, &Address::generate(&env));
     assert_eq!(result, Err(Ok(Error::AllowlistFull)));
     assert_eq!(client.get_attester_count(), 2);
 }
@@ -316,68 +324,74 @@ fn add_attester_beyond_cap_fails() {
 #[test]
 fn removing_an_attester_frees_cap_slot() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
     client.set_max_attesters(&1);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
+    client.add_attester(&admin, &attester);
     assert_eq!(
-        client.try_add_attester(&Address::generate(&env)),
+        client.try_add_attester(&admin, &Address::generate(&env)),
         Err(Ok(Error::AllowlistFull))
     );
 
-    client.remove_attester(&attester);
+    client.remove_attester(&admin, &attester);
     assert_eq!(client.get_attester_count(), 0);
-    client.add_attester(&Address::generate(&env));
+    client.add_attester(&admin, &Address::generate(&env));
     assert_eq!(client.get_attester_count(), 1);
 }
 
 #[test]
 fn re_adding_an_existing_attester_does_not_consume_cap() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
     client.set_max_attesters(&1);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.add_attester(&attester);
+    client.add_attester(&admin, &attester);
+    client.add_attester(&admin, &attester);
     assert_eq!(client.get_attester_count(), 1);
 }
 
 #[test]
 fn update_attester_info_on_unknown_attester_fails() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[1u8; 32]);
     let region = Symbol::new(&env, "west");
-    let result = client.try_update_attester_info(&attester, &Some(license_hash), &Some(region));
+    let result =
+        client.try_update_attester_info(&admin, &attester, &Some(license_hash), &Some(region));
     assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
 }
 
 #[test]
 fn update_attester_info_on_removed_attester_fails() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.remove_attester(&attester);
+    client.add_attester(&admin, &attester);
+    client.remove_attester(&admin, &attester);
 
-    let result = client.try_update_attester_info(&attester, &None, &None);
+    let result = client.try_update_attester_info(&admin, &attester, &None, &None);
     assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
 }
 
 #[test]
 fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
     let initial_hash = BytesN::from_array(&env, &[1u8; 32]);
     let initial_region = Symbol::new(&env, "west");
-    client.add_attester_with_info(&attester, &Some(initial_hash), &Some(initial_region));
+    client.add_attester_with_info(
+        &admin,
+        &attester,
+        &Some(initial_hash),
+        &Some(initial_region),
+    );
 
     // Check event was emitted before any other call clears it.
     let expected_added_event = AttesterAdded {
@@ -391,6 +405,7 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     let updated_hash = BytesN::from_array(&env, &[2u8; 32]);
     let updated_region = Symbol::new(&env, "east");
     client.update_attester_info(
+        &admin,
         &attester,
         &Some(updated_hash.clone()),
         &Some(updated_region.clone()),
@@ -422,40 +437,46 @@ fn update_attester_info_without_admin_auth_fails() {
     let attester = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&admin);
-    client.add_attester(&attester);
+    initialize_for_tests(&client, &admin);
+    client.add_attester(&admin, &attester);
 
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
         address: &attester,
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
             fn_name: "update_attester_info",
-            args: (attester.clone(), None::<BytesN<32>>, None::<Symbol>).into_val(&env),
+            args: (
+                admin.clone(),
+                attester.clone(),
+                None::<BytesN<32>>,
+                None::<Symbol>,
+            )
+                .into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_update_attester_info(&attester, &None, &None);
+    let result = client.try_update_attester_info(&admin, &attester, &None, &None);
     assert_eq!(result, Err(Err(soroban_sdk::InvokeError::Abort)));
 }
 
 #[test]
 fn update_attester_info_while_paused_fails() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.pause();
+    client.add_attester(&admin, &attester);
+    client.pause(&admin);
 
-    let result = client.try_update_attester_info(&attester, &None, &None);
+    let result = client.try_update_attester_info(&admin, &attester, &None, &None);
     assert_eq!(result, Err(Ok(Error::ContractPaused)));
 }
 
 #[test]
 fn get_attester_status_for_unknown_attester_is_none() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
     assert_eq!(client.get_attester_status(&attester), None);
@@ -464,11 +485,11 @@ fn get_attester_status_for_unknown_attester_is_none() {
 #[test]
 fn get_attester_status_for_removed_attester_is_none() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.remove_attester(&attester);
+    client.add_attester(&admin, &attester);
+    client.remove_attester(&admin, &attester);
 
     assert_eq!(client.get_attester_status(&attester), None);
 }
@@ -476,15 +497,15 @@ fn get_attester_status_for_removed_attester_is_none() {
 #[test]
 fn lowering_max_attesters_below_current_count_does_not_evict() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     // Add 3 attesters with no cap restriction.
     let attester1 = Address::generate(&env);
     let attester2 = Address::generate(&env);
     let attester3 = Address::generate(&env);
-    client.add_attester(&attester1);
-    client.add_attester(&attester2);
-    client.add_attester(&attester3);
+    client.add_attester(&admin, &attester1);
+    client.add_attester(&admin, &attester2);
+    client.add_attester(&admin, &attester3);
     assert_eq!(client.get_attester_count(), 3);
 
     // Lower the cap to 1 — well below the current count of 3.
@@ -499,7 +520,7 @@ fn lowering_max_attesters_below_current_count_does_not_evict() {
 
     // Adding a new attester must fail with AllowlistFull because count >= cap.
     let new_attester = Address::generate(&env);
-    let result = client.try_add_attester(&new_attester);
+    let result = client.try_add_attester(&admin, &new_attester);
     assert_eq!(result, Err(Ok(Error::AllowlistFull)));
     assert!(!client.is_attester(&new_attester));
 }
@@ -514,7 +535,7 @@ fn lowering_max_attesters_below_current_count_does_not_evict() {
 #[test]
 fn suspend_unknown_attester_behavior() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let never_added = Address::generate(&env);
 
@@ -522,7 +543,7 @@ fn suspend_unknown_attester_behavior() {
     assert!(!client.is_attester(&never_added));
 
     // suspend_attester succeeds (no error) even though the address was never added.
-    client.suspend_attester(&never_added);
+    client.suspend_attester(&admin, &never_added);
 
     // The AttesterSuspended event was still emitted, confirming the call succeeded.
     let expected_event = AttesterSuspended {
@@ -544,12 +565,13 @@ fn suspend_unknown_attester_behavior() {
 #[test]
 fn get_attester_status_reports_metadata_and_suspension_consistently() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[3u8; 32]);
     let region = Symbol::new(&env, "north");
     client.add_attester_with_info(
+        &admin,
         &attester,
         &Some(license_hash.clone()),
         &Some(region.clone()),
@@ -567,7 +589,7 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     );
     assert!(client.is_attester(&attester));
 
-    client.suspend_attester(&attester);
+    client.suspend_attester(&admin, &attester);
     assert_eq!(
         client.get_attester_status(&attester),
         Some(AttesterStatus {
@@ -580,7 +602,7 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
     );
     assert!(!client.is_attester(&attester));
 
-    client.reinstate_attester(&attester);
+    client.reinstate_attester(&admin, &attester);
     assert_eq!(
         client.get_attester_status(&attester),
         Some(AttesterStatus {
@@ -596,21 +618,21 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
 
 #[test]
 fn admin_address_can_be_added_as_attester() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (_env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
 
     // The admin's own address IS permitted as an attester — no special-case rejection exists.
-    client.add_attester(&admin);
+    client.add_attester(&admin, &admin);
     assert!(client.is_attester(&admin));
 }
 
 #[test]
 fn contract_address_can_be_added_as_attester() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (_env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
 
     // The contract's own address IS permitted as an attester — no special-case rejection exists.
-    client.add_attester(&client.address);
+    client.add_attester(&admin, &client.address);
     assert!(client.is_attester(&client.address));
 }
 
@@ -624,7 +646,7 @@ fn second_propose_admin_call_overwrites_pending_proposal() {
     let address2 = Address::generate(&env);
 
     env.mock_all_auths();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     client.propose_admin(&address1);
     client.propose_admin(&address2);
@@ -653,5 +675,5 @@ fn second_propose_admin_call_overwrites_pending_proposal() {
     }]);
 
     let result = client.try_accept_admin();
-    assert_eq!(result, Ok(()));
+    assert_eq!(result, Ok(Ok(())));
 }

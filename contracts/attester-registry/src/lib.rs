@@ -8,7 +8,7 @@ use soroban_sdk::{
     Symbol, Vec,
 };
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Storage keys for the attester registry.
 ///
@@ -37,6 +37,16 @@ enum DataKey {
     MaxAttesters,
     /// Current count of allowlisted attesters.
     AttesterCount,
+    /// Explicit capabilities granted by the owner.
+    Role(Role, Address),
+}
+
+/// Operational capabilities managed by the owner.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Role {
+    Registrar,
+    Guardian,
 }
 
 /// Metadata associated with an allowlisted attester.
@@ -114,6 +124,8 @@ pub enum Error {
     AttesterNotFound = 7,
     /// The supplied batch exceeds `BATCH_LIMIT` addresses.
     BatchTooLarge = 8,
+    /// The supplied address has not been granted the required role.
+    RoleNotGranted = 9,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -228,6 +240,35 @@ impl AttesterRegistry {
         Self::admin(&env)
     }
 
+    /// Grant a registrar or guardian capability. Only the owner may change roles.
+    pub fn grant_role(env: Env, role: Role, account: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::Role(role, account.clone()), &true);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Revoke a registrar or guardian capability. Only the owner may change roles.
+    pub fn revoke_role(env: Env, role: Role, account: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .remove(&DataKey::Role(role, account.clone()));
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Return whether `account` holds `role`.
+    pub fn has_role(env: Env, role: Role, account: Address) -> bool {
+        env.storage().instance().has(&DataKey::Role(role, account))
+    }
+
     /// Propose a new admin address. The caller must authorize as the current admin.
     /// Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
@@ -275,11 +316,10 @@ impl AttesterRegistry {
     /// `update_attester_info`, `remove_attester`, `suspend_attester`, and
     /// `reinstate_attester` until `unpause` is called. Requires the admin's
     /// authorization.
-    pub fn pause(env: Env) -> Result<(), Error> {
-        let admin = Self::admin(&env)?;
-        admin.require_auth();
+    pub fn pause(env: Env, guardian: Address) -> Result<(), Error> {
+        Self::require_role(&env, Role::Guardian, &guardian)?;
         env.storage().instance().set(&DataKey::Paused, &true);
-        Paused { by: admin }.publish(&env);
+        Paused { by: guardian }.publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -309,8 +349,8 @@ impl AttesterRegistry {
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
     /// `attester` is not already present (see `set_max_attesters`).
-    pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+    pub fn add_attester(env: Env, registrar: Address, attester: Address) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         let already_present = env
             .storage()
@@ -345,11 +385,12 @@ impl AttesterRegistry {
     /// `attester` is not already present (see `set_max_attesters`).
     pub fn add_attester_with_info(
         env: Env,
+        registrar: Address,
         attester: Address,
         license_hash: Option<BytesN<32>>,
         region: Option<Symbol>,
     ) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         let already_present = env
             .storage()
@@ -388,11 +429,12 @@ impl AttesterRegistry {
     /// enrollment.
     pub fn update_attester_info(
         env: Env,
+        registrar: Address,
         attester: Address,
         license_hash: Option<BytesN<32>>,
         region: Option<Symbol>,
     ) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         if !env
             .storage()
@@ -425,8 +467,12 @@ impl AttesterRegistry {
     /// call never fails due to duplicates in the batch and no duplicate events
     /// are emitted. Exactly one `AttesterAdded` event is emitted per newly
     /// added address.
-    pub fn add_attesters(env: Env, attesters: Vec<Address>) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+    pub fn add_attesters(
+        env: Env,
+        registrar: Address,
+        attesters: Vec<Address>,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
 
         if attesters.len() > BATCH_LIMIT {
@@ -473,8 +519,12 @@ impl AttesterRegistry {
     /// (idempotent), so the call never fails if an address was already removed
     /// and no spurious events are emitted. Exactly one `AttesterRemoved` event
     /// is emitted per address that was actually removed.
-    pub fn remove_attesters(env: Env, attesters: Vec<Address>) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+    pub fn remove_attesters(
+        env: Env,
+        registrar: Address,
+        attesters: Vec<Address>,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
 
         if attesters.len() > BATCH_LIMIT {
@@ -512,8 +562,8 @@ impl AttesterRegistry {
 
     /// Remove `attester` from the allowlist. Requires the admin's
     /// authorization. A no-op if the attester was never allowlisted.
-    pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+    pub fn remove_attester(env: Env, registrar: Address, attester: Address) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         let was_present = env
             .storage()
@@ -576,8 +626,8 @@ impl AttesterRegistry {
     /// `Error::AttesterNotFound` for unknown addresses. The inconsistency is
     /// known and documented here rather than silently changed; a follow-up
     /// issue should decide whether to align both functions.
-    pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+    pub fn suspend_attester(env: Env, registrar: Address, attester: Address) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
@@ -590,8 +640,12 @@ impl AttesterRegistry {
     }
 
     /// Reinstate a suspended attester. Requires the admin's authorization.
-    pub fn reinstate_attester(env: Env, attester: Address) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+    pub fn reinstate_attester(
+        env: Env,
+        registrar: Address,
+        attester: Address,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         env.storage()
             .persistent()
@@ -684,14 +738,9 @@ impl AttesterRegistry {
             return Err(Error::MigrationNotRequired);
         }
 
-        // Per-version migration steps, oldest first. This build introduces
-        // schema version 1, whose layout is identical to the legacy
-        // (unversioned) layout, so no data reshaping is required here.
-        // Schema-changing releases insert their steps below, guarded by the
-        // version they migrate FROM, e.g.:
-        //
-        //   if stored < 2 { /* move/reshape v1 data into the v2 layout */ }
-        //   if stored < 3 { /* ... */ }
+        // Existing admin state remains the owner; newly introduced role
+        // storage is empty until the owner grants capabilities.
+        let _ = stored;
 
         env.storage()
             .instance()
@@ -707,6 +756,19 @@ impl AttesterRegistry {
             .instance()
             .get(&DataKey::Admin)
             .ok_or(Error::NotInitialized)
+    }
+
+    fn require_role(env: &Env, role: Role, account: &Address) -> Result<(), Error> {
+        Self::admin(env)?;
+        if !env
+            .storage()
+            .instance()
+            .has(&DataKey::Role(role, account.clone()))
+        {
+            return Err(Error::RoleNotGranted);
+        }
+        account.require_auth();
+        Ok(())
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {

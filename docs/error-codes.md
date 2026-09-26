@@ -17,6 +17,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `6` | `MigrationNotRequired` | No pending storage migration; `SchemaVersion` is already current. |
 | `7` | `AttesterNotFound` | `update_attester_info` was called for an address that is not currently allowlisted (never added, or since removed). |
 | `8` | `BatchTooLarge` | The batch supplied to `add_attesters` or `remove_attesters` exceeds `BATCH_LIMIT` (40) addresses. |
+| `9` | `RoleNotGranted` | The supplied address does not hold the required owner-managed role. |
 
 ## `attestation-registry`
 
@@ -29,6 +30,8 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `5` | `InvalidRegistryWiring` | The configured attester-registry address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration. |
 | `6` | `AttestationNotFound` | No attestation exists for the given record hash. |
 | `7` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
+| `8` | `RoleNotGranted` | The supplied address does not hold the required owner-managed role. |
+| `9` | `MigrationNotRequired` | No pending storage migration; `SchemaVersion` is already current. |
 
 ## `multisig-account`
 

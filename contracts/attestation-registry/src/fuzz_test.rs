@@ -32,8 +32,11 @@ proptest! {
         let admin = Address::generate(&env);
         let attester = Address::generate(&env);
         attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
         client.initialize(&admin, &attester_registry_id);
-        attester_registry_client.add_attester(&attester);
+        client.grant_role(&Role::Guardian, &admin);
+        client.grant_role(&Role::Revoker, &admin);
+        attester_registry_client.add_attester(&admin, &attester);
 
         let record_hash = BytesN::from_array(&env, &bytes);
         let result = client.try_attest(&attester, &record_hash);
@@ -71,13 +74,16 @@ proptest! {
 
         let admin = Address::generate(&env);
         attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
         client.initialize(&admin, &attester_registry_id);
+        client.grant_role(&Role::Guardian, &admin);
+        client.grant_role(&Role::Revoker, &admin);
 
         let record_hash = BytesN::from_array(&env, &bytes);
         let mut last_attester = None;
         for _ in 0..attempts {
             let attester = Address::generate(&env);
-            attester_registry_client.add_attester(&attester);
+            attester_registry_client.add_attester(&admin, &attester);
             let result = client.try_attest(&attester, &record_hash);
             prop_assert!(result.is_ok());
             last_attester = Some(attester);
