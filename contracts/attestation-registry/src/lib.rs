@@ -380,7 +380,7 @@ impl AttestationRegistry {
             .storage()
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
-            .ok_or(Error::NotInitialized)?;
+            .ok_or(Error::AttestationNotFound)?;
 
         let count: u64 = env
             .storage()
