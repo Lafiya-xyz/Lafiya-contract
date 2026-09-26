@@ -17,10 +17,12 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `Paused` (`attester-registry` and `attestation-registry`)
 - `Unpaused` (`attester-registry` and `attestation-registry`)
 - `AttesterRegistryRepointed` (`attestation-registry`)
+- `MultisigConfigured` and `AuthorizationApproved` (`multisig-account`)
 
-`Initialized` is currently a declared schema only: neither registry publishes it
-during initialization. Indexers must not rely on receiving it unless contract
-behavior is changed in a future release.
+`Initialized` is emitted by `attester-registry` from its deployment constructor.
+`MultisigConfigured` is emitted during multisig deployment, and
+`AuthorizationApproved` records the timestamp and signer keys for each successful
+authorization. Indexers should consume these events alongside registry activity.
 
 These events need to be consumed by the off‑chain services used by **lafiya‑web** to display the verified status in near‑real‑time. This document outlines the design of an **event indexing / webhook service** that polls or streams Soroban events and reconciles them with the existing Supabase‑backed profile data.
 

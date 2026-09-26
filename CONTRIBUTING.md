@@ -108,7 +108,7 @@ To maintain high security and minimize gas/storage costs on Soroban, all contrac
 ### Fuzz / Property-Based Testing
 `attester-registry` and `attestation-registry` each have a `fuzz_test.rs` module (built with [`proptest`](https://docs.rs/proptest), already a dev-dependency in both crates) alongside their regular `test.rs`:
 - `attester-registry::fuzz_test` generates arbitrary sequences of `add_attester`/`remove_attester`/`suspend_attester`/`reinstate_attester` calls over a small pool of addresses and checks, after every step, that `is_attester` agrees with a plain-Rust model — i.e. it never observes an address as simultaneously allowlisted and not.
-- `attestation-registry::fuzz_test` calls `attest` with arbitrary/adversarial 32-byte `record_hash` values (including all-zero and all-`0xFF`) and in unusual orderings relative to `initialize`, asserting it only ever returns a typed `Result` and never panics.
+- `attestation-registry::fuzz_test` calls `attest` with arbitrary/adversarial 32-byte `record_hash` values (including all-zero and all-`0xFF`) and repeated submissions, asserting it only ever returns a typed `Result` and never panics.
 
 CI runs these with a small, time-bounded case count (`PROPTEST_CASES=256`, see `.github/workflows/ci.yml`) as a **non-blocking** job — a regression there is a signal to investigate, not a merge blocker, since proptest's case count/seed is inherently variable run to run.
 

@@ -9,8 +9,8 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 
 | Error Code (u32) | Variant Name | Description |
 |---|---|---|
-| `1` | `NotInitialized` | The contract has not been initialized yet. |
-| `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
+| `1` | `NotInitialized` | Required registry configuration is missing from storage (for example, on a legacy instance). |
+| `2` | `AlreadyInitialized` | Reserved for compatibility with the removed public initializer. |
 | `3` | `NoPendingTransfer` | No admin transfer is pending; `accept_admin` was called before `propose_admin` nominated a successor (admin transfer is a two-step flow: `propose_admin` then `accept_admin`). |
 | `4` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
 | `5` | `AllowlistFull` | The allowlist has reached its configured soft cap. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`. |
@@ -22,8 +22,8 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 
 | Error Code (u32) | Variant Name | Description |
 |---|---|---|
-| `1` | `NotInitialized` | The contract has not been initialized yet. |
-| `2` | `AlreadyInitialized` | The contract is already initialized; double-initialization is rejected. |
+| `1` | `NotInitialized` | Required registry configuration is missing from storage (for example, on a legacy instance). |
+| `2` | `AlreadyInitialized` | Reserved for compatibility with the removed public initializer. |
 | `3` | `AttesterNotAllowlisted` | The attester address is not allowlisted in the configured `attester-registry` contract. |
 | `4` | `NoPendingTransfer` | No admin transfer is pending. |
 | `5` | `InvalidRegistryWiring` | The configured attester-registry address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration. |

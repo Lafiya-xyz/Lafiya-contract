@@ -97,7 +97,7 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 
 | Function | Description |
 | --- | --- |
-| `initialize(admin: Address)` | Sets the admin. Callable once. |
+| `__constructor(admin: Address)` | Sets the admin atomically at deployment; the supplied admin must authorize the deployment. |
 | `get_admin() -> Address` | Returns the current admin address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
@@ -124,7 +124,7 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 
 | Function | Description |
 | --- | --- |
-| `initialize(admin: Address, attester_registry: Address)` | Sets the admin and the `attester-registry` contract to consult. Callable once. |
+| `__constructor(admin: Address, attester_registry: Address)` | Sets the admin and validates/configures the `attester-registry` atomically at deployment; the supplied admin must authorize the deployment. |
 | `get_admin() -> Address` | Returns the current admin address. |
 | `get_attester_registry() -> Address` | Returns the configured `attester-registry` contract address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
@@ -133,10 +133,10 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `pause()` | Blocks `attest` until unpaused. Requires admin auth. Emits `Paused`. |
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
-| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
+| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash with at most one retained entry per attester; repeats refresh the same entry. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
 | `revoke_attestation(record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires admin auth. Emits `AttestationRevoked`. |
-| `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
-| `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |
+| `get_attestation(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation set for a record hash, ordered by each retained attester's first submission. Each attester has at most one retained entry, and repeat submissions refresh that entry without evicting other attesters. Open to any caller. |
+| `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Compatibility alias for `get_attestation`; returns the full bounded attestation set in first-submission order. |
 
 ### Contract upgrades
 
@@ -155,8 +155,10 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 | --- | --- |
 | `__constructor(signers: Vec<BytesN<32>>, threshold: u32)` | Configures the ed25519 signer set and required N-of-M threshold at deployment. |
 | `__check_auth(...)` | Verifies ordered, unique signatures from configured signers whenever another contract calls `require_auth()` for this account address. |
+| `get_signers() -> Vec<BytesN<32>>` | Returns the configured public keys in canonical ascending order for signer software and audits. |
+| `get_threshold() -> u32` | Returns the configured authorization threshold. |
 
-`attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
+`attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is wasted size.
 
 ## Repository Structure
 
@@ -174,12 +176,12 @@ contracts/
 ├── attester-registry/       # allowlist contract
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
+│       ├── lib.rs           # constructor, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
 │       └── test.rs
 └── attestation-registry/    # attestation contract
     ├── Cargo.toml
     └── src/
-        ├── lib.rs           # initialize, attest, get_attestation, upgrade, migrate, get_schema_version
+        ├── lib.rs           # constructor, attest, get_attestation, upgrade, migrate, get_schema_version
         └── test.rs
 docs/
 └── adr/                      # architecture decisions, index, and template
@@ -246,11 +248,12 @@ make check                        # fmt-check + clippy + test + wasm build
 
 Deploy `multisig-account` first with the ed25519 public keys of all M administrators and the required threshold N. For example, three signer keys with a threshold of two creates a 2-of-3 admin account. Keep the signer keys in separate custody and order submitted signatures by public key.
 
-Use the deployed multisig contract address as `admin` when initializing both registries:
+Use the deployed multisig contract address as `admin` in both registry deployment constructors:
 
 ```text
-attester-registry.initialize(multisig_address)
-attestation-registry.initialize(multisig_address, attester_registry_address)
+stellar contract deploy --wasm attester_registry.wasm -- --admin MULTISIG_ADDRESS
+stellar contract deploy --wasm attestation_registry.wasm -- --admin MULTISIG_ADDRESS \
+  --attester_registry ATTESTER_REGISTRY_ADDRESS
 ```
 
 The registry contracts need no multisig-specific logic. Their existing `admin.require_auth()` calls invoke the account contract's `__check_auth`, so an admin operation succeeds only when its authorization entry contains at least N valid signatures.
@@ -305,14 +308,14 @@ make test-integration  # Integration tests (deployed WASMs on local Soroban netw
 
 Covers, per contract (see `contracts/*/src/test.rs` and `tests/integration/run.sh`):
 
-- ✅ Initialize / double-initialize rejection
+- ✅ Atomic registry constructor configuration and invalid-wiring rejection
 - ✅ Admin-gated writes (`add_attester`, `remove_attester`), including rejection when the caller's auth entry doesn't match
 - ✅ Allowlist lookups (`is_attester`)
-- ✅ `attest` by an allowlisted vs. non-allowlisted attester, and before the contract is initialized
-- ✅ `get_attestation` lookups, including unknown hashes and re-attestation overwrite
+- ✅ `attest` by allowlisted vs. non-allowlisted attesters
+- ✅ Bounded `get_attestation` history, including same-attester refresh without evicting other attesters
 - ✅ Emitted events (`AttesterAdded`, `AttesterRemoved`, `AttestationRecorded`)
 - ✅ Multisig threshold, signer validation, signature ordering, and invalid-signature rejection
-- ✅ Multisig-backed initialization and admin operations through the contract-account authorization path
+- ✅ Multisig-backed admin operations through the contract-account authorization path
 
 
 ## Dependencies

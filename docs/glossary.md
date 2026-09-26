@@ -10,7 +10,8 @@ Terms in *italics* within a definition are themselves defined in this glossary.
 
 ### Admin
 
-The address authorized to perform administrative operations on a registry: `initialize`,
+The address authorized to perform administrative operations on a registry, supplied to the
+deployment constructor,
 attester add/remove/suspend/reinstate, pause/unpause, `upgrade`, and `migrate`. Pre-alpha
 contracts start with a single admin address ([ADR-0003](adr/0003-single-admin-initial-model.md));
 the intended shape is a *multisig account* ([ADR-0007](adr/0007-unscoped-multisig-authorization.md)).
@@ -91,7 +92,7 @@ Hashes recorded before LRC-1 are treated as legacy/unversioned (version `0x00`).
 
 The version number of a contract's on-chain storage schema. Every contract carries
 `const SCHEMA_VERSION: u32` (currently `1` for both registries), writes it to instance
-storage during `initialize()`, and exposes it via `get_schema_version()`. `0` means no
+storage during construction, and exposes it via `get_schema_version()`. `0` means no
 version recorded (legacy pre-versioning deployment or uninitialized contract). Bumping
 `SCHEMA_VERSION` signals a schema-changing upgrade that requires `migrate()` to run the
 ordered migration steps. See [docs/architecture/storage-versioning.md](architecture/storage-versioning.md)

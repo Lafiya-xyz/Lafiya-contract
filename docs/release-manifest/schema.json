@@ -47,7 +47,7 @@
           "crate_path": { "type": "string" },
           "package_version": { "type": "string" },
           "storage_schema_version": {
-            "description": "The contract's SCHEMA_VERSION const, i.e. what get_schema_version() returns after initialize/migrate. Null if the contract has no versioned storage yet.",
+            "description": "The contract's SCHEMA_VERSION const, i.e. what get_schema_version() returns after constructor/migrate. Null if the contract has no versioned storage yet.",
             "type": ["integer", "null"],
             "minimum": 0
           },

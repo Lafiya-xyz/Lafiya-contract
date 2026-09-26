@@ -13,7 +13,7 @@ should not link the callee's contract implementation into the caller's Wasm arti
 A direct runtime dependency on the full `attester-registry` crate would pull in code that the
 caller does not execute locally, increase coupling and artifact size, and can produce linker
 warnings when both contract implementations export functions with the same names, such as
-`initialize`.
+the registries' former separate `initialize` entry points (now atomic deployment constructors).
 
 ## Decision
 
