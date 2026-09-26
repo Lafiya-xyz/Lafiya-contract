@@ -309,7 +309,8 @@ impl AttesterRegistry {
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
     /// `attester` is not already present (see `set_max_attesters`). If already
-    /// allowlisted, this is a no-op and emits no event.
+    /// allowlisted, this is a no-op and emits no event. A stale suspension on
+    /// an address being enrolled is cleared.
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
@@ -328,9 +329,10 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .set(&DataKey::AttesterCount, &(count + 1));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Suspended(attester.clone()));
+        let suspended_key = DataKey::Suspended(attester.clone());
+        if env.storage().persistent().has(&suspended_key) {
+            env.storage().persistent().remove(&suspended_key);
+        }
         let info = AttesterInfo {
             license_hash: None,
             region: None,
@@ -348,7 +350,8 @@ impl AttesterRegistry {
     /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
     /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
     /// `attester` is not already present (see `set_max_attesters`). If already
-    /// allowlisted, this is a no-op; use `update_attester_info` to change metadata.
+    /// allowlisted, this is a no-op; use `update_attester_info` to change
+    /// metadata. A stale suspension on an address being enrolled is cleared.
     pub fn add_attester_with_info(
         env: Env,
         attester: Address,
@@ -372,9 +375,10 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .set(&DataKey::AttesterCount, &(count + 1));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Suspended(attester.clone()));
+        let suspended_key = DataKey::Suspended(attester.clone());
+        if env.storage().persistent().has(&suspended_key) {
+            env.storage().persistent().remove(&suspended_key);
+        }
         let info = AttesterInfo {
             license_hash,
             region,
@@ -581,17 +585,9 @@ impl AttesterRegistry {
 
     /// Suspend an allowlisted attester. Requires the admin's authorization.
     ///
-    /// **Note:** this function does **not** check whether `attester` was ever
-    /// added via `add_attester`. If called on an address that is not in the
-    /// allowlist, it silently sets the `Suspended` storage key and emits
-    /// `AttesterSuspended` for that address — a no-op from an access-control
-    /// perspective because `is_attester` also checks for an `Attester` storage
-    /// entry, so the phantom suspension has no effect on allowlist queries.
-    /// Any phantom suspension is cleared if the address is later enrolled.
-    /// This diverges from `update_attester_info`, which returns
-    /// `Error::AttesterNotFound` for unknown addresses. The inconsistency is
-    /// known and documented here rather than silently changed; a follow-up
-    /// issue should decide whether to align both functions.
+    /// This does not check whether `attester` is allowlisted. Suspending an
+    /// unknown address has no effect until it is enrolled, at which point the
+    /// stale suspension is cleared.
     pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;

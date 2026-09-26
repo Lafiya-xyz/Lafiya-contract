@@ -102,18 +102,18 @@ fn remove_attester_revokes_allowlisting() {
     client.add_attester(&attester);
     assert!(client.is_attester(&attester));
 
-    client.remove_attester(&attester);
-    assert!(!client.is_attester(&attester));
     let expected_event = AttesterRemoved {
         attester: attester.clone(),
     };
+    client.remove_attester(&attester);
     assert_eq!(
         env.events().all(),
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
+    assert!(!client.is_attester(&attester));
 
     client.remove_attester(&attester);
-    assert!(env.events().all().is_empty());
+    assert!(env.events().all().events().is_empty());
 }
 
 #[test]
@@ -124,10 +124,10 @@ fn remove_attester_never_added_is_a_no_op() {
     let attester = Address::generate(&env);
     client.remove_attester(&attester);
     assert!(!client.is_attester(&attester));
-    assert!(env.events().all().is_empty());
+    assert!(env.events().all().events().is_empty());
 
     client.remove_attester(&attester);
-    assert!(env.events().all().is_empty());
+    assert!(env.events().all().events().is_empty());
 }
 
 #[test]
@@ -380,11 +380,15 @@ fn re_adding_existing_attester_preserves_info_and_emits_no_added_event() {
             region: Some(original_region.clone()),
         }),
     );
-    assert!(env.events().all().is_empty());
+    assert!(env.events().all().events().is_empty());
 
     let replacement_hash = BytesN::from_array(&env, &[2u8; 32]);
     let replacement_region = Symbol::new(&env, "east");
-    client.add_attester_with_info(&attester, &Some(replacement_hash), &Some(replacement_region));
+    client.add_attester_with_info(
+        &attester,
+        &Some(replacement_hash),
+        &Some(replacement_region),
+    );
     assert_eq!(
         client.get_attester_info(&attester),
         Some(AttesterInfo {
@@ -392,7 +396,7 @@ fn re_adding_existing_attester_preserves_info_and_emits_no_added_event() {
             region: Some(original_region),
         }),
     );
-    assert!(env.events().all().is_empty());
+    assert!(env.events().all().events().is_empty());
 }
 
 #[test]
@@ -557,7 +561,7 @@ fn lowering_max_attesters_below_current_count_does_not_evict() {
 
 #[test]
 fn setting_max_attesters_while_paused_fails() {
-    let (env, client, admin) = setup();
+    let (_, client, admin) = setup();
     client.initialize(&admin);
     let initial_max = client.get_max_attesters();
 
@@ -569,27 +573,14 @@ fn setting_max_attesters_while_paused_fails() {
     assert_eq!(client.get_max_attesters(), initial_max);
 }
 
-/// Calling `suspend_attester` on an address that was never allowlisted is a
-/// no-op from an access-control perspective: the `Suspended` key is written
-/// for that address and `AttesterSuspended` is emitted, but `is_attester`
-/// still returns `false` because there is no matching `Attester` storage
-/// entry. This inconsistency with `update_attester_info` (which returns
-/// `Error::AttesterNotFound`) is documented on the function and tracked as a
-/// known issue.
 #[test]
-fn suspend_unknown_attester_behavior() {
+fn suspend_unknown_attester_emits_event_without_allowlisting() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
     let never_added = Address::generate(&env);
-
-    // Precondition: the address has never been allowlisted.
     assert!(!client.is_attester(&never_added));
-
-    // suspend_attester succeeds (no error) even though the address was never added.
     client.suspend_attester(&never_added);
-
-    // The AttesterSuspended event was still emitted, confirming the call succeeded.
     let expected_event = AttesterSuspended {
         attester: never_added.clone(),
     };
@@ -597,17 +588,11 @@ fn suspend_unknown_attester_behavior() {
         env.events().all(),
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
-
-    // The phantom suspension has no effect on allowlist queries because
-    // is_attester also checks for the Attester storage entry.
-    assert!(!client.is_attester(&never_added));
-
-    // get_attester_status returns None because there is no Attester entry.
     assert_eq!(client.get_attester_status(&never_added), None);
 }
 
 #[test]
-fn adding_previously_suspended_unknown_attester_clears_phantom_suspension() {
+fn adding_attester_after_unknown_suspension_clears_it() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
@@ -629,7 +614,7 @@ fn adding_previously_suspended_unknown_attester_clears_phantom_suspension() {
 }
 
 #[test]
-fn adding_with_info_after_unknown_suspension_clears_phantom_suspension() {
+fn adding_with_info_after_unknown_suspension_clears_it() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
@@ -637,7 +622,11 @@ fn adding_with_info_after_unknown_suspension_clears_phantom_suspension() {
     let license_hash = BytesN::from_array(&env, &[4u8; 32]);
     let region = Symbol::new(&env, "south");
     client.suspend_attester(&attester);
-    client.add_attester_with_info(&attester, &Some(license_hash.clone()), &Some(region.clone()));
+    client.add_attester_with_info(
+        &attester,
+        &Some(license_hash.clone()),
+        &Some(region.clone()),
+    );
 
     assert!(client.is_attester(&attester));
     assert_eq!(
@@ -764,5 +753,5 @@ fn second_propose_admin_call_overwrites_pending_proposal() {
     }]);
 
     let result = client.try_accept_admin();
-    assert_eq!(result, Ok(()));
+    assert_eq!(result, Ok(Ok(())));
 }
