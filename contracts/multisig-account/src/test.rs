@@ -14,6 +14,18 @@ pub(crate) fn signing_keys() -> std::vec::Vec<SigningKey> {
     keys
 }
 
+fn five_signing_keys() -> std::vec::Vec<SigningKey> {
+    let mut keys = std::vec![
+        SigningKey::from_bytes(&[1; 32]),
+        SigningKey::from_bytes(&[2; 32]),
+        SigningKey::from_bytes(&[3; 32]),
+        SigningKey::from_bytes(&[4; 32]),
+        SigningKey::from_bytes(&[5; 32]),
+    ];
+    keys.sort_by_key(|key| key.verifying_key().to_bytes());
+    keys
+}
+
 pub(crate) fn register_account(
     env: &Env,
     keys: &[SigningKey],
@@ -337,4 +349,120 @@ fn signer_rotation_requires_current_account_authorization() {
     env.mock_auths(&[]);
     assert!(client.try_set_signers(&replacement, &2).is_err());
     assert_eq!(client.get_signers(), original_signers);
+}
+
+#[test]
+fn weighted_quorum_requires_minimum_signers_and_weight() {
+    let env = Env::default();
+    let keys = five_signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let mut signers = Vec::new(&env);
+    for (index, key) in keys.iter().enumerate() {
+        signers.push_back(SignerConfig {
+            public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+            weight: if index == 0 { 2 } else { 1 },
+            role: None,
+        });
+    }
+
+    env.mock_all_auths();
+    client.set_policy(&signers, &4, &3, &Vec::new(&env));
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let weighted_quorum = signatures_for(&env, &keys[..3], &payload.to_array());
+    assert_eq!(
+        check_auth(&env, &account, &payload, weighted_quorum),
+        Ok(())
+    );
+
+    let three_unweighted_signers = signatures_for(&env, &keys[1..4], &payload.to_array());
+    assert_eq!(
+        check_auth(&env, &account, &payload, three_unweighted_signers),
+        Err(Ok(Error::NotEnoughWeight))
+    );
+}
+
+#[test]
+fn role_requirements_are_enforced_in_addition_to_quorum() {
+    let env = Env::default();
+    let keys = five_signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let director_role = soroban_sdk::Symbol::new(&env, "medical_director");
+    let officer_role = soroban_sdk::Symbol::new(&env, "programme_officer");
+    let mut signers = Vec::new(&env);
+    for (index, key) in keys.iter().enumerate() {
+        let role = match index {
+            0 => Some(director_role.clone()),
+            1..=3 => Some(officer_role.clone()),
+            _ => None,
+        };
+        signers.push_back(SignerConfig {
+            public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+            weight: 1,
+            role,
+        });
+    }
+    let mut requirements = Vec::new(&env);
+    requirements.push_back(RoleRequirement {
+        role: director_role,
+        minimum: 1,
+    });
+    requirements.push_back(RoleRequirement {
+        role: officer_role,
+        minimum: 2,
+    });
+
+    env.mock_all_auths();
+    client.set_policy(&signers, &3, &3, &requirements);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let valid = signatures_for(&env, &keys[..3], &payload.to_array());
+    assert_eq!(check_auth(&env, &account, &payload, valid), Ok(()));
+
+    let no_director = signatures_for(&env, &keys[1..], &payload.to_array());
+    assert_eq!(
+        check_auth(&env, &account, &payload, no_director),
+        Err(Ok(Error::RoleQuorumNotMet))
+    );
+
+    let insufficient_officers = signatures_for(
+        &env,
+        &[keys[0].clone(), keys[1].clone(), keys[4].clone()],
+        &payload.to_array(),
+    );
+    assert_eq!(
+        check_auth(&env, &account, &payload, insufficient_officers),
+        Err(Ok(Error::RoleQuorumNotMet))
+    );
+}
+
+#[test]
+fn invalid_policy_does_not_replace_current_signers() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let original_policy = client.get_policy();
+    let mut signers = Vec::new(&env);
+    for key in keys.iter() {
+        signers.push_back(SignerConfig {
+            public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+            weight: 1,
+            role: None,
+        });
+    }
+    let mut impossible_requirement = Vec::new(&env);
+    impossible_requirement.push_back(RoleRequirement {
+        role: soroban_sdk::Symbol::new(&env, "medical_director"),
+        minimum: 1,
+    });
+
+    env.mock_all_auths();
+    assert_eq!(
+        client.try_set_policy(&signers, &2, &2, &impossible_requirement),
+        Err(Ok(Error::InvalidPolicy))
+    );
+    assert_eq!(client.get_policy(), original_policy);
 }

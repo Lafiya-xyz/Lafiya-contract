@@ -154,9 +154,11 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 | Function | Description |
 | --- | --- |
 | `__constructor(signers: Vec<BytesN<32>>, threshold: u32)` | Configures the ed25519 signer set and required N-of-M threshold at deployment. |
-| `get_signers() -> Vec<BytesN<32>>` / `get_threshold() -> u32` | Returns the active signer set and its required approval count. |
-| `set_signers(signers: Vec<BytesN<32>>, threshold: u32)` | Atomically rotates signers and threshold. The current account policy must authorize the change. |
-| `__check_auth(...)` | Verifies ordered, unique signatures from configured signers whenever another contract calls `require_auth()` for this account address. |
+| `get_signers() -> Vec<BytesN<32>>` / `get_threshold() -> u32` | Returns the active signer set and minimum approval count. |
+| `get_policy() -> SignerPolicy` | Returns signer weights, roles, weight threshold, minimum signer count, and required role quorums. |
+| `set_signers(signers: Vec<BytesN<32>>, threshold: u32)` | Atomically rotates signers using equal weights and no role constraints. The current account policy must authorize the change. |
+| `set_policy(signers: Vec<SignerConfig>, weight_threshold: u32, minimum_signers: u32, role_requirements: Vec<RoleRequirement>)` | Atomically replaces the weighted and role-based policy. The current account policy must authorize the change. |
+| `__check_auth(...)` | Verifies ordered, unique signatures against signer-count, weight, and role quorums whenever another contract calls `require_auth()` for this account address. |
 
 `attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
 

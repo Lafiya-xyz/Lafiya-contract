@@ -1,7 +1,6 @@
-//! Soroban custom account contract implementing N-of-M multisig authorization.
+//! Soroban custom account contract implementing weighted, role-based multisig authorization.
 //!
-//! This contract enforces that transactions requiring approval must be signed
-//! by at least a configured threshold of registered signers (N-of-M multisig).
+//! This contract enforces minimum signer, voting-weight, and role quorums.
 //! It implements Soroban's `CustomAccountInterface` to integrate with the
 //! protocol's authentication system, enabling use as a custom account for
 //! administrative operations on the `attester-registry` and
@@ -32,6 +31,37 @@ enum DataKey {
     SignerCount,
     /// The ordered list of registered signers, used to safely replace the set.
     SignerSet,
+    /// Per-signer weight and role used during authorization.
+    SignerDetails(BytesN<32>),
+    /// The current weighted and role-based quorum policy.
+    Policy,
+}
+
+/// A configured signer and the voting weight/role assigned to that signer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerConfig {
+    pub public_key: BytesN<32>,
+    pub weight: u32,
+    pub role: Option<soroban_sdk::Symbol>,
+}
+
+/// A minimum number of approvals required from one role.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RoleRequirement {
+    pub role: soroban_sdk::Symbol,
+    pub minimum: u32,
+}
+
+/// Full multisig policy returned by `get_policy`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct SignerPolicy {
+    pub signers: Vec<SignerConfig>,
+    pub weight_threshold: u32,
+    pub minimum_signers: u32,
+    pub role_requirements: Vec<RoleRequirement>,
 }
 
 /// A single ed25519 signature from one signer in the multisig set.
@@ -63,6 +93,12 @@ pub enum Error {
     NotInitialized = 6,
     /// The supplied signature count exceeds the configured signer count.
     TooManySigners = 7,
+    /// The supplied signatures do not meet the configured weight threshold.
+    NotEnoughWeight = 8,
+    /// The supplied signatures do not meet one or more role requirements.
+    RoleQuorumNotMet = 9,
+    /// A signer weight, role requirement, or policy threshold is invalid.
+    InvalidPolicy = 10,
 }
 
 /// Instance storage TTL policy:
@@ -86,12 +122,22 @@ impl MultisigAccount {
             panic_with_error!(&env, Error::InvalidThreshold);
         }
 
+        let mut signer_configs = Vec::new(&env);
         for signer in signers.iter() {
-            let key = DataKey::Signer(signer);
+            let key = DataKey::Signer(signer.clone());
             if env.storage().instance().has(&key) {
                 panic_with_error!(&env, Error::DuplicateSigner);
             }
             env.storage().instance().set(&key, &());
+            let config = SignerConfig {
+                public_key: signer.clone(),
+                weight: 1,
+                role: None,
+            };
+            env.storage()
+                .instance()
+                .set(&DataKey::SignerDetails(signer), &config);
+            signer_configs.push_back(config);
         }
 
         env.storage()
@@ -101,6 +147,15 @@ impl MultisigAccount {
             .instance()
             .set(&DataKey::SignerCount, &signers.len());
         env.storage().instance().set(&DataKey::SignerSet, &signers);
+        env.storage().instance().set(
+            &DataKey::Policy,
+            &SignerPolicy {
+                signers: signer_configs,
+                weight_threshold: threshold,
+                minimum_signers: threshold,
+                role_requirements: Vec::new(&env),
+            },
+        );
     }
 
     /// Return the current ordered signer set.
@@ -119,13 +174,49 @@ impl MultisigAccount {
             .ok_or(Error::NotInitialized)
     }
 
-    /// Atomically replace the signer set and approval threshold.
+    /// Return the current weighted and role-based signer policy.
+    pub fn get_policy(env: Env) -> Result<SignerPolicy, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Policy)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Replace the signer set with equal-weight signers and no role constraints.
     ///
-    /// The account itself must authorize this call under its current
-    /// signer configuration.
+    /// The account itself must authorize this call under its current policy.
     pub fn set_signers(env: Env, signers: Vec<BytesN<32>>, threshold: u32) -> Result<(), Error> {
+        let mut configs = Vec::new(&env);
+        for public_key in signers.iter() {
+            configs.push_back(SignerConfig {
+                public_key,
+                weight: 1,
+                role: None,
+            });
+        }
+        let role_requirements = Vec::new(&env);
+        Self::set_policy(env, configs, threshold, threshold, role_requirements)
+    }
+
+    /// Atomically replace the signer set and approval policy.
+    ///
+    /// `minimum_signers` and `weight_threshold` must both be met. Each role
+    /// requirement also specifies a minimum number of approving signers with
+    /// that role. The current policy must authorize this change.
+    pub fn set_policy(
+        env: Env,
+        signers: Vec<SignerConfig>,
+        weight_threshold: u32,
+        minimum_signers: u32,
+        role_requirements: Vec<RoleRequirement>,
+    ) -> Result<(), Error> {
         env.current_contract_address().require_auth();
-        Self::validate_signers(&signers, threshold)?;
+        Self::validate_policy(
+            &signers,
+            weight_threshold,
+            minimum_signers,
+            &role_requirements,
+        )?;
 
         let old_signers: Vec<BytesN<32>> = env
             .storage()
@@ -134,19 +225,42 @@ impl MultisigAccount {
             .ok_or(Error::NotInitialized)?;
 
         for signer in old_signers.iter() {
-            env.storage().instance().remove(&DataKey::Signer(signer));
+            env.storage()
+                .instance()
+                .remove(&DataKey::Signer(signer.clone()));
+            env.storage()
+                .instance()
+                .remove(&DataKey::SignerDetails(signer));
         }
+        let mut public_keys = Vec::new(&env);
         for signer in signers.iter() {
-            env.storage().instance().set(&DataKey::Signer(signer), &());
+            env.storage()
+                .instance()
+                .set(&DataKey::Signer(signer.public_key.clone()), &());
+            env.storage()
+                .instance()
+                .set(&DataKey::SignerDetails(signer.public_key.clone()), &signer);
+            public_keys.push_back(signer.public_key);
         }
 
         env.storage()
             .instance()
-            .set(&DataKey::Threshold, &threshold);
+            .set(&DataKey::Threshold, &minimum_signers);
         env.storage()
             .instance()
             .set(&DataKey::SignerCount, &signers.len());
-        env.storage().instance().set(&DataKey::SignerSet, &signers);
+        env.storage()
+            .instance()
+            .set(&DataKey::SignerSet, &public_keys);
+        env.storage().instance().set(
+            &DataKey::Policy,
+            &SignerPolicy {
+                signers,
+                weight_threshold,
+                minimum_signers,
+                role_requirements,
+            },
+        );
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -154,16 +268,54 @@ impl MultisigAccount {
         Ok(())
     }
 
-    fn validate_signers(signers: &Vec<BytesN<32>>, threshold: u32) -> Result<(), Error> {
-        if threshold == 0 || threshold > signers.len() {
+    fn validate_policy(
+        signers: &Vec<SignerConfig>,
+        weight_threshold: u32,
+        minimum_signers: u32,
+        role_requirements: &Vec<RoleRequirement>,
+    ) -> Result<(), Error> {
+        if minimum_signers == 0 || minimum_signers > signers.len() {
             return Err(Error::InvalidThreshold);
         }
 
+        let mut total_weight = 0u32;
         for (index, signer) in signers.iter().enumerate() {
+            if signer.weight == 0 {
+                return Err(Error::InvalidPolicy);
+            }
+            total_weight = total_weight
+                .checked_add(signer.weight)
+                .ok_or(Error::InvalidPolicy)?;
             for previous in signers.iter().take(index) {
-                if previous == signer {
+                if previous.public_key == signer.public_key {
                     return Err(Error::DuplicateSigner);
                 }
+            }
+        }
+
+        if weight_threshold == 0 || weight_threshold > total_weight {
+            return Err(Error::InvalidPolicy);
+        }
+
+        for (index, requirement) in role_requirements.iter().enumerate() {
+            if requirement.minimum == 0 {
+                return Err(Error::InvalidPolicy);
+            }
+            if role_requirements
+                .iter()
+                .take(index)
+                .any(|previous| previous.role == requirement.role)
+            {
+                return Err(Error::InvalidPolicy);
+            }
+            let mut matching_signers = 0u32;
+            for signer in signers.iter() {
+                if signer.role == Some(requirement.role.clone()) {
+                    matching_signers += 1;
+                }
+            }
+            if requirement.minimum > matching_signers {
+                return Err(Error::InvalidPolicy);
             }
         }
         Ok(())
@@ -175,10 +327,10 @@ impl CustomAccountInterface for MultisigAccount {
     type Signature = Vec<Signature>;
     type Error = Error;
 
-    /// Verify the authorization of a transaction by checking N-of-M ed25519 signatures.
+    /// Verify the authorization of a transaction using the configured quorum policy.
     ///
-    /// Verifies that the supplied signatures meet the configured threshold and each belongs to
-    /// an authorized signer, with signatures ordered in ascending public-key order.
+    /// Signatures must meet the minimum signer count and weight threshold, satisfy every role
+    /// minimum, and be ordered by ascending public key.
     ///
     /// # Arguments
     /// * `signature_payload` — A 32-byte hash of the transaction to authorize.
@@ -190,13 +342,13 @@ impl CustomAccountInterface for MultisigAccount {
         signatures: Self::Signature,
         _auth_contexts: Vec<Context>,
     ) -> Result<(), Error> {
-        let threshold: u32 = env
+        let policy: SignerPolicy = env
             .storage()
             .instance()
-            .get(&DataKey::Threshold)
+            .get(&DataKey::Policy)
             .ok_or(Error::NotInitialized)?;
 
-        if signatures.len() < threshold {
+        if signatures.len() < policy.minimum_signers {
             return Err(Error::NotEnoughSigners);
         }
 
@@ -210,6 +362,8 @@ impl CustomAccountInterface for MultisigAccount {
             return Err(Error::TooManySigners);
         }
 
+        let mut signer_configs = Vec::new(&env);
+        let mut signed_weight = 0u32;
         for index in 0..signatures.len() {
             let signature = signatures.get_unchecked(index);
             if index > 0 {
@@ -227,11 +381,37 @@ impl CustomAccountInterface for MultisigAccount {
                 return Err(Error::UnknownSigner);
             }
 
+            let signer_config: SignerConfig = env
+                .storage()
+                .instance()
+                .get(&DataKey::SignerDetails(signature.public_key.clone()))
+                .ok_or(Error::UnknownSigner)?;
+            signed_weight = signed_weight
+                .checked_add(signer_config.weight)
+                .ok_or(Error::InvalidPolicy)?;
+            signer_configs.push_back(signer_config);
+
             env.crypto().ed25519_verify(
                 &signature.public_key,
                 &signature_payload.clone().into(),
                 &signature.signature,
             );
+        }
+
+        if signed_weight < policy.weight_threshold {
+            return Err(Error::NotEnoughWeight);
+        }
+
+        for requirement in policy.role_requirements.iter() {
+            let mut matching_signers = 0u32;
+            for signer in signer_configs.iter() {
+                if signer.role == Some(requirement.role.clone()) {
+                    matching_signers += 1;
+                }
+            }
+            if matching_signers < requirement.minimum {
+                return Err(Error::RoleQuorumNotMet);
+            }
         }
 
         env.storage()

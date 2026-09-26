@@ -36,8 +36,11 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 |---|---|---|
 | `1` | `InvalidThreshold` | The threshold is zero or exceeds the configured signer count. |
 | `2` | `DuplicateSigner` | The signer configuration contains the same public key more than once. |
-| `3` | `NotEnoughSigners` | The supplied signature count is below the configured threshold. |
+| `3` | `NotEnoughSigners` | The supplied signature count is below the configured minimum signer count. |
 | `4` | `BadSignatureOrder` | Signatures are duplicated or are not strictly ordered by public key. |
 | `5` | `UnknownSigner` | A signature belongs to a public key that is not a configured signer. |
 | `6` | `NotInitialized` | The account's signer threshold is unavailable. |
 | `7` | `TooManySigners` | The supplied signature count exceeds the configured signer count. |
+| `8` | `NotEnoughWeight` | The supplied signatures do not meet the configured voting-weight threshold. |
+| `9` | `RoleQuorumNotMet` | The supplied signatures do not meet one or more required role minimums. |
+| `10` | `InvalidPolicy` | A signer weight, role requirement, or policy threshold is invalid. |
