@@ -325,6 +325,9 @@ impl AttesterRegistry {
             env.storage()
                 .instance()
                 .set(&DataKey::AttesterCount, &(count + 1));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Suspended(attester.clone()));
         }
         let info = AttesterInfo {
             license_hash: None,
@@ -364,6 +367,9 @@ impl AttesterRegistry {
             env.storage()
                 .instance()
                 .set(&DataKey::AttesterCount, &(count + 1));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Suspended(attester.clone()));
         }
         let info = AttesterInfo {
             license_hash,
@@ -572,6 +578,7 @@ impl AttesterRegistry {
     /// `AttesterSuspended` for that address — a no-op from an access-control
     /// perspective because `is_attester` also checks for an `Attester` storage
     /// entry, so the phantom suspension has no effect on allowlist queries.
+    /// Any phantom suspension is cleared if the address is later enrolled.
     /// This diverges from `update_attester_info`, which returns
     /// `Error::AttesterNotFound` for unknown addresses. The inconsistency is
     /// known and documented here rather than silently changed; a follow-up

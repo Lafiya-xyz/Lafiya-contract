@@ -542,6 +542,52 @@ fn suspend_unknown_attester_behavior() {
 }
 
 #[test]
+fn adding_previously_suspended_unknown_attester_clears_phantom_suspension() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.suspend_attester(&attester);
+    client.add_attester(&attester);
+
+    assert!(client.is_attester(&attester));
+    assert_eq!(
+        client.get_attester_status(&attester),
+        Some(AttesterStatus {
+            info: AttesterInfo {
+                license_hash: None,
+                region: None,
+            },
+            suspended: false,
+        }),
+    );
+}
+
+#[test]
+fn adding_with_info_after_unknown_suspension_clears_phantom_suspension() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[4u8; 32]);
+    let region = Symbol::new(&env, "south");
+    client.suspend_attester(&attester);
+    client.add_attester_with_info(&attester, &Some(license_hash.clone()), &Some(region.clone()));
+
+    assert!(client.is_attester(&attester));
+    assert_eq!(
+        client.get_attester_status(&attester),
+        Some(AttesterStatus {
+            info: AttesterInfo {
+                license_hash: Some(license_hash),
+                region: Some(region),
+            },
+            suspended: false,
+        }),
+    );
+}
+
+#[test]
 fn get_attester_status_reports_metadata_and_suspension_consistently() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
