@@ -51,7 +51,8 @@ enum DataKey {
     Attestation(BytesN<32>, u64),
     /// Latest sequence number for a given record hash.
     AttestationSequence(BytesN<32>),
-    /// Count of attestations for a given record hash (for bounded history).
+    /// Reserved legacy key. Retained at its enum position for storage
+    /// compatibility; history windows are now derived from the sequence.
     AttestationCount(BytesN<32>),
     /// The storage schema version of the contract.
     SchemaVersion,
@@ -384,23 +385,12 @@ impl AttestationRegistry {
             &new_sequence,
         );
 
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-        let new_count = count + 1;
-
-        if new_count > MAX_HISTORY {
-            let oldest_sequence = new_count.saturating_sub(MAX_HISTORY);
+        if new_sequence > MAX_HISTORY {
+            let oldest_sequence = new_sequence - MAX_HISTORY;
             env.storage()
                 .persistent()
                 .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
         }
-
-        env.storage()
-            .persistent()
-            .set(&DataKey::AttestationCount(record_hash.clone()), &new_count);
 
         // Extend TTL on the specific attestation entry just written, so it is
         // not subject to state-archival independently of the instance storage.
@@ -435,17 +425,7 @@ impl AttestationRegistry {
             .get(&DataKey::AttestationSequence(record_hash.clone()))
             .ok_or(Error::NotInitialized)?;
 
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-
-        let start_sequence = if count > MAX_HISTORY {
-            sequence.saturating_sub(MAX_HISTORY - 1)
-        } else {
-            1
-        };
+        let start_sequence = Self::history_start(sequence);
 
         for seq in start_sequence..=sequence {
             env.storage()
@@ -455,6 +435,7 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::AttestationSequence(record_hash.clone()));
+        // Remove the obsolete counter from records written by earlier versions.
         env.storage()
             .persistent()
             .remove(&DataKey::AttestationCount(record_hash.clone()));
@@ -498,18 +479,8 @@ impl AttestationRegistry {
             None => return Vec::new(&env),
         };
 
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-
         let mut history = Vec::new(&env);
-        let start_sequence = if count > MAX_HISTORY {
-            sequence.saturating_sub(MAX_HISTORY - 1)
-        } else {
-            1
-        };
+        let start_sequence = Self::history_start(sequence);
 
         for seq in start_sequence..=sequence {
             if let Some(attestation) = env
@@ -543,6 +514,10 @@ impl AttestationRegistry {
             .instance()
             .get(&DataKey::MaxAttestationAge)
             .unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
+    }
+
+    fn history_start(sequence: u64) -> u64 {
+        sequence.saturating_sub(MAX_HISTORY - 1).max(1)
     }
 
     fn latest_attestation(env: &Env, record_hash: BytesN<32>) -> Option<Attestation> {
