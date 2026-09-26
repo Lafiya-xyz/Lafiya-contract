@@ -16,9 +16,9 @@
 
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
-    contract, contracterror, contractimpl, contracttype,
+    contract, contracterror, contractevent, contractimpl, contracttype,
     crypto::Hash,
-    panic_with_error, BytesN, Env, Vec,
+    panic_with_error, Bytes, BytesN, Env, Vec,
 };
 
 #[contracttype]
@@ -30,6 +30,8 @@ enum DataKey {
     Signer(BytesN<32>),
     /// The total number of registered signers.
     SignerCount,
+    /// The configured signer public keys.
+    Signers,
 }
 
 /// A single ed25519 signature from one signer in the multisig set.
@@ -69,6 +71,23 @@ pub enum Error {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultisigConfigured {
+    #[topic]
+    pub threshold: u32,
+    pub signers: Vec<BytesN<32>>,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AuthorizationApproved {
+    #[topic]
+    pub timestamp: u64,
+    pub payload: Bytes,
+    pub signers: Vec<BytesN<32>>,
+}
+
 #[contract]
 pub struct MultisigAccount;
 
@@ -98,6 +117,52 @@ impl MultisigAccount {
         env.storage()
             .instance()
             .set(&DataKey::SignerCount, &signers.len());
+        env.storage().instance().set(&DataKey::Signers, &signers);
+
+        MultisigConfigured {
+            threshold,
+            signers: Self::sorted_signers(&env, &signers),
+        }
+        .publish(&env);
+    }
+
+    /// Return the configured threshold.
+    pub fn get_threshold(env: Env) -> Result<u32, Error> {
+        env.storage()
+            .instance()
+            .get(&DataKey::Threshold)
+            .ok_or(Error::NotInitialized)
+    }
+
+    /// Return all configured signers in the canonical ascending-key order
+    /// required by `__check_auth`.
+    pub fn get_signers(env: Env) -> Result<Vec<BytesN<32>>, Error> {
+        let signers: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::Signers)
+            .ok_or(Error::NotInitialized)?;
+        Ok(Self::sorted_signers(&env, &signers))
+    }
+
+    fn sorted_signers(env: &Env, signers: &Vec<BytesN<32>>) -> Vec<BytesN<32>> {
+        let mut sorted = Vec::new(env);
+        for signer in signers.iter() {
+            let mut next = Vec::new(env);
+            let mut inserted = false;
+            for current in sorted.iter() {
+                if !inserted && signer < current {
+                    next.push_back(signer.clone());
+                    inserted = true;
+                }
+                next.push_back(current);
+            }
+            if !inserted {
+                next.push_back(signer);
+            }
+            sorted = next;
+        }
+        sorted
     }
 }
 
@@ -141,6 +206,7 @@ impl CustomAccountInterface for MultisigAccount {
             return Err(Error::TooManySigners);
         }
 
+        let mut authorized_signers = Vec::new(&env);
         for index in 0..signatures.len() {
             let signature = signatures.get_unchecked(index);
             if index > 0 {
@@ -163,19 +229,27 @@ impl CustomAccountInterface for MultisigAccount {
                 &signature_payload.clone().into(),
                 &signature.signature,
             );
+            authorized_signers.push_back(signature.public_key);
         }
 
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
+        AuthorizationApproved {
+            timestamp: env.ledger().timestamp(),
+            payload: signature_payload.clone().into(),
+            signers: authorized_signers,
+        }
+        .publish(&env);
+
         Ok(())
     }
 }
 
 #[cfg(test)]
+mod fuzz_test;
+#[cfg(test)]
 mod integration_test;
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod fuzz_test;

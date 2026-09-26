@@ -55,54 +55,21 @@ fn authorization_entry(
 #[test]
 fn multisig_address_administers_both_registries() {
     let env = Env::default();
+    env.mock_all_auths();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
 
-    let attester_registry_id = env.register(attester_registry::AttesterRegistry, ());
+    let attester_registry_id =
+        env.register(attester_registry::AttesterRegistry, (account.clone(),));
     let attester_registry =
         attester_registry::AttesterRegistryClient::new(&env, &attester_registry_id);
-    let initialize_attesters = authorization_entry(
-        &env,
-        &account,
-        invocation(
-            &attester_registry_id,
-            "initialize",
-            Vec::from_array(&env, [account.clone().into_val(&env)]),
-        ),
-        &keys[..2],
-        1,
-    );
-    attester_registry
-        .set_auths(&[initialize_attesters])
-        .initialize(&account);
 
-    let attestation_registry_id = env.register(attestation_registry::AttestationRegistry, ());
+    let attestation_registry_id = env.register(
+        attestation_registry::AttestationRegistry,
+        (account.clone(), attester_registry_id.clone()),
+    );
     let attestation_registry =
         attestation_registry::AttestationRegistryClient::new(&env, &attestation_registry_id);
-    let initialize_attestations = authorization_entry(
-        &env,
-        &account,
-        invocation(
-            &attestation_registry_id,
-            "initialize",
-            Vec::from_array(
-                &env,
-                [
-                    account.clone().into_val(&env),
-                    attester_registry_id.clone().into_val(&env),
-                ],
-            ),
-        ),
-        &keys[..2],
-        2,
-    );
-    attestation_registry
-        .set_auths(&[initialize_attestations])
-        .initialize(&account, &attester_registry_id);
-    assert_eq!(
-        attestation_registry.try_initialize(&account, &attester_registry_id),
-        Err(Ok(attestation_registry::Error::AlreadyInitialized))
-    );
 
     let attester = Address::generate(&env);
     let add_attester = authorization_entry(

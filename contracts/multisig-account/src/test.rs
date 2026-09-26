@@ -2,7 +2,8 @@ extern crate std;
 
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
-use soroban_sdk::{auth::Context, BytesN, Env, IntoVal, Vec};
+use soroban_sdk::testutils::Events as _;
+use soroban_sdk::{auth::Context, BytesN, Env, Event, IntoVal, Vec};
 
 pub(crate) fn signing_keys() -> std::vec::Vec<SigningKey> {
     let mut keys = std::vec![
@@ -38,6 +39,30 @@ pub(crate) fn signatures_for(env: &Env, keys: &[SigningKey], payload: &[u8; 32])
         });
     }
     signatures
+}
+
+#[test]
+fn getters_return_threshold_and_canonical_signer_order() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let configured = [&keys[2], &keys[1], &keys[0]];
+    let signers = configured
+        .iter()
+        .map(|key| BytesN::from_array(&env, &key.verifying_key().to_bytes()))
+        .collect::<std::vec::Vec<_>>();
+    let mut configured_signers = Vec::new(&env);
+    for signer in signers {
+        configured_signers.push_back(signer);
+    }
+    let account = env.register(MultisigAccount, (configured_signers, 2u32));
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let mut expected_signers = Vec::new(&env);
+    for key in &keys {
+        expected_signers.push_back(BytesN::from_array(&env, &key.verifying_key().to_bytes()));
+    }
+    assert_eq!(client.get_threshold(), 2);
+    assert_eq!(client.get_signers(), expected_signers);
 }
 
 fn check_auth(
@@ -242,6 +267,33 @@ fn check_auth_extends_ttl_on_success() {
 
     // Successful __check_auth call triggers extend_ttl on SignerCount/Threshold
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
+fn successful_auth_emits_signers_and_payload() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let signatures = signatures_for(&env, &keys[..2], &payload.to_array());
+
+    assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+
+    let approved = AuthorizationApproved {
+        timestamp: env.ledger().timestamp(),
+        payload: payload.clone().into(),
+        signers: Vec::from_array(
+            &env,
+            [
+                BytesN::from_array(&env, &keys[0].verifying_key().to_bytes()),
+                BytesN::from_array(&env, &keys[1].verifying_key().to_bytes()),
+            ],
+        ),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![approved.to_xdr(&env, &account)]
+    );
 }
 
 #[test]
