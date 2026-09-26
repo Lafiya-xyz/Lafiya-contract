@@ -308,7 +308,8 @@ impl AttesterRegistry {
 
     /// Add `attester` to the allowlist. Requires the admin's authorization.
     /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
-    /// `attester` is not already present (see `set_max_attesters`).
+    /// `attester` is not already present (see `set_max_attesters`). If already
+    /// allowlisted, this is a no-op and emits no event.
     pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
@@ -316,19 +317,20 @@ impl AttesterRegistry {
             .storage()
             .persistent()
             .has(&DataKey::Attester(attester.clone()));
-        if !already_present {
-            let count = Self::attester_count(&env);
-            let max = Self::max_attesters(&env);
-            if count >= max {
-                return Err(Error::AllowlistFull);
-            }
-            env.storage()
-                .instance()
-                .set(&DataKey::AttesterCount, &(count + 1));
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Suspended(attester.clone()));
+        if already_present {
+            return Ok(());
         }
+        let count = Self::attester_count(&env);
+        let max = Self::max_attesters(&env);
+        if count >= max {
+            return Err(Error::AllowlistFull);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AttesterCount, &(count + 1));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Suspended(attester.clone()));
         let info = AttesterInfo {
             license_hash: None,
             region: None,
@@ -345,7 +347,8 @@ impl AttesterRegistry {
 
     /// Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
     /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
-    /// `attester` is not already present (see `set_max_attesters`).
+    /// `attester` is not already present (see `set_max_attesters`). If already
+    /// allowlisted, this is a no-op; use `update_attester_info` to change metadata.
     pub fn add_attester_with_info(
         env: Env,
         attester: Address,
@@ -358,19 +361,20 @@ impl AttesterRegistry {
             .storage()
             .persistent()
             .has(&DataKey::Attester(attester.clone()));
-        if !already_present {
-            let count = Self::attester_count(&env);
-            let max = Self::max_attesters(&env);
-            if count >= max {
-                return Err(Error::AllowlistFull);
-            }
-            env.storage()
-                .instance()
-                .set(&DataKey::AttesterCount, &(count + 1));
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Suspended(attester.clone()));
+        if already_present {
+            return Ok(());
         }
+        let count = Self::attester_count(&env);
+        let max = Self::max_attesters(&env);
+        if count >= max {
+            return Err(Error::AllowlistFull);
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::AttesterCount, &(count + 1));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Suspended(attester.clone()));
         let info = AttesterInfo {
             license_hash,
             region,
