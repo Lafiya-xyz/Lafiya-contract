@@ -149,6 +149,8 @@ pub enum Error {
     AttestationNotFound = 6,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
+    /// The configured attester-registry could not be called.
+    AttesterRegistryUnavailable = 8,
 }
 
 /// The attestation registry contract.
@@ -305,7 +307,10 @@ impl AttestationRegistry {
 
         let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
-        if !registry.is_attester(&attester) {
+        let is_attester = registry
+            .try_is_attester(&attester)
+            .map_err(|_| Error::AttesterRegistryUnavailable)?;
+        if !is_attester {
             return Err(Error::AttesterNotAllowlisted);
         }
 

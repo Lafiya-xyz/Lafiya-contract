@@ -106,6 +106,19 @@ fn attest_before_initialize_fails() {
 }
 
 #[test]
+fn attest_returns_registry_unavailable_when_registry_call_traps() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let record_hash = BytesN::from_array(&env, &[12u8; 32]);
+    let broken_registry = Address::generate(&env);
+    client.set_attester_registry(&broken_registry);
+
+    let result = client.try_attest(&attester, &record_hash);
+    assert_eq!(result, Err(Ok(Error::AttesterRegistryUnavailable)));
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
 fn get_attestation_returns_none_for_unknown_hash() {
     let (env, client, _attester_registry, _admin) = setup();
     let record_hash = BytesN::from_array(&env, &[9u8; 32]);

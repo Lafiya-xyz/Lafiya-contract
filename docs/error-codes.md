@@ -29,6 +29,7 @@ This document enumerates the error codes defined in the Lafiya Soroban smart con
 | `5` | `InvalidRegistryWiring` | The configured attester-registry address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration. |
 | `6` | `AttestationNotFound` | No attestation exists for the given record hash. |
 | `7` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
+| `8` | `AttesterRegistryUnavailable` | The configured attester-registry could not be called while checking allowlist membership. |
 
 ## `multisig-account`
 
