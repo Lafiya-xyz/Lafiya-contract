@@ -157,6 +157,67 @@ fn get_attestation_history_returns_all_attestations() {
 }
 
 #[test]
+fn attester_can_withdraw_only_their_own_attestation() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester_a = Address::generate(&env);
+    let attester_b = Address::generate(&env);
+    attester_registry.add_attester(&attester_a);
+    attester_registry.add_attester(&attester_b);
+
+    let record_hash = BytesN::from_array(&env, &[42u8; 32]);
+    let first = client.attest(&attester_a, &record_hash);
+    let second = client.attest(&attester_b, &record_hash);
+
+    client.withdraw_attestation(&attester_a, &record_hash);
+
+    assert_eq!(client.get_attestation(&record_hash), Some(second));
+    assert_eq!(client.get_attestation_history(&record_hash).len(), 2);
+    let expected_event = AttestationWithdrawn {
+        record_hash: record_hash.clone(),
+        attester: attester_a.clone(),
+    };
+    let expected_xdr = expected_event.to_xdr(&env, &client.address);
+    let events = env.events().all();
+    assert_eq!(
+        events.last(),
+        Some(&expected_xdr)
+    );
+
+    // The attestation is retained as an immutable historical record.
+    assert_eq!(client.get_attestation_history(&record_hash).get(0), Some(first));
+}
+
+#[test]
+fn attester_cannot_withdraw_another_attesters_attestation() {
+    let (env, client, attester_registry, _admin) = setup();
+    let owner = Address::generate(&env);
+    let other = Address::generate(&env);
+    attester_registry.add_attester(&owner);
+    attester_registry.add_attester(&other);
+
+    let record_hash = BytesN::from_array(&env, &[43u8; 32]);
+    let attestation = client.attest(&owner, &record_hash);
+
+    let result = client.try_withdraw_attestation(&other, &record_hash);
+    assert_eq!(result, Err(Ok(Error::AttestationNotOwned)));
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
+fn attester_withdrawal_requires_the_attesters_authorization() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[44u8; 32]);
+    let attestation = client.attest(&attester, &record_hash);
+
+    env.mock_auths(&[]);
+    let result = client.try_withdraw_attestation(&attester, &record_hash);
+    assert!(result.is_err());
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+}
+
+#[test]
 fn get_attestation_history_returns_empty_for_unknown_hash() {
     let (env, client, _attester_registry, _admin) = setup();
     let record_hash = BytesN::from_array(&env, &[8u8; 32]);

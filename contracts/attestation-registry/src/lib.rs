@@ -56,6 +56,8 @@ enum DataKey {
     SchemaVersion,
     /// Whether state-changing operations are currently paused.
     Paused,
+    /// Whether an attester withdrew a specific historical attestation.
+    AttestationWithdrawn(BytesN<32>, u64),
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -98,6 +100,16 @@ pub struct AttestationRecorded {
 pub struct AttestationRevoked {
     #[topic]
     pub record_hash: BytesN<32>,
+}
+
+/// Emitted when an attester withdraws their own attestation.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationWithdrawn {
+    #[topic]
+    pub record_hash: BytesN<32>,
+    #[topic]
+    pub attester: Address,
 }
 
 /// Emitted when state-changing operations are paused.
@@ -149,6 +161,8 @@ pub enum Error {
     AttestationNotFound = 6,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
+    /// The attester has no active attestation for the given record hash.
+    AttestationNotOwned = 8,
 }
 
 /// The attestation registry contract.
@@ -411,6 +425,58 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Withdraw the caller's latest active attestation for `record_hash`.
+    /// Other attesters' attestations are unaffected.
+    pub fn withdraw_attestation(
+        env: Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        attester.require_auth();
+
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))
+            .ok_or(Error::AttestationNotOwned)?;
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationCount(record_hash.clone()))
+            .unwrap_or(0);
+        let start_sequence = if count > MAX_HISTORY {
+            sequence.saturating_sub(MAX_HISTORY - 1)
+        } else {
+            1
+        };
+
+        for seq in (start_sequence..=sequence).rev() {
+            let key = DataKey::Attestation(record_hash.clone(), seq);
+            let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&key) else {
+                continue;
+            };
+            if attestation.attester == attester
+                && !env.storage().persistent().has(&DataKey::AttestationWithdrawn(
+                    record_hash.clone(),
+                    seq,
+                ))
+            {
+                env.storage().persistent().set(
+                    &DataKey::AttestationWithdrawn(record_hash.clone(), seq),
+                    &true,
+                );
+                AttestationWithdrawn {
+                    record_hash,
+                    attester,
+                }
+                .publish(&env);
+                return Ok(());
+            }
+        }
+
+        Err(Error::AttestationNotOwned)
+    }
+
     /// Look up the latest attestation for `record_hash`, if any. Callable
     /// by anyone — this is what lets a responder's QR scan independently
     /// check a card without an external oracle.
@@ -419,9 +485,33 @@ impl AttestationRegistry {
             .storage()
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))?;
-        env.storage()
+        let count: u64 = env
+            .storage()
             .persistent()
-            .get(&DataKey::Attestation(record_hash, sequence))
+            .get(&DataKey::AttestationCount(record_hash.clone()))
+            .unwrap_or(0);
+        let start_sequence = if count > MAX_HISTORY {
+            sequence.saturating_sub(MAX_HISTORY - 1)
+        } else {
+            1
+        };
+
+        for seq in (start_sequence..=sequence).rev() {
+            if env.storage().persistent().has(&DataKey::AttestationWithdrawn(
+                record_hash.clone(),
+                seq,
+            )) {
+                continue;
+            }
+            if let Some(attestation) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Attestation(record_hash.clone(), seq))
+            {
+                return Some(attestation);
+            }
+        }
+        None
     }
 
     /// Look up the full attestation history for `record_hash`, if any.
