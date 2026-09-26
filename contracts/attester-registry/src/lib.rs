@@ -89,10 +89,9 @@ pub const BATCH_LIMIT: u32 = 40;
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    /// `initialize` has not been called yet; call
-    /// `initialize(admin: Address)` before using the contract.
+    /// Required registry configuration is missing from storage.
     NotInitialized = 1,
-    /// `initialize` was called more than once.
+    /// Reserved for compatibility with the removed public initializer.
     AlreadyInitialized = 2,
     /// `accept_admin` was called with no pending admin transfer. Admin transfer is a
     /// two-step flow: the current admin must first call `propose_admin` to nominate a
@@ -208,10 +207,7 @@ pub struct AttesterRegistry;
 impl AttesterRegistry {
     /// Set the admin address authorized to manage the allowlist. Can only
     /// be called once; the caller must authorize as the given `admin`.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
+    pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -220,7 +216,7 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        Ok(())
+        Initialized { admin }.publish(&env);
     }
 
     /// Return the current admin address.

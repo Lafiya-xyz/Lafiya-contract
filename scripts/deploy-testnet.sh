@@ -4,7 +4,7 @@
 set -e
 
 # Lafiya Smart Contract Deployment Script
-# Deploys both contracts to Stellar Testnet (or other networks) and initializes them.
+# Deploys both contracts with their security-sensitive constructor arguments.
 
 NETWORK="testnet"
 IDENTITY=""
@@ -17,7 +17,7 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  -i, --identity <identity>       stellar-cli identity name to use for deployment (or set STELLAR_IDENTITY)"
-    echo "  -a, --admin-address <address>   Admin address for contract initialization (defaults to the identity's address)"
+    echo "  -a, --admin-address <address>   Admin address for both contracts (defaults to the identity's address)"
     echo "  -n, --network <network>         Stellar network (default: testnet)"
     echo "  -y, --yes                       Skip interactive confirmation prompt"
     echo "  -h, --help                      Show this help message"
@@ -126,7 +126,8 @@ echo "Deploying attester-registry..."
 ATTESTER_REGISTRY_ID=$(stellar contract deploy \
     --wasm "$ATTESTER_WASM" \
     --source-account "$IDENTITY" \
-    --network "$NETWORK")
+    --network "$NETWORK" \
+    -- --admin "$ADMIN_ADDRESS")
 
 if [ -z "$ATTESTER_REGISTRY_ID" ]; then
     echo "Error: Failed to deploy attester-registry." >&2
@@ -140,7 +141,8 @@ echo "Deploying attestation-registry..."
 ATTESTATION_REGISTRY_ID=$(stellar contract deploy \
     --wasm "$ATTESTATION_WASM" \
     --source-account "$IDENTITY" \
-    --network "$NETWORK")
+    --network "$NETWORK" \
+    -- --admin "$ADMIN_ADDRESS" --attester_registry "$ATTESTER_REGISTRY_ID")
 
 if [ -z "$ATTESTATION_REGISTRY_ID" ]; then
     echo "Error: Failed to deploy attestation-registry." >&2
@@ -149,32 +151,7 @@ fi
 echo "attestation-registry deployed successfully. ID: $ATTESTATION_REGISTRY_ID"
 echo ""
 
-# 4. Initialize attester-registry
-echo "Initializing attester-registry..."
-stellar contract invoke \
-    --id "$ATTESTER_REGISTRY_ID" \
-    --source-account "$IDENTITY" \
-    --network "$NETWORK" \
-    -- initialize \
-    --admin "$ADMIN_ADDRESS"
-
-echo "attester-registry initialized successfully."
-echo ""
-
-# 5. Initialize attestation-registry
-echo "Initializing attestation-registry..."
-stellar contract invoke \
-    --id "$ATTESTATION_REGISTRY_ID" \
-    --source-account "$IDENTITY" \
-    --network "$NETWORK" \
-    -- initialize \
-    --admin "$ADMIN_ADDRESS" \
-    --attester_registry "$ATTESTER_REGISTRY_ID"
-
-echo "attestation-registry initialized successfully."
-echo ""
-
-# 6. Save deployment details to deployments/<network>.json
+# 4. Save deployment details to deployments/<network>.json
 mkdir -p deployments
 DEPLOYMENTS_FILE="deployments/${NETWORK}.json"
 

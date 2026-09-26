@@ -43,10 +43,9 @@ proptest! {
     ) {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(AttesterRegistry, ());
-        let client = AttesterRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let contract_id = env.register(AttesterRegistry, (admin,));
+        let client = AttesterRegistryClient::new(&env, &contract_id);
 
         let addrs: std::vec::Vec<Address> =
             (0..POOL_SIZE).map(|_| Address::generate(&env)).collect();
@@ -101,10 +100,9 @@ proptest! {
         // never removed or suspended.
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(AttesterRegistry, ());
-        let client = AttesterRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        client.initialize(&admin);
+        let contract_id = env.register(AttesterRegistry, (admin,));
+        let client = AttesterRegistryClient::new(&env, &contract_id);
 
         let addrs: std::vec::Vec<Address> =
             (0..POOL_SIZE).map(|_| Address::generate(&env)).collect();

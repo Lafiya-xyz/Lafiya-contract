@@ -7,9 +7,9 @@ use soroban_sdk::{Env, Event, IntoVal};
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     (env, client, admin)
 }
 
@@ -20,40 +20,20 @@ fn get_schema_version_succeeds() {
     // and must be deliberate, paired with a migration plan (see
     // `needs_migration`/`migrate` in lib.rs), and not an accidental side
     // effect of an unrelated change.
-    let (_, client, admin) = setup();
+    let (_, client, _admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
-    client.initialize(&admin);
     assert_eq!(client.get_schema_version(), 1);
 }
 
 #[test]
-fn initialize_sets_admin() {
+fn constructor_sets_admin() {
     let (_, client, admin) = setup();
-    client.initialize(&admin);
     assert_eq!(client.get_admin(), admin);
 }
 
 #[test]
-fn get_admin_before_initialize_fails() {
-    let (_, client, _admin) = setup();
-
-    let result = client.try_get_admin();
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
-}
-
-#[test]
-fn initialize_twice_fails() {
-    let (_, client, admin) = setup();
-    client.initialize(&admin);
-
-    let result = client.try_initialize(&admin);
-    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
-}
-
-#[test]
 fn is_attester_false_before_allowlisting() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let someone = Address::generate(&env);
     assert!(!client.is_attester(&someone));
@@ -62,7 +42,6 @@ fn is_attester_false_before_allowlisting() {
 #[test]
 fn add_attester_allowlists_and_emits_event() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
 
     let attester = Address::generate(&env);
     client.add_attester(&attester);
@@ -95,8 +74,7 @@ fn add_attester_allowlists_and_emits_event() {
 
 #[test]
 fn remove_attester_revokes_allowlisting() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     client.add_attester(&attester);
@@ -108,8 +86,7 @@ fn remove_attester_revokes_allowlisting() {
 
 #[test]
 fn remove_attester_never_added_is_a_no_op() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     client.remove_attester(&attester);
@@ -117,25 +94,14 @@ fn remove_attester_never_added_is_a_no_op() {
 }
 
 #[test]
-fn add_attester_before_initialize_fails() {
-    let (env, client, _admin) = setup();
-    let attester = Address::generate(&env);
-
-    let result = client.try_add_attester(&attester);
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
-}
-
-#[test]
 fn add_attester_without_admin_auth_fails() {
     // No mock_all_auths(): calls must present a real, matching auth entry.
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
-    let admin = Address::generate(&env);
-    let attester = Address::generate(&env);
-
     env.mock_all_auths();
-    client.initialize(&admin);
+    let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
+    let attester = Address::generate(&env);
 
     // Only mock an auth entry for `attester`, not `admin`, so the
     // contract's `admin.require_auth()` has nothing to satisfy it.
@@ -157,14 +123,12 @@ fn add_attester_without_admin_auth_fails() {
 #[test]
 fn propose_admin_by_non_admin_fails() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let new_admin = Address::generate(&env);
     let malicious = Address::generate(&env);
-
-    env.mock_all_auths();
-    client.initialize(&admin);
 
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
         address: &malicious,
@@ -183,14 +147,13 @@ fn propose_admin_by_non_admin_fails() {
 #[test]
 fn accept_admin_by_wrong_address_fails() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let new_admin = Address::generate(&env);
     let malicious = Address::generate(&env);
 
-    env.mock_all_auths();
-    client.initialize(&admin);
     client.propose_admin(&new_admin);
 
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
@@ -209,8 +172,7 @@ fn accept_admin_by_wrong_address_fails() {
 
 #[test]
 fn accept_admin_with_no_pending_proposal_fails() {
-    let (_env, client, admin) = setup();
-    client.initialize(&admin);
+    let (_env, client, _admin) = setup();
 
     let result = client.try_accept_admin();
     assert_eq!(result, Err(Ok(Error::NoPendingTransfer)));
@@ -219,7 +181,6 @@ fn accept_admin_with_no_pending_proposal_fails() {
 #[test]
 fn successful_admin_transfer_flow() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
 
     let new_admin = Address::generate(&env);
 
@@ -300,8 +261,7 @@ fn successful_admin_transfer_flow() {
 
 #[test]
 fn add_attester_beyond_cap_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
     client.set_max_attesters(&2);
 
     client.add_attester(&Address::generate(&env));
@@ -315,8 +275,7 @@ fn add_attester_beyond_cap_fails() {
 
 #[test]
 fn removing_an_attester_frees_cap_slot() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
     client.set_max_attesters(&1);
 
     let attester = Address::generate(&env);
@@ -334,8 +293,7 @@ fn removing_an_attester_frees_cap_slot() {
 
 #[test]
 fn re_adding_an_existing_attester_does_not_consume_cap() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
     client.set_max_attesters(&1);
 
     let attester = Address::generate(&env);
@@ -346,8 +304,7 @@ fn re_adding_an_existing_attester_does_not_consume_cap() {
 
 #[test]
 fn update_attester_info_on_unknown_attester_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[1u8; 32]);
@@ -358,8 +315,7 @@ fn update_attester_info_on_unknown_attester_fails() {
 
 #[test]
 fn update_attester_info_on_removed_attester_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     client.add_attester(&attester);
@@ -371,8 +327,7 @@ fn update_attester_info_on_removed_attester_fails() {
 
 #[test]
 fn update_attester_info_updates_metadata_and_emits_distinct_event() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     let initial_hash = BytesN::from_array(&env, &[1u8; 32]);
@@ -416,13 +371,12 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
 #[test]
 fn update_attester_info_without_admin_auth_fails() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let attester = Address::generate(&env);
 
-    env.mock_all_auths();
-    client.initialize(&admin);
     client.add_attester(&attester);
 
     env.mock_auths(&[soroban_sdk::testutils::MockAuth {
@@ -441,8 +395,7 @@ fn update_attester_info_without_admin_auth_fails() {
 
 #[test]
 fn update_attester_info_while_paused_fails() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     client.add_attester(&attester);
@@ -454,8 +407,7 @@ fn update_attester_info_while_paused_fails() {
 
 #[test]
 fn get_attester_status_for_unknown_attester_is_none() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     assert_eq!(client.get_attester_status(&attester), None);
@@ -463,8 +415,7 @@ fn get_attester_status_for_unknown_attester_is_none() {
 
 #[test]
 fn get_attester_status_for_removed_attester_is_none() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     client.add_attester(&attester);
@@ -475,8 +426,7 @@ fn get_attester_status_for_removed_attester_is_none() {
 
 #[test]
 fn lowering_max_attesters_below_current_count_does_not_evict() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     // Add 3 attesters with no cap restriction.
     let attester1 = Address::generate(&env);
@@ -513,8 +463,7 @@ fn lowering_max_attesters_below_current_count_does_not_evict() {
 /// known issue.
 #[test]
 fn suspend_unknown_attester_behavior() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let never_added = Address::generate(&env);
 
@@ -543,8 +492,7 @@ fn suspend_unknown_attester_behavior() {
 
 #[test]
 fn get_attester_status_reports_metadata_and_suspension_consistently() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (env, client, _admin) = setup();
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[3u8; 32]);
@@ -596,8 +544,7 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
 
 #[test]
 fn admin_address_can_be_added_as_attester() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (_env, client, admin) = setup();
 
     // The admin's own address IS permitted as an attester — no special-case rejection exists.
     client.add_attester(&admin);
@@ -606,8 +553,7 @@ fn admin_address_can_be_added_as_attester() {
 
 #[test]
 fn contract_address_can_be_added_as_attester() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
+    let (_env, client, _admin) = setup();
 
     // The contract's own address IS permitted as an attester — no special-case rejection exists.
     client.add_attester(&client.address);
@@ -617,14 +563,12 @@ fn contract_address_can_be_added_as_attester() {
 #[test]
 fn second_propose_admin_call_overwrites_pending_proposal() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let address1 = Address::generate(&env);
     let address2 = Address::generate(&env);
-
-    env.mock_all_auths();
-    client.initialize(&admin);
 
     client.propose_admin(&address1);
     client.propose_admin(&address2);
@@ -653,5 +597,5 @@ fn second_propose_admin_call_overwrites_pending_proposal() {
     }]);
 
     let result = client.try_accept_admin();
-    assert_eq!(result, Ok(()));
+    assert_eq!(result, Ok(Ok(())));
 }
