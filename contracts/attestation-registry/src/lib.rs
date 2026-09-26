@@ -21,6 +21,7 @@ pub trait AttesterRegistryInterface {
 /// This bounds storage growth per re-attestation. When exceeded,
 /// the oldest attestation is removed (FIFO eviction).
 const MAX_HISTORY: u64 = 10;
+const BATCH_LIMIT: u32 = 50;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -78,6 +79,16 @@ pub struct Attestation {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+}
+
+/// One attestation to submit in a batch, optionally linked to a previous
+/// record version.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AttestationRequest {
+    pub attester: Address,
+    pub record_hash: BytesN<32>,
+    pub previous_record_hash: Option<BytesN<32>>,
 }
 
 /// Summary state for a record hash, distinguishing absent verification from
@@ -194,6 +205,8 @@ pub enum Error {
     AttestationNotOwned = 8,
     /// The supplied previous hash or version relationship is invalid.
     InvalidRecordVersion = 9,
+    /// The batch contains more requests than the supported maximum.
+    BatchTooLarge = 10,
 }
 
 /// The attestation registry contract.
@@ -368,6 +381,52 @@ impl AttestationRegistry {
             record_hash,
             Some(previous_record_hash),
         )
+    }
+
+    /// Record up to `BATCH_LIMIT` attestations in one transaction. Each
+    /// attester must authorize their request; allowlist status is checked once
+    /// per distinct attester in the batch.
+    pub fn batch_attest(
+        env: Env,
+        requests: Vec<AttestationRequest>,
+    ) -> Result<Vec<Attestation>, Error> {
+        if requests.len() > BATCH_LIMIT {
+            return Err(Error::BatchTooLarge);
+        }
+        Self::require_not_paused(&env)?;
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        let mut checked_attesters = Vec::new(&env);
+        let mut results = Vec::new(&env);
+
+        for request in requests.iter() {
+            request.attester.require_auth();
+
+            let mut already_checked = false;
+            for checked_attester in checked_attesters.iter() {
+                if checked_attester == request.attester {
+                    already_checked = true;
+                    break;
+                }
+            }
+            if !already_checked {
+                if !registry.is_attester(&request.attester) {
+                    return Err(Error::AttesterNotAllowlisted);
+                }
+                checked_attesters.push_back(request.attester.clone());
+            }
+
+            let attestation = Self::record_attestation(
+                &env,
+                request.attester,
+                request.record_hash,
+                request.previous_record_hash,
+            )?;
+            results.push_back(attestation);
+        }
+
+        Ok(results)
     }
 
     /// Revoke all attestations for `record_hash` without erasing the

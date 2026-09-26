@@ -153,6 +153,112 @@ fn attest_version_rejects_conflicting_lineage() {
 }
 
 #[test]
+fn batch_attest_records_multiple_requests_and_links_versions() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let previous_hash = BytesN::from_array(&env, &[53u8; 32]);
+    client.attest(&attester, &previous_hash);
+
+    let mut requests = Vec::new(&env);
+    for hash_byte in [54u8, 55u8, 56u8] {
+        requests.push_back(AttestationRequest {
+            attester: attester.clone(),
+            record_hash: BytesN::from_array(&env, &[hash_byte; 32]),
+            previous_record_hash: if hash_byte == 54 {
+                Some(previous_hash.clone())
+            } else {
+                None
+            },
+        });
+    }
+
+    let results = client.batch_attest(&requests);
+    assert_eq!(results.len(), 3);
+    assert_eq!(
+        client.get_attestation_status(&BytesN::from_array(&env, &[54u8; 32])),
+        AttestationStatus::Verified
+    );
+    assert_eq!(
+        client.get_previous_record_hash(&BytesN::from_array(&env, &[54u8; 32])),
+        Some(previous_hash.clone())
+    );
+    assert_eq!(
+        client.get_next_record_hash(&previous_hash),
+        Some(BytesN::from_array(&env, &[54u8; 32]))
+    );
+}
+
+#[test]
+fn batch_attest_rejects_batches_over_the_limit() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let mut requests = Vec::new(&env);
+    for _ in 0..=BATCH_LIMIT {
+        requests.push_back(AttestationRequest {
+            attester: attester.clone(),
+            record_hash: BytesN::from_array(&env, &[57u8; 32]),
+            previous_record_hash: None,
+        });
+    }
+
+    assert_eq!(
+        client.try_batch_attest(&requests),
+        Err(Ok(Error::BatchTooLarge))
+    );
+    assert_eq!(
+        client.get_attestation(&BytesN::from_array(&env, &[57u8; 32])),
+        None
+    );
+}
+
+#[test]
+fn batch_attest_rejects_non_allowlisted_requests_atomically() {
+    let (env, client, attester_registry, _admin) = setup();
+    let allowlisted = Address::generate(&env);
+    let rejected = Address::generate(&env);
+    attester_registry.add_attester(&allowlisted);
+    let first_hash = BytesN::from_array(&env, &[58u8; 32]);
+    let second_hash = BytesN::from_array(&env, &[59u8; 32]);
+    let mut requests = Vec::new(&env);
+    requests.push_back(AttestationRequest {
+        attester: allowlisted,
+        record_hash: first_hash.clone(),
+        previous_record_hash: None,
+    });
+    requests.push_back(AttestationRequest {
+        attester: rejected,
+        record_hash: second_hash.clone(),
+        previous_record_hash: None,
+    });
+
+    assert_eq!(
+        client.try_batch_attest(&requests),
+        Err(Ok(Error::AttesterNotAllowlisted))
+    );
+    assert_eq!(client.get_attestation(&first_hash), None);
+    assert_eq!(client.get_attestation(&second_hash), None);
+}
+
+#[test]
+fn batch_attest_requires_each_attesters_authorization() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[60u8; 32]);
+    let mut requests = Vec::new(&env);
+    requests.push_back(AttestationRequest {
+        attester: attester.clone(),
+        record_hash: record_hash.clone(),
+        previous_record_hash: None,
+    });
+
+    env.mock_auths(&[]);
+    assert!(client.try_batch_attest(&requests).is_err());
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
 fn attest_by_non_allowlisted_attester_fails() {
     let (env, client, _attester_registry, _admin) = setup();
     let attester = Address::generate(&env);

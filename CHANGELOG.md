@@ -16,6 +16,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `attestation-registry`: `attest_version` explicitly links a newly attested
   record hash to its previously attested version, with read methods for both
   directions of the version relationship.
+- `attestation-registry`: `batch_attest` accepts up to 50 independently
+  authorized requests per transaction and checks allowlist membership once per
+  distinct attester, supporting queued field submissions with fewer RPC calls.
 - ADR-0010 and a prototype release manifest: `scripts/generate_release_manifest.py`
   binds contract wasm hashes, storage schema versions, generated bindings, event
   schemas, and per-network deployment state into one JSON document
