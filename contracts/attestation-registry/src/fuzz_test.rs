@@ -11,7 +11,7 @@ use super::*;
 use attester_registry::{AttesterRegistry, AttesterRegistryClient};
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN, Env};
+use soroban_sdk::{Address, BytesN, Env, Symbol};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
@@ -39,7 +39,7 @@ proptest! {
         attester_registry_client.add_attester(&admin, &attester);
 
         let record_hash = BytesN::from_array(&env, &bytes);
-        let result = client.try_attest(&attester, &record_hash);
+        let result = client.try_attest(&attester, &record_hash, &Symbol::new(&env, "lagos"));
         prop_assert!(result.is_ok());
         prop_assert!(client.get_attestation(&record_hash).is_some());
     }
@@ -55,7 +55,7 @@ proptest! {
         let attester = Address::generate(&env);
         let record_hash = BytesN::from_array(&env, &bytes);
 
-        let result = client.try_attest(&attester, &record_hash);
+        let result = client.try_attest(&attester, &record_hash, &Symbol::new(&env, "lagos"));
         prop_assert_eq!(result, Err(Ok(Error::NotInitialized)));
     }
 
@@ -84,7 +84,7 @@ proptest! {
         for _ in 0..attempts {
             let attester = Address::generate(&env);
             attester_registry_client.add_attester(&admin, &attester);
-            let result = client.try_attest(&attester, &record_hash);
+            let result = client.try_attest(&attester, &record_hash, &Symbol::new(&env, "lagos"));
             prop_assert!(result.is_ok());
             last_attester = Some(attester);
         }

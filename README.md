@@ -105,11 +105,12 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `add_attester_with_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>, valid_from: Option<u64>, valid_until: Option<u64>)` | Allowlists `attester` with credential metadata and an inclusive-start/exclusive-end validity window. Regional registrars can only enroll their assigned region. |
 | `update_attester_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<Symbol>, valid_from: Option<u64>, valid_until: Option<u64>)` | Updates metadata and validity for an already-allowlisted attester. Requires the Registrar role; fails with `Error::AttesterNotFound` if absent and `Error::InvalidValidityWindow` if the start is not earlier than the end. |
 | `remove_attester(registrar: Address, attester: Address)` | Removes `attester` from the allowlist. Requires the Registrar role. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
-| `add_attesters(registrar: Address, attesters: Vec<Address>)` / `remove_attesters(registrar: Address, attesters: Vec<Address>)` | Batch enrollment/removal. Regional enrollment batches are limited to 20 entries to bound quota accounting; removals require a global Registrar. |
+| `add_attesters(registrar: Address, attesters: Vec<Address>)` / `remove_attesters(registrar: Address, attesters: Vec<Address>)` | Batch enrollment/removal. Regional enrollment batches are limited to 20; batches that remove regional enrollments are limited to 8 for storage accounting. Removals require a global Registrar. |
 | `set_regional_registrar(registrar: Address, region: Symbol, quota: u32)` | Owner-only assignment of a regional registrar and its maximum concurrent enrollment count. |
 | `revoke_regional_registrar(registrar: Address)` / `get_regional_registrar(registrar: Address)` | Revoke or inspect a regional assignment. Existing enrollments remain attributed until removed. |
-| `get_regional_registrar_count(registrar: Address) -> u32` | Number of currently enrolled attesters attributed to the regional registrar. |
-| `is_attester(attester: Address) -> bool` | Whether `attester` is allowlisted, not suspended, and within its validity window. Open to any caller, including other contracts. |
+| `get_regional_registrar_count(registrar: Address) -> u32` | Number of still-enrolled attesters attributed to the registrar. Suspension or credential expiry does not free quota; removal does. |
+| `is_attester(attester: Address) -> bool` | Whether `attester` is allowlisted, not suspended, and within its validity window. |
+| `is_attester_for_region(attester: Address, region: Symbol) -> bool` | Whether `attester` is active and scoped to `region`. An absent `AttesterInfo.region` means globally scoped for backwards compatibility. |
 | `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
 | `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns metadata, suspension, and computed `Active`, `Suspended`, `NotYetValid`, or `Expired` status. `None` if not allowlisted. |
 | `suspend_attester(registrar: Address, attester: Address)` | Suspends an allowlisted attester without removing it. Regional registrars may only suspend their region. Blocked while paused. |
@@ -133,11 +134,11 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `get_attester_registry() -> Address` | Returns the configured `attester-registry` contract address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for allowlist checks. Requires admin auth. Emits `AttesterRegistryRepointed`. |
+| `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for regional allowlist checks. Requires owner auth and verifies the regional interface. Emits `AttesterRegistryRepointed`. |
 | `pause(guardian: Address)` | Blocks `attest` until unpaused. Requires the Guardian role. Emits `Paused`. |
 | `unpause()` | Restores normal operation after `pause`. Requires owner auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
-| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and active allowlist status (checked via `attester-registry::is_attester`). Stores `{ attester, timestamp }` with bounded history. |
+| `attest(attester: Address, record_hash: BytesN<32>, region: Symbol) -> Attestation` | Requires `attester`'s auth and active authorization for `region` (checked via `attester-registry::is_attester_for_region`). Stores `{ attester, timestamp }` with bounded history. |
 | `revoke_attestation(revoker: Address, record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires the Revoker role. Emits `AttestationRevoked`. |
 | `grant_role(role: Role, account: Address)` / `revoke_role(role: Role, account: Address)` | Grants or revokes a Guardian or Revoker role. Owner-only. |
 | `upgrade(new_wasm_hash: BytesN<32>)` / `migrate()` | Upgrades code and records pending schema migrations. Owner-only. |
@@ -146,10 +147,10 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 
 ### Contract upgrades
 
-`attester-registry` is upgradeable by its owner (`upgrade`/`migrate`/`get_schema_version`
-above), with storage schema versioning (`SCHEMA_VERSION` is currently `4`) to make
-schema-changing upgrades explicit and verifiable. `attestation-registry` does not
-currently expose an `upgrade`/`migrate` path. **Operators** must follow
+Both registries are upgradeable by their owner (`upgrade`/`migrate`/`get_schema_version`
+above), with storage schema versioning (`attester-registry` is currently at `4`,
+`attestation-registry` at `2`) to make schema-changing upgrades explicit and verifiable.
+**Operators** must follow
 [docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the
 pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
 reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
@@ -162,7 +163,7 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 | `__constructor(signers: Vec<BytesN<32>>, threshold: u32)` | Configures the ed25519 signer set and required N-of-M threshold at deployment. |
 | `__check_auth(...)` | Verifies ordered, unique signatures from configured signers whenever another contract calls `require_auth()` for this account address. |
 
-`attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
+`attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (`is_attester` and `is_attester_for_region`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
 
 ## Repository Structure
 

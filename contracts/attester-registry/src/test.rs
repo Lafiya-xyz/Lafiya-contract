@@ -63,6 +63,18 @@ fn is_attester_false_before_allowlisting() {
 
     let someone = Address::generate(&env);
     assert!(!client.is_attester(&someone));
+    assert!(!client.is_attester_for_region(&someone, &Symbol::new(&env, "lagos")));
+}
+
+#[test]
+fn unscoped_attester_remains_valid_for_any_region() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    assert!(client.is_attester_for_region(&attester, &Symbol::new(&env, "lagos")));
+    assert!(client.is_attester_for_region(&attester, &Symbol::new(&env, "abuja")));
 }
 
 #[test]
@@ -710,6 +722,8 @@ fn regional_registrar_is_limited_to_its_region_and_quota() {
         client.get_attester_info(&first).unwrap().region,
         Some(lagos.clone())
     );
+    assert!(client.is_attester_for_region(&first, &lagos));
+    assert!(!client.is_attester_for_region(&first, &Symbol::new(&env, "abuja")));
     assert_eq!(client.get_regional_registrar_count(&registrar), 1);
 
     let second = Address::generate(&env);
@@ -796,6 +810,24 @@ fn regional_registrar_cannot_assign_a_different_region() {
 }
 
 #[test]
+fn regional_registrar_cannot_reassign_an_existing_enrollment() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &1);
+
+    assert_eq!(
+        client.try_add_attester(&registrar, &attester),
+        Err(Ok(Error::RegionMismatch))
+    );
+    assert_eq!(client.get_attester_info(&attester).unwrap().region, None);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 0);
+}
+
+#[test]
 fn regional_registrar_can_suspend_only_its_region() {
     let (env, client, admin) = setup();
     initialize_for_tests(&client, &admin);
@@ -820,6 +852,40 @@ fn regional_registrar_can_suspend_only_its_region() {
         client.try_suspend_attester(&registrar, &abuja_attester),
         Err(Ok(Error::RegionMismatch))
     );
+}
+
+#[test]
+fn regional_batch_removal_respects_storage_limit() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &9);
+    let mut attesters = Vec::new(&env);
+    for _ in 0..9 {
+        attesters.push_back(Address::generate(&env));
+    }
+    client.add_attesters(&registrar, &attesters);
+
+    assert_eq!(
+        client.try_remove_attesters(&admin, &attesters),
+        Err(Ok(Error::BatchTooLarge))
+    );
+    assert_eq!(client.get_regional_registrar_count(&registrar), 9);
+
+    let mut first_eight = Vec::new(&env);
+    for index in 0..8 {
+        if let Some(attester) = attesters.get(index) {
+            first_eight.push_back(attester);
+        }
+    }
+    client.remove_attesters(&admin, &first_eight);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 1);
+
+    if let Some(last_attester) = attesters.get(8) {
+        client.remove_attester(&admin, &last_attester);
+    }
+    assert_eq!(client.get_regional_registrar_count(&registrar), 0);
 }
 
 #[test]

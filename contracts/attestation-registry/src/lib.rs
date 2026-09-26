@@ -5,7 +5,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
-    BytesN, Env, Vec,
+    BytesN, Env, Symbol, Vec,
 };
 
 /// The subset of the `attester-registry` contract this crate calls. Kept
@@ -15,6 +15,7 @@ use soroban_sdk::{
 #[contractclient(name = "AttesterRegistryClient")]
 pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
+    fn is_attester_for_region(env: Env, attester: Address, region: Symbol) -> bool;
 }
 
 /// Maximum number of historical attestations to keep per record hash.
@@ -186,25 +187,26 @@ impl AttestationRegistry {
     /// ## Best-effort interface check
     ///
     /// This function performs a lightweight sanity check against
-    /// `attester_registry`: it calls `is_attester` with a throwaway address
-    /// and confirms the call does not trap. This confirms the address
-    /// implements the expected interface — it does **not** prove the address
-    /// is the canonical, trusted `attester-registry` deployment. A malicious
-    /// contract that happens to expose `is_attester` would pass this check.
+    /// `attester_registry`: it calls `is_attester_for_region` with a
+    /// throwaway address and region, and confirms the call does not trap.
+    /// This confirms the address implements the expected interface — it does
+    /// **not** prove the address is the canonical, trusted deployment.
     pub fn initialize(env: Env, admin: Address, attester_registry: Address) -> Result<(), Error> {
         if env.storage().instance().has(&DataKey::Admin) {
             return Err(Error::AlreadyInitialized);
         }
         admin.require_auth();
 
-        // Best-effort sanity check: verify attester_registry implements
-        // the is_attester interface by calling it with a throwaway address.
+        // Best-effort sanity check: verify attester_registry implements the
+        // regional allowlist interface with a throwaway address.
         let registry = AttesterRegistryClient::new(&env, &attester_registry);
-        // Use the current contract's own address as the throwaway — it's a
-        // valid Address but won't be an allowlisted attester, so a real
-        // attester-registry will return `false` (not trap).
+        // The current contract address is valid but will not be allowlisted.
         let throwaway = env.current_contract_address();
-        if registry.try_is_attester(&throwaway).is_err() {
+        let throwaway_region = Symbol::new(&env, "interface");
+        if registry
+            .try_is_attester_for_region(&throwaway, &throwaway_region)
+            .is_err()
+        {
             return Err(Error::InvalidRegistryWiring);
         }
 
@@ -293,11 +295,22 @@ impl AttestationRegistry {
     }
 
     /// Change the attester-registry contract this registry consults for
-    /// allowlist checks. Requires the admin's authorization. Emits
+    /// allowlist checks. Requires the admin's authorization and a compatible
+    /// regional allowlist interface. Emits
     /// `AttesterRegistryRepointed` for indexer/audit visibility.
     pub fn set_attester_registry(env: Env, new_registry: Address) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
+
+        let registry = AttesterRegistryClient::new(&env, &new_registry);
+        let throwaway = env.current_contract_address();
+        let throwaway_region = Symbol::new(&env, "interface");
+        if registry
+            .try_is_attester_for_region(&throwaway, &throwaway_region)
+            .is_err()
+        {
+            return Err(Error::InvalidRegistryWiring);
+        }
 
         let previous = Self::attester_registry(&env)?;
 
@@ -315,7 +328,7 @@ impl AttestationRegistry {
     }
 
     /// Pause the contract, blocking `attest` until `unpause` is called.
-    /// Requires the admin's authorization.
+    /// Requires the Guardian role.
     pub fn pause(env: Env, guardian: Address) -> Result<(), Error> {
         Self::require_role(&env, Role::Guardian, &guardian)?;
         env.storage().instance().set(&DataKey::Paused, &true);
@@ -323,7 +336,7 @@ impl AttestationRegistry {
         Ok(())
     }
 
-    /// Resume normal operation after a `pause`. Requires the admin's authorization.
+    /// Resume normal operation after a `pause`. Requires the owner's authorization.
     pub fn unpause(env: Env) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
@@ -340,7 +353,8 @@ impl AttestationRegistry {
             .unwrap_or(false)
     }
 
-    /// Record that `attester` verified the record hashing to `record_hash`.
+    /// Record that `attester` verified the record hashing to `record_hash` in
+    /// `region`.
     /// Requires `attester`'s authorization and that `attester` is
     /// currently allowlisted in the configured `attester-registry`.
     /// Stores the attestation with an incrementing sequence number,
@@ -349,13 +363,14 @@ impl AttestationRegistry {
         env: Env,
         attester: Address,
         record_hash: BytesN<32>,
+        region: Symbol,
     ) -> Result<Attestation, Error> {
         attester.require_auth();
         Self::require_not_paused(&env)?;
 
         let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
-        if !registry.is_attester(&attester) {
+        if !registry.is_attester_for_region(&attester, &region) {
             return Err(Error::AttesterNotAllowlisted);
         }
 
@@ -421,7 +436,7 @@ impl AttestationRegistry {
         Ok(attestation)
     }
 
-    /// Revoke all attestations for `record_hash`. Gated by admin authorization.
+    /// Revoke all attestations for `record_hash`. Requires the Revoker role.
     pub fn revoke_attestation(
         env: Env,
         revoker: Address,

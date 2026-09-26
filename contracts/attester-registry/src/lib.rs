@@ -97,7 +97,7 @@ pub enum AttesterStatusKind {
     Expired,
 }
 
-/// An allowlisted attester's metadata together with its current suspension
+/// An allowlisted attester's metadata, suspension state, and computed validity
 /// state, as returned by `get_attester_status`.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -134,6 +134,7 @@ const DEFAULT_MAX_ATTESTERS: u32 = 50_000;
 /// resource-limit abort at the network layer.
 pub const BATCH_LIMIT: u32 = 40;
 const REGIONAL_BATCH_LIMIT: u32 = 20;
+const REGIONAL_REMOVE_BATCH_LIMIT: u32 = 8;
 
 /// Errors returned by the attester registry's public entry points.
 #[contracterror]
@@ -481,14 +482,14 @@ impl AttesterRegistry {
                 .persistent()
                 .get(&DataKey::Attester(attester.clone()))
                 .ok_or(Error::AttesterNotFound)?;
-            if let Some(assignment) = regional_scope.as_ref() {
-                if existing
-                    .region
-                    .as_ref()
-                    .is_some_and(|current| current != &assignment.region)
-                {
-                    return Err(Error::RegionMismatch);
-                }
+            if regional_scope.is_some() {
+                Self::ensure_regional_existing(
+                    &env,
+                    &registrar,
+                    regional_scope.as_ref(),
+                    &attester,
+                    &existing,
+                )?;
             } else if existing.region != region {
                 Self::clear_regional_attester(&env, &attester);
             }
@@ -550,14 +551,14 @@ impl AttesterRegistry {
                 .persistent()
                 .get(&DataKey::Attester(attester.clone()))
                 .ok_or(Error::AttesterNotFound)?;
-            if let Some(assignment) = regional_scope.as_ref() {
-                if existing
-                    .region
-                    .as_ref()
-                    .is_some_and(|current| current != &assignment.region)
-                {
-                    return Err(Error::RegionMismatch);
-                }
+            if regional_scope.is_some() {
+                Self::ensure_regional_existing(
+                    &env,
+                    &registrar,
+                    regional_scope.as_ref(),
+                    &attester,
+                    &existing,
+                )?;
             } else if existing.region != region {
                 Self::clear_regional_attester(&env, &attester);
             }
@@ -698,6 +699,8 @@ impl AttesterRegistry {
     ///
     /// Requires a global registrar's authorization. Blocked while paused.
     /// Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+    /// If the batch removes regional enrollments, its size is additionally
+    /// limited to `REGIONAL_REMOVE_BATCH_LIMIT` to bound storage cleanup.
     /// Addresses that are not currently allowlisted are silently skipped
     /// (idempotent), so the call never fails if an address was already removed
     /// and no spurious events are emitted. Exactly one `AttesterRemoved` event
@@ -717,7 +720,7 @@ impl AttesterRegistry {
             env.storage()
                 .persistent()
                 .has(&DataKey::RegionalAttester(attester))
-        }) && attesters.len() > REGIONAL_BATCH_LIMIT
+        }) && attesters.len() > REGIONAL_REMOVE_BATCH_LIMIT
         {
             return Err(Error::BatchTooLarge);
         }
@@ -863,8 +866,8 @@ impl AttesterRegistry {
         Ok(())
     }
 
-    /// Whether `attester` is currently allowlisted (and not suspended). Callable by anyone,
-    /// including other contracts (e.g. `attestation-registry`).
+    /// Whether `attester` is allowlisted, not suspended, and within its validity
+    /// window. Callable by anyone, including other contracts.
     pub fn is_attester(env: Env, attester: Address) -> bool {
         if !env
             .storage()
@@ -879,14 +882,23 @@ impl AttesterRegistry {
             && Self::valid_at(Self::validity(&env, &attester), env.ledger().timestamp())
     }
 
+    /// Whether `attester` is active and authorized for `region`. Attesters
+    /// without a configured region remain globally scoped for compatibility.
+    pub fn is_attester_for_region(env: Env, attester: Address, region: Symbol) -> bool {
+        let Some(info) = Self::attester_info(&env, &attester) else {
+            return false;
+        };
+        Self::is_attester(env, attester) && info.region.is_none_or(|assigned| assigned == region)
+    }
+
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
         Self::attester_info(&env, &attester)
     }
 
-    /// Get `attester`'s metadata together with its current suspension state
-    /// in a single call. Returns `None` if `attester` is not currently
-    /// allowlisted (never added, or since removed).
+    /// Get `attester`'s metadata with computed validity status. The status
+    /// prioritizes suspension, then not-yet-valid and expired windows.
+    /// Returns `None` if the attester is not allowlisted.
     pub fn get_attester_status(env: Env, attester: Address) -> Option<AttesterStatus> {
         let info = Self::attester_info(&env, &attester)?;
         let suspended = env
@@ -1011,6 +1023,26 @@ impl AttesterRegistry {
             }
             None => Ok(region),
         }
+    }
+
+    fn ensure_regional_existing(
+        env: &Env,
+        registrar: &Address,
+        scope: Option<&RegionalRegistrarInfo>,
+        attester: &Address,
+        existing: &StoredAttesterInfo,
+    ) -> Result<(), Error> {
+        let assignment = scope.ok_or(Error::RoleNotGranted)?;
+        let assigned_registrar: Option<Address> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RegionalAttester(attester.clone()));
+        if assigned_registrar.as_ref() != Some(registrar)
+            || existing.region.as_ref() != Some(&assignment.region)
+        {
+            return Err(Error::RegionMismatch);
+        }
+        Ok(())
     }
 
     fn ensure_regional_quota(
