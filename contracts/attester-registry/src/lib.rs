@@ -53,6 +53,8 @@ pub struct AttesterInfo {
     pub region: Option<String>,
     /// Whether this attester is currently suspended.
     pub suspended: bool,
+    /// Whether this address has been removed from the allowlist.
+    pub removed: bool,
     /// Why the current suspension was imposed, if any.
     pub suspension_reason: Option<Symbol>,
     /// Ledger timestamp at which the current suspension began.
@@ -337,7 +339,9 @@ impl AttesterRegistry {
         let already_present = env
             .storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()));
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()))
+            .map(|info| !info.removed)
+            .unwrap_or(false);
         if !already_present {
             let count = Self::attester_count(&env);
             let max = Self::max_attesters(&env);
@@ -352,6 +356,7 @@ impl AttesterRegistry {
             license_hash: None,
             region: None,
             suspended: false,
+            removed: false,
             suspension_reason: None,
             suspended_since: None,
             trust_revoked_after: None,
@@ -381,7 +386,9 @@ impl AttesterRegistry {
         let already_present = env
             .storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()));
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()))
+            .map(|info| !info.removed)
+            .unwrap_or(false);
         if !already_present {
             let count = Self::attester_count(&env);
             let max = Self::max_attesters(&env);
@@ -396,6 +403,7 @@ impl AttesterRegistry {
             license_hash,
             region,
             suspended: false,
+            removed: false,
             suspension_reason: None,
             suspended_since: None,
             trust_revoked_after: None,
@@ -437,6 +445,7 @@ impl AttesterRegistry {
             license_hash,
             region,
             suspended: false,
+            removed: false,
             suspension_reason: None,
             suspended_since: None,
             trust_revoked_after: None,
@@ -474,7 +483,13 @@ impl AttesterRegistry {
 
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
-            if !env.storage().persistent().has(&key) {
+            let already_present = env
+                .storage()
+                .persistent()
+                .get::<_, AttesterInfo>(&key)
+                .map(|info| !info.removed)
+                .unwrap_or(false);
+            if !already_present {
                 if count >= max {
                     return Err(Error::AllowlistFull);
                 }
@@ -482,6 +497,7 @@ impl AttesterRegistry {
                     license_hash: None,
                     region: None,
                     suspended: false,
+                    removed: false,
                     suspension_reason: None,
                     suspended_since: None,
                     trust_revoked_after: None,
@@ -525,8 +541,16 @@ impl AttesterRegistry {
 
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
-            if env.storage().persistent().has(&key) {
-                env.storage().persistent().remove(&key);
+            if let Some(mut info) = env.storage().persistent().get::<_, AttesterInfo>(&key) {
+                if info.removed {
+                    continue;
+                }
+                info.removed = true;
+                info.suspended = false;
+                info.suspension_reason = None;
+                info.suspended_since = None;
+                info.trust_revoked_after = Some(env.ledger().timestamp());
+                env.storage().persistent().set(&key, &info);
                 if count > 0 {
                     count -= 1;
                 }
@@ -552,13 +576,21 @@ impl AttesterRegistry {
     pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
-        let was_present = env
+        let mut info = env
             .storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Attester(attester.clone()));
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()));
+        let was_present = info.as_ref().map(|info| !info.removed).unwrap_or(false);
+        if let Some(ref mut info) = info {
+            info.removed = true;
+            info.suspended = false;
+            info.suspension_reason = None;
+            info.suspended_since = None;
+            info.trust_revoked_after = Some(env.ledger().timestamp());
+            env.storage()
+                .persistent()
+                .set(&DataKey::Attester(attester.clone()), info);
+        }
         if was_present {
             let count = Self::attester_count(&env);
             if count > 0 {
@@ -667,13 +699,16 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .get::<_, AttesterInfo>(&DataKey::Attester(attester))
-            .map(|info| !info.suspended)
+            .map(|info| !info.removed && !info.suspended)
             .unwrap_or(false)
     }
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
-        env.storage().persistent().get(&DataKey::Attester(attester))
+        env.storage()
+            .persistent()
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .filter(|info| !info.removed)
     }
 
     /// Return the first timestamp at which attestations by this attester
@@ -715,6 +750,9 @@ impl AttesterRegistry {
             .storage()
             .persistent()
             .get(&DataKey::Attester(attester.clone()))?;
+        if info.removed {
+            return None;
+        }
         let suspended = info.suspended;
         Some(AttesterStatus {
             suspension_reason: info.suspension_reason.clone(),
