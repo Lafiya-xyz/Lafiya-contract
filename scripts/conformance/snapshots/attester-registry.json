@@ -79,6 +79,31 @@
   },
   {
     "kind": "function_v0",
+    "name": "add_attesters",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attesters",
+          "type_": {
+            "vec": {
+              "element_type": "address"
+            }
+          }
+        }
+      ],
+      "name": "add_attesters",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_admin",
     "spec": {
       "inputs": [],
@@ -319,6 +344,31 @@
   },
   {
     "kind": "function_v0",
+    "name": "remove_attesters",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attesters",
+          "type_": {
+            "vec": {
+              "element_type": "address"
+            }
+          }
+        }
+      ],
+      "name": "remove_attesters",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "set_max_attesters",
     "spec": {
       "inputs": [
@@ -473,6 +523,10 @@
         {
           "name": "AttesterNotFound",
           "value": 7
+        },
+        {
+          "name": "BatchTooLarge",
+          "value": 8
         }
       ],
       "lib": "",
@@ -496,6 +550,16 @@
           "location": "topic_list",
           "name": "new_admin",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -515,6 +579,16 @@
           "location": "topic_list",
           "name": "attester",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -534,6 +608,16 @@
           "location": "topic_list",
           "name": "attester",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -553,6 +637,16 @@
           "location": "topic_list",
           "name": "attester",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -572,6 +666,16 @@
           "location": "topic_list",
           "name": "attester",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -591,6 +695,16 @@
           "location": "topic_list",
           "name": "attester",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -610,6 +724,16 @@
           "location": "topic_list",
           "name": "admin",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -629,6 +753,16 @@
           "location": "topic_list",
           "name": "by",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -648,6 +782,16 @@
           "location": "topic_list",
           "name": "by",
           "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [
@@ -671,6 +815,16 @@
               "n": 32
             }
           }
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [

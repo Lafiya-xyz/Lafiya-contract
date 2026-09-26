@@ -37,6 +37,18 @@ def _strip_docs(node):
     return node
 
 
+def _normalize_type_keys(node):
+    """Keep snapshots stable across CLI versions that serialize `type`/`type_`."""
+    if isinstance(node, dict):
+        return {
+            ("type_" if key == "type" else key): _normalize_type_keys(value)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_normalize_type_keys(value) for value in node]
+    return node
+
+
 def _entry_name(kind, body):
     if kind == "function_v0":
         return body["name"]
@@ -89,7 +101,8 @@ def extract(wasm_path):
     entries = []
     for entry in raw:
         ((kind, body),) = entry.items()
-        entries.append((kind, _entry_name(kind, body), _strip_docs(body)))
+        normalized = _normalize_type_keys(_strip_docs(body))
+        entries.append((kind, _entry_name(kind, body), normalized))
 
     entries.sort(key=lambda e: (KIND_ORDER.get(e[0], 99), e[1]))
     return [{"kind": k, "name": n, "spec": s} for k, n, s in entries]

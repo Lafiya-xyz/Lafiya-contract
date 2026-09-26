@@ -5,7 +5,7 @@
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
-    BytesN, Env, Vec,
+    BytesN, Env, Symbol, Vec,
 };
 
 /// The subset of the `attester-registry` contract this crate calls. Kept
@@ -23,6 +23,7 @@ pub trait AttesterRegistryInterface {
 const MAX_HISTORY: u64 = 10;
 
 const SCHEMA_VERSION: u32 = 1;
+const EVENT_SCHEMA_VERSION: u32 = 2;
 
 /// Instance storage TTL policy:
 /// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
@@ -78,6 +79,8 @@ pub struct AdminTransferred {
     pub previous_admin: Address,
     #[topic]
     pub new_admin: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when a new attestation is recorded for a record hash.
@@ -90,6 +93,12 @@ pub struct AttestationRecorded {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+    /// Sequence number of the history entry written by this event.
+    pub sequence: u64,
+    /// Sequence number evicted from the bounded FIFO history, if any.
+    pub evicted_sequence: Option<u64>,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when an attestation is revoked.
@@ -98,6 +107,14 @@ pub struct AttestationRecorded {
 pub struct AttestationRevoked {
     #[topic]
     pub record_hash: BytesN<32>,
+    /// Admin who authorized the revocation.
+    pub by: Address,
+    /// Number of stored history entries removed.
+    pub removed_count: u64,
+    /// Non-sensitive, concise reason code supplied by the admin.
+    pub reason: Symbol,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when state-changing operations are paused.
@@ -106,6 +123,8 @@ pub struct AttestationRevoked {
 pub struct Paused {
     #[topic]
     pub by: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when state-changing operations are unpaused.
@@ -114,6 +133,8 @@ pub struct Paused {
 pub struct Unpaused {
     #[topic]
     pub by: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when the `attester-registry` contract this registry consults is repointed.
@@ -124,6 +145,8 @@ pub struct AttesterRegistryRepointed {
     pub previous: Address,
     #[topic]
     pub new: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Errors returned by the attestation registry's public entry points.
@@ -235,6 +258,8 @@ impl AttestationRegistry {
         AdminTransferred {
             previous_admin,
             new_admin: pending_admin,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
         }
         .publish(&env);
 
@@ -257,6 +282,8 @@ impl AttestationRegistry {
         AttesterRegistryRepointed {
             previous,
             new: new_registry,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
         }
         .publish(&env);
 
@@ -269,7 +296,12 @@ impl AttestationRegistry {
         let admin = Self::admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &true);
-        Paused { by: admin }.publish(&env);
+        Paused {
+            by: admin,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -278,7 +310,12 @@ impl AttestationRegistry {
         let admin = Self::admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
-        Unpaused { by: admin }.publish(&env);
+        Unpaused {
+            by: admin,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -338,12 +375,15 @@ impl AttestationRegistry {
             .unwrap_or(0);
         let new_count = count + 1;
 
-        if new_count > MAX_HISTORY {
-            let oldest_sequence = new_count.saturating_sub(MAX_HISTORY);
+        let evicted_sequence = if new_count > MAX_HISTORY {
+            let oldest_sequence = new_sequence.saturating_sub(MAX_HISTORY);
             env.storage()
                 .persistent()
                 .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
-        }
+            Some(oldest_sequence)
+        } else {
+            None
+        };
 
         env.storage()
             .persistent()
@@ -365,6 +405,10 @@ impl AttestationRegistry {
             record_hash,
             attester,
             timestamp: attestation.timestamp,
+            sequence: new_sequence,
+            evicted_sequence,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
         }
         .publish(&env);
 
@@ -372,7 +416,11 @@ impl AttestationRegistry {
     }
 
     /// Revoke all attestations for `record_hash`. Gated by admin authorization.
-    pub fn revoke_attestation(env: Env, record_hash: BytesN<32>) -> Result<(), Error> {
+    pub fn revoke_attestation(
+        env: Env,
+        record_hash: BytesN<32>,
+        reason: Symbol,
+    ) -> Result<(), Error> {
         let admin: Address = Self::admin(&env)?;
         admin.require_auth();
 
@@ -394,10 +442,13 @@ impl AttestationRegistry {
             1
         };
 
+        let mut removed_count = 0;
         for seq in start_sequence..=sequence {
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Attestation(record_hash.clone(), seq));
+            let key = DataKey::Attestation(record_hash.clone(), seq);
+            if env.storage().persistent().has(&key) {
+                env.storage().persistent().remove(&key);
+                removed_count += 1;
+            }
         }
         env.storage()
             .persistent()
@@ -406,7 +457,15 @@ impl AttestationRegistry {
             .persistent()
             .remove(&DataKey::AttestationCount(record_hash.clone()));
 
-        AttestationRevoked { record_hash }.publish(&env);
+        AttestationRevoked {
+            record_hash,
+            by: admin,
+            removed_count,
+            reason,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
 
         Ok(())
     }

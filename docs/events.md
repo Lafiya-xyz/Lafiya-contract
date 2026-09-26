@@ -23,6 +23,8 @@ for how these events are consumed.
 |---|---|---|
 | `previous_admin` | `Address` | topic_list |
 | `new_admin` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttestationRecorded`
 
@@ -34,6 +36,10 @@ for how these events are consumed.
 | `record_hash` | `BytesN<32>` | topic_list |
 | `attester` | `Address` | data |
 | `timestamp` | `u64` | data |
+| `sequence` | `u64` | data |
+| `evicted_sequence` | `Option<u64>` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttestationRevoked`
 
@@ -43,6 +49,11 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `record_hash` | `BytesN<32>` | topic_list |
+| `by` | `Address` | data |
+| `removed_count` | `u64` | data |
+| `reason` | `Symbol` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttesterRegistryRepointed`
 
@@ -53,6 +64,8 @@ for how these events are consumed.
 |---|---|---|
 | `previous` | `Address` | topic_list |
 | `new` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `Paused`
 
@@ -62,6 +75,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `by` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `Unpaused`
 
@@ -71,6 +86,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `by` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ## `attester-registry`
 
@@ -83,6 +100,8 @@ for how these events are consumed.
 |---|---|---|
 | `previous_admin` | `Address` | topic_list |
 | `new_admin` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttesterAdded`
 
@@ -92,6 +111,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttesterInfoUpdated`
 
@@ -101,6 +122,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttesterReinstated`
 
@@ -110,6 +133,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttesterRemoved`
 
@@ -119,6 +144,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `AttesterSuspended`
 
@@ -128,6 +155,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `Initialized`
 
@@ -137,6 +166,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `admin` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `Paused`
 
@@ -146,6 +177,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `by` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `Unpaused`
 
@@ -155,6 +188,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `by` | `Address` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `Upgraded`
 
@@ -164,3 +199,5 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `new_wasm_hash` | `BytesN<32>` | topic_list |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |

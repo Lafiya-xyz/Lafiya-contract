@@ -201,7 +201,11 @@ fn get_attestation_history_boundary_at_max_history() {
 
     // History should contain exactly MAX_HISTORY entries (10).
     // The first attestation (oldest) should have been evicted.
-    assert_eq!(history.len(), 10, "Expected exactly MAX_HISTORY entries in history");
+    assert_eq!(
+        history.len(),
+        10,
+        "Expected exactly MAX_HISTORY entries in history"
+    );
 
     // The oldest entry in history should be the second attestation.
     assert_eq!(
@@ -222,7 +226,9 @@ fn get_attestation_history_boundary_at_max_history() {
         assert_eq!(
             history.get(i).unwrap().timestamp,
             attestations[i + 1].timestamp,
-            "History entry {} should match attestation {}", i, i + 1
+            "History entry {} should match attestation {}",
+            i,
+            i + 1
         );
     }
 }
@@ -240,10 +246,42 @@ fn attest_emits_event() {
         record_hash: record_hash.clone(),
         attester: attestation.attester.clone(),
         timestamp: attestation.timestamp,
+        sequence: 1,
+        evicted_sequence: None,
+        contract_kind: Symbol::new(&env, "attestation_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
         env.events().all(),
         std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+}
+
+#[test]
+fn attest_event_reports_sequence_and_fifo_eviction() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let record_hash = BytesN::from_array(&env, &[15u8; 32]);
+
+    let mut last_attestation = None;
+    for _ in 0..MAX_HISTORY + 1 {
+        last_attestation = Some(client.attest(&attester, &record_hash));
+    }
+
+    let attestation = last_attestation.unwrap();
+    let expected_event = AttestationRecorded {
+        record_hash,
+        attester,
+        timestamp: attestation.timestamp,
+        sequence: MAX_HISTORY + 1,
+        evicted_sequence: Some(1),
+        contract_kind: Symbol::new(&env, "attestation_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    assert_eq!(
+        env.events().all().events().last(),
+        Some(&expected_event.to_xdr(&env, &client.address)),
     );
 }
 
@@ -367,6 +405,8 @@ fn successful_admin_transfer_flow() {
     let expected_event = AdminTransferred {
         previous_admin: admin.clone(),
         new_admin: new_admin.clone(),
+        contract_kind: Symbol::new(&env, "attestation_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
         env.events().all(),
@@ -849,6 +889,8 @@ fn set_attester_registry_by_admin_succeeds() {
     let expected_event = AttesterRegistryRepointed {
         previous: attester_registry.address.clone(),
         new: new_registry.clone(),
+        contract_kind: Symbol::new(&env, "attestation_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
         env.events().all(),
@@ -917,8 +959,20 @@ fn revoke_attestation_happy_path() {
     client.attest(&attester, &record_hash);
     assert_eq!(client.get_attestation(&record_hash).is_some(), true);
 
-    client.revoke_attestation(&record_hash);
+    client.revoke_attestation(&record_hash, &Symbol::new(&env, "record_error"));
 
+    let expected_event = AttestationRevoked {
+        record_hash: record_hash.clone(),
+        by: admin,
+        removed_count: 1,
+        reason: Symbol::new(&env, "record_error"),
+        contract_kind: Symbol::new(&env, "attestation_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
     assert_eq!(client.get_attestation(&record_hash), None);
 }
 
@@ -937,12 +991,12 @@ fn revoke_attestation_without_admin_auth_fails() {
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
             fn_name: "revoke_attestation",
-            args: (record_hash.clone(),).into_val(&env),
+            args: (record_hash.clone(), Symbol::new(&env, "fraud")).into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_revoke_attestation(&record_hash);
+    let result = client.try_revoke_attestation(&record_hash, &Symbol::new(&env, "fraud"));
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), Some(attestation));
 }
@@ -952,7 +1006,7 @@ fn revoke_attestation_for_unknown_hash_returns_not_initialized() {
     let (env, client, _attester_registry, _admin) = setup();
     let record_hash = BytesN::from_array(&env, &[13u8; 32]);
 
-    let result = client.try_revoke_attestation(&record_hash);
+    let result = client.try_revoke_attestation(&record_hash, &Symbol::new(&env, "unknown"));
     // NOTE: This is a bug in the contract. revoke_attestation returns
     // Error::NotInitialized when called with an unknown hash (line 371 in lib.rs),
     // but it should return Error::AttestationNotFound. This test documents
@@ -962,7 +1016,7 @@ fn revoke_attestation_for_unknown_hash_returns_not_initialized() {
 
 #[test]
 fn revoke_attestation_clears_get_attestation_history() {
-    let (env, client, attester_registry, _admin) = setup();
+    let (env, client, attester_registry, admin) = setup();
     let attester_a = Address::generate(&env);
     let attester_b = Address::generate(&env);
     let attester_c = Address::generate(&env);
@@ -983,9 +1037,23 @@ fn revoke_attestation_clears_get_attestation_history() {
 
     assert_eq!(client.get_attestation(&record_hash), Some(third));
 
-    client.revoke_attestation(&record_hash);
+    let reason = Symbol::new(&env, "fraud");
+    client.revoke_attestation(&record_hash, &reason);
+    let emitted_event = env.events().all().events().last().cloned();
 
     assert_eq!(client.get_attestation(&record_hash), None);
     let history_after = client.get_attestation_history(&record_hash);
     assert_eq!(history_after.len(), 0);
+    let expected_event = AttestationRevoked {
+        record_hash,
+        by: admin,
+        removed_count: 3,
+        reason,
+        contract_kind: Symbol::new(&env, "attestation_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    assert_eq!(
+        emitted_event.as_ref(),
+        Some(&expected_event.to_xdr(&env, &client.address)),
+    );
 }
