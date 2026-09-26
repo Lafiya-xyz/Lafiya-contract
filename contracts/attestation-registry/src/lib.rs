@@ -17,10 +17,13 @@ pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
 }
 
-/// Maximum number of historical attestations to keep per record hash.
-/// This bounds storage growth per re-attestation. When exceeded,
-/// the oldest attestation is removed (FIFO eviction).
+/// Maximum number of attestations to keep per record hash. At capacity,
+/// further attestations require admin revocation rather than evicting history.
 const MAX_HISTORY: u64 = 10;
+
+const CONSENT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
+const CONSENT_TTL_THRESHOLD: u32 = 60_480;
+const CONSENT_TTL_BUMP: u32 = 120_960;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -56,6 +59,12 @@ enum DataKey {
     SchemaVersion,
     /// Whether state-changing operations are currently paused.
     Paused,
+    /// A patient's one-time authorization for an attester and record hash.
+    PatientConsent(BytesN<32>, Address, Address),
+    /// The patient-selected expiry for an attestation consent grant.
+    PatientConsentValidity(BytesN<32>, Address, Address),
+    /// Expiry timestamp for an attestation at a specific sequence number.
+    AttestationExpiry(BytesN<32>, u64),
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -68,6 +77,19 @@ pub struct Attestation {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+}
+
+/// An attestation together with its freshness status. Attestations written
+/// before expiry tracking was introduced have no expiry and are treated stale.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationStatus {
+    /// The attestation being checked.
+    pub attestation: Attestation,
+    /// Timestamp selected by the patient when authorizing this attestation.
+    pub expires_at: Option<u64>,
+    /// Whether the expiry has passed, or is unknown for a legacy attestation.
+    pub is_expired: bool,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -90,6 +112,9 @@ pub struct AttestationRecorded {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+    /// Patient-selected timestamp after which responders should treat this
+    /// verification as stale.
+    pub expires_at: u64,
 }
 
 /// Emitted when an attestation is revoked.
@@ -149,6 +174,14 @@ pub enum Error {
     AttestationNotFound = 6,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
+    /// No matching patient consent was granted for this attester and record.
+    PatientConsentRequired = 8,
+    /// The matching patient consent has expired.
+    PatientConsentExpired = 9,
+    /// The current ledger timestamp cannot be safely advanced to calculate a time bound.
+    TimestampOverflow = 10,
+    /// The patient-selected attestation expiry is not in the future.
+    InvalidAttestationExpiry = 11,
 }
 
 /// The attestation registry contract.
@@ -290,14 +323,67 @@ impl AttestationRegistry {
             .unwrap_or(false)
     }
 
+    /// Grant a one-time authorization for `attester` to attest `record_hash`.
+    /// The patient must authorize this call. The grant is bound to the patient,
+    /// attester, and record hash, expires after seven days, and is consumed by
+    /// the matching `attest` call. The patient also selects when that
+    /// attestation becomes stale.
+    pub fn consent_attestation(
+        env: Env,
+        patient: Address,
+        attester: Address,
+        record_hash: BytesN<32>,
+        attestation_expires_at: u64,
+    ) -> Result<(), Error> {
+        patient.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if attestation_expires_at <= env.ledger().timestamp() {
+            return Err(Error::InvalidAttestationExpiry);
+        }
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        if !registry.is_attester(&attester) {
+            return Err(Error::AttesterNotAllowlisted);
+        }
+
+        let expires_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(CONSENT_VALIDITY_SECONDS)
+            .ok_or(Error::TimestampOverflow)?;
+        let key = DataKey::PatientConsent(record_hash.clone(), patient.clone(), attester.clone());
+        env.storage().persistent().set(&key, &expires_at);
+        let validity_key = DataKey::PatientConsentValidity(record_hash, patient, attester);
+        env.storage()
+            .persistent()
+            .set(&validity_key, &attestation_expires_at);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, CONSENT_TTL_THRESHOLD, CONSENT_TTL_BUMP);
+        env.storage().persistent().extend_ttl(
+            &validity_key,
+            CONSENT_TTL_THRESHOLD,
+            CONSENT_TTL_BUMP,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(())
+    }
+
     /// Record that `attester` verified the record hashing to `record_hash`.
-    /// Requires `attester`'s authorization and that `attester` is
-    /// currently allowlisted in the configured `attester-registry`.
+    /// Requires `attester`'s authorization, an unexpired one-time patient
+    /// consent grant for this exact patient/attester/hash tuple, and that
+    /// `attester` is currently allowlisted in the configured registry.
     /// Stores the attestation with an incrementing sequence number,
     /// maintaining a bounded history (MAX_HISTORY entries per hash).
     pub fn attest(
         env: Env,
         attester: Address,
+        patient: Address,
         record_hash: BytesN<32>,
     ) -> Result<Attestation, Error> {
         attester.require_auth();
@@ -309,21 +395,53 @@ impl AttestationRegistry {
             return Err(Error::AttesterNotAllowlisted);
         }
 
-        let attestation = Attestation {
-            attester: attester.clone(),
-            timestamp: env.ledger().timestamp(),
-        };
-
         let sequence: u64 = env
             .storage()
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
             .unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationCount(record_hash.clone()))
+            .unwrap_or(0);
+        let consent_key =
+            DataKey::PatientConsent(record_hash.clone(), patient.clone(), attester.clone());
+        let consent_expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&consent_key)
+            .ok_or(Error::PatientConsentRequired)?;
+        if env.ledger().timestamp() >= consent_expires_at {
+            return Err(Error::PatientConsentExpired);
+        }
+        let consent_validity_key =
+            DataKey::PatientConsentValidity(record_hash.clone(), patient, attester.clone());
+        let attestation_expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&consent_validity_key)
+            .ok_or(Error::PatientConsentRequired)?;
+        if env.ledger().timestamp() >= attestation_expires_at {
+            return Err(Error::InvalidAttestationExpiry);
+        }
+        env.storage().persistent().remove(&consent_key);
+        env.storage().persistent().remove(&consent_validity_key);
+
+        let attestation = Attestation {
+            attester: attester.clone(),
+            timestamp: env.ledger().timestamp(),
+        };
+
         let new_sequence = sequence + 1;
 
         env.storage().persistent().set(
             &DataKey::Attestation(record_hash.clone(), new_sequence),
             &attestation,
+        );
+        env.storage().persistent().set(
+            &DataKey::AttestationExpiry(record_hash.clone(), new_sequence),
+            &attestation_expires_at,
         );
 
         env.storage().persistent().set(
@@ -331,11 +449,6 @@ impl AttestationRegistry {
             &new_sequence,
         );
 
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
         let new_count = count + 1;
 
         if new_count > MAX_HISTORY {
@@ -356,6 +469,11 @@ impl AttestationRegistry {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
+        env.storage().persistent().extend_ttl(
+            &DataKey::AttestationExpiry(record_hash.clone(), new_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
 
         env.storage()
             .instance()
@@ -365,6 +483,7 @@ impl AttestationRegistry {
             record_hash,
             attester,
             timestamp: attestation.timestamp,
+            expires_at: attestation_expires_at,
         }
         .publish(&env);
 
@@ -380,7 +499,7 @@ impl AttestationRegistry {
             .storage()
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
-            .ok_or(Error::NotInitialized)?;
+            .ok_or(Error::AttestationNotFound)?;
 
         let count: u64 = env
             .storage()
@@ -398,6 +517,9 @@ impl AttestationRegistry {
             env.storage()
                 .persistent()
                 .remove(&DataKey::Attestation(record_hash.clone(), seq));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AttestationExpiry(record_hash.clone(), seq));
         }
         env.storage()
             .persistent()
@@ -422,6 +544,25 @@ impl AttestationRegistry {
         env.storage()
             .persistent()
             .get(&DataKey::Attestation(record_hash, sequence))
+    }
+
+    /// Look up the latest attestation with its patient-selected expiry status.
+    /// An attestation without a recorded expiry is treated as stale.
+    pub fn get_attestation_status(env: Env, record_hash: BytesN<32>) -> Option<AttestationStatus> {
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
+        let attestation: Attestation = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attestation(record_hash.clone(), sequence))?;
+        Some(Self::attestation_status(
+            &env,
+            &record_hash,
+            sequence,
+            attestation,
+        ))
     }
 
     /// Look up the full attestation history for `record_hash`, if any.
@@ -461,6 +602,69 @@ impl AttestationRegistry {
         }
 
         history
+    }
+
+    /// Look up the bounded attestation history with expiry status for each
+    /// entry, oldest first. Attestations without an expiry are treated stale.
+    pub fn get_attestation_history_status(
+        env: Env,
+        record_hash: BytesN<32>,
+    ) -> Vec<AttestationStatus> {
+        let sequence: u64 = match env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))
+        {
+            Some(seq) => seq,
+            None => return Vec::new(&env),
+        };
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationCount(record_hash.clone()))
+            .unwrap_or(0);
+        let start_sequence = if count > MAX_HISTORY {
+            sequence.saturating_sub(MAX_HISTORY - 1)
+        } else {
+            1
+        };
+
+        let mut history = Vec::new(&env);
+        for seq in start_sequence..=sequence {
+            if let Some(attestation) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Attestation(record_hash.clone(), seq))
+            {
+                history.push_back(Self::attestation_status(
+                    &env,
+                    &record_hash,
+                    seq,
+                    attestation,
+                ));
+            }
+        }
+        history
+    }
+
+    fn attestation_status(
+        env: &Env,
+        record_hash: &BytesN<32>,
+        sequence: u64,
+        attestation: Attestation,
+    ) -> AttestationStatus {
+        let expires_at: Option<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationExpiry(record_hash.clone(), sequence));
+        let is_expired = expires_at
+            .map(|expiry| env.ledger().timestamp() >= expiry)
+            .unwrap_or(true);
+        AttestationStatus {
+            attestation,
+            expires_at,
+            is_expired,
+        }
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {

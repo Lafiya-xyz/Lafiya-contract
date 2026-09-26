@@ -36,7 +36,10 @@ proptest! {
         attester_registry_client.add_attester(&attester);
 
         let record_hash = BytesN::from_array(&env, &bytes);
-        let result = client.try_attest(&attester, &record_hash);
+        let patient = Address::generate(&env);
+        let expires_at = env.ledger().timestamp() + 10_000;
+        client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+        let result = client.try_attest(&attester, &patient, &record_hash);
         prop_assert!(result.is_ok());
         prop_assert!(client.get_attestation(&record_hash).is_some());
     }
@@ -50,9 +53,10 @@ proptest! {
         let contract_id = env.register(AttestationRegistry, ());
         let client = AttestationRegistryClient::new(&env, &contract_id);
         let attester = Address::generate(&env);
+        let patient = Address::generate(&env);
         let record_hash = BytesN::from_array(&env, &bytes);
 
-        let result = client.try_attest(&attester, &record_hash);
+        let result = client.try_attest(&attester, &patient, &record_hash);
         prop_assert_eq!(result, Err(Ok(Error::NotInitialized)));
     }
 
@@ -78,7 +82,10 @@ proptest! {
         for _ in 0..attempts {
             let attester = Address::generate(&env);
             attester_registry_client.add_attester(&attester);
-            let result = client.try_attest(&attester, &record_hash);
+            let patient = Address::generate(&env);
+            let expires_at = env.ledger().timestamp() + 10_000;
+            client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+            let result = client.try_attest(&attester, &patient, &record_hash);
             prop_assert!(result.is_ok());
             last_attester = Some(attester);
         }

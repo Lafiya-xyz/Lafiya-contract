@@ -133,10 +133,13 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `pause()` | Blocks `attest` until unpaused. Requires admin auth. Emits `Paused`. |
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
-| `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
+| `consent_attestation(patient: Address, attester: Address, record_hash: BytesN<32>, attestation_expires_at: u64)` | Requires the patient's auth and an allowlisted attester. Creates a one-time grant bound to that patient, attester, and record hash; the grant expires after seven days, while the patient-selected `attestation_expires_at` determines when verification becomes stale. |
+| `attest(attester: Address, patient: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth, an unexpired one-time patient grant for the exact patient/attester/hash tuple, and that `attester` is allowlisted (checked via `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded` with the patient-selected expiry. |
 | `revoke_attestation(record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires admin auth. Emits `AttestationRevoked`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
 | `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |
+| `get_attestation_status(record_hash: BytesN<32>) -> Option<AttestationStatus>` | Returns the latest attestation with its patient-selected expiry and whether it is stale. Attestations without a recorded expiry are reported as stale. |
+| `get_attestation_history_status(record_hash: BytesN<32>) -> Vec<AttestationStatus>` | Returns the bounded history with freshness status for each entry, oldest first. |
 
 ### Contract upgrades
 
