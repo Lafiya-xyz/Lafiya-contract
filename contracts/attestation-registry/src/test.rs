@@ -93,6 +93,61 @@ fn attest_by_non_allowlisted_attester_fails() {
 }
 
 #[test]
+fn anchor_batch_stores_one_root_and_returns_metadata() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let root = BytesN::from_array(&env, &[21u8; 32]);
+
+    let batch = client.anchor_batch(&attester, &root, &3);
+
+    assert_eq!(batch.attester, attester);
+    assert_eq!(batch.leaf_count, 3);
+    assert_eq!(client.get_attestation_batch(&root), Some(batch));
+}
+
+#[test]
+fn anchor_batch_rejects_empty_batch() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let root = BytesN::from_array(&env, &[22u8; 32]);
+
+    assert_eq!(
+        client.try_anchor_batch(&attester, &root, &0),
+        Err(Ok(Error::EmptyBatch))
+    );
+    assert_eq!(client.get_attestation_batch(&root), None);
+}
+
+#[test]
+fn anchor_batch_rejects_non_allowlisted_attester() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    let root = BytesN::from_array(&env, &[23u8; 32]);
+
+    assert_eq!(
+        client.try_anchor_batch(&attester, &root, &2),
+        Err(Ok(Error::AttesterNotAllowlisted))
+    );
+    assert_eq!(client.get_attestation_batch(&root), None);
+}
+
+#[test]
+fn anchor_batch_rejects_reused_root() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    let root = BytesN::from_array(&env, &[24u8; 32]);
+    client.anchor_batch(&attester, &root, &2);
+
+    assert_eq!(
+        client.try_anchor_batch(&attester, &root, &2),
+        Err(Ok(Error::BatchAlreadyAnchored))
+    );
+}
+
+#[test]
 fn attest_before_initialize_fails() {
     let env = Env::default();
     env.mock_all_auths();

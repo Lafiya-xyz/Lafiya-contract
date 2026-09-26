@@ -134,6 +134,8 @@ Three Soroban contracts, each in its own crate under `contracts/`.
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
+| `anchor_batch(attester: Address, root: BytesN<32>, leaf_count: u32) -> AttestationBatch` | Requires `attester`'s auth and allowlist membership. Anchors an off-chain Merkle batch using one persistent storage entry for the entire batch. See [Merkle-batched attestations](docs/merkle-batch-attestations.md) for the tree format and verification limitations. |
+| `get_attestation_batch(root: BytesN<32>) -> Option<AttestationBatch>` | Returns the attester, anchoring timestamp, and leaf count for an anchored root. |
 | `revoke_attestation(record_hash: BytesN<32>)` | Revokes all attestations for `record_hash`. Requires admin auth. Emits `AttestationRevoked`. |
 | `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | Looks up the latest attestation for a record hash. Open to any caller — this is what lets a responder's QR scan verify a card without an external oracle. |
 | `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | Returns the full bounded attestation history for a record hash, oldest first. Open to any caller. |

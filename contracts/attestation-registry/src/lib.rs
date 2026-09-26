@@ -56,6 +56,8 @@ enum DataKey {
     SchemaVersion,
     /// Whether state-changing operations are currently paused.
     Paused,
+    /// Metadata for an anchored Merkle batch, keyed by its root.
+    AttestationBatch(BytesN<32>),
 }
 
 /// A single attestation: proof that `attester` verified the off-chain
@@ -68,6 +70,18 @@ pub struct Attestation {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+}
+
+/// Metadata for a batch of record commitments anchored by one attester.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationBatch {
+    /// The allowlisted attester authorizing every leaf in the batch.
+    pub attester: Address,
+    /// Ledger timestamp at which the root was anchored.
+    pub timestamp: u64,
+    /// Number of record commitments represented by the Merkle root.
+    pub leaf_count: u32,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -98,6 +112,20 @@ pub struct AttestationRecorded {
 pub struct AttestationRevoked {
     #[topic]
     pub record_hash: BytesN<32>,
+}
+
+/// Emitted when an attester anchors a Merkle root for multiple records.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationBatchAnchored {
+    #[topic]
+    pub root: BytesN<32>,
+    /// The allowlisted attester authorizing every leaf in the batch.
+    pub attester: Address,
+    /// Ledger timestamp at which the root was anchored.
+    pub timestamp: u64,
+    /// Number of record commitments represented by the Merkle root.
+    pub leaf_count: u32,
 }
 
 /// Emitted when state-changing operations are paused.
@@ -149,6 +177,10 @@ pub enum Error {
     AttestationNotFound = 6,
     /// The requested operation is blocked while the contract is paused.
     ContractPaused = 7,
+    /// A Merkle batch must contain at least one record.
+    EmptyBatch = 8,
+    /// The Merkle root has already been anchored.
+    BatchAlreadyAnchored = 9,
 }
 
 /// The attestation registry contract.
@@ -369,6 +401,69 @@ impl AttestationRegistry {
         .publish(&env);
 
         Ok(attestation)
+    }
+
+    /// Anchor a Merkle root containing multiple record commitments.
+    ///
+    /// The attester authorizes the root and leaf count, while the contract
+    /// stores only one persistent entry for the entire batch. Verifiers
+    /// reconstruct inclusion proofs using the tree format documented in
+    /// `docs/merkle-batch-attestations.md`.
+    pub fn anchor_batch(
+        env: Env,
+        attester: Address,
+        root: BytesN<32>,
+        leaf_count: u32,
+    ) -> Result<AttestationBatch, Error> {
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if leaf_count == 0 {
+            return Err(Error::EmptyBatch);
+        }
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        if !registry.is_attester(&attester) {
+            return Err(Error::AttesterNotAllowlisted);
+        }
+
+        let key = DataKey::AttestationBatch(root.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::BatchAlreadyAnchored);
+        }
+
+        let batch = AttestationBatch {
+            attester: attester.clone(),
+            timestamp: env.ledger().timestamp(),
+            leaf_count,
+        };
+        env.storage().persistent().set(&key, &batch);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        AttestationBatchAnchored {
+            root,
+            attester,
+            timestamp: batch.timestamp,
+            leaf_count,
+        }
+        .publish(&env);
+
+        Ok(batch)
+    }
+
+    /// Look up metadata for a Merkle batch root, if it has been anchored.
+    pub fn get_attestation_batch(env: Env, root: BytesN<32>) -> Option<AttestationBatch> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttestationBatch(root))
     }
 
     /// Revoke all attestations for `record_hash`. Gated by admin authorization.
