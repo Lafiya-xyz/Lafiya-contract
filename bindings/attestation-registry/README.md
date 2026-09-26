@@ -65,7 +65,7 @@ const recordHash = Buffer.from("abc123...", "hex"); // hash of the off-chain rec
 // state, so after simulation you must sign and send the transaction.
 await contract.attest({ attester, record_hash: recordHash }).then((tx) => tx.signAndSend());
 
-// get_attestation() is a read-only lookup, callable by anyone.
+// get_attestation() returns all retained attestations in first-submission order.
 const { result } = await contract.get_attestation({ record_hash: recordHash });
-console.log(result); // the latest Attestation, or null if none
+console.log(result); // a bounded array of Attestation entries
 ```

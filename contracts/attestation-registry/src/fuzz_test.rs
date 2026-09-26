@@ -1,6 +1,6 @@
 //! Property-based fuzz testing for `attest`. Targets two things the issue
 //! called out specifically: panics on arbitrary/adversarial `record_hash`
-//! byte patterns, and unusual call orderings relative to `initialize`.
+//! byte patterns and re-attestation behavior.
 //!
 //! Run just this target locally with more cases via:
 //! `PROPTEST_CASES=10000 cargo test -p attestation-registry fuzz_test -- --nocapture`
@@ -24,36 +24,22 @@ proptest! {
         let env = Env::default();
         env.mock_all_auths();
 
-        let attester_registry_id = env.register(AttesterRegistry, ());
+        let admin = Address::generate(&env);
+        let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
         let attester_registry_client = AttesterRegistryClient::new(&env, &attester_registry_id);
-        let contract_id = env.register(AttestationRegistry, ());
+        let contract_id = env.register(
+            AttestationRegistry,
+            (admin, attester_registry_id.clone()),
+        );
         let client = AttestationRegistryClient::new(&env, &contract_id);
 
-        let admin = Address::generate(&env);
         let attester = Address::generate(&env);
-        attester_registry_client.initialize(&admin);
-        client.initialize(&admin, &attester_registry_id);
         attester_registry_client.add_attester(&attester);
 
         let record_hash = BytesN::from_array(&env, &bytes);
         let result = client.try_attest(&attester, &record_hash);
         prop_assert!(result.is_ok());
-        prop_assert!(client.get_attestation(&record_hash).is_some());
-    }
-
-    /// Calling `attest` before `initialize` must fail cleanly with
-    /// `Error::NotInitialized` for any `record_hash`, never panic.
-    #[test]
-    fn attest_before_initialize_never_panics(bytes in proptest::array::uniform32(any::<u8>())) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(AttestationRegistry, ());
-        let client = AttestationRegistryClient::new(&env, &contract_id);
-        let attester = Address::generate(&env);
-        let record_hash = BytesN::from_array(&env, &bytes);
-
-        let result = client.try_attest(&attester, &record_hash);
-        prop_assert_eq!(result, Err(Ok(Error::NotInitialized)));
+        prop_assert!(!client.get_attestation(&record_hash).is_empty());
     }
 
     /// Re-attesting the same `record_hash` with arbitrary byte content,
@@ -64,14 +50,14 @@ proptest! {
         let env = Env::default();
         env.mock_all_auths();
 
-        let attester_registry_id = env.register(AttesterRegistry, ());
-        let attester_registry_client = AttesterRegistryClient::new(&env, &attester_registry_id);
-        let contract_id = env.register(AttestationRegistry, ());
-        let client = AttestationRegistryClient::new(&env, &contract_id);
-
         let admin = Address::generate(&env);
-        attester_registry_client.initialize(&admin);
-        client.initialize(&admin, &attester_registry_id);
+        let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
+        let attester_registry_client = AttesterRegistryClient::new(&env, &attester_registry_id);
+        let contract_id = env.register(
+            AttestationRegistry,
+            (admin, attester_registry_id.clone()),
+        );
+        let client = AttestationRegistryClient::new(&env, &contract_id);
 
         let record_hash = BytesN::from_array(&env, &bytes);
         let mut last_attester = None;
@@ -85,10 +71,7 @@ proptest! {
 
         if let Some(expected) = last_attester {
             let stored = client.get_attestation(&record_hash);
-            prop_assert!(stored.is_some());
-            if let Some(attestation) = stored {
-                prop_assert_eq!(attestation.attester, expected);
-            }
+            prop_assert!(stored.iter().any(|attestation| attestation.attester == expected));
         }
     }
 }
