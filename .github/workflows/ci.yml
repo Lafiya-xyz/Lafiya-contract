@@ -82,3 +82,32 @@ jobs:
       - run: cargo test --workspace --locked fuzz_test -- --nocapture
         env:
           PROPTEST_CASES: 256
+
+  lrc1-cross-language:
+    name: LRC-1 cross-language determinism (Rust + TypeScript + Python + random)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      # ── Rust ──────────────────────────────────────────────────────────────
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Rust – LRC-1 vector tests
+        run: cargo test -p lafiya-commitment --locked
+
+      # ── TypeScript ────────────────────────────────────────────────────────
+      - uses: actions/setup-node@v4
+        with:
+          # Node 22+ supports --experimental-strip-types natively (no build step).
+          node-version: "22"
+      - name: TypeScript – LRC-1 vector tests
+        run: node --experimental-strip-types crates/lafiya-commitment/reference-ts/lrc1.test.ts
+
+      # ── Python ────────────────────────────────────────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Python – LRC-1 vector tests + 10k random cross-check
+        run: |
+          python crates/lafiya-commitment/reference-py/lrc1_test.py \
+            --random-count 10000

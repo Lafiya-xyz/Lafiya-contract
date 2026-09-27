@@ -38,6 +38,9 @@
 
 use sha2::{Digest, Sha256};
 
+#[cfg(feature = "lrc2")]
+pub mod lrc2;
+
 /// Domain-separation tag mixed into every LRC-1 commitment. Distinguishes a
 /// Lafiya record commitment from a hash produced for an unrelated purpose
 /// (e.g. a different protocol reusing SHA-256 over similarly shaped bytes).

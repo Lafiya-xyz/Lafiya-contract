@@ -1,0 +1,15 @@
+[package]
+name = "lafiya-qr"
+version = "0.1.0"
+edition = "2021"
+description = "Lafiya QR payload v1 encoder/decoder — compact, versioned, network-scoped card reference"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[dependencies]
+sha2 = "0.10"
+
+[dev-dependencies]
+hex = "0.4"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

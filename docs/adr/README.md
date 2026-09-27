@@ -43,3 +43,5 @@ Terms used throughout these ADRs — *attester*, *CHW*, *record hash* / *record 
 | [ADR-0009](0009-treasury-asset-custody-model.md) | Stellar asset, treasury, and custody model for the USDC incentive layer | Proposed |
 | [ADR-0010](0010-release-manifest-and-compatibility.md) | Versioned release manifest for contracts, bindings, events, and deployments | Proposed |
 | [ADR-0011](0011-rpc-provider-failover-and-transaction-recovery.md) | RPC provider failover and transaction-recovery strategy | Proposed |
+| [ADR-0012](0012-lrc2-selective-disclosure.md) | LRC-2 — per-field Merkle commitments for selective disclosure | Proposed |
+| [ADR-0014](0014-offline-attestation-receipts.md) | Offline-verifiable attestation receipts for responders without connectivity | Proposed |

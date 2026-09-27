@@ -8,6 +8,7 @@ members = [
     "crates/lafiya-cli",
     "crates/lafiya-commitment",
     "crates/lafiya-rpc-resilience",
+    "crates/lafiya-qr",
 ]
 
 [workspace.package]
