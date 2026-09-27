@@ -18,6 +18,7 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 attestation-registry = { path = "../attestation-registry", features = ["testutils"] }
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 ed25519-dalek = "3.0.0"
+p256 = "0.13.2"
 sha2 = "0.10.9"
 proptest = "1"
 

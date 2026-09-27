@@ -35,14 +35,44 @@ enum DataKey {
     SignerDetails(BytesN<32>),
     /// The current weighted and role-based quorum policy.
     Policy,
+    /// Membership marker for Ed25519 and secp256r1 signers.
+    TypedSigner(SignerKey),
+    /// Weighted and role configuration for a typed signer key.
+    TypedSignerDetails(SignerKey),
+    /// Ordered typed signer keys used when replacing the set.
+    TypedSignerSet,
+}
+
+/// Public key type used by an authorized signer.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum SignerKey {
+    /// Ed25519 public key.
+    Ed25519(BytesN<32>),
+    /// Uncompressed SEC-1 secp256r1 public key.
+    Secp256r1(BytesN<65>),
+}
+
+impl SignerKey {
+    fn is_before(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Ed25519(left), Self::Ed25519(right)) => left.to_array() < right.to_array(),
+            (Self::Ed25519(_), Self::Secp256r1(_)) => true,
+            (Self::Secp256r1(_), Self::Ed25519(_)) => false,
+            (Self::Secp256r1(left), Self::Secp256r1(right)) => left.to_array() < right.to_array(),
+        }
+    }
 }
 
 /// A configured signer and the voting weight/role assigned to that signer.
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignerConfig {
-    pub public_key: BytesN<32>,
+    /// Ed25519 or uncompressed SEC-1 secp256r1 public key.
+    pub public_key: SignerKey,
+    /// Voting weight contributed toward the weighted quorum.
     pub weight: u32,
+    /// Optional role used to satisfy one or more role minimums.
     pub role: Option<soroban_sdk::Symbol>,
 }
 
@@ -50,7 +80,9 @@ pub struct SignerConfig {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RoleRequirement {
+    /// The role required in the approving signer set.
     pub role: soroban_sdk::Symbol,
+    /// Minimum number of approving signers that must have this role.
     pub minimum: u32,
 }
 
@@ -58,9 +90,13 @@ pub struct RoleRequirement {
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SignerPolicy {
+    /// Configured Ed25519 and secp256r1 signers.
     pub signers: Vec<SignerConfig>,
+    /// Minimum sum of signer weights among approvals.
     pub weight_threshold: u32,
+    /// Minimum number of distinct signer approvals.
     pub minimum_signers: u32,
+    /// Additional role-specific approval minimums.
     pub role_requirements: Vec<RoleRequirement>,
 }
 
@@ -69,8 +105,8 @@ pub struct SignerPolicy {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct Signature {
     /// The public key of the signer who created this signature.
-    pub public_key: BytesN<32>,
-    /// The ed25519 signature bytes.
+    pub public_key: SignerKey,
+    /// The 64-byte signature; P-256 uses low-S r || s over the authorization hash.
     pub signature: BytesN<64>,
 }
 
@@ -85,7 +121,7 @@ pub enum Error {
     DuplicateSigner = 2,
     /// The supplied signature count is below the configured threshold.
     NotEnoughSigners = 3,
-    /// Signatures are not strictly ordered by ascending public key.
+    /// Signatures are not strictly ordered by key type and public-key bytes.
     BadSignatureOrder = 4,
     /// A signature corresponds to a public key that is not a configured signer.
     UnknownSigner = 5,
@@ -129,14 +165,18 @@ impl MultisigAccount {
                 panic_with_error!(&env, Error::DuplicateSigner);
             }
             env.storage().instance().set(&key, &());
+            let public_key = SignerKey::Ed25519(signer.clone());
             let config = SignerConfig {
-                public_key: signer.clone(),
+                public_key: public_key.clone(),
                 weight: 1,
                 role: None,
             };
             env.storage()
                 .instance()
-                .set(&DataKey::SignerDetails(signer), &config);
+                .set(&DataKey::TypedSigner(public_key.clone()), &());
+            env.storage()
+                .instance()
+                .set(&DataKey::TypedSignerDetails(public_key.clone()), &config);
             signer_configs.push_back(config);
         }
 
@@ -156,14 +196,31 @@ impl MultisigAccount {
                 role_requirements: Vec::new(&env),
             },
         );
+        let mut typed_signers = Vec::new(&env);
+        for signer in signers.iter() {
+            typed_signers.push_back(SignerKey::Ed25519(signer));
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::TypedSignerSet, &typed_signers);
     }
 
     /// Return the current ordered signer set.
-    pub fn get_signers(env: Env) -> Result<Vec<BytesN<32>>, Error> {
-        env.storage()
+    pub fn get_signers(env: Env) -> Result<Vec<SignerKey>, Error> {
+        if let Some(signers) = env.storage().instance().get(&DataKey::TypedSignerSet) {
+            return Ok(signers);
+        }
+
+        let legacy_signers: Vec<BytesN<32>> = env
+            .storage()
             .instance()
             .get(&DataKey::SignerSet)
-            .ok_or(Error::NotInitialized)
+            .ok_or(Error::NotInitialized)?;
+        let mut signers = Vec::new(&env);
+        for signer in legacy_signers.iter() {
+            signers.push_back(SignerKey::Ed25519(signer));
+        }
+        Ok(signers)
     }
 
     /// Return the minimum number of signer approvals required.
@@ -176,10 +233,7 @@ impl MultisigAccount {
 
     /// Return the current weighted and role-based signer policy.
     pub fn get_policy(env: Env) -> Result<SignerPolicy, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Policy)
-            .ok_or(Error::NotInitialized)
+        Self::policy(&env)
     }
 
     /// Replace the signer set with equal-weight signers and no role constraints.
@@ -189,7 +243,7 @@ impl MultisigAccount {
         let mut configs = Vec::new(&env);
         for public_key in signers.iter() {
             configs.push_back(SignerConfig {
-                public_key,
+                public_key: SignerKey::Ed25519(public_key),
                 weight: 1,
                 role: None,
             });
@@ -218,29 +272,59 @@ impl MultisigAccount {
             &role_requirements,
         )?;
 
-        let old_signers: Vec<BytesN<32>> = env
+        let old_signers = match env
             .storage()
             .instance()
-            .get(&DataKey::SignerSet)
-            .ok_or(Error::NotInitialized)?;
+            .get::<_, Vec<SignerKey>>(&DataKey::TypedSignerSet)
+        {
+            Some(signers) => signers,
+            None => {
+                let legacy_signers: Vec<BytesN<32>> = env
+                    .storage()
+                    .instance()
+                    .get(&DataKey::SignerSet)
+                    .ok_or(Error::NotInitialized)?;
+                let mut signers = Vec::new(&env);
+                for signer in legacy_signers.iter() {
+                    signers.push_back(SignerKey::Ed25519(signer));
+                }
+                signers
+            }
+        };
 
+        let mut legacy_signers = Vec::new(&env);
+        let mut typed_signers = Vec::new(&env);
         for signer in old_signers.iter() {
             env.storage()
                 .instance()
-                .remove(&DataKey::Signer(signer.clone()));
+                .remove(&DataKey::TypedSigner(signer.clone()));
             env.storage()
                 .instance()
-                .remove(&DataKey::SignerDetails(signer));
+                .remove(&DataKey::TypedSignerDetails(signer.clone()));
+            if let SignerKey::Ed25519(public_key) = signer {
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::Signer(public_key.clone()));
+                env.storage()
+                    .instance()
+                    .remove(&DataKey::SignerDetails(public_key.clone()));
+            }
         }
-        let mut public_keys = Vec::new(&env);
         for signer in signers.iter() {
             env.storage()
                 .instance()
-                .set(&DataKey::Signer(signer.public_key.clone()), &());
-            env.storage()
-                .instance()
-                .set(&DataKey::SignerDetails(signer.public_key.clone()), &signer);
-            public_keys.push_back(signer.public_key);
+                .set(&DataKey::TypedSigner(signer.public_key.clone()), &());
+            env.storage().instance().set(
+                &DataKey::TypedSignerDetails(signer.public_key.clone()),
+                &signer,
+            );
+            if let SignerKey::Ed25519(public_key) = &signer.public_key {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Signer(public_key.clone()), &());
+                legacy_signers.push_back(public_key.clone());
+            }
+            typed_signers.push_back(signer.public_key.clone());
         }
 
         env.storage()
@@ -251,7 +335,10 @@ impl MultisigAccount {
             .set(&DataKey::SignerCount, &signers.len());
         env.storage()
             .instance()
-            .set(&DataKey::SignerSet, &public_keys);
+            .set(&DataKey::SignerSet, &legacy_signers);
+        env.storage()
+            .instance()
+            .set(&DataKey::TypedSignerSet, &typed_signers);
         env.storage().instance().set(
             &DataKey::Policy,
             &SignerPolicy {
@@ -282,6 +369,11 @@ impl MultisigAccount {
         for (index, signer) in signers.iter().enumerate() {
             if signer.weight == 0 {
                 return Err(Error::InvalidPolicy);
+            }
+            if let SignerKey::Secp256r1(public_key) = &signer.public_key {
+                if public_key.to_array()[0] != 4 {
+                    return Err(Error::InvalidPolicy);
+                }
             }
             total_weight = total_weight
                 .checked_add(signer.weight)
@@ -320,6 +412,37 @@ impl MultisigAccount {
         }
         Ok(())
     }
+
+    fn policy(env: &Env) -> Result<SignerPolicy, Error> {
+        if let Some(policy) = env.storage().instance().get(&DataKey::Policy) {
+            return Ok(policy);
+        }
+
+        let minimum_signers: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::Threshold)
+            .ok_or(Error::NotInitialized)?;
+        let legacy_signers: Vec<BytesN<32>> = env
+            .storage()
+            .instance()
+            .get(&DataKey::SignerSet)
+            .ok_or(Error::NotInitialized)?;
+        let mut signers = Vec::new(env);
+        for public_key in legacy_signers.iter() {
+            signers.push_back(SignerConfig {
+                public_key: SignerKey::Ed25519(public_key),
+                weight: 1,
+                role: None,
+            });
+        }
+        Ok(SignerPolicy {
+            signers,
+            weight_threshold: minimum_signers,
+            minimum_signers,
+            role_requirements: Vec::new(env),
+        })
+    }
 }
 
 #[contractimpl(contracttrait)]
@@ -330,11 +453,11 @@ impl CustomAccountInterface for MultisigAccount {
     /// Verify the authorization of a transaction using the configured quorum policy.
     ///
     /// Signatures must meet the minimum signer count and weight threshold, satisfy every role
-    /// minimum, and be ordered by ascending public key.
+    /// minimum, and be ordered by key type and ascending key bytes.
     ///
     /// # Arguments
     /// * `signature_payload` — A 32-byte hash of the transaction to authorize.
-    /// * `signatures` — A vector of ed25519 signatures, each with a public key and signature bytes, ordered by ascending public key.
+    /// * `signatures` — Ed25519 or secp256r1 signatures, ordered by key type and public-key bytes.
     /// * `_auth_contexts` — Intentionally unused; see [ADR-0007](../adr/0007-unscoped-multisig-authorization.md) for why this account does not scope authorization to specific contracts or functions during pre-alpha.
     fn __check_auth(
         env: Env,
@@ -342,11 +465,7 @@ impl CustomAccountInterface for MultisigAccount {
         signatures: Self::Signature,
         _auth_contexts: Vec<Context>,
     ) -> Result<(), Error> {
-        let policy: SignerPolicy = env
-            .storage()
-            .instance()
-            .get(&DataKey::Policy)
-            .ok_or(Error::NotInitialized)?;
+        let policy = Self::policy(&env)?;
 
         if signatures.len() < policy.minimum_signers {
             return Err(Error::NotEnoughSigners);
@@ -368,34 +487,58 @@ impl CustomAccountInterface for MultisigAccount {
             let signature = signatures.get_unchecked(index);
             if index > 0 {
                 let previous = signatures.get_unchecked(index - 1);
-                if previous.public_key >= signature.public_key {
+                if !previous.public_key.is_before(&signature.public_key) {
                     return Err(Error::BadSignatureOrder);
                 }
             }
 
-            if !env
+            let is_typed_signer = env
                 .storage()
                 .instance()
-                .has(&DataKey::Signer(signature.public_key.clone()))
-            {
+                .has(&DataKey::TypedSigner(signature.public_key.clone()));
+            let is_legacy_ed25519_signer = match &signature.public_key {
+                SignerKey::Ed25519(public_key) => env
+                    .storage()
+                    .instance()
+                    .has(&DataKey::Signer(public_key.clone())),
+                SignerKey::Secp256r1(_) => false,
+            };
+            if !is_typed_signer && !is_legacy_ed25519_signer {
                 return Err(Error::UnknownSigner);
             }
 
-            let signer_config: SignerConfig = env
+            let signer_config: SignerConfig = match env
                 .storage()
                 .instance()
-                .get(&DataKey::SignerDetails(signature.public_key.clone()))
-                .ok_or(Error::UnknownSigner)?;
+                .get(&DataKey::TypedSignerDetails(signature.public_key.clone()))
+            {
+                Some(config) => config,
+                None => match &signature.public_key {
+                    SignerKey::Ed25519(public_key) if is_legacy_ed25519_signer => SignerConfig {
+                        public_key: SignerKey::Ed25519(public_key.clone()),
+                        weight: 1,
+                        role: None,
+                    },
+                    _ => return Err(Error::UnknownSigner),
+                },
+            };
             signed_weight = signed_weight
                 .checked_add(signer_config.weight)
                 .ok_or(Error::InvalidPolicy)?;
             signer_configs.push_back(signer_config);
 
-            env.crypto().ed25519_verify(
-                &signature.public_key,
-                &signature_payload.clone().into(),
-                &signature.signature,
-            );
+            match &signature.public_key {
+                SignerKey::Ed25519(public_key) => env.crypto().ed25519_verify(
+                    public_key,
+                    &signature_payload.clone().into(),
+                    &signature.signature,
+                ),
+                SignerKey::Secp256r1(public_key) => env.crypto().secp256r1_verify(
+                    public_key,
+                    &signature_payload,
+                    &signature.signature,
+                ),
+            }
         }
 
         if signed_weight < policy.weight_threshold {

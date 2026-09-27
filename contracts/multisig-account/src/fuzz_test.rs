@@ -99,7 +99,10 @@ proptest! {
         let mut signatures = Vec::new(&env);
         for key in ordered {
             signatures.push_back(Signature {
-                public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+                public_key: SignerKey::Ed25519(BytesN::from_array(
+                    &env,
+                    &key.verifying_key().to_bytes(),
+                )),
                 signature: BytesN::from_array(&env, &key.sign(&payload_bytes).to_bytes()),
             });
         }
@@ -145,7 +148,10 @@ proptest! {
             let mut sigs = Vec::new(&env);
             for key in ordered {
                 sigs.push_back(Signature {
-                    public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+                    public_key: SignerKey::Ed25519(BytesN::from_array(
+                        &env,
+                        &key.verifying_key().to_bytes(),
+                    )),
                     signature: BytesN::from_array(&env, &key.sign(&payload_bytes).to_bytes()),
                 });
             }
@@ -197,7 +203,10 @@ proptest! {
         let mut signatures = Vec::new(&env);
         for key in ordered.iter().rev() {
             signatures.push_back(Signature {
-                public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+                public_key: SignerKey::Ed25519(BytesN::from_array(
+                    &env,
+                    &key.verifying_key().to_bytes(),
+                )),
                 signature: BytesN::from_array(&env, &key.sign(&payload_bytes).to_bytes()),
             });
         }

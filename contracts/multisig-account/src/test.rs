@@ -2,6 +2,9 @@ extern crate std;
 
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
+use p256::ecdsa::{
+    signature::hazmat::PrehashSigner, Signature as P256Signature, SigningKey as P256SigningKey,
+};
 use soroban_sdk::{auth::Context, BytesN, Env, IntoVal, Vec};
 
 pub(crate) fn signing_keys() -> std::vec::Vec<SigningKey> {
@@ -45,7 +48,10 @@ pub(crate) fn signatures_for(env: &Env, keys: &[SigningKey], payload: &[u8; 32])
     let mut signatures = Vec::new(env);
     for key in ordered {
         signatures.push_back(Signature {
-            public_key: BytesN::from_array(env, &key.verifying_key().to_bytes()),
+            public_key: SignerKey::Ed25519(BytesN::from_array(
+                env,
+                &key.verifying_key().to_bytes(),
+            )),
             signature: BytesN::from_array(env, &key.sign(payload).to_bytes()),
         });
     }
@@ -64,6 +70,18 @@ fn check_auth(
         signatures.into_val(env),
         &Vec::<Context>::new(env),
     )
+}
+
+fn p256_signature(env: &Env, key: &P256SigningKey, payload: &[u8; 32]) -> Signature {
+    let public_key = key.verifying_key().to_encoded_point(false);
+    let public_key_bytes: [u8; 65] = public_key.as_bytes().try_into().unwrap();
+    let signature: P256Signature = key.sign_prehash(payload).unwrap();
+    let signature = signature.normalize_s().unwrap_or(signature);
+    let signature_bytes: [u8; 64] = signature.to_bytes().into();
+    Signature {
+        public_key: SignerKey::Secp256r1(BytesN::from_array(env, &public_key_bytes)),
+        signature: BytesN::from_array(env, &signature_bytes),
+    }
 }
 
 #[test]
@@ -166,11 +184,17 @@ fn same_signer_appearing_twice_in_signatures_is_rejected() {
     let signer = &keys[0];
 
     let first_signature = Signature {
-        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        public_key: SignerKey::Ed25519(BytesN::from_array(
+            &env,
+            &signer.verifying_key().to_bytes(),
+        )),
         signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
     };
     let second_signature = Signature {
-        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        public_key: SignerKey::Ed25519(BytesN::from_array(
+            &env,
+            &signer.verifying_key().to_bytes(),
+        )),
         signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
     };
     assert_eq!(first_signature.signature, second_signature.signature);
@@ -311,7 +335,11 @@ fn signer_set_and_threshold_can_be_rotated() {
     env.mock_all_auths();
     client.set_signers(&replacement, &2);
 
-    assert_eq!(client.get_signers(), replacement);
+    let mut expected_signers = Vec::new(&env);
+    for signer in replacement.iter() {
+        expected_signers.push_back(SignerKey::Ed25519(signer));
+    }
+    assert_eq!(client.get_signers(), expected_signers);
     assert_eq!(client.get_threshold(), 2);
 
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -360,7 +388,10 @@ fn weighted_quorum_requires_minimum_signers_and_weight() {
     let mut signers = Vec::new(&env);
     for (index, key) in keys.iter().enumerate() {
         signers.push_back(SignerConfig {
-            public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+            public_key: SignerKey::Ed25519(BytesN::from_array(
+                &env,
+                &key.verifying_key().to_bytes(),
+            )),
             weight: if index == 0 { 2 } else { 1 },
             role: None,
         });
@@ -399,7 +430,10 @@ fn role_requirements_are_enforced_in_addition_to_quorum() {
             _ => None,
         };
         signers.push_back(SignerConfig {
-            public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+            public_key: SignerKey::Ed25519(BytesN::from_array(
+                &env,
+                &key.verifying_key().to_bytes(),
+            )),
             weight: 1,
             role,
         });
@@ -439,6 +473,117 @@ fn role_requirements_are_enforced_in_addition_to_quorum() {
 }
 
 #[test]
+fn p256_passkey_signer_can_authorize() {
+    let env = Env::default();
+    let ed_keys = signing_keys();
+    let account = register_account(&env, &ed_keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let passkey = P256SigningKey::from_slice(&[9u8; 32]).unwrap();
+    let encoded_key = passkey.verifying_key().to_encoded_point(false);
+    let public_key: [u8; 65] = encoded_key.as_bytes().try_into().unwrap();
+    let signers = Vec::from_array(
+        &env,
+        [SignerConfig {
+            public_key: SignerKey::Secp256r1(BytesN::from_array(&env, &public_key)),
+            weight: 1,
+            role: None,
+        }],
+    );
+
+    env.mock_all_auths();
+    client.set_policy(&signers, &1, &1, &Vec::new(&env));
+
+    let payload_bytes = [7u8; 32];
+    let payload = BytesN::from_array(&env, &payload_bytes);
+    let signature = p256_signature(&env, &passkey, &payload_bytes);
+    assert_eq!(
+        check_auth(
+            &env,
+            &account,
+            &payload,
+            Vec::from_array(&env, [signature.clone()])
+        ),
+        Ok(())
+    );
+
+    let wrong_payload = BytesN::from_array(&env, &[8u8; 32]);
+    assert!(check_auth(
+        &env,
+        &account,
+        &wrong_payload,
+        Vec::from_array(&env, [signature])
+    )
+    .is_err());
+}
+
+#[test]
+fn mixed_ed25519_and_p256_signers_use_canonical_order() {
+    let env = Env::default();
+    let ed_keys = signing_keys();
+    let account = register_account(&env, &ed_keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let passkey = P256SigningKey::from_slice(&[10u8; 32]).unwrap();
+    let encoded_key = passkey.verifying_key().to_encoded_point(false);
+    let p256_public_key: [u8; 65] = encoded_key.as_bytes().try_into().unwrap();
+    let ed_public_key = BytesN::from_array(&env, &ed_keys[0].verifying_key().to_bytes());
+    let signers = Vec::from_array(
+        &env,
+        [
+            SignerConfig {
+                public_key: SignerKey::Ed25519(ed_public_key.clone()),
+                weight: 1,
+                role: None,
+            },
+            SignerConfig {
+                public_key: SignerKey::Secp256r1(BytesN::from_array(&env, &p256_public_key)),
+                weight: 1,
+                role: None,
+            },
+        ],
+    );
+
+    env.mock_all_auths();
+    client.set_policy(&signers, &2, &2, &Vec::new(&env));
+
+    let payload_bytes = [11u8; 32];
+    let payload = BytesN::from_array(&env, &payload_bytes);
+    let ed_signature = signatures_for(&env, &ed_keys[..1], &payload_bytes).get_unchecked(0);
+    let p256_signature = p256_signature(&env, &passkey, &payload_bytes);
+    let ordered = Vec::from_array(&env, [ed_signature.clone(), p256_signature.clone()]);
+    assert_eq!(check_auth(&env, &account, &payload, ordered), Ok(()));
+
+    let reversed = Vec::from_array(&env, [p256_signature, ed_signature]);
+    assert_eq!(
+        check_auth(&env, &account, &payload, reversed),
+        Err(Ok(Error::BadSignatureOrder))
+    );
+}
+
+#[test]
+fn malformed_p256_sec1_key_is_rejected_in_policy() {
+    let env = Env::default();
+    let ed_keys = signing_keys();
+    let account = register_account(&env, &ed_keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let invalid_signer = Vec::from_array(
+        &env,
+        [SignerConfig {
+            public_key: SignerKey::Secp256r1(BytesN::from_array(&env, &[0u8; 65])),
+            weight: 1,
+            role: None,
+        }],
+    );
+    let original_policy = client.get_policy();
+
+    env.mock_all_auths();
+    assert_eq!(
+        client.try_set_policy(&invalid_signer, &1, &1, &Vec::new(&env)),
+        Err(Ok(Error::InvalidPolicy))
+    );
+    assert_eq!(client.get_policy(), original_policy);
+}
+
+#[test]
 fn invalid_policy_does_not_replace_current_signers() {
     let env = Env::default();
     let keys = signing_keys();
@@ -448,7 +593,10 @@ fn invalid_policy_does_not_replace_current_signers() {
     let mut signers = Vec::new(&env);
     for key in keys.iter() {
         signers.push_back(SignerConfig {
-            public_key: BytesN::from_array(&env, &key.verifying_key().to_bytes()),
+            public_key: SignerKey::Ed25519(BytesN::from_array(
+                &env,
+                &key.verifying_key().to_bytes(),
+            )),
             weight: 1,
             role: None,
         });
