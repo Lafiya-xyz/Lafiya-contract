@@ -6,10 +6,23 @@
 **Scope:** upgrading existing deployed instances (testnet or mainnet). Initial
 deployment is out of scope for this runbook.
 
-**Companion tooling:** [`scripts/upgrade.sh`](../../scripts/upgrade.sh) automates the
-mechanical steps described here (build → size check → hash → upload → `upgrade()` →
-optional `migrate()` → verify). Every step the script performs is also spelled out
-manually below, so the procedure can be followed — and audited — without it.
+**Companion tooling:** `lafiya-cli upgrade` (issue #402) automates the mechanical
+steps described here (build → size check → hash → upload → `upgrade()` → optional
+`migrate()` → verify). Every step the CLI performs is also spelled out manually below.
+
+> **Note:** `scripts/upgrade.sh` is now a thin deprecation wrapper that calls
+> `lafiya-cli upgrade`. Use the CLI directly:
+>
+> ```bash
+> lafiya-cli upgrade \
+>   --contract attester-registry \
+>   --id <CONTRACT_ID> \
+>   --source <ADMIN_IDENTITY> \
+>   --network testnet \
+>   --expected-schema-version 1 \
+>   [--run-migrate] \
+>   [--dry-run]
+> ```
 
 > ⚠️ An upgrade is a security-critical operation: whoever holds the admin key can
 > repoint the contract at **any** wasm. Never sign an `upgrade` call for a wasm hash
@@ -153,10 +166,10 @@ Failure modes that must stop the procedure:
 
 ## 4. The `upgrade()` call sequence
 
-Mechanical path — [`scripts/upgrade.sh`](../../scripts/upgrade.sh):
+Mechanical path — `lafiya-cli upgrade` (issue #402):
 
 ```bash
-scripts/upgrade.sh \
+lafiya-cli upgrade \
   --contract attester-registry \
   --id <CONTRACT_ID> \
   --source <ADMIN_IDENTITY> \

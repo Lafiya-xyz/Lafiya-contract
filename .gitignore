@@ -1,9 +1,70 @@
+# ── Rust build artifacts ──────────────────────────────────────────────────
 /target
 **/*.rs.bk
-.DS_Store
+
+# ── Wasm outputs (built artifacts, not source) ────────────────────────────
 *.wasm
-!contracts/**/target
+
+# ── IDE and editor files ──────────────────────────────────────────────────
+.DS_Store
+.idea/
+.vscode/settings.json
+*.swp
+*.swo
+*~
+
+# ── Environment / secrets ─────────────────────────────────────────────────
 .env
-.soroban
+.env.*
+*.pem
+*.key
+*.p12
+*.pfx
+# Stellar CLI local state (identity keys, network cache)
+.soroban/
+.stellar/
+
+# ── Test / snapshot artifacts ─────────────────────────────────────────────
+# Soroban SDK test snapshots — generated, not reviewed
 test_snapshots/
+**/.soroban/
+# Conformance snapshots are intentionally committed; individual run logs are not
+scripts/conformance/*.log
+scripts/conformance/.cache/
+
+# ── Python ────────────────────────────────────────────────────────────────
 __pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+.eggs/
+
+# ── Node / TypeScript bindings build output ───────────────────────────────
+node_modules/
+bindings/*/node_modules/
+bindings/*/dist/
+bindings/*/.pnpm-store/
+# pnpm virtual store
+.pnpm/
+# npm / yarn lockfile side products
+.npm/
+
+# ── Generated files ───────────────────────────────────────────────────────
+# TypeScript declaration files compiled from bindings src are generated
+bindings/*/src/*.d.ts
+bindings/*/src/*.js
+
+# ── Deployment records (local artefacts, not committed policy) ────────────
+deployments/*.json
+
+# ── Temporary / log files ─────────────────────────────────────────────────
+*.log
+*.tmp
+*.bak
+/tmp/
+
+# ── OS files ──────────────────────────────────────────────────────────────
+Thumbs.db
