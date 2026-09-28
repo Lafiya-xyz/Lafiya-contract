@@ -1,4 +1,6 @@
-.PHONY: build test fmt fmt-check clippy wasm wasm-contracts check clean config-check config-list deploy bench conformance conformance-update
+.PHONY: build test fmt fmt-check clippy wasm wasm-contracts check clean \
+        config-check config-list deploy upgrade smoke-test \
+        bench conformance conformance-update preflight
 
 build:
 	cargo build --workspace
@@ -52,12 +54,43 @@ bench:
 
 NETWORK ?= testnet
 
+# ---------------------------------------------------------------------------
+# CLI-based operational targets (issues #401, #402)
+# ---------------------------------------------------------------------------
+
+# Run preflight checks against the selected network without any mutating operation.
+# Usage: make preflight [NETWORK=testnet]
+preflight:
+	@echo "==> Running preflight checks for network: $(NETWORK)"
+	lafiya-cli --network $(NETWORK) config show
+
+# Show config for the selected network.
+# Usage: make config-check [NETWORK=testnet]
 config-check:
-	./scripts/admin.sh --network $(NETWORK) config show
+	lafiya-cli --network $(NETWORK) config show
 	cargo test -p lafiya-config
 
+# List all configured networks.
 config-list:
-	./scripts/admin.sh --network $(NETWORK) config list
+	lafiya-cli config list
+
+# Deploy contracts to the selected network via the Rust CLI.
+# Usage: make deploy [NETWORK=testnet] [DRY_RUN=--dry-run] [SOURCE=--source alice]
+DRY_RUN ?=
+SOURCE  ?=
+ADMIN   ?=
 
 deploy:
-	./scripts/deploy.sh --network $(NETWORK)
+	lafiya-cli --network $(NETWORK) deploy $(DRY_RUN) $(SOURCE) $(ADMIN)
+
+# Upgrade a contract. Requires CONTRACT=attester-registry|attestation-registry.
+# Usage: make upgrade CONTRACT=attester-registry [NETWORK=testnet] [SOURCE=--source alice]
+CONTRACT ?= attester-registry
+
+upgrade:
+	lafiya-cli --network $(NETWORK) upgrade --contract $(CONTRACT) $(SOURCE) $(DRY_RUN)
+
+# Run smoke tests against a deployed instance.
+# Usage: make smoke-test [NETWORK=testnet]
+smoke-test:
+	lafiya-cli --network $(NETWORK) smoke-test $(DRY_RUN)

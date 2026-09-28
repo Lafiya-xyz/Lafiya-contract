@@ -3,6 +3,7 @@
 //! No secrets are ever stored in the config file — only public RPC URLs,
 //! passphrases, and contract IDs.
 
+pub mod preflight;
 pub mod validation;
 
 use serde::Deserialize;
