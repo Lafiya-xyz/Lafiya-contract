@@ -66,6 +66,19 @@ pub struct AttesterStatus {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+/// Persistent storage TTL policy for per-attester entries:
+/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
+/// - Extend to: 365 days (17280 * 365 = 6307200 ledgers)
+///
+/// Persistent entries (Attester, Suspended) are bumped on every write and
+/// on `add_attester`/`suspend_attester`/`reinstate_attester` so that an
+/// attester added once and never touched again does not silently expire.
+/// The longer "extend to" window (1 year vs. 90 days for instance storage)
+/// reflects that attester records are long-lived by design: a CHW should
+/// remain allowlisted for at least a full year without any admin action.
+const PERSISTENT_BUMP_AMOUNT: u32 = 6_307_200;
+const PERSISTENT_LIFETIME_THRESHOLD: u32 = 518_400;
+
 /// Default soft cap on the number of allowlisted attesters, used until an
 /// admin raises it via `set_max_attesters`. Sized generously above any
 /// realistic CHW allowlist so it never trips in normal operation; it exists
@@ -333,6 +346,11 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Attester(attester.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -372,6 +390,11 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Attester(attester.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -408,6 +431,11 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Attester(attester.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -447,6 +475,11 @@ impl AttesterRegistry {
                     region: None,
                 };
                 env.storage().persistent().set(&key, &info);
+                env.storage().persistent().extend_ttl(
+                    &key,
+                    PERSISTENT_LIFETIME_THRESHOLD,
+                    PERSISTENT_BUMP_AMOUNT,
+                );
                 count += 1;
                 AttesterAdded {
                     attester: attester.clone(),
@@ -582,6 +615,23 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Suspended(attester.clone()), &true);
+        env.storage().persistent().extend_ttl(
+            &DataKey::Suspended(attester.clone()),
+            PERSISTENT_LIFETIME_THRESHOLD,
+            PERSISTENT_BUMP_AMOUNT,
+        );
+        // Also bump the Attester entry itself to keep both entries in sync.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester.clone()))
+        {
+            env.storage().persistent().extend_ttl(
+                &DataKey::Attester(attester.clone()),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
         AttesterSuspended { attester }.publish(&env);
         env.storage()
             .instance()
@@ -596,6 +646,19 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::Suspended(attester.clone()));
+        // Bump the Attester entry TTL on reinstate so a recently-unsuspended
+        // attester isn't immediately at risk of expiry.
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester.clone()))
+        {
+            env.storage().persistent().extend_ttl(
+                &DataKey::Attester(attester.clone()),
+                PERSISTENT_LIFETIME_THRESHOLD,
+                PERSISTENT_BUMP_AMOUNT,
+            );
+        }
         AttesterReinstated { attester }.publish(&env);
         env.storage()
             .instance()

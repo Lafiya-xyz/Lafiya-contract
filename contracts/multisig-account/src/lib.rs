@@ -99,6 +99,26 @@ impl MultisigAccount {
             .instance()
             .set(&DataKey::SignerCount, &signers.len());
     }
+
+    /// Extend the instance storage TTL without performing any authorization.
+    ///
+    /// This is a permissionless entry point that any caller can invoke to
+    /// prevent the account's storage from expiring due to inactivity. Without
+    /// this, an admin account that only processes one transaction per month
+    /// could have its `Threshold`/`Signer*` entries evicted by Soroban's
+    /// state-archival mechanism between admin actions, permanently bricking
+    /// the account.
+    ///
+    /// This function performs no authentication and changes no state beyond
+    /// the storage TTL — it is safe to call from off-chain monitoring jobs,
+    /// cron scripts, or any signer key as a maintenance transaction.
+    ///
+    /// See: [SEC-02](../../issues/08-multisig-account-no-ttl-extension-bricking-risk.md)
+    pub fn keep_alive(env: Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
 }
 
 #[contractimpl(contracttrait)]

@@ -11,7 +11,8 @@ use thiserror::Error;
 
 pub use validation::{
     validate_account_address, validate_address, validate_contract_id, validate_network_name,
-    validate_record_hash, validate_rpc_url, validate_source_account, AddressKind, ValidationError,
+    validate_passphrase, validate_record_hash, validate_rpc_url, validate_source_account,
+    AddressKind, ValidationError,
 };
 
 #[derive(Debug, Error)]
