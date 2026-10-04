@@ -113,7 +113,8 @@ enum DataKey {
     Attestation(BytesN<32>, u64),
     /// Latest sequence number for a given record hash.
     AttestationSequence(BytesN<32>),
-    /// Count of attestations for a given record hash (for bounded history).
+    /// Reserved legacy key. Retained at its enum position for storage
+    /// compatibility; history windows are now derived from the sequence.
     AttestationCount(BytesN<32>),
     /// The storage schema version of the contract.
     SchemaVersion,
@@ -573,6 +574,26 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Set the maximum age in seconds for which an attestation is considered
+    /// current. Requires the admin's authorization.
+    pub fn set_max_attestation_age(env: Env, max_age: u64) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::MaxAttestationAge, &max_age);
+        Ok(())
+    }
+
+    /// Return the maximum age in seconds for which an attestation is
+    /// considered current. Defaults to 365 days.
+    pub fn get_max_attestation_age(env: Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAttestationAge)
+            .unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
+    }
+
     /// Whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         env.storage()
@@ -785,10 +806,6 @@ impl AttestationRegistry {
                 .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
         }
 
-        env.storage()
-            .persistent()
-            .set(&DataKey::AttestationCount(record_hash.clone()), &new_count);
-
         // Extend TTL on the specific attestation entry just written, so it is
         // not subject to state-archival independently of the instance storage.
         env.storage().persistent().extend_ttl(
@@ -976,18 +993,8 @@ impl AttestationRegistry {
             None => return Vec::new(&env),
         };
 
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-
         let mut history = Vec::new(&env);
-        let start_sequence = if count > MAX_HISTORY {
-            sequence.saturating_sub(MAX_HISTORY - 1)
-        } else {
-            1
-        };
+        let start_sequence = Self::history_start(sequence);
 
         for seq in start_sequence..=sequence {
             if let Some(attestation) = env
@@ -1178,6 +1185,27 @@ impl AttestationRegistry {
             .instance()
             .get(&DataKey::AttesterRegistry)
             .ok_or(Error::NotInitialized)
+    }
+
+    fn max_attestation_age(env: &Env) -> u64 {
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxAttestationAge)
+            .unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
+    }
+
+    fn history_start(sequence: u64) -> u64 {
+        sequence.saturating_sub(MAX_HISTORY - 1).max(1)
+    }
+
+    fn latest_attestation(env: &Env, record_hash: BytesN<32>) -> Option<Attestation> {
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
+        env.storage()
+            .persistent()
+            .get(&DataKey::Attestation(record_hash, sequence))
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {
