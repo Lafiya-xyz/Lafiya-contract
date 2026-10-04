@@ -156,6 +156,8 @@ In the repository: [glossary](docs/glossary.md) · [ADRs](docs/adr/README.md) ·
 | `remove_attester_rate_limit(attester: Address)` | Removes an attester's override, reverting it to the global limit. Requires admin auth. |
 | `get_rate_limit_retry_after(attester: Address) -> Option<u32>` | If the attester's window is full, returns the first ledger it may attest again. |
 
+For relayer-paid submissions, see [Relayer-Sponsored Attestations](docs/relayer-sponsored-attestations.md).
+
 ### Contract upgrades
 
 `attester-registry` is upgradeable by its admin (`upgrade`/`migrate`/`get_schema_version`
