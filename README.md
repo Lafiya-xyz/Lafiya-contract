@@ -119,6 +119,8 @@ Four Soroban contracts, each in its own crate under `contracts/`.
 | `suspend_attester_with_reason(attester: Address, reason: Symbol)` | Suspends an allowlisted attester with an explicit status reason (for example `misconduct` or `license_pending`). |
 | `reinstate_attester(attester: Address)` | Reinstates a suspended attester. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterReinstated`. |
 | `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Does not evict existing attesters if lowered below the current count. |
+| `grant_role(role: Role, account: Address)` / `revoke_role(role: Role, account: Address)` | Grants or revokes a global Registrar or Guardian role. Owner-only. |
+| `pause(guardian: Address)` / `unpause()` | A Guardian can pause; only the owner can resume operation. |
 | `get_max_attesters() -> u32` | The current soft cap on the number of allowlisted attesters. |
 | `get_attester_count() -> u32` | The current number of allowlisted attesters. |
 | `pause()` | Blocks `add_attester`, `add_attester_with_info`, `remove_attester`, `suspend_attester`, and `reinstate_attester` until unpaused. Self-revocation remains available while paused. Requires admin auth. Emits `Paused`. |
@@ -138,9 +140,9 @@ In the repository: [glossary](docs/glossary.md) · [ADRs](docs/adr/README.md) ·
 | `get_attester_registry() -> Address` | Returns the configured `attester-registry` contract address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for allowlist checks. Requires admin auth. Emits `AttesterRegistryRepointed`. |
-| `pause()` | Blocks `attest` until unpaused. Requires admin auth. Emits `Paused`. |
-| `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
+| `set_attester_registry(new_registry: Address)` | Repoints the `attester-registry` contract this registry consults for regional allowlist checks. Requires owner auth and verifies the regional interface. Emits `AttesterRegistryRepointed`. |
+| `pause(guardian: Address)` | Blocks `attest` until unpaused. Requires the Guardian role. Emits `Paused`. |
+| `unpause()` | Restores normal operation after `pause`. Requires owner auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
 | `attest(attester: Address, record_hash: BytesN<32>) -> Attestation` | Requires `attester`'s auth and that `attester` is allowlisted (checked via a cross-contract call to `attester-registry::is_attester`). Stores `{ attester, timestamp }` keyed by `record_hash`, keeping a bounded history per hash. Blocked while paused (`Error::ContractPaused`). Emits `AttestationRecorded`. |
 | `is_attestation_trusted(record_hash: BytesN<32>) -> bool` | Checks the latest attestation against the attester's recorded trust-revocation cutoff while preserving the raw historical attestation. |
@@ -174,7 +176,7 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 | `__check_auth(...)` | Verifies ordered, unique signatures from configured signers whenever another contract calls `require_auth()` for this account address. |
 | `get_interface() -> InterfaceInfo` | Contract kind, interface version, enabled features, and storage/event schema versions for runtime compatibility negotiation (see [docs/releasing.md](docs/releasing.md#interface-version-and-runtime-negotiation)). Open to any caller. |
 
-`attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (just `is_attester`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
+`attestation-registry` calls `attester-registry` through a local `#[contractclient]` trait interface (`is_attester` and `is_attester_for_region`), not a direct crate dependency — depending on the whole crate would link `attester-registry`'s own contract implementation into `attestation-registry`'s wasm build too, which is both wasted size and, at least on the Soroban SDK version this repo pins, produces a linker warning from the two contracts' colliding `initialize` exports.
 
 ### `incentive-pool`
 

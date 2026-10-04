@@ -2,7 +2,7 @@
 
 extern crate std;
 
-use crate::{AttesterRegistry, AttesterRegistryClient};
+use crate::{AttesterRegistry, AttesterRegistryClient, Role};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env};
 
@@ -48,13 +48,15 @@ fn large_attester_allowlist_load() {
         (env, client, admin)
     };
     client.initialize(&admin);
+    client.grant_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Guardian, &admin);
 
     let mut sampled_attesters = std::vec::Vec::<Address>::new();
     let mut observed_checkpoints = 0;
 
     for i in 0..TOTAL_ATTESTERS {
         let attester = Address::generate(&env);
-        client.add_attester(&attester);
+        client.add_attester(&admin, &attester);
 
         let attester_count = i + 1;
         if let Some(checkpoint) = BUDGET_CHECKPOINTS

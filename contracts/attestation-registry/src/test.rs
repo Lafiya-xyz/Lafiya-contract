@@ -22,7 +22,10 @@ fn setup() -> (
 
     let admin = Address::generate(&env);
     attester_registry_client.initialize(&admin);
+    attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
     client.initialize(&admin, &attester_registry_id);
+    client.grant_role(&Role::Guardian, &admin);
+    client.grant_role(&Role::Revoker, &admin);
 
     (env, client, attester_registry_client, admin)
 }
@@ -103,7 +106,14 @@ fn get_attester_registry_before_initialize_fails() {
 fn attest_by_allowlisted_attester_succeeds() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
-    attester_registry.add_attester(&attester);
+    attester_registry.add_attester_with_info(
+        &_admin,
+        &attester,
+        &None,
+        &Some(Symbol::new(&env, "lagos")),
+        &None,
+        &None,
+    );
 
     let record_hash = BytesN::from_array(&env, &[7u8; 32]);
     let attestation = attest_with_consent(&env, &client, &attester, &record_hash);
@@ -190,8 +200,8 @@ fn re_attest_overwrites_previous_attestation() {
     let (env, client, attester_registry, _admin) = setup();
     let attester_a = Address::generate(&env);
     let attester_b = Address::generate(&env);
-    attester_registry.add_attester(&attester_a);
-    attester_registry.add_attester(&attester_b);
+    attester_registry.add_attester(&_admin, &attester_a);
+    attester_registry.add_attester(&_admin, &attester_b);
 
     let record_hash = BytesN::from_array(&env, &[3u8; 32]);
     let first = attest_with_consent(&env, &client, &attester_a, &record_hash);
@@ -213,9 +223,9 @@ fn get_attestation_history_returns_all_attestations() {
     let attester_a = Address::generate(&env);
     let attester_b = Address::generate(&env);
     let attester_c = Address::generate(&env);
-    attester_registry.add_attester(&attester_a);
-    attester_registry.add_attester(&attester_b);
-    attester_registry.add_attester(&attester_c);
+    attester_registry.add_attester(&_admin, &attester_a);
+    attester_registry.add_attester(&_admin, &attester_b);
+    attester_registry.add_attester(&_admin, &attester_c);
 
     let record_hash = BytesN::from_array(&env, &[6u8; 32]);
     let first = attest_with_consent(&env, &client, &attester_a, &record_hash);
@@ -421,7 +431,7 @@ fn patient_cannot_grant_already_expired_attestation() {
 fn attest_emits_event() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
-    attester_registry.add_attester(&attester);
+    attester_registry.add_attester(&_admin, &attester);
     let record_hash = BytesN::from_array(&env, &[4u8; 32]);
 
     let attestation = attest_with_consent(&env, &client, &attester, &record_hash);
@@ -450,7 +460,7 @@ fn attest_emits_event() {
 fn attest_without_attester_auth_fails() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
-    attester_registry.add_attester(&attester);
+    attester_registry.add_attester(&admin, &attester);
     let record_hash = BytesN::from_array(&env, &[5u8; 32]);
 
     let patient = Address::generate(&env);
@@ -618,14 +628,14 @@ fn initialize_rejects_non_contract_address() {
 
     let result = client.try_initialize(&admin, &non_contract);
     // Same `Error::InvalidRegistryWiring` variant as
-    // `initialize_rejects_unrelated_contract_without_is_attester` below —
+    // `initialize_rejects_unrelated_contract_without_regional_check` below —
     // the contract does not distinguish "not a contract at all" from "a
     // contract, but missing `is_attester`"; both are one generic wiring error.
     assert_eq!(result, Err(Ok(Error::InvalidRegistryWiring)));
 }
 
 #[test]
-fn initialize_rejects_unrelated_contract_without_is_attester() {
+fn initialize_rejects_unrelated_contract_without_regional_check() {
     let env = Env::default();
     env.mock_all_auths();
     let contract_id = env.register(AttestationRegistry, ());
@@ -634,7 +644,7 @@ fn initialize_rejects_unrelated_contract_without_is_attester() {
 
     // Use the attestation-registry contract itself as the "attester registry"
     // address — it's a valid deployed contract but does NOT implement
-    // the is_attester interface, so the sanity check should reject it.
+    // the is_attester_for_region interface, so the sanity check should reject it.
     let result = client.try_initialize(&admin, &contract_id);
     // Same `Error::InvalidRegistryWiring` variant as
     // `initialize_rejects_non_contract_address` above — see that test's
@@ -654,6 +664,7 @@ fn initialize_accepts_real_attester_registry() {
     let attester_registry_client =
         attester_registry::AttesterRegistryClient::new(&env, &attester_registry_id);
     attester_registry_client.initialize(&admin);
+    attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
 
     let result = client.try_initialize(&admin, &attester_registry_id);
     assert_eq!(result, Ok(Ok(())));
@@ -871,6 +882,7 @@ fn test_initialize_auth_matrix() {
             attester_registry::AttesterRegistryClient::new(&env, &attester_registry);
         env.mock_all_auths();
         attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
 
         let auth_address = match case.auth_role {
             "admin" => Some(admin.clone()),
@@ -974,6 +986,7 @@ fn test_attest_auth_matrix() {
         // Setup attester registry allowlist
         env.mock_all_auths();
         attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
         client.initialize(&admin, &attester_registry_id);
 
         if case.allowlisted {
@@ -996,6 +1009,7 @@ fn test_attest_auth_matrix() {
             "admin" => Some(admin.clone()),
             _ => None,
         };
+        let region = test_region(&env);
 
         if let Some(addr) = auth_address {
             env.mock_auths(&[soroban_sdk::testutils::MockAuth {
@@ -1045,7 +1059,9 @@ fn test_attest_auth_matrix() {
 fn set_attester_registry_by_admin_succeeds() {
     let (env, client, attester_registry, admin) = setup();
 
-    let new_registry = Address::generate(&env);
+    let new_registry = env.register(attester_registry::AttesterRegistry, ());
+    let new_registry_client = attester_registry::AttesterRegistryClient::new(&env, &new_registry);
+    new_registry_client.initialize(&admin);
     assert_eq!(client.get_attester_registry(), attester_registry.address);
 
     client.set_attester_registry(&new_registry);
@@ -1076,6 +1092,18 @@ fn set_attester_registry_by_admin_succeeds() {
     );
 
     assert_eq!(client.get_attester_registry(), new_registry);
+}
+
+#[test]
+fn set_attester_registry_rejects_incompatible_contract() {
+    let (env, client, attester_registry, _admin) = setup();
+    let incompatible = env.register(AttestationRegistry, ());
+
+    assert_eq!(
+        client.try_set_attester_registry(&incompatible),
+        Err(Ok(Error::InvalidRegistryWiring))
+    );
+    assert_eq!(client.get_attester_registry(), attester_registry.address);
 }
 
 #[test]
@@ -1116,13 +1144,13 @@ fn set_attester_registry_before_initialize_fails() {
 fn revoke_attestation_happy_path() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
-    attester_registry.add_attester(&attester);
+    attester_registry.add_attester(&admin, &attester);
 
     let record_hash = BytesN::from_array(&env, &[11u8; 32]);
     attest_with_consent(&env, &client, &attester, &record_hash);
     assert!(client.get_attestation(&record_hash).is_some());
 
-    client.revoke_attestation(&record_hash);
+    client.revoke_attestation(&admin, &record_hash);
 
     assert_eq!(client.get_attestation(&record_hash), None);
     assert_eq!(
@@ -1148,7 +1176,7 @@ fn revoke_attestation_without_admin_auth_fails() {
     let (env, client, attester_registry, _admin) = setup();
     let attester = Address::generate(&env);
     let malicious = Address::generate(&env);
-    attester_registry.add_attester(&attester);
+    attester_registry.add_attester(&_admin, &attester);
 
     let record_hash = BytesN::from_array(&env, &[12u8; 32]);
     let attestation = attest_with_consent(&env, &client, &attester, &record_hash);
@@ -1158,12 +1186,12 @@ fn revoke_attestation_without_admin_auth_fails() {
         invoke: &soroban_sdk::testutils::MockAuthInvoke {
             contract: &client.address,
             fn_name: "revoke_attestation",
-            args: (record_hash.clone(),).into_val(&env),
+            args: (_admin.clone(), record_hash.clone()).into_val(&env),
             sub_invokes: &[],
         },
     }]);
 
-    let result = client.try_revoke_attestation(&record_hash);
+    let result = client.try_revoke_attestation(&_admin, &record_hash);
     assert!(result.is_err());
     assert_eq!(client.get_attestation(&record_hash), Some(attestation));
 }
@@ -1183,9 +1211,9 @@ fn revoke_attestation_preserves_get_attestation_history() {
     let attester_a = Address::generate(&env);
     let attester_b = Address::generate(&env);
     let attester_c = Address::generate(&env);
-    attester_registry.add_attester(&attester_a);
-    attester_registry.add_attester(&attester_b);
-    attester_registry.add_attester(&attester_c);
+    attester_registry.add_attester(&_admin, &attester_a);
+    attester_registry.add_attester(&_admin, &attester_b);
+    attester_registry.add_attester(&_admin, &attester_c);
 
     let record_hash = BytesN::from_array(&env, &[14u8; 32]);
     let first = attest_with_consent(&env, &client, &attester_a, &record_hash);
@@ -1200,7 +1228,7 @@ fn revoke_attestation_preserves_get_attestation_history() {
 
     assert_eq!(client.get_attestation(&record_hash), Some(third));
 
-    client.revoke_attestation(&record_hash);
+    client.revoke_attestation(&_admin, &record_hash);
 
     assert_eq!(client.get_attestation(&record_hash), None);
     let history_after = client.get_attestation_history(&record_hash);

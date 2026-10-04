@@ -119,15 +119,17 @@ export interface Client {
     pause: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a attest transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Record that `attester` verified the record hashing to `record_hash`.
+     * Record that `attester` verified the record hashing to `record_hash` in
+     * `region`.
      * Requires `attester`'s authorization and that `attester` is
      * currently allowlisted in the configured `attester-registry`.
      * Stores the attestation with an incrementing sequence number,
      * maintaining a bounded history (MAX_HISTORY entries per hash).
      */
-    attest: ({ attester, record_hash }: {
+    attest: ({ attester, record_hash, region }: {
         attester: string;
         record_hash: Buffer;
+        region: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<Attestation>>>;
     /**
      * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.

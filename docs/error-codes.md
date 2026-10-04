@@ -19,6 +19,11 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `6` | `MigrationNotRequired` | No pending storage migration; `SchemaVersion` is already current. |
 | `7` | `AttesterNotFound` | `update_attester_info` was called for an address that is not currently allowlisted (never added, or since removed). |
 | `8` | `BatchTooLarge` | The batch supplied to `add_attesters` or `remove_attesters` exceeds `BATCH_LIMIT` (40) addresses. |
+| `9` | `RoleNotGranted` | The supplied address does not hold the required owner-managed role. |
+| `10` | `InvalidValidityWindow` | The supplied inclusive start is not earlier than the exclusive end. |
+| `11` | `RegionMismatch` | A regional registrar attempted an operation outside its assigned region. |
+| `12` | `RegionalQuotaExceeded` | The regional registrar's concurrent enrollment quota has been reached. |
+| `13` | `RegionalAttestersRemain` | A regional registrar's region cannot change until all attributed attesters are removed. |
 
 ## `attestation-registry`
 

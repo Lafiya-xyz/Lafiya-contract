@@ -204,7 +204,14 @@ export interface Client {
    * Fails with `Error::AllowlistFull` if the allowlist is at capacity and
    * `attester` is not already present (see `set_max_attesters`).
    */
-  add_attester: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  add_attesters: ({registrar, attesters}: {registrar: string, attesters: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a propose_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Propose a new admin address. The caller must authorize as the current admin.
+   * Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
+   */
+  propose_admin: ({new_admin}: {new_admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a add_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -230,10 +237,43 @@ export interface Client {
 
   /**
    * Construct and simulate a remove_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Remove `attester` from the allowlist. Requires the admin's
+   * Remove `attester` from the allowlist. Requires a global registrar's
    * authorization. A no-op if the attester was never allowlisted.
    */
-  remove_attester: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  remove_attester: ({registrar, attester}: {registrar: string, attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a remove_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Remove multiple attesters from the allowlist in a single transaction.
+   *
+   * Requires a global registrar's authorization. Blocked while paused.
+   * Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+   * If the batch removes regional enrollments, its size is additionally
+   * limited to `REGIONAL_REMOVE_BATCH_LIMIT` to bound storage cleanup.
+   * Addresses that are not currently allowlisted are silently skipped
+   * (idempotent), so the call never fails if an address was already removed
+   * and no spurious events are emitted. Exactly one `AttesterRemoved` event
+   * is emitted per address that was actually removed.
+   */
+  remove_attesters: ({registrar, attesters}: {registrar: string, attesters: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a suspend_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Suspend an allowlisted attester. A global registrar may suspend any
+   * attester; a regional registrar may suspend only attesters in its region.
+   *
+   * **Note:** this function does **not** check whether `attester` was ever
+   * added via `add_attester`. If called on an address that is not in the
+   * allowlist, it silently sets the `Suspended` storage key and emits
+   * `AttesterSuspended` for that address — a no-op from an access-control
+   * perspective because `is_attester` also checks for an `Attester` storage
+   * entry, so the phantom suspension has no effect on allowlist queries.
+   * This diverges from `update_attester_info`, which returns
+   * `Error::AttesterNotFound` for unknown addresses. The inconsistency is
+   * known and documented here rather than silently changed; a follow-up
+   * issue should decide whether to align both functions.
+   */
+  suspend_attester: ({registrar, attester}: {registrar: string, attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a remove_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.

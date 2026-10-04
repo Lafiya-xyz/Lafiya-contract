@@ -11,7 +11,7 @@ use super::*;
 use attester_registry::{AttesterRegistry, AttesterRegistryClient};
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN, Env};
+use soroban_sdk::{Address, BytesN, Env, Symbol};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
@@ -32,8 +32,11 @@ proptest! {
         let admin = Address::generate(&env);
         let attester = Address::generate(&env);
         attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
         client.initialize(&admin, &attester_registry_id);
-        attester_registry_client.add_attester(&attester);
+        client.grant_role(&Role::Guardian, &admin);
+        client.grant_role(&Role::Revoker, &admin);
+        attester_registry_client.add_attester(&admin, &attester);
 
         let record_hash = BytesN::from_array(&env, &bytes);
         let patient = Address::generate(&env);
@@ -75,7 +78,10 @@ proptest! {
 
         let admin = Address::generate(&env);
         attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
         client.initialize(&admin, &attester_registry_id);
+        client.grant_role(&Role::Guardian, &admin);
+        client.grant_role(&Role::Revoker, &admin);
 
         let record_hash = BytesN::from_array(&env, &bytes);
         let mut last_attester = None;
