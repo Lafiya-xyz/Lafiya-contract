@@ -198,6 +198,8 @@ pub struct AdminTransferred {
     pub previous_admin: Address,
     #[topic]
     pub new_admin: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when a new attestation is recorded for a record hash.
@@ -221,6 +223,14 @@ pub struct AttestationRecorded {
 pub struct AttestationRevoked {
     #[topic]
     pub record_hash: BytesN<32>,
+    /// Admin who authorized the revocation.
+    pub by: Address,
+    /// Number of stored history entries removed.
+    pub removed_count: u64,
+    /// Non-sensitive, concise reason code supplied by the admin.
+    pub reason: Symbol,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when an attester records the last attestation its rate-limit
@@ -251,6 +261,8 @@ pub struct RateLimitSet {
 pub struct Paused {
     #[topic]
     pub by: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when state-changing operations are unpaused.
@@ -259,6 +271,8 @@ pub struct Paused {
 pub struct Unpaused {
     #[topic]
     pub by: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when the `attester-registry` contract this registry consults is repointed.
@@ -269,6 +283,8 @@ pub struct AttesterRegistryRepointed {
     pub previous: Address,
     #[topic]
     pub new: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Errors returned by the attestation registry's public entry points.
@@ -517,6 +533,8 @@ impl AttestationRegistry {
         AdminTransferred {
             previous_admin,
             new_admin: pending_admin,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
         }
         .publish(&env);
 
@@ -550,6 +568,8 @@ impl AttestationRegistry {
         AttesterRegistryRepointed {
             previous,
             new: new_registry,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
         }
         .publish(&env);
 
@@ -570,7 +590,12 @@ impl AttestationRegistry {
         let admin = Self::admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
-        Unpaused { by: admin }.publish(&env);
+        Unpaused {
+            by: admin,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -799,12 +824,15 @@ impl AttestationRegistry {
 
         let new_count = count + 1;
 
-        if new_count > MAX_HISTORY {
-            let oldest_sequence = new_count.saturating_sub(MAX_HISTORY);
+        let evicted_sequence = if new_count > MAX_HISTORY {
+            let oldest_sequence = new_sequence.saturating_sub(MAX_HISTORY);
             env.storage()
                 .persistent()
                 .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
-        }
+            Some(oldest_sequence)
+        } else {
+            None
+        };
 
         // Extend TTL on the specific attestation entry just written, so it is
         // not subject to state-archival independently of the instance storage.
@@ -926,6 +954,7 @@ impl AttestationRegistry {
         let mut found = false;
         let mut withdrawn = false;
 
+        let mut removed_count = 0;
         for seq in start_sequence..=sequence {
             let Some(attestation) = env
                 .storage()

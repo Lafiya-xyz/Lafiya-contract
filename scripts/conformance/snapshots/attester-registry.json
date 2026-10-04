@@ -740,6 +740,16 @@
               "n": 32
             }
           }
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [

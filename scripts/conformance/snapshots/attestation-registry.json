@@ -345,6 +345,10 @@
               "n": 32
             }
           }
+        },
+        {
+          "name": "reason",
+          "type_": "symbol"
         }
       ],
       "name": "revoke_attestation",
@@ -601,6 +605,31 @@
               "n": 32
             }
           }
+        },
+        {
+          "location": "data",
+          "name": "by",
+          "type_": "address"
+        },
+        {
+          "location": "data",
+          "name": "removed_count",
+          "type_": "u64"
+        },
+        {
+          "location": "data",
+          "name": "reason",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "contract_kind",
+          "type_": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "schema_version",
+          "type_": "u32"
         }
       ],
       "prefix_topics": [

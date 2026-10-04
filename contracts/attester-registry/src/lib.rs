@@ -249,6 +249,8 @@ pub struct AdminTransferred {
     pub previous_admin: Address,
     #[topic]
     pub new_admin: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when the current admin nominates a successor.
@@ -278,6 +280,8 @@ pub struct AdminTransferCancelled {
 pub struct Initialized {
     #[topic]
     pub admin: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when an attester is added to the allowlist.
@@ -286,6 +290,8 @@ pub struct Initialized {
 pub struct AttesterAdded {
     #[topic]
     pub attester: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when an already-allowlisted attester's metadata is updated via
@@ -296,6 +302,8 @@ pub struct AttesterAdded {
 pub struct AttesterInfoUpdated {
     #[topic]
     pub attester: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when an attester is removed from the allowlist.
@@ -304,6 +312,8 @@ pub struct AttesterInfoUpdated {
 pub struct AttesterRemoved {
     #[topic]
     pub attester: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when an attester revokes its own key.
@@ -330,6 +340,8 @@ pub struct AttesterSuspended {
 pub struct AttesterReinstated {
     #[topic]
     pub attester: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when the contract is upgraded to new wasm.
@@ -338,6 +350,8 @@ pub struct AttesterReinstated {
 pub struct Upgraded {
     #[topic]
     pub new_wasm_hash: BytesN<32>,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when state-changing operations are paused.
@@ -346,6 +360,8 @@ pub struct Upgraded {
 pub struct Paused {
     #[topic]
     pub by: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when state-changing operations are unpaused.
@@ -354,6 +370,8 @@ pub struct Paused {
 pub struct Unpaused {
     #[topic]
     pub by: Address,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -643,6 +661,8 @@ impl AttesterRegistry {
         AdminTransferred {
             previous_admin,
             new_admin: pending_admin,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
         }
         .publish(&env);
 
@@ -694,7 +714,12 @@ impl AttesterRegistry {
         let admin = Self::admin(&env)?;
         admin.require_auth();
         env.storage().instance().set(&DataKey::Paused, &false);
-        Unpaused { by: admin }.publish(&env);
+        Unpaused {
+            by: admin,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -774,7 +799,12 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        AttesterAdded { attester }.publish(&env);
+        AttesterAdded {
+            attester,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -847,7 +877,12 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        AttesterAdded { attester }.publish(&env);
+        AttesterAdded {
+            attester,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -899,7 +934,12 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        AttesterInfoUpdated { attester }.publish(&env);
+        AttesterInfoUpdated {
+            attester,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -959,6 +999,8 @@ impl AttesterRegistry {
                 count += 1;
                 AttesterAdded {
                     attester: attester.clone(),
+                    contract_kind: Symbol::new(&env, "attester_registry"),
+                    schema_version: EVENT_SCHEMA_VERSION,
                 }
                 .publish(&env);
             }
@@ -1024,6 +1066,8 @@ impl AttesterRegistry {
                 Self::record_status_change(&env, &attester, false);
                 AttesterRemoved {
                     attester: attester.clone(),
+                    contract_kind: Symbol::new(&env, "attester_registry"),
+                    schema_version: EVENT_SCHEMA_VERSION,
                 }
                 .publish(&env);
             }
@@ -1296,7 +1340,12 @@ impl AttesterRegistry {
         Self::admin(&env)?.require_auth();
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
-        Upgraded { new_wasm_hash }.publish(&env);
+        Upgraded {
+            new_wasm_hash,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);

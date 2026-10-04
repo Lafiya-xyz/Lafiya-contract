@@ -47,8 +47,8 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 |---|---|---|
 | `1` | `InvalidThreshold` | The threshold is zero or exceeds the configured signer count. |
 | `2` | `DuplicateSigner` | The signer configuration contains the same public key more than once. |
-| `3` | `NotEnoughSigners` | The supplied signature count is below the configured threshold. |
-| `4` | `BadSignatureOrder` | Signatures are duplicated or are not strictly ordered by public key. |
+| `3` | `NotEnoughSigners` | The supplied signature count is below the configured minimum signer count. |
+| `4` | `BadSignatureOrder` | Signatures are duplicated or are not ordered Ed25519 first, then P-256, with keys ascending within each type. |
 | `5` | `UnknownSigner` | A signature belongs to a public key that is not a configured signer. |
 | `6` | `NotInitialized` | The account's signer threshold is unavailable. |
 | `7` | `TooManySigners` | The supplied signature count exceeds the configured signer count. |

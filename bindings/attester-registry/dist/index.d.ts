@@ -98,6 +98,20 @@ export interface AttesterStatus {
    */
     suspended: boolean;
 }
+/**
+ * An allowlisted attester's metadata together with its current suspension
+ * state, as returned by `get_attester_status`.
+ */
+export interface AttesterStatus {
+    /**
+   * The attester's stored metadata.
+   */
+    info: AttesterInfo;
+    /**
+   * Whether the attester is currently suspended.
+   */
+    suspended: boolean;
+}
 export interface Client {
     /**
      * Construct and simulate a pause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -250,6 +264,38 @@ export interface Client {
      */
     suspend_attester: ({ registrar, attester }: {
         registrar: string;
+        attester: string;
+    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    /**
+     * Construct and simulate a remove_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+     * Remove multiple attesters from the allowlist in a single transaction.
+     *
+     * Requires the admin's authorization. Blocked while the contract is paused.
+     * Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+     * Addresses that are not currently allowlisted are silently skipped
+     * (idempotent), so the call never fails if an address was already removed
+     * and no spurious events are emitted. Exactly one `AttesterRemoved` event
+     * is emitted per address that was actually removed.
+     */
+    remove_attesters: ({ attesters }: {
+        attesters: Array<string>;
+    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    /**
+     * Construct and simulate a suspend_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+     * Suspend an allowlisted attester. Requires the admin's authorization.
+     *
+     * **Note:** this function does **not** check whether `attester` was ever
+     * added via `add_attester`. If called on an address that is not in the
+     * allowlist, it silently sets the `Suspended` storage key and emits
+     * `AttesterSuspended` for that address — a no-op from an access-control
+     * perspective because `is_attester` also checks for an `Attester` storage
+     * entry, so the phantom suspension has no effect on allowlist queries.
+     * This diverges from `update_attester_info`, which returns
+     * `Error::AttesterNotFound` for unknown addresses. The inconsistency is
+     * known and documented here rather than silently changed; a follow-up
+     * issue should decide whether to align both functions.
+     */
+    suspend_attester: ({ attester }: {
         attester: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**

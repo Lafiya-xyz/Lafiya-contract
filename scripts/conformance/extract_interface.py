@@ -87,7 +87,8 @@ def extract(wasm_path: Path) -> list[dict[str, Any]]:
     entries: list[tuple[str, str, Any]] = []
     for entry in raw:
         ((kind, body),) = entry.items()
-        entries.append((kind, _entry_name(kind, body), _strip_docs(body)))
+        normalized = _normalize_type_keys(_strip_docs(body))
+        entries.append((kind, _entry_name(kind, body), normalized))
 
     entries.sort(key=lambda e: (KIND_ORDER.get(e[0], 99), e[1]))
     return [{"kind": k, "name": n, "spec": s} for k, n, s in entries]

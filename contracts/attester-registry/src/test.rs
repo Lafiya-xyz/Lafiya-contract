@@ -102,6 +102,8 @@ fn add_attester_allowlists_and_emits_event() {
 
     let expected_event = AttesterAdded {
         attester: attester.clone(),
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
         env.events().all(),
@@ -364,6 +366,8 @@ fn successful_admin_transfer_flow() {
     let expected_event = AdminTransferred {
         previous_admin: admin.clone(),
         new_admin: new_admin.clone(),
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
         env.events().all(),
@@ -529,6 +533,8 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     // Check event was emitted before any other call clears it.
     let expected_added_event = AttesterAdded {
         attester: attester.clone(),
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
         env.events().all(),
@@ -548,6 +554,8 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
 
     let expected_updated_event = AttesterInfoUpdated {
         attester: attester.clone(),
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
         env.events().all(),

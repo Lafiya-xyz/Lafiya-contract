@@ -32,6 +32,15 @@ Lafiya contracts currently declare the following on-chain event schemas:
 during initialization. Indexers must not rely on receiving it unless contract
 behavior is changed in a future release.
 
+Every registry event payload includes `contract_kind` and `schema_version`.
+Registry event schema version `2` adds these fields; consumers should branch on
+both values rather than infer contract type from event name or contract address.
+`AttestationRecorded` also includes its per-record `sequence` and optional
+`evicted_sequence`, allowing an indexer to mirror the bounded FIFO history.
+`AttestationRevoked` includes the authorizing admin, the number of entries
+removed, and a short reason symbol. Reason symbols are public and must not
+contain personal or other sensitive data.
+
 These events need to be consumed by the off‑chain services used by **lafiya‑web** to display the verified status in near‑real‑time. This document outlines the design of an **event indexing / webhook service** that polls or streams Soroban events and reconciles them with the existing Supabase‑backed profile data.
 
 ## Architecture Options
