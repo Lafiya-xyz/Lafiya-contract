@@ -1,0 +1,71 @@
+name: Flaky test detection
+
+on:
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
+    inputs:
+      runs:
+        description: Number of repeated suite runs
+        default: "5"
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  detect:
+    name: Repeat suite without retries
+    runs-on: ubuntu-latest
+    env:
+      RUNS: ${{ github.event.inputs.runs || '5' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest archive --workspace --all-features --locked --archive-file archive.tar.zst
+      - name: Run suite ${{ env.RUNS }} times
+        run: |
+          mkdir -p results
+          for i in $(seq 1 "$RUNS"); do
+            cargo nextest run --profile flaky --archive-file archive.tar.zst \
+              --workspace-remap . --retries 0 || true
+            cp target/nextest/flaky/junit.xml "results/run-$i.xml"
+          done
+      - name: Find inconsistent tests
+        id: analyze
+        run: |
+          python3 - <<'PY' > flaky.md
+          import glob, xml.etree.ElementTree as ET
+          outcomes = {}
+          for path in sorted(glob.glob("results/*.xml")):
+              for case in ET.parse(path).iter("testcase"):
+                  name = f"{case.get('classname')}::{case.get('name')}"
+                  failed = case.find("failure") is not None or case.find("error") is not None
+                  outcomes.setdefault(name, []).append(failed)
+          flaky = sorted(n for n, r in outcomes.items() if any(r) and not all(r))
+          for n in flaky:
+              r = outcomes[n]
+              print(f"- `{n}`: failed {sum(r)}/{len(r)} runs")
+          PY
+          if [ -s flaky.md ]; then echo "found=true" >> "$GITHUB_OUTPUT"; fi
+          cat flaky.md
+      - name: Report to issue
+        if: steps.analyze.outputs.found == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          title="Flaky tests detected by nightly run"
+          body="$(printf 'Run: %s/%s/actions/runs/%s\n\n' "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"; cat flaky.md)"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: flaky-junit
+          path: results/

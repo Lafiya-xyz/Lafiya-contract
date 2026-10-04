@@ -11,6 +11,7 @@ machine-generated source of truth for that shape, meant to be regenerated
 (`make conformance-update`) whenever a contract's events change, and to fail
 CI (`--check`) if a change lands without the doc being regenerated.
 """
+
 import sys
 from pathlib import Path
 
@@ -36,7 +37,7 @@ for how these events are consumed.
 """
 
 
-def render_contract(name, cfg):
+def render_contract(name: str, cfg: dict[str, Path]) -> str:
     lines = [f"## `{name}`\n"]
     events = [e for e in extract(cfg["wasm_path"]) if e["kind"] == "event_v0"]
     if not events:
@@ -53,19 +54,19 @@ def render_contract(name, cfg):
         lines.append("| Field | Type | Location |")
         lines.append("|---|---|---|")
         for p in spec["params"]:
-            lines.append(f"| `{p['name']}` | `{render_type(p['type_'])}` | {p['location']} |")
+            lines.append(f"| `{p['name']}` | `{render_type(p['type'])}` | {p['location']} |")
         lines.append("")
     return "\n".join(lines)
 
 
-def render_doc():
+def render_doc() -> str:
     parts = [HEADER]
     for name in sorted(CONTRACTS):
         parts.append(render_contract(name, CONTRACTS[name]))
     return "\n".join(parts).rstrip() + "\n"
 
 
-def main():
+def main() -> None:
     check = "--check" in sys.argv[1:]
     rendered = render_doc()
 

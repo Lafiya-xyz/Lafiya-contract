@@ -1,0 +1,92 @@
+<!doctype html>
+<!--
+  Minimal scan-and-verify page for @lafiya/verifier.
+  Build the SDK first (`pnpm build` in packages/verifier-sdk), then serve
+  the repository root, e.g. `npx serve .`, and open
+  /packages/verifier-sdk/example/. The import map resolves the generated
+  bindings to their committed builds and the Stellar SDK to a CDN. Edit
+  TRUST below for your network. Scanning uses the browser's
+  BarcodeDetector (Chrome/Android); a text box is the fallback.
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Lafiya card verifier</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 32rem; margin: 2rem auto; padding: 0 1rem; }
+      video { width: 100%; border-radius: 8px; background: #000; }
+      textarea { width: 100%; }
+      #verdict { font-size: 1.5rem; font-weight: 600; margin-top: 1rem; }
+      .verified { color: #0a7d32; } .bad { color: #b3261e; }
+    </style>
+    <script type="importmap">
+      {
+        "imports": {
+          "@lafiya/attestation-registry": "/bindings/attestation-registry/dist/index.js",
+          "@lafiya/attester-registry": "/bindings/attester-registry/dist/index.js",
+          "@stellar/stellar-sdk": "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk@14/+esm",
+          "@stellar/stellar-sdk/contract": "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk@14/lib/contract/+esm",
+          "@stellar/stellar-sdk/rpc": "https://cdn.jsdelivr.net/npm/@stellar/stellar-sdk@14/lib/rpc/+esm",
+          "buffer": "https://cdn.jsdelivr.net/npm/buffer@6.0.3/+esm"
+        }
+      }
+    </script>
+  </head>
+  <body>
+    <h1>Verify a Lafiya card</h1>
+    <video id="camera" playsinline muted hidden></video>
+    <button id="scan">Scan QR code</button>
+    <p><label>…or paste the QR payload<br /><textarea id="payload" rows="3"></textarea></label></p>
+    <button id="verify">Verify</button>
+    <div id="verdict"></div>
+    <ul id="reasons"></ul>
+
+    <script type="module">
+      import { LafiyaVerifier, VERDICT_DESCRIPTIONS } from "../dist/esm/index.js";
+
+      const TRUST = {
+        testnet: {
+          networkPassphrase: "Test SDF Network ; September 2015",
+          rpcUrl: "https://soroban-testnet.stellar.org",
+          attestationRegistry: "C...ATTESTATION_REGISTRY",
+          attesterRegistry: "C...ATTESTER_REGISTRY",
+        },
+      };
+
+      const verifier = new LafiyaVerifier({ network: "testnet", trust: TRUST });
+      const $ = (id) => document.getElementById(id);
+
+      async function verify(text) {
+        const result = await verifier.verifyCard(text, { maxAgeDays: 365 });
+        $("verdict").textContent = VERDICT_DESCRIPTIONS[result.verdict];
+        $("verdict").className = result.verdict === "verified" ? "verified" : "bad";
+        $("reasons").replaceChildren(
+          ...result.reasons.map((r) => Object.assign(document.createElement("li"), { textContent: `${r.code}: ${r.message}` })),
+        );
+      }
+
+      $("verify").onclick = () => verify($("payload").value);
+      $("scan").onclick = async () => {
+        if (!("BarcodeDetector" in window)) {
+          $("verdict").textContent = "Scanning isn't supported in this browser; paste the payload instead.";
+          return;
+        }
+        const video = $("camera");
+        video.hidden = false;
+        video.srcObject = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "environment" } });
+        await video.play();
+        const detector = new BarcodeDetector({ formats: ["qr_code"] });
+        const tick = async () => {
+          const [code] = await detector.detect(video);
+          if (!code) return requestAnimationFrame(tick);
+          video.srcObject.getTracks().forEach((t) => t.stop());
+          video.hidden = true;
+          $("payload").value = code.rawValue;
+          verify(code.rawValue);
+        };
+        tick();
+      };
+    </script>
+  </body>
+</html>

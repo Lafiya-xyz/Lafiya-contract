@@ -47,6 +47,8 @@ proptest! {
         let client = AttesterRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
         client.initialize(&admin);
+    client.grant_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Guardian, &admin);
 
         let addrs: std::vec::Vec<Address> =
             (0..POOL_SIZE).map(|_| Address::generate(&env)).collect();
@@ -60,20 +62,20 @@ proptest! {
         for op in &ops {
             match *op {
                 Op::Add(i) => {
-                    client.add_attester(&addrs[i]);
+                    client.add_attester(&admin, &addrs[i]);
                     allowlisted[i] = true;
                 }
                 Op::Remove(i) => {
-                    client.remove_attester(&addrs[i]);
+                    client.remove_attester(&admin, &addrs[i]);
                     allowlisted[i] = false;
                     suspended[i] = false;
                 }
                 Op::Suspend(i) => {
-                    client.suspend_attester(&addrs[i]);
+                    client.suspend_attester(&admin, &addrs[i]);
                     suspended[i] = true;
                 }
                 Op::Reinstate(i) => {
-                    client.reinstate_attester(&addrs[i]);
+                    client.reinstate_attester(&admin, &addrs[i]);
                     suspended[i] = false;
                 }
             }
@@ -105,12 +107,14 @@ proptest! {
         let client = AttesterRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
         client.initialize(&admin);
+    client.grant_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Guardian, &admin);
 
         let addrs: std::vec::Vec<Address> =
             (0..POOL_SIZE).map(|_| Address::generate(&env)).collect();
 
         for i in ops {
-            client.add_attester(&addrs[i]);
+            client.add_attester(&admin, &addrs[i]);
             prop_assert!(client.is_attester(&addrs[i]));
         }
     }

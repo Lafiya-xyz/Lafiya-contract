@@ -1,0 +1,61 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lafiya networks.toml",
+  "type": "object",
+  "additionalProperties": {
+    "$ref": "#/$defs/NetworkConfig"
+  },
+  "$defs": {
+    "ContractIds": {
+      "description": "Deployed contract ids of a network. An empty string means \"not deployed\".",
+      "type": "object",
+      "properties": {
+        "attestation_registry": {
+          "description": "`C...` contract id of the attestation registry, or \"\" when not deployed.",
+          "type": "string"
+        },
+        "attester_registry": {
+          "description": "`C...` contract id of the attester registry, or \"\" when not deployed.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "attester_registry",
+        "attestation_registry"
+      ]
+    },
+    "NetworkConfig": {
+      "description": "One network profile in `config/networks.toml`.",
+      "type": "object",
+      "properties": {
+        "contracts": {
+          "description": "Deployed contract ids for this network.",
+          "$ref": "#/$defs/ContractIds"
+        },
+        "network_passphrase": {
+          "description": "Stellar network passphrase.",
+          "type": "string"
+        },
+        "rpc_url": {
+          "description": "Soroban JSON-RPC endpoint (http:// or https://). Used when `rpc_urls` is empty.",
+          "type": "string"
+        },
+        "rpc_urls": {
+          "description": "Ordered RPC endpoints for failover (primary first). Falls back to\n`rpc_url` when empty (ADR-0011).",
+          "type": "array",
+          "default": [],
+          "items": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "rpc_url",
+        "network_passphrase",
+        "contracts"
+      ]
+    }
+  }
+}

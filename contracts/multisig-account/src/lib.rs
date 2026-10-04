@@ -18,7 +18,7 @@ use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
     contract, contracterror, contractimpl, contracttype,
     crypto::Hash,
-    panic_with_error, BytesN, Env, Vec,
+    panic_with_error, BytesN, Env, Symbol, Vec,
 };
 
 #[contracttype]
@@ -69,6 +69,41 @@ pub enum Error {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+/// Interface kind reported by `get_interface`, used by clients as a weak
+/// identity check when wiring contracts (not proof of authenticity).
+pub const CONTRACT_KIND: &str = "lafiya_multisig_account";
+
+/// Version of the public contract interface (functions, errors, types).
+/// Bump on any breaking ABI change; `scripts/conformance/check_snapshot.py`
+/// refuses a breaking snapshot update without a bump.
+pub const INTERFACE_VERSION: u32 = 1;
+
+/// Version of the emitted event schemas (see `docs/events.md`).
+pub const EVENT_VERSION: u32 = 1;
+
+/// Optional features this build supports, reported by `get_interface`.
+pub const FEATURES: [&str; 2] = ["ed25519", "unscoped_auth"];
+
+/// Interface and capability metadata returned by `get_interface`, so
+/// clients can negotiate features with one call instead of probing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterfaceInfo {
+    /// Contract kind, e.g. `lafiya_multisig_account`.
+    pub contract_kind: Symbol,
+    /// Public interface version; bumped on any breaking ABI change.
+    pub interface_version: u32,
+    /// Optional features enabled in this build.
+    pub features: Vec<Symbol>,
+    /// Storage schema version (this contract has no versioned storage, so always 1).
+    pub schema_version: u32,
+    /// Event schema version.
+    pub event_version: u32,
+}
+
+/// Storage schema version; this contract's storage is not versioned.
+const SCHEMA_VERSION: u32 = 1;
+
 #[contract]
 pub struct MultisigAccount;
 
@@ -100,24 +135,21 @@ impl MultisigAccount {
             .set(&DataKey::SignerCount, &signers.len());
     }
 
-    /// Extend the instance storage TTL without performing any authorization.
-    ///
-    /// This is a permissionless entry point that any caller can invoke to
-    /// prevent the account's storage from expiring due to inactivity. Without
-    /// this, an admin account that only processes one transaction per month
-    /// could have its `Threshold`/`Signer*` entries evicted by Soroban's
-    /// state-archival mechanism between admin actions, permanently bricking
-    /// the account.
-    ///
-    /// This function performs no authentication and changes no state beyond
-    /// the storage TTL — it is safe to call from off-chain monitoring jobs,
-    /// cron scripts, or any signer key as a maintenance transaction.
-    ///
-    /// See: [SEC-02](../../issues/08-multisig-account-no-ttl-extension-bricking-risk.md)
-    pub fn keep_alive(env: Env) {
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    /// Report the contract kind, interface version, enabled features, and
+    /// storage/event schema versions for runtime compatibility negotiation.
+    /// Callable by anyone.
+    pub fn get_interface(env: Env) -> InterfaceInfo {
+        let mut features = Vec::new(&env);
+        for feature in FEATURES {
+            features.push_back(Symbol::new(&env, feature));
+        }
+        InterfaceInfo {
+            contract_kind: Symbol::new(&env, CONTRACT_KIND),
+            interface_version: INTERFACE_VERSION,
+            features,
+            schema_version: SCHEMA_VERSION,
+            event_version: EVENT_VERSION,
+        }
     }
 }
 
@@ -134,7 +166,7 @@ impl CustomAccountInterface for MultisigAccount {
     /// # Arguments
     /// * `signature_payload` — A 32-byte hash of the transaction to authorize.
     /// * `signatures` — A vector of ed25519 signatures, each with a public key and signature bytes, ordered by ascending public key.
-    /// * `_auth_contexts` — Intentionally unused; see [ADR-0007](../adr/0007-unscoped-multisig-authorization.md) for why this account does not scope authorization to specific contracts or functions during pre-alpha.
+    /// * `_auth_contexts` — Intentionally unused; see [ADR-0007](../../../docs/adr/0007-unscoped-multisig-authorization.md) for why this account does not scope authorization to specific contracts or functions during pre-alpha.
     fn __check_auth(
         env: Env,
         signature_payload: Hash<32>,
@@ -194,8 +226,8 @@ impl CustomAccountInterface for MultisigAccount {
 }
 
 #[cfg(test)]
+mod fuzz_test;
+#[cfg(test)]
 mod integration_test;
 #[cfg(test)]
 mod test;
-#[cfg(test)]
-mod fuzz_test;
