@@ -1591,6 +1591,170 @@ fn git_commit_hash() -> anyhow::Result<String> {
     Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
+/// Handle all `trust-bundle` subcommands.
+///
+/// Trust bundles are JSON files containing a signed snapshot of allowlisted
+/// attester Ed25519 public keys.  They are distributed to offline verifier apps
+/// so that responders can verify attestation receipts without a live RPC call.
+///
+/// Full signing / verification requires the attester Ed25519 keys from the
+/// on-chain registry and a supporting key management tool.  This implementation
+/// prints the planned stellar CLI invocations in dry-run style — the same
+/// pattern used by all other `lafiya-cli` commands.  The actual signing step
+/// will be wired to a hardware key or a stellar identity in a follow-up once
+/// key export APIs are available.
+fn trust_bundle_command(
+    sub: TrustBundleSub,
+    network: &str,
+    network_cfg: &NetworkConfig,
+) -> anyhow::Result<()> {
+    match sub {
+        TrustBundleSub::Generate {
+            admin_key,
+            valid_days,
+            output,
+            dry_run,
+        } => {
+            // Validate the admin key identity name (must not be empty).
+            if admin_key.trim().is_empty() {
+                anyhow::bail!("--admin-key must not be empty");
+            }
+            if valid_days == 0 {
+                anyhow::bail!("--valid-days must be at least 1");
+            }
+
+            let attester_registry = &network_cfg.contracts.attester_registry;
+            let attestation_registry = &network_cfg.contracts.attestation_registry;
+
+            println!("Trust bundle generation for network: {network}");
+            println!("Attester registry:    {attester_registry}");
+            println!("Attestation registry: {attestation_registry}");
+            println!("Admin key identity:   {admin_key}");
+            println!("Valid for:            {valid_days} day(s)");
+
+            // Step 1: fetch the active attester list from the chain.
+            println!();
+            println!("Step 1: fetch active attesters from chain (requires stellar CLI):");
+            let attester_query_args = vec![
+                "contract".to_string(),
+                "invoke".to_string(),
+                "--network".to_string(),
+                network.to_string(),
+                "--id".to_string(),
+                attester_registry.clone(),
+                "--".to_string(),
+                "get_attester_count".to_string(),
+            ];
+            println!("> stellar {}", attester_query_args.join(" "));
+
+            // Step 2: for each attester, fetch their Ed25519 public key.
+            println!();
+            println!("Step 2: for each attester, call get_attester_info to retrieve their");
+            println!("        Ed25519 public key (stored in license_hash field per ADR-0014).");
+
+            // Step 3: sign the bundle with the admin key.
+            println!();
+            println!("Step 3: sign bundle with admin key '{admin_key}' (Ed25519).");
+            println!("        Signing domain: \"lafiya:trust-bundle:v1\\0\" || network_id || ...");
+
+            // Step 4: emit bundle.
+            if dry_run {
+                println!();
+                println!("[dry-run] Bundle would be written to: {output}");
+                println!("[dry-run] Bundle schema (JSON):");
+                println!("  {{");
+                println!("    \"v\": 1,");
+                println!("    \"network_id\": \"<4-byte hex from SHA-256(passphrase)>\",");
+                println!("    \"attestation_registry\": \"{attestation_registry}\",");
+                println!("    \"created_at\": <unix-ts>,");
+                println!("    \"expires_at\": <unix-ts + {valid_days} * 86400>,");
+                println!("    \"attesters\": [\"<hex-pubkey-1>\", \"<hex-pubkey-2>\", ...],");
+                println!("    \"admin_sig\": \"<hex-64-bytes>\"");
+                println!("  }}");
+            } else {
+                println!();
+                println!("Output: {output}");
+                println!("NOTE: Full signing requires the stellar CLI identity '{}' to have", admin_key);
+                println!("      an exportable Ed25519 keypair. Use --dry-run to preview.");
+                println!("      For a production deployment, use the trust-bundle generation");
+                println!("      script: scripts/generate_trust_bundle.sh --network {network} \\");
+                println!("        --admin-key {admin_key} --valid-days {valid_days} --output {output}");
+            }
+            Ok(())
+        }
+        TrustBundleSub::Verify { bundle, admin_pubkey } => {
+            println!("Trust bundle verification");
+            println!("Bundle file: {bundle}");
+
+            // Check the bundle file exists.
+            if !std::path::Path::new(&bundle).exists() {
+                anyhow::bail!("bundle file not found: {bundle}");
+            }
+
+            // Read and print the bundle structure.
+            let content = std::fs::read_to_string(&bundle)
+                .with_context(|| format!("failed to read bundle file: {bundle}"))?;
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .with_context(|| format!("bundle file is not valid JSON: {bundle}"))?;
+
+            // Basic structural validation.
+            let v = parsed.get("v").and_then(|v| v.as_u64()).unwrap_or(0);
+            if v != 1 {
+                anyhow::bail!("unsupported bundle version: {v}");
+            }
+
+            let network_id = parsed.get("network_id").and_then(|v| v.as_str()).unwrap_or("<missing>");
+            let created_at = parsed.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let expires_at = parsed.get("expires_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let attester_count = parsed.get("attesters")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+
+            println!("Version:        {v}");
+            println!("Network ID:     {network_id}");
+            println!("Created at:     {created_at}");
+            println!("Expires at:     {expires_at}");
+            println!("Attester count: {attester_count}");
+
+            if let Some(pubkey_hex) = admin_pubkey {
+                // Validate hex format (must be 64 hex chars = 32 bytes).
+                if pubkey_hex.len() != 64 {
+                    anyhow::bail!(
+                        "--admin-pubkey must be 64 hex characters (32 bytes), got {} chars",
+                        pubkey_hex.len()
+                    );
+                }
+                if pubkey_hex.chars().any(|c| !c.is_ascii_hexdigit()) {
+                    anyhow::bail!("--admin-pubkey contains non-hex characters");
+                }
+                println!("Admin pubkey:   {pubkey_hex}");
+                println!("NOTE: Ed25519 signature verification requires the ed25519-dalek");
+                println!("      crate which is not yet a dependency of lafiya-cli.");
+                println!("      Structural validation passed. Signature verification: skipped.");
+            } else {
+                println!("Admin pubkey:   <not provided, signature verification skipped>");
+            }
+
+            println!("Bundle structural validation: OK");
+            Ok(())
+        }
+        TrustBundleSub::Show { bundle } => {
+            if !std::path::Path::new(&bundle).exists() {
+                anyhow::bail!("bundle file not found: {bundle}");
+            }
+            let content = std::fs::read_to_string(&bundle)
+                .with_context(|| format!("failed to read bundle file: {bundle}"))?;
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .with_context(|| format!("bundle file is not valid JSON: {bundle}"))?;
+
+            println!("Trust Bundle: {bundle}");
+            println!("{}", serde_json::to_string_pretty(&parsed)?);
+            Ok(())
+        }
+    }
+}
+
 mod which {
     use std::path::Path;
 
