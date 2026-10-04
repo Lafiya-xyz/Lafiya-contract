@@ -80,7 +80,7 @@ jobs:
           echo "attester_registry=$(jq -r .attester_registry "deployments/$NETWORK.json")" >> "$GITHUB_OUTPUT"
           echo "attestation_registry=$(jq -r .attestation_registry "deployments/$NETWORK.json")" >> "$GITHUB_OUTPUT"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: deployment-${{ github.run_id }}
           path: deployments/${{ env.NETWORK }}.json
