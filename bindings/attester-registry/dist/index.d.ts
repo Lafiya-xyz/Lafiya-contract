@@ -78,6 +78,11 @@ export interface AttesterInfo {
    * The geographic region the attester is authorized to attest for, if any.
    */
     region: Option<string>;
+    suspended: boolean;
+    removed: boolean;
+    suspension_reason: Option<string>;
+    suspended_since: Option<bigint>;
+    trust_revoked_after: Option<bigint>;
 }
 /**
  * An allowlisted attester's metadata together with its current suspension
@@ -313,6 +318,13 @@ export interface Client {
         license_hash: Option<Buffer>;
         region: Option<string>;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    suspend_attester_with_reason: ({ attester, reason }: {
+        attester: string;
+        reason: string;
+    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    get_attester_trust_revoked_after: ({ attester }: {
+        attester: string;
+    }, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>;
 }
 export declare class Client extends ContractClient {
     readonly options: ContractClientOptions;

@@ -5,7 +5,7 @@
 
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
-    Symbol, Vec,
+    String, Symbol, Vec,
 };
 
 const SCHEMA_VERSION: u32 = 1;
@@ -68,6 +68,9 @@ enum DataKey {
     /// allowlisted attester.
     Attester(Address),
     /// Presence of this key means the attester is currently suspended.
+    ///
+    /// Kept in the enum for storage compatibility. Suspension state is now
+    /// stored in `AttesterInfo`.
     Suspended(Address),
     /// The storage schema version of the contract.
     SchemaVersion,
@@ -104,7 +107,18 @@ pub struct AttesterInfo {
     /// Hash of the attester's off-chain license/credential document, if any.
     pub license_hash: Option<BytesN<32>>,
     /// The geographic region the attester is authorized to attest for, if any.
-    pub region: Option<Symbol>,
+    /// ISO 3166-2 code, for example `NG-LA`.
+    pub region: Option<String>,
+    /// Whether this attester is currently suspended.
+    pub suspended: bool,
+    /// Whether this address has been removed from the allowlist.
+    pub removed: bool,
+    /// Why the current suspension was imposed, if any.
+    pub suspension_reason: Option<Symbol>,
+    /// Ledger timestamp at which the current suspension began.
+    pub suspended_since: Option<u64>,
+    /// Earliest timestamp whose attestations must no longer be trusted.
+    pub trust_revoked_after: Option<u64>,
 }
 
 /// A status transition retained for point-in-time allowlist queries.
@@ -124,6 +138,12 @@ pub struct AttesterStatus {
     pub info: AttesterInfo,
     /// Whether the attester is currently suspended.
     pub suspended: bool,
+    /// Why the attester is suspended, if it is suspended.
+    pub suspension_reason: Option<Symbol>,
+    /// Ledger timestamp at which the suspension began.
+    pub suspended_since: Option<u64>,
+    /// Earliest timestamp whose attestations are no longer trusted.
+    pub trust_revoked_after: Option<u64>,
 }
 
 /// Instance storage TTL policy:
@@ -268,6 +288,8 @@ pub struct AttesterRevoked {
 pub struct AttesterSuspended {
     #[topic]
     pub attester: Address,
+    pub reason: Symbol,
+    pub since: u64,
 }
 
 /// Emitted when a suspended attester is reinstated.
@@ -581,7 +603,9 @@ impl AttesterRegistry {
         let already_present = env
             .storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()));
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()))
+            .map(|info| !info.removed)
+            .unwrap_or(false);
         if !already_present {
             let count = Self::attester_count(&env);
             let max = Self::max_attesters(&env);
@@ -595,6 +619,11 @@ impl AttesterRegistry {
         let info = AttesterInfo {
             license_hash: None,
             region: None,
+            suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: None,
         };
         env.storage()
             .persistent()
@@ -614,14 +643,17 @@ impl AttesterRegistry {
         env: Env,
         attester: Address,
         license_hash: Option<BytesN<32>>,
-        region: Option<Symbol>,
+        region: Option<String>,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        Self::validate_region(&region)?;
         let already_present = env
             .storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()));
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()))
+            .map(|info| !info.removed)
+            .unwrap_or(false);
         if !already_present {
             let count = Self::attester_count(&env);
             let max = Self::max_attesters(&env);
@@ -635,6 +667,11 @@ impl AttesterRegistry {
         let info = AttesterInfo {
             license_hash,
             region,
+            suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: None,
         };
         env.storage()
             .persistent()
@@ -658,10 +695,11 @@ impl AttesterRegistry {
         env: Env,
         attester: Address,
         license_hash: Option<BytesN<32>>,
-        region: Option<Symbol>,
+        region: Option<String>,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        Self::validate_region(&region)?;
         if !env
             .storage()
             .persistent()
@@ -672,6 +710,11 @@ impl AttesterRegistry {
         let info = AttesterInfo {
             license_hash,
             region,
+            suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: None,
         };
         env.storage()
             .persistent()
@@ -706,13 +749,24 @@ impl AttesterRegistry {
 
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
-            if !env.storage().persistent().has(&key) {
+            let already_present = env
+                .storage()
+                .persistent()
+                .get::<_, AttesterInfo>(&key)
+                .map(|info| !info.removed)
+                .unwrap_or(false);
+            if !already_present {
                 if count >= max {
                     return Err(Error::AllowlistFull);
                 }
                 let info = AttesterInfo {
                     license_hash: None,
                     region: None,
+                    suspended: false,
+                    removed: false,
+                    suspension_reason: None,
+                    suspended_since: None,
+                    trust_revoked_after: None,
                 };
                 env.storage().persistent().set(&key, &info);
                 Self::record_status_change(&env, &attester, true);
@@ -754,11 +808,16 @@ impl AttesterRegistry {
 
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
-            if env.storage().persistent().has(&key) {
-                env.storage().persistent().remove(&key);
-                env.storage()
-                    .persistent()
-                    .remove(&DataKey::Suspended(attester.clone()));
+            if let Some(mut info) = env.storage().persistent().get::<_, AttesterInfo>(&key) {
+                if info.removed {
+                    continue;
+                }
+                info.removed = true;
+                info.suspended = false;
+                info.suspension_reason = None;
+                info.suspended_since = None;
+                info.trust_revoked_after = Some(env.ledger().timestamp());
+                env.storage().persistent().set(&key, &info);
                 if count > 0 {
                     count -= 1;
                 }
@@ -785,16 +844,21 @@ impl AttesterRegistry {
     pub fn remove_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
-        let was_present = env
+        let mut info = env
             .storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Attester(attester.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Suspended(attester.clone()));
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()));
+        let was_present = info.as_ref().map(|info| !info.removed).unwrap_or(false);
+        if let Some(ref mut info) = info {
+            info.removed = true;
+            info.suspended = false;
+            info.suspension_reason = None;
+            info.suspended_since = None;
+            info.trust_revoked_after = Some(env.ledger().timestamp());
+            env.storage()
+                .persistent()
+                .set(&DataKey::Attester(attester.clone()), info);
+        }
         if was_present {
             let count = Self::attester_count(&env);
             if count > 0 {
@@ -837,19 +901,30 @@ impl AttesterRegistry {
 
     /// Suspend an allowlisted attester. Requires the admin's authorization.
     ///
-    /// **Note:** this function does **not** check whether `attester` was ever
-    /// added via `add_attester`. If called on an address that is not in the
-    /// allowlist, it silently sets the `Suspended` storage key and emits
-    /// `AttesterSuspended` for that address — a no-op from an access-control
-    /// perspective because `is_attester` also checks for an `Attester` storage
-    /// entry, so the phantom suspension has no effect on allowlist queries.
-    /// This diverges from `update_attester_info`, which returns
-    /// `Error::AttesterNotFound` for unknown addresses. The inconsistency is
-    /// known and documented here rather than silently changed; a follow-up
-    /// issue should decide whether to align both functions.
+    /// Returns `Error::AttesterNotFound` when the address is not allowlisted.
     pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
+        let reason = Symbol::new(&env, "administrative");
+        Self::suspend_attester_with_reason(env, attester, reason)
+    }
+
+    /// Suspend an attester and record the operational reason and cutoff time.
+    pub fn suspend_attester_with_reason(
+        env: Env,
+        attester: Address,
+        reason: Symbol,
+    ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        let mut info: AttesterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(attester.clone()))
+            .ok_or(Error::AttesterNotFound)?;
+        let since = env.ledger().timestamp();
+        info.suspended = true;
+        info.suspension_reason = Some(reason.clone());
+        info.suspended_since = Some(since);
+        info.trust_revoked_after = Some(since);
         env.storage()
             .persistent()
             .set(&DataKey::Suspended(attester.clone()), &true);
@@ -865,9 +940,17 @@ impl AttesterRegistry {
     pub fn reinstate_attester(env: Env, attester: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
+        let mut info: AttesterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(attester.clone()))
+            .ok_or(Error::AttesterNotFound)?;
+        info.suspended = false;
+        info.suspension_reason = None;
+        info.suspended_since = None;
         env.storage()
             .persistent()
-            .remove(&DataKey::Suspended(attester.clone()));
+            .set(&DataKey::Attester(attester.clone()), &info);
         AttesterReinstated { attester }.publish(&env);
         env.storage()
             .instance()
@@ -878,16 +961,11 @@ impl AttesterRegistry {
     /// Whether `attester` is currently allowlisted (and not suspended). Callable by anyone,
     /// including other contracts (e.g. `attestation-registry`).
     pub fn is_attester(env: Env, attester: Address) -> bool {
-        if !env
-            .storage()
+        env.storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()))
-        {
-            return false;
-        }
-        !env.storage()
-            .persistent()
-            .has(&DataKey::Suspended(attester))
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .map(|info| !info.removed && !info.suspended)
+            .unwrap_or(false)
     }
 
     /// Whether `attester` was active at the supplied ledger timestamp.
@@ -915,7 +993,41 @@ impl AttesterRegistry {
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
-        env.storage().persistent().get(&DataKey::Attester(attester))
+        env.storage()
+            .persistent()
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .filter(|info| !info.removed)
+    }
+
+    /// Return the first timestamp at which attestations by this attester
+    /// stopped being trusted.
+    pub fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .and_then(|info| info.trust_revoked_after)
+    }
+
+    fn validate_region(region: &Option<String>) -> Result<(), Error> {
+        if let Some(region) = region {
+            let bytes = region.to_bytes();
+            if bytes.len() < 4 || bytes.len() > 7 || bytes.get(2) != Some(b'-') {
+                return Err(Error::InvalidRegion);
+            }
+            for (index, byte) in bytes.iter().enumerate() {
+                let valid = if index == 2 {
+                    byte == b'-'
+                } else if index < 2 {
+                    byte.is_ascii_uppercase()
+                } else {
+                    byte.is_ascii_uppercase() || byte.is_ascii_digit()
+                };
+                if !valid {
+                    return Err(Error::InvalidRegion);
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Get `attester`'s metadata together with its current suspension state
@@ -926,11 +1038,17 @@ impl AttesterRegistry {
             .storage()
             .persistent()
             .get(&DataKey::Attester(attester.clone()))?;
-        let suspended = env
-            .storage()
-            .persistent()
-            .has(&DataKey::Suspended(attester));
-        Some(AttesterStatus { info, suspended })
+        if info.removed {
+            return None;
+        }
+        let suspended = info.suspended;
+        Some(AttesterStatus {
+            suspension_reason: info.suspension_reason.clone(),
+            suspended_since: info.suspended_since,
+            trust_revoked_after: info.trust_revoked_after,
+            info,
+            suspended,
+        })
     }
 
     /// Report the contract kind, interface version, enabled features, and

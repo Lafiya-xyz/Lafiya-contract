@@ -330,7 +330,8 @@ export interface Client {
    * `attester` is not already present (see `set_max_attesters`).
    */
   add_attester_with_info: ({attester, license_hash, region}: {attester: string, license_hash: Option<Buffer>, region: Option<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
+  suspend_attester_with_reason: ({attester, reason}: {attester: string, reason: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  get_attester_trust_revoked_after: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(

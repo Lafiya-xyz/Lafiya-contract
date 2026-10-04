@@ -15,6 +15,7 @@ use soroban_sdk::{
 #[contractclient(name = "AttesterRegistryClient")]
 pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
+    fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64>;
 }
 
 /// Emitted when the current admin nominates a successor.
