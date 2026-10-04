@@ -22,7 +22,7 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "add_attester",
@@ -43,11 +43,11 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         },
         {
           "name": "license_hash",
-          "type_": {
+          "type": {
             "option": {
               "value_type": {
                 "bytes_n": {
@@ -59,7 +59,7 @@
         },
         {
           "name": "region",
-          "type_": {
+          "type": {
             "option": {
               "value_type": "symbol"
             }
@@ -67,6 +67,31 @@
         }
       ],
       "name": "add_attester_with_info",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "add_attesters",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attesters",
+          "type": {
+            "vec": {
+              "element_type": "address"
+            }
+          }
+        }
+      ],
+      "name": "add_attesters",
       "outputs": [
         {
           "result": {
@@ -111,7 +136,7 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "get_attester_info",
@@ -135,7 +160,7 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "get_attester_status",
@@ -147,6 +172,21 @@
                 "name": "AttesterStatus"
               }
             }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_interface",
+    "spec": {
+      "inputs": [],
+      "name": "get_interface",
+      "outputs": [
+        {
+          "udt": {
+            "name": "InterfaceInfo"
           }
         }
       ]
@@ -181,7 +221,7 @@
       "inputs": [
         {
           "name": "admin",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "initialize",
@@ -202,7 +242,7 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "is_attester",
@@ -261,7 +301,7 @@
       "inputs": [
         {
           "name": "new_admin",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "propose_admin",
@@ -282,7 +322,7 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "reinstate_attester",
@@ -303,10 +343,35 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "remove_attester",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "remove_attesters",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attesters",
+          "type": {
+            "vec": {
+              "element_type": "address"
+            }
+          }
+        }
+      ],
+      "name": "remove_attesters",
       "outputs": [
         {
           "result": {
@@ -324,7 +389,7 @@
       "inputs": [
         {
           "name": "max_attesters",
-          "type_": "u32"
+          "type": "u32"
         }
       ],
       "name": "set_max_attesters",
@@ -345,7 +410,7 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "name": "suspend_attester",
@@ -382,11 +447,11 @@
       "inputs": [
         {
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         },
         {
           "name": "license_hash",
-          "type_": {
+          "type": {
             "option": {
               "value_type": {
                 "bytes_n": {
@@ -398,7 +463,7 @@
         },
         {
           "name": "region",
-          "type_": {
+          "type": {
             "option": {
               "value_type": "symbol"
             }
@@ -423,7 +488,7 @@
       "inputs": [
         {
           "name": "new_wasm_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -473,6 +538,10 @@
         {
           "name": "AttesterNotFound",
           "value": 7
+        },
+        {
+          "name": "BatchTooLarge",
+          "value": 8
         }
       ],
       "lib": "",
@@ -490,12 +559,12 @@
         {
           "location": "topic_list",
           "name": "previous_admin",
-          "type_": "address"
+          "type": "address"
         },
         {
           "location": "topic_list",
           "name": "new_admin",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -514,7 +583,7 @@
         {
           "location": "topic_list",
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -533,7 +602,7 @@
         {
           "location": "topic_list",
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -552,7 +621,7 @@
         {
           "location": "topic_list",
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -571,7 +640,7 @@
         {
           "location": "topic_list",
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -590,7 +659,7 @@
         {
           "location": "topic_list",
           "name": "attester",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -609,7 +678,7 @@
         {
           "location": "topic_list",
           "name": "admin",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -628,7 +697,7 @@
         {
           "location": "topic_list",
           "name": "by",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -647,7 +716,7 @@
         {
           "location": "topic_list",
           "name": "by",
-          "type_": "address"
+          "type": "address"
         }
       ],
       "prefix_topics": [
@@ -666,7 +735,7 @@
         {
           "location": "topic_list",
           "name": "new_wasm_hash",
-          "type_": {
+          "type": {
             "bytes_n": {
               "n": 32
             }
@@ -685,7 +754,7 @@
       "fields": [
         {
           "name": "license_hash",
-          "type_": {
+          "type": {
             "option": {
               "value_type": {
                 "bytes_n": {
@@ -697,7 +766,7 @@
         },
         {
           "name": "region",
-          "type_": {
+          "type": {
             "option": {
               "value_type": "symbol"
             }
@@ -715,7 +784,7 @@
       "fields": [
         {
           "name": "info",
-          "type_": {
+          "type": {
             "udt": {
               "name": "AttesterInfo"
             }
@@ -723,11 +792,45 @@
         },
         {
           "name": "suspended",
-          "type_": "bool"
+          "type": "bool"
         }
       ],
       "lib": "",
       "name": "AttesterStatus"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "InterfaceInfo",
+    "spec": {
+      "fields": [
+        {
+          "name": "contract_kind",
+          "type": "symbol"
+        },
+        {
+          "name": "event_version",
+          "type": "u32"
+        },
+        {
+          "name": "features",
+          "type": {
+            "vec": {
+              "element_type": "symbol"
+            }
+          }
+        },
+        {
+          "name": "interface_version",
+          "type": "u32"
+        },
+        {
+          "name": "schema_version",
+          "type": "u32"
+        }
+      ],
+      "lib": "",
+      "name": "InterfaceInfo"
     }
   }
 ]

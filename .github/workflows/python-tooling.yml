@@ -1,0 +1,53 @@
+name: Python tooling
+
+# Lints, type-checks, and tests the Python gates that decide whether a release
+# is "compatible" (scripts/conformance/, the release-manifest scripts, and
+# .github/scripts/). Make `python-tooling` a required status check on `main`.
+
+on:
+  pull_request:
+    paths:
+      - "scripts/**/*.py"
+      - "scripts/tests/**"
+      - "scripts/conformance/snapshots/**"
+      - ".github/scripts/**"
+      - "docs/release-manifest/**"
+      - "pyproject.toml"
+      - "requirements-dev.lock"
+      - ".github/workflows/python-tooling.yml"
+  push:
+    branches: [main]
+
+jobs:
+  python-tooling:
+    name: python-tooling
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements-dev.lock
+
+      - name: Install pinned dependencies
+        run: pip install -r requirements-dev.lock
+
+      - name: Lint (ruff)
+        run: ruff check .
+
+      - name: Format (ruff)
+        run: ruff format --check .
+
+      - name: Type-check (mypy --strict)
+        run: mypy
+
+      - name: Test with coverage (>= 80%)
+        run: pytest --cov-report=xml
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: python-tooling-coverage
+          path: coverage.xml

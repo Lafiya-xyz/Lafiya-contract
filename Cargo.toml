@@ -4,10 +4,14 @@ members = [
     "contracts/multisig-account",
     "contracts/attester-registry",
     "contracts/attestation-registry",
+    "contracts/incentive-pool",
     "crates/lafiya-config",
     "crates/lafiya-cli",
     "crates/lafiya-commitment",
+    "crates/lafiya-contract-common",
     "crates/lafiya-rpc-resilience",
+    "crates/lafiya-watchdog",
+    "crates/lafiya-fraud-scoring",
 ]
 
 [workspace.package]
@@ -17,7 +21,7 @@ license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
 [workspace.dependencies]
-soroban-sdk = "27.0.0"
+soroban-sdk = "28.0.0"
 
 [profile.release]
 opt-level = "z"

@@ -9,8 +9,8 @@
 
 use lafiya_rpc_resilience::mock::{ScriptedProvider, Shared};
 use lafiya_rpc_resilience::{
-    FailoverClient, RecoveryLog, RecoveryResult, RetryPolicy, RpcError, RpcProvider, SubmitOutcome,
-    TxState,
+    FailoverClient, RecoveryLog, RecoveryResult, RetryPolicy, RpcError, RpcProvider, SignedTx,
+    SubmitOutcome, TxState,
 };
 
 fn policy() -> RetryPolicy {
@@ -34,7 +34,8 @@ fn timeout_before_send_is_safe_to_retry_and_succeeds() {
     let mut client = FailoverClient::new(providers, policy());
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_recovery("tx-timeout-before-send", &mut log);
+    let result =
+        client.submit_with_recovery(&SignedTx::new("tx-timeout-before-send", ""), &mut log);
 
     assert_eq!(
         result,
@@ -68,7 +69,7 @@ fn ambiguous_timeout_after_send_polls_instead_of_resubmitting() {
     let mut client = FailoverClient::new(providers, policy());
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_recovery("tx-ambiguous-accepted", &mut log);
+    let result = client.submit_with_recovery(&SignedTx::new("tx-ambiguous-accepted", ""), &mut log);
 
     assert_eq!(
         result,
@@ -100,7 +101,7 @@ fn ambiguous_timeout_after_send_polls_and_finds_rejection() {
     let mut client = FailoverClient::new(providers, policy());
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_recovery("tx-ambiguous-rejected", &mut log);
+    let result = client.submit_with_recovery(&SignedTx::new("tx-ambiguous-rejected", ""), &mut log);
 
     assert_eq!(
         result,
@@ -129,7 +130,7 @@ fn rate_limit_backs_off_then_succeeds_on_the_same_provider() {
     let mut client = FailoverClient::new(providers, policy());
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_recovery("tx-rate-limited", &mut log);
+    let result = client.submit_with_recovery(&SignedTx::new("tx-rate-limited", ""), &mut log);
 
     assert_eq!(
         result,
@@ -162,7 +163,7 @@ fn primary_provider_down_fails_over_to_secondary_without_duplicate_submission() 
     let mut client = FailoverClient::new(providers, policy());
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_recovery("tx-failover", &mut log);
+    let result = client.submit_with_recovery(&SignedTx::new("tx-failover", ""), &mut log);
 
     assert_eq!(
         result,
@@ -198,7 +199,7 @@ fn exhausting_submit_rounds_escalates_to_the_operator_as_not_submitted() {
     );
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_recovery("tx-always-down", &mut log);
+    let result = client.submit_with_recovery(&SignedTx::new("tx-always-down", ""), &mut log);
 
     assert_eq!(
         result,
@@ -231,7 +232,7 @@ fn exhausting_poll_rounds_escalates_to_the_operator_as_unknown() {
     );
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_recovery("tx-vanishes", &mut log);
+    let result = client.submit_with_recovery(&SignedTx::new("tx-vanishes", ""), &mut log);
 
     assert_eq!(
         result,

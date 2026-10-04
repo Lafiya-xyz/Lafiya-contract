@@ -243,7 +243,15 @@ fn attest_emits_event() {
     };
     assert_eq!(
         env.events().all(),
-        std::vec![expected_event.to_xdr(&env, &client.address)],
+        std::vec![
+            AdminTransferProposed {
+                current_admin: admin.clone(),
+                proposed_admin: new_admin.clone(),
+                expires_at: 30 * 24 * 60 * 60,
+            }
+            .to_xdr(&env, &client.address),
+            expected_event.to_xdr(&env, &client.address)
+        ],
     );
 }
 
@@ -988,4 +996,222 @@ fn revoke_attestation_clears_get_attestation_history() {
     assert_eq!(client.get_attestation(&record_hash), None);
     let history_after = client.get_attestation_history(&record_hash);
     assert_eq!(history_after.len(), 0);
+}
+
+#[test]
+fn get_interface_reports_kind_versions_and_features() {
+    let (env, client, attester_registry, _admin) = setup();
+
+    let info = client.get_interface();
+    assert_eq!(
+        info.contract_kind,
+        Symbol::new(&env, "lafiya_attestation_registry")
+    );
+    assert_eq!(info.interface_version, INTERFACE_VERSION);
+    assert_eq!(info.schema_version, 1);
+    assert_eq!(info.event_version, EVENT_VERSION);
+    assert!(info.features.contains(Symbol::new(&env, "revocation")));
+
+    // Each contract reports its own kind, so wiring can be sanity-checked.
+    assert_ne!(
+        attester_registry.get_interface().contract_kind,
+        info.contract_kind
+    );
+}
+fn advance_ledgers(env: &Env, n: u32) {
+    use soroban_sdk::testutils::Ledger as _;
+    env.ledger().with_mut(|l| l.sequence_number += n);
+}
+
+fn rate_limited_setup(
+    max_per_window: u32,
+    window_ledgers: u32,
+) -> (Env, AttestationRegistryClient<'static>, Address) {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+    client.set_attestation_rate_limit(&max_per_window, &window_ledgers);
+    (env, client, attester)
+}
+
+fn hash(env: &Env, n: u8) -> BytesN<32> {
+    BytesN::from_array(env, &[n; 32])
+}
+
+#[test]
+fn rate_limit_disabled_by_default() {
+    let (env, client, attester_registry, _admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester);
+
+    assert_eq!(client.get_attestation_rate_limit(), None);
+    for i in 0..20 {
+        client.attest(&attester, &hash(&env, i));
+    }
+    assert_eq!(client.get_rate_limit_retry_after(&attester), None);
+}
+
+#[test]
+fn rate_limit_under_and_at_limit_succeeds() {
+    let (env, client, attester) = rate_limited_setup(3, 100);
+
+    client.attest(&attester, &hash(&env, 1));
+    client.attest(&attester, &hash(&env, 2));
+    assert_eq!(client.get_rate_limit_retry_after(&attester), None);
+
+    client.attest(&attester, &hash(&env, 3));
+    let start = env.ledger().sequence();
+    assert_eq!(
+        client.get_rate_limit_retry_after(&attester),
+        Some(start + 100)
+    );
+}
+
+#[test]
+fn rate_limit_hit_event_emitted_when_window_fills() {
+    let (env, client, attester) = rate_limited_setup(1, 100);
+    let start = env.ledger().sequence();
+
+    let record_hash = hash(&env, 1);
+    let attestation = client.attest(&attester, &record_hash);
+
+    let hit = RateLimitHit {
+        attester: attester.clone(),
+        retry_after_ledger: start + 100,
+    };
+    let recorded = AttestationRecorded {
+        record_hash,
+        attester,
+        timestamp: attestation.timestamp,
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![
+            hit.to_xdr(&env, &client.address),
+            recorded.to_xdr(&env, &client.address)
+        ],
+    );
+}
+
+#[test]
+fn rate_limit_over_limit_fails() {
+    let (env, client, attester) = rate_limited_setup(2, 100);
+
+    client.attest(&attester, &hash(&env, 1));
+    client.attest(&attester, &hash(&env, 2));
+    assert_eq!(
+        client.try_attest(&attester, &hash(&env, 3)),
+        Err(Ok(Error::RateLimited))
+    );
+    assert_eq!(client.get_attestation(&hash(&env, 3)), None);
+}
+
+#[test]
+fn rate_limit_window_rollover_resets_count() {
+    let (env, client, attester) = rate_limited_setup(1, 100);
+
+    client.attest(&attester, &hash(&env, 1));
+    advance_ledgers(&env, 99);
+    assert_eq!(
+        client.try_attest(&attester, &hash(&env, 2)),
+        Err(Ok(Error::RateLimited))
+    );
+
+    advance_ledgers(&env, 1);
+    assert_eq!(client.get_rate_limit_retry_after(&attester), None);
+    client.attest(&attester, &hash(&env, 2));
+}
+
+#[test]
+fn rate_limit_is_per_attester() {
+    let (env, client, attester_registry, _admin) = setup();
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    attester_registry.add_attester(&a);
+    attester_registry.add_attester(&b);
+    client.set_attestation_rate_limit(&1, &100);
+
+    client.attest(&a, &hash(&env, 1));
+    client.attest(&b, &hash(&env, 2));
+    assert_eq!(
+        client.try_attest(&a, &hash(&env, 3)),
+        Err(Ok(Error::RateLimited))
+    );
+}
+
+#[test]
+fn rate_limit_per_attester_override() {
+    let (env, client, attester) = rate_limited_setup(1, 100);
+    client.set_attester_rate_limit(&attester, &3);
+
+    for i in 0..3 {
+        client.attest(&attester, &hash(&env, i));
+    }
+    assert_eq!(
+        client.try_attest(&attester, &hash(&env, 9)),
+        Err(Ok(Error::RateLimited))
+    );
+
+    client.remove_attester_rate_limit(&attester);
+    advance_ledgers(&env, 100);
+    client.attest(&attester, &hash(&env, 10));
+    assert_eq!(
+        client.try_attest(&attester, &hash(&env, 11)),
+        Err(Ok(Error::RateLimited))
+    );
+}
+
+#[test]
+fn rate_limit_fails_open_after_temporary_entry_expiry() {
+    let (env, client, attester) = rate_limited_setup(1, 100);
+    client.attest(&attester, &hash(&env, 1));
+
+    // Simulate the temporary `RateWindow` entry being archived before the
+    // window ends: the attester starts a fresh window.
+    env.as_contract(&client.address, || {
+        env.storage()
+            .temporary()
+            .remove(&DataKey::RateWindow(attester.clone()));
+    });
+
+    client.attest(&attester, &hash(&env, 2));
+    assert_eq!(
+        client.try_attest(&attester, &hash(&env, 3)),
+        Err(Ok(Error::RateLimited))
+    );
+}
+
+#[test]
+fn rate_limit_zero_disables_and_invalid_window_rejected() {
+    let (env, client, attester) = rate_limited_setup(1, 100);
+
+    assert_eq!(
+        client.try_set_attestation_rate_limit(&5, &0),
+        Err(Ok(Error::InvalidRateLimit))
+    );
+    assert_eq!(
+        client.try_set_attestation_rate_limit(&5, &(MAX_RATE_WINDOW_LEDGERS + 1)),
+        Err(Ok(Error::InvalidRateLimit))
+    );
+
+    client.set_attestation_rate_limit(&0, &0);
+    assert_eq!(client.get_attestation_rate_limit(), None);
+    for i in 0..5 {
+        client.attest(&attester, &hash(&env, i));
+    }
+}
+
+#[test]
+fn set_attestation_rate_limit_requires_admin_auth() {
+    let env = Env::default();
+    let attester_registry_id = env.register(attester_registry::AttesterRegistry, ());
+    let contract_id = env.register(AttestationRegistry, ());
+    let client = AttestationRegistryClient::new(&env, &contract_id);
+    let admin = Address::generate(&env);
+    env.mock_all_auths();
+    attester_registry::AttesterRegistryClient::new(&env, &attester_registry_id).initialize(&admin);
+    client.initialize(&admin, &attester_registry_id);
+
+    env.set_auths(&[]);
+    assert!(client.try_set_attestation_rate_limit(&1, &100).is_err());
 }

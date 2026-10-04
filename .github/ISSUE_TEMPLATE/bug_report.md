@@ -11,7 +11,7 @@ labels: bug
 > **Privacy:** never paste real personal or health data (names, record
 > contents, QR payloads) into an issue — only synthetic test data and
 > non-reversible hashes. See the privacy note in the
-> [README](README.md#privacy--compliance).
+> [overview](../../docs/overview.md#privacy--compliance).
 
 ## Description
 

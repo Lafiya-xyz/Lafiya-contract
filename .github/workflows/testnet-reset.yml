@@ -1,0 +1,126 @@
+name: Testnet Reset Watch
+
+# Hourly detection of SDF testnet resets (issue #425). On `network-reset`:
+# redeploy, re-seed fixtures, open a PR with the new contract IDs, and notify
+# maintainers and lafiya-web. See docs/runbooks/testnet-reset.md.
+
+on:
+  schedule:
+    - cron: '7 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: testnet-reset
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  detect:
+    runs-on: ubuntu-latest
+    outputs:
+      status: ${{ steps.detect.outputs.status }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+      - name: Classify testnet state
+        id: detect
+        run: python3 scripts/testnet_reset/detect.py --network testnet
+      - name: Report
+        run: |
+          echo "Testnet status: **${{ steps.detect.outputs.status }}**" >> "$GITHUB_STEP_SUMMARY"
+
+  notify-missing:
+    needs: detect
+    if: needs.detect.outputs.status == 'contract-missing'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open alert issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create -R "$GITHUB_REPOSITORY" \
+            --title "Testnet contract instance missing" \
+            --body "The hourly testnet check found a configured contract instance missing while the network itself was not reset (likely TTL expiry). Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID. Follow docs/runbooks/testnet-reset.md."
+
+  redeploy:
+    needs: detect
+    if: needs.detect.outputs.status == 'network-reset'
+    runs-on: ubuntu-latest
+    environment: testnet
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: '3.12'
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Import and fund deployer
+        env:
+          DEPLOYER_SECRET: ${{ secrets.TESTNET_DEPLOYER_SECRET }}
+        run: |
+          echo "$DEPLOYER_SECRET" | stellar keys add deployer --secret-key
+          # After a reset every account is gone, so friendbot must fund it again.
+          curl -sf --retry 5 --retry-delay 30 "https://friendbot.stellar.org/?addr=$(stellar keys address deployer)" > /dev/null \
+            || { echo "::error title=Friendbot unavailable::cannot fund deployer after reset"; exit 1; }
+
+      - name: Redeploy canonical system
+        run: ./scripts/deploy-testnet.sh --identity deployer --network testnet --yes
+
+      - name: Re-seed fixture data
+        run: ./scripts/testnet_reset/seed-fixtures.sh deployments/testnet.json deployer testnet
+
+      - name: Reconcile configuration and record new baseline
+        run: |
+          python3 scripts/testnet_reset/reconcile.py deployments/testnet.json --network testnet
+          python3 scripts/testnet_reset/detect.py --network testnet --update-state
+          ROW="| $(date -u +%Y-%m-%dT%H:%M:%SZ) | reset-redeploy | ${GITHUB_SHA::7} | \`$(jq -r .attester_registry deployments/testnet.json)\` | \`$(jq -r .attestation_registry deployments/testnet.json)\` | success | [run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) |"
+          echo "$ROW" >> docs/deployments/testnet.md
+
+      - name: Open PR with updated contract IDs
+        id: pr
+        uses: peter-evans/create-pull-request@v7
+        with:
+          branch: chore/testnet-reset-${{ github.run_id }}
+          title: 'chore(testnet): reconcile contract IDs after testnet reset'
+          commit-message: 'chore(testnet): reconcile contract IDs after testnet reset'
+          add-paths: |
+            config/networks.toml
+            config/testnet-state.json
+            bindings/*/src/index.ts
+            docs/deployments/testnet.md
+          body: |
+            Automated by `testnet-reset.yml` after a detected testnet reset.
+            Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+      - name: Notify lafiya-web
+        env:
+          GH_TOKEN: ${{ secrets.LAFIYA_WEB_DISPATCH_TOKEN }}
+        run: |
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::LAFIYA_WEB_DISPATCH_TOKEN not set; skipping repository_dispatch"
+            exit 0
+          fi
+          jq -n --arg pr "${{ steps.pr.outputs.pull-request-url }}" --slurpfile d deployments/testnet.json \
+            '{event_type: "lafiya-testnet-reset", client_payload: {deployment: $d[0], pull_request: $pr}}' \
+            | gh api repos/Lafiya-xyz/lafiya-web/dispatches --input -
+
+      - name: Notify maintainers
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh issue create -R "$GITHUB_REPOSITORY" \
+            --title "Testnet reset detected: contracts redeployed" \
+            --body "Testnet was reset and the system was redeployed. Review and merge ${{ steps.pr.outputs.pull-request-url }}. Runbook: docs/runbooks/testnet-reset.md."

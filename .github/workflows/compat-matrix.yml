@@ -1,0 +1,100 @@
+name: Compatibility Matrix
+
+# Weekly check that the contracts still build and pass tests against newer
+# Soroban SDK releases and the current/next Stellar protocol, so upgrades are
+# never silent. See docs/runbooks/sdk-protocol-upgrade.md.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Mondays 06:00 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep in sync with the CLI used for `make bindings` / `make conformance`.
+  STELLAR_CLI_VERSION: "25.1.0"
+
+jobs:
+  sdk:
+    name: SDK (${{ matrix.sdk }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # pinned:       the version in Cargo.lock
+        # latest-patch: newest release compatible with Cargo.toml's requirement
+        # main:         rs-soroban-sdk main branch (pre-release)
+        sdk: [pinned, latest-patch, main]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - name: Select soroban-sdk
+        run: |
+          case "${{ matrix.sdk }}" in
+            pinned) ;;
+            latest-patch) cargo update -p soroban-sdk ;;
+            main)
+              sed -i 's|^soroban-sdk = .*|soroban-sdk = { git = "https://github.com/stellar/rs-soroban-sdk", branch = "main" }|' Cargo.toml
+              cargo update -p soroban-sdk
+              ;;
+          esac
+          cargo tree -p attestation-registry -i soroban-sdk --depth 0
+      - name: Test
+        run: cargo test --workspace
+      - name: Build contract crates
+        run: cargo build --release --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
+
+  protocol:
+    name: Protocol (quickstart:${{ matrix.image }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # latest:  current network protocol
+        # testing: next protocol ahead of the testnet/mainnet votes
+        image: [latest, testing]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Stellar CLI
+        run: |
+          curl -sSfL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" -o stellar-cli.tar.gz
+          tar -xzf stellar-cli.tar.gz stellar
+          sudo mv stellar /usr/local/bin/
+          stellar --version
+      - name: Start quickstart
+        run: docker run -d -p 8000:8000 --name stellar "stellar/quickstart:${{ matrix.image }}" --local
+      - name: Integration tests
+        run: make test-integration
+
+  report:
+    name: Open issue on failure
+    needs: [sdk, protocol]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Weekly compatibility matrix failed"
+          body="The scheduled SDK/protocol compatibility matrix failed: $RUN_URL
+
+          Follow docs/runbooks/sdk-protocol-upgrade.md to triage."
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

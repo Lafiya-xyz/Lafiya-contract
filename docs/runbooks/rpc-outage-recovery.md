@@ -19,6 +19,36 @@ retry-classification model and the failure-injection prototype this runbook mirr
 
 ---
 
+## 0. What `lafiya-cli` already does for you
+
+`lafiya-cli attester add` / `attester remove` do **not** hand submission to a single
+`stellar contract invoke` call any more. The CLI:
+
+1. builds and simulates the transaction with `stellar contract invoke --build-only` and
+   `stellar tx simulate`, trying each endpoint in `rpc_urls` in order (these steps are
+   read-only);
+2. signs it locally (`stellar tx sign`) and computes its hash (`stellar tx hash`);
+3. submits it through `FailoverClient::submit_with_recovery` with the production
+   `HttpRpcProvider`, across every endpoint in `rpc_urls` (or just `rpc_url` when the list
+   is empty):
+   - connection refused, DNS failure, TLS failure, HTTP 429/503, or `TRY_AGAIN_LATER`:
+     nothing was recorded, so it retries on the next endpoint after a jittered backoff;
+   - timeout after the request was written, a reset mid-response, or another 5xx: the
+     outcome is ambiguous, so it **polls `getTransaction` on every endpoint** instead of
+     resubmitting;
+   - `ERROR` from `sendTransaction`, or `FAILED` from `getTransaction`: final, never retried.
+
+Pass `-v` to print the full recovery log (`[rpc] round 1: submit <hash> via <url>` …).
+The command ends in one of three ways:
+
+| CLI output | Meaning | What to do |
+| --- | --- | --- |
+| `Transaction <hash> succeeded in ledger <n> (via <url>)` | Landed. | Nothing. |
+| `transaction <hash> was rejected (<code>); do not resubmit it` | Final on-chain verdict. | See §3, last row. |
+| `outcome of transaction <hash> is unknown …` | Every endpoint exhausted without a verdict. | Keep the hash and go to [§3a](#3a-poll-the-transaction-hash), then [§5](#5-escalate). |
+
+The rest of this runbook covers the Bash scripts, other commands, and the "unknown" case.
+
 ## 1. Is this a read or a write?
 
 - **Read-only** (`config show`, `attester is`, `attestation get`, `stellar tx simulate`):
@@ -33,7 +63,10 @@ retry-classification model and the failure-injection prototype this runbook mirr
 check the command's stderr/stdout output first. If the process was killed before printing
 one (or you don't have the terminal output anymore):
 
-- For `attester add`/`remove` and `attest`: these are single-invocation calls signed and
+- For `lafiya-cli attester add`/`remove`: the hash is computed before anything is sent and
+  printed in every final message (and in the `-v` log). If the CLI stopped before printing
+  one, it failed while building, simulating, or signing, so nothing was submitted.
+- For `attest` and the Bash `scripts/admin.sh`: these are single-invocation calls signed and
   submitted in one step; if no hash was printed, the request most likely never reached the
   network (Definite failure — see §3, retry directly). This is the one case where "no hash"
   is itself informative.
@@ -78,7 +111,16 @@ Read `result.status`:
 - `"FAILED"` — the transaction was included but failed on-chain. Read `result.resultXdr` (or
   re-run with `--network` pointed at a block explorer if you have one configured) for why.
   Treat as **do not retry this transaction** (§3, last row).
-- `"NOT_FOUND"` — this provider has no record of the hash. This means either it never
+- `"NOT_FOUND"` **and** `result.latestLedger` is greater than the transaction's
+  `maxLedger` (the CLI prints `valid through ledger N` when it submits) — the transaction
+  has **expired** and can never be included. Nothing was applied. It is safe to re-run the
+  original command, which builds a fresh transaction with new bounds. `lafiya-cli` already
+  does this automatically, up to two times.
+- `"NOT_FOUND"` and the source account's sequence number (`stellar keys` / `getLedgerEntries`)
+  is at or past the transaction's sequence number — a **different** transaction consumed the
+  sequence number, so this one can never be included. Check what that transaction did
+  before re-running anything, since it may already have made the same change.
+- `"NOT_FOUND"` otherwise — this provider has no record of the hash. This means either it never
   arrived, or it aged out of this provider's retention window. If you have more than one RPC
   URL available for this network, repeat the query against each before concluding "not
   found" — see [§4](#4-if-the-provider-itself-is-down).
@@ -89,8 +131,19 @@ Read `result.status`:
 
 ## 4. If the provider itself is down
 
-`config/networks.toml` currently defines one `rpc_url` per network (ADR-0011 proposes
-extending this to a list; until that lands, do this manually):
+List fallback endpoints per network in `rpc_urls` (primary first; `rpc_url` is used when
+the list is empty). `lafiya-cli` then fails over automatically (§0):
+
+```toml
+[testnet]
+rpc_url = "https://soroban-testnet.stellar.org"
+rpc_urls = ["https://soroban-testnet.stellar.org", "https://<second-provider>"]
+```
+
+For a one-off, don't edit the tracked file. Put the list in the gitignored
+`config/networks.local.toml`, or point `rpc_url` at a working provider with
+`LAFIYA_<NETWORK>_RPC_URL=...` or `--set rpc_url=...` (either one replaces the whole list;
+see `config/README.md`). For the Bash scripts and manual checks:
 
 1. Get a second known-good RPC URL for the same network (a different SDF endpoint, a
    self-hosted node, or a third-party provider — see ADR-0011's provider comparison matrix
@@ -102,12 +155,17 @@ extending this to a list; until that lands, do this manually):
    `NOT_FOUND` everywhere, treat it as safe to retry and re-run the original command,
    pointed at the working provider:
    ```sh
-   ./scripts/admin.sh --network testnet --config /path/to/alt-networks.toml attester add G...
+   LAFIYA_TESTNET_RPC_URL=https://<working-provider> ./scripts/admin.sh --network testnet attester add G...
    ```
-   (Use a scratch copy of `networks.toml` with `rpc_url` swapped — do not commit a
-   temporary provider override into the tracked config file.)
+   (Do not commit a temporary provider override into the tracked config file.)
 
 ## 5. Escalate
+
+The security watchdog raises `watchdog_failing` / `watchdog_lag` (critical) when it
+cannot reach RPC or falls behind; during an outage expect those alerts and follow
+[watchdog.md](watchdog.md#alert-types). Every admin command run with `lafiya-cli`
+during the incident is recorded in `~/.lafiya/audit.jsonl` (`lafiya-cli audit show`),
+including the transaction hash when the stellar CLI reported one.
 
 If §3a's poll budget is exhausted and no provider will confirm either `SUCCESS`, `FAILED`,
 or a consistent `NOT_FOUND`, stop retrying. Record: the transaction hash, the command that
@@ -116,3 +174,38 @@ was run, the network, and every provider URL queried with its response. This is 
 automated model also gives up at this point rather than guessing, and hands the same
 information back for a human to resolve (e.g. by inspecting a block explorer, or waiting out
 a provider's indexing lag before trying again later).
+
+## 6. Transaction stuck pending (fee escalation)
+
+**Scope:** the transaction is not ambiguous -- §3a's `getTransaction` poll returns
+`"PENDING"` consistently across providers -- it is simply not being included, usually because
+its inclusion fee lost a surge-pricing auction. This is a different problem from an RPC
+outage: retrying or polling harder does not help; the transaction needs a higher bid. See
+issue #408 and `crates/lafiya-rpc-resilience/src/fees.rs` for the calculator this section
+describes.
+
+1. **Confirm it's a fee problem, not an outage.** If `getTransaction` returns `"PENDING"`
+   consistently (not `NOT_FOUND` on some providers), and several ledgers have closed since
+   submission, the transaction reached the network but isn't winning inclusion. Compare its
+   inclusion fee against current network conditions:
+   ```sh
+   curl -s "$LAFIYA_RPC_URL" -H 'content-type: application/json' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"getFeeStats"}' | python3 -m json.tool
+   ```
+2. **Resubmit as a fee-bump transaction**, not a fresh transaction: wrap the *same* signed
+   envelope in a `FeeBumpTransaction` with a higher inclusion fee (`fees::decide_fee_bump`
+   picks the new bid -- p90 of current `getFeeStats` by default, strictly above the original
+   bid). The inner transaction's hash is unchanged by a fee bump, so §3a's poll-by-hash
+   instructions apply unmodified to the wrapped submission -- keep polling the *inner* hash.
+3. **Respect `--max-fee`.** If the computed bump would exceed the operator-set budget
+   ceiling, `fees::enforce_budget` refuses it (`FeeError::ExceedsBudget`). Do not override
+   this by hand without deliberately raising `--max-fee` first -- it exists so an automated
+   or scripted retry can't runaway-bid during a fee spike.
+4. **Emergency commands (`pause`, `emergency-stop`, `revoke`) start at high priority** (p90)
+   rather than going through this escalation path from p50, since they're the case where
+   minutes of delay matter most.
+5. If a fee-bumped resubmission also sits pending past the same threshold, repeat from step
+   2 with fresh `getFeeStats` data -- congestion can worsen between attempts. If it's still
+   unresolved after a few rounds, escalate per [§5](#5-escalate); note in the escalation that
+   this was a fee-congestion case, not an ambiguous-outcome case, so the next operator
+   doesn't re-walk §3a expecting a different answer.
