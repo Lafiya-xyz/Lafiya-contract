@@ -91,7 +91,7 @@ jobs:
 
       - name: Open PR with updated contract IDs
         id: pr
-        uses: peter-evans/create-pull-request@v7
+        uses: peter-evans/create-pull-request@v8
         with:
           branch: chore/testnet-reset-${{ github.run_id }}
           title: 'chore(testnet): reconcile contract IDs after testnet reset'
