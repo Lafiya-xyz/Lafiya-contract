@@ -7,18 +7,215 @@
 //! hash, admin/source account) is validated locally before the stellar CLI is
 //! invoked, so malformed input fails fast with an actionable message.
 
+mod audit;
+mod auth_decode;
+mod logging;
+
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use lafiya_config::{
-    get_network, load_networks, validate_account_address, validate_address, validate_network_name,
-    validate_record_hash, validate_source_account, ContractKind, DeploymentState, NetworkConfig,
+    load_networks, resolve_network, validate_account_address, validate_address,
+    validate_network_name, validate_record_hash, validate_source_account, ContractKind,
+    DeploymentState, NetworkConfig,
 };
+use lafiya_rpc_resilience::{
+    backoff_with_jitter, http::HttpRpcProvider, FailoverClient, RecoveryLog, RecoveryResult,
+    RetryPolicy, RpcProvider, SignedTx,
+};
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
+
+mod interface;
+mod deployment_ledger;
+use deployment_ledger::{DeployEvent, DeploymentRecord};
 
 /// Env var holding the stellar CLI identity used as transaction source.
 const ENV_SOURCE: &str = "STELLAR_ACCOUNT";
 /// Env var holding the contract admin address.
 const ENV_ADMIN: &str = "ADMIN_ADDRESS";
+
+// ── Helper: build `stellar contract invoke` argv ─────────────────────────────
+
+/// Build a `stellar contract invoke` argument list from the given parameters.
+///
+/// The returned `Vec<String>` is passed directly to `std::process::Command::args`,
+/// so every argument is a separate element — values are never shell-concatenated
+/// or interpolated, which prevents any injection through user-supplied fields.
+///
+/// # Arguments
+/// * `cfg`         – network config (supplies `--rpc-url` and `--network-passphrase`)
+/// * `contract_id` – the `C...` contract strkey for `--id`
+/// * `source`      – optional stellar CLI identity or `G...` address for `--source`
+/// * `fn_name`     – the contract function name for `--fn`
+/// * `fn_args`     – the already-validated positional function arguments (e.g.
+///                   `&["--attester", "G..."]`)
+pub fn invoke_args(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: Option<&str>,
+    fn_name: &str,
+    fn_args: &[&str],
+) -> Vec<String> {
+    let mut args: Vec<String> = vec![
+        "contract".to_string(),
+        "invoke".to_string(),
+        "--id".to_string(),
+        contract_id.to_string(),
+        "--rpc-url".to_string(),
+        cfg.rpc_url.clone(),
+        "--network-passphrase".to_string(),
+        cfg.network_passphrase.clone(),
+    ];
+    if let Some(src) = source {
+        args.push("--source".to_string());
+        args.push(src.to_string());
+    }
+    args.push("--".to_string());
+    args.push(fn_name.to_string());
+    for a in fn_args {
+        args.push(a.to_string());
+    }
+    args
+}
+
+/// Run `stellar <args>` as a subprocess, propagating a non-zero exit as an error.
+///
+/// If the `stellar` CLI binary is not on `PATH`, returns an error with install
+/// instructions instead of panicking.
+pub fn run_stellar(args: Vec<String>) -> anyhow::Result<()> {
+    if which::which("stellar").is_err() {
+        anyhow::bail!(
+            "stellar CLI not found — install with: cargo install --locked stellar-cli"
+        );
+    }
+    println!("> stellar {}", args.join(" "));
+    let status = std::process::Command::new("stellar")
+        .args(&args)
+        .status()
+        .context("failed to spawn stellar CLI")?;
+    if !status.success() {
+        anyhow::bail!("stellar CLI exited with {}", status);
+    }
+    Ok(())
+}
+
+/// Resolve the transaction source account.
+///
+/// Precedence (first non-empty wins):
+/// 1. `--source` flag value
+/// 2. `STELLAR_ACCOUNT` environment variable
+///
+/// The resolved value is validated with `validate_source_account` — it must be
+/// a stellar CLI identity name or a `G...` strkey.  Returns `Ok(None)` only
+/// when both sources are absent.
+pub fn validated_source(flag: Option<String>) -> anyhow::Result<Option<String>> {
+    let raw = flag.or_else(|| std::env::var(ENV_SOURCE).ok());
+    match raw {
+        None => Ok(None),
+        Some(s) if s.is_empty() => Ok(None),
+        Some(s) => {
+            validate_source_account(&s).context("invalid source account")?;
+            Ok(Some(s))
+        }
+    }
+}
+
+/// Produce a human-readable one-liner summarising the deployment state of `cfg`.
+pub fn deployment_summary(cfg: &NetworkConfig) -> String {
+    match cfg.deployment_state() {
+        DeploymentState::NotDeployed => "not yet deployed".to_string(),
+        DeploymentState::Deployed => format!(
+            "deployed (attester-registry: {}, attestation-registry: {})",
+            cfg.contracts.attester_registry, cfg.contracts.attestation_registry
+        ),
+        DeploymentState::Partial { missing } => {
+            let names: Vec<&str> = missing.iter().map(|k| k.key()).collect();
+            format!("partially deployed — missing: {}", names.join(", "))
+        }
+    }
+}
+
+// ── Deploy identity and mode ──────────────────────────────────────────────────
+
+/// The deploy mode selected by the operator.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DeployMode {
+    /// Only build the WASM artefacts; skip network submission.
+    BuildOnly,
+    /// Resolve network config and print what would happen, but do not submit.
+    DryRun,
+    /// Full deploy (build + upload + deploy).
+    Deploy,
+}
+
+impl DeployMode {
+    /// Construct a `DeployMode` from the `--build-only` and `--dry-run` flags.
+    pub fn new(build_only: bool, dry_run: bool) -> Self {
+        if build_only {
+            DeployMode::BuildOnly
+        } else if dry_run {
+            DeployMode::DryRun
+        } else {
+            DeployMode::Deploy
+        }
+    }
+}
+
+/// Resolved admin identity and transaction source for the deploy command.
+#[derive(Debug, Clone)]
+pub struct DeployIdentity {
+    /// The admin `G...` address that will be passed to `initialize`.
+    pub admin: Option<String>,
+    /// The stellar CLI identity or `G...` address used as the transaction source.
+    pub source: Option<String>,
+}
+
+impl DeployIdentity {
+    /// Resolve the deploy identity from CLI flags, env fallbacks, and the deploy
+    /// mode.
+    ///
+    /// For `Deploy` mode, both `source` and `admin` must be present (either from
+    /// flags or env vars).  For `BuildOnly` and `DryRun` they are optional.
+    pub fn resolve(
+        admin_flag: Option<String>,
+        source_flag: Option<String>,
+        admin_env: Option<String>,
+        source_env: Option<String>,
+        mode: DeployMode,
+    ) -> anyhow::Result<Self> {
+        // Env fallbacks
+        let admin = admin_flag.or(admin_env).filter(|s| !s.is_empty());
+        let source = source_flag.or(source_env).filter(|s| !s.is_empty());
+
+        // Validate what we have
+        if let Some(ref a) = admin {
+            validate_account_address("admin", a).context("invalid admin address")?;
+        }
+        if let Some(ref s) = source {
+            validate_source_account(s).context("invalid source account")?;
+        }
+
+        // For a real deploy both are required
+        if mode == DeployMode::Deploy {
+            if admin.is_none() {
+                anyhow::bail!(
+                    "admin address is required for deploy. Pass --admin G... or set {ENV_ADMIN}"
+                );
+            }
+            if source.is_none() {
+                anyhow::bail!(
+                    "source account is required for deploy. Pass --source or set {ENV_SOURCE}"
+                );
+            }
+        }
+
+        Ok(DeployIdentity { admin, source })
+    }
+}
+
+// ── CLI argument types ────────────────────────────────────────────────────────
 
 #[derive(Parser, Debug)]
 #[command(
@@ -34,12 +231,25 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
+    /// Log output format (logs go to stderr)
+    #[arg(long, value_enum, default_value = "text", global = true)]
+    log_format: logging::LogFormat,
+
+    /// Increase log verbosity (-v debug, -vv trace)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
     #[command(subcommand)]
     command: Commands,
 }
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Verify published trust data (SEP-1 stellar.toml)
+    Trust {
+        #[command(subcommand)]
+        sub: TrustSub,
+    },
     /// Show / list network config
     Config {
         #[command(subcommand)]
@@ -54,6 +264,22 @@ enum Commands {
     Attestation {
         #[command(subcommand)]
         sub: AttestationSub,
+    },
+    /// Decode authorization entries for signer review (ADR-0007)
+    Auth {
+        #[command(subcommand)]
+        sub: AuthSub,
+    },
+    /// Inspect the local operation audit log
+    Audit {
+        #[command(subcommand)]
+        sub: AuditSub,
+    },
+    /// Negotiate the interface of a deployed contract via `get_interface`
+    Interface {
+        /// Which contract to query
+        #[arg(value_enum)]
+        contract: InterfaceTarget,
     },
     /// Deploy contracts (wrapper around scripts/deploy.sh logic, but uses same config)
     Deploy {
@@ -70,6 +296,95 @@ enum Commands {
         #[arg(long)]
         admin: Option<String>,
     },
+    /// Append-only per-network deployment history (deployments/<network>.jsonl)
+    Deployments {
+        #[command(subcommand)]
+        sub: DeploymentsSub,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DeploymentsSub {
+    /// Append one event record to deployments/<network>.jsonl.
+    ///
+    /// Called automatically by scripts/deploy.sh and scripts/upgrade.sh after
+    /// on-chain confirmation; can also be run by hand for an out-of-band
+    /// change (e.g. admin_transfer).
+    Record {
+        /// deploy | initialize | upgrade | migrate | admin_transfer | repoint
+        #[arg(long)]
+        event: String,
+        /// attester-registry | attestation-registry | multisig-account
+        #[arg(long)]
+        contract_kind: String,
+        /// The affected contract's Stellar contract ID (C...)
+        #[arg(long)]
+        contract_id: String,
+        /// Path to the wasm now running, to compute wasm_sha256 (omit for
+        /// events that don't change code, e.g. admin_transfer)
+        #[arg(long)]
+        wasm: Option<PathBuf>,
+        /// sha256 of the wasm this event replaced (upgrade/migrate)
+        #[arg(long)]
+        previous_wasm_sha256: Option<String>,
+        /// Confirmed transaction hash. Omit only if it genuinely could not
+        /// be captured -- the record is still appended with tx_hash: null,
+        /// but `deployments verify` cannot confirm it against the chain.
+        #[arg(long)]
+        tx_hash: Option<String>,
+        /// Ledger sequence the transaction closed in, if known
+        #[arg(long)]
+        ledger: Option<u32>,
+        /// Identity/signer-set that authorized this event
+        #[arg(long)]
+        operator: String,
+    },
+    /// Verify a network's ledger file: hash chain intact, ledgers
+    /// monotonic, required fields present. Offline check only -- does not
+    /// query the chain (see deployments/README.md).
+    Verify,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum InterfaceTarget {
+    Attester,
+    Attestation,
+}
+
+#[derive(Subcommand, Debug)]
+enum TrustSub {
+    /// Fetch https://<domain>/.well-known/stellar.toml and compare its contract ids and
+    /// wasm hashes with the local config and on-chain instance data
+    Verify {
+        /// Domain serving the stellar.toml, e.g. lafiya.xyz
+        #[arg(long)]
+        domain: String,
+        /// PEM root certificate to trust instead of the WebPKI roots (staging hosts)
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+        /// Skip the on-chain wasm hash comparison
+        #[arg(long, default_value_t = false)]
+        skip_chain: bool,
+    },
+}
+
+/// Output format for `config env`.
+///
+/// - `shell`  (default): `export KEY='value'` — safe for `eval $(...)`.
+/// - `dotenv`: `KEY='value'` — safe for `set -a; source <(...); set +a`.
+/// - `json`:   `{ "KEY": "value", ... }` — for scripting with `jq`.
+///
+/// Single-quoting ensures shell metacharacters (`$`, backtick, `!`, etc.)
+/// in any value are treated as literals and cannot execute commands.
+#[derive(Debug, Clone, clap::ValueEnum, Default)]
+enum EnvFormat {
+    /// Shell export lines with single-quote-escaped values. Safe for `eval`.
+    #[default]
+    Shell,
+    /// `KEY=VALUE` pairs suitable for `set -a; source <(...)`.
+    Dotenv,
+    /// JSON object. Parse with `jq` or your language's JSON library.
+    Json,
 }
 
 #[derive(Subcommand, Debug)]
@@ -80,7 +395,22 @@ enum ConfigSub {
     List,
     /// Print shell export lines for current network (for use with eval or sourcing)
     Env,
+    /// Print the JSON Schema for networks.toml (committed as config/networks.schema.json)
+    Schema,
 }
+
+fn parse_override(raw: &str) -> Result<(String, String), String> {
+    raw.split_once('=')
+        .map(|(k, v)| (k.trim().to_string(), v.to_string()))
+        .ok_or_else(|| format!("expected KEY=VALUE, got `{raw}`"))
+}
+
+/// Single-quote a value for safe use in `eval`.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
+}
+
+// ── attester subcommands ──────────────────────────────────────────────────────
 
 #[derive(Subcommand, Debug)]
 enum AttesterSub {
@@ -89,33 +419,227 @@ enum AttesterSub {
         /// Stellar address (G...)
         address: String,
     },
-    /// Add attester (requires admin - will invoke stellar CLI)
+    /// Add attester (requires admin)
     Add {
         /// Stellar address (G...) to allowlist as an attester
         address: String,
         #[arg(long)]
         source: Option<String>,
     },
-    /// Remove attester
+    /// Add attester with optional metadata (requires admin)
+    AddWithInfo {
+        /// Stellar address (G...) to allowlist
+        address: String,
+        /// Hex-encoded 32-byte license hash (optional)
+        #[arg(long)]
+        license_hash: Option<String>,
+        /// Region symbol, e.g. `NG-LA` (optional)
+        #[arg(long)]
+        region: Option<String>,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Update metadata for an already-allowlisted attester (requires admin)
+    UpdateInfo {
+        /// Stellar address (G...) of the attester to update
+        address: String,
+        /// Hex-encoded 32-byte license hash (optional)
+        #[arg(long)]
+        license_hash: Option<String>,
+        /// Region symbol, e.g. `NG-LA` (optional)
+        #[arg(long)]
+        region: Option<String>,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Remove attester (requires admin)
     Remove {
         /// Stellar address (G...) to remove from the allowlist
         address: String,
         #[arg(long)]
         source: Option<String>,
     },
+    /// Suspend an allowlisted attester (requires admin)
+    Suspend {
+        /// Stellar address (G...) to suspend
+        address: String,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Reinstate a suspended attester (requires admin)
+    Reinstate {
+        /// Stellar address (G...) to reinstate
+        address: String,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Get stored metadata for an attester
+    GetInfo {
+        /// Stellar address (G...)
+        address: String,
+    },
+    /// Get attester metadata and suspension state
+    GetStatus {
+        /// Stellar address (G...)
+        address: String,
+    },
+    /// Set the soft cap on the number of allowlisted attesters (requires admin)
+    SetMaxAttesters {
+        /// Maximum number of attesters
+        max: u32,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Get the soft cap on the number of allowlisted attesters
+    GetMaxAttesters,
+    /// Get the current count of allowlisted attesters
+    GetCount,
+    /// Get the storage schema version
+    GetSchemaVersion,
+    /// Upgrade the contract wasm (requires admin)
+    Upgrade {
+        /// Hex-encoded 32-byte wasm hash of the already-uploaded wasm blob
+        new_wasm_hash: String,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Run any pending storage-schema migration (requires admin)
+    Migrate {
+        #[arg(long)]
+        source: Option<String>,
+    },
+}
+
+// ── attestation subcommands ───────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+enum AuthSub {
+    /// Render a SorobanAuthorizationEntry or TransactionEnvelope (base64 XDR,
+    /// or a path to a file containing it) as a human-readable tree
+    Decode {
+        /// Base64 XDR, or a path to a file containing it
+        input: String,
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: DecodeFormat,
+        /// Extra known address label, as ADDRESS=NAME (repeatable)
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Current ledger sequence, to show how soon the entry expires
+        #[arg(long)]
+        current_ledger: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum DecodeFormat {
+    Text,
+    Json,
+}
+
+#[derive(Subcommand, Debug)]
+enum AuditSub {
+    /// Print the audit log (LAFIYA_AUDIT_LOG or ~/.lafiya/audit.jsonl)
+    Show,
+    /// Verify the audit log hash chain
+    Verify,
 }
 
 #[derive(Subcommand, Debug)]
 enum AttestationSub {
-    /// Get attestation for a record hash (hex encoded 32-byte hash)
+    /// Get latest attestation for a record hash (hex encoded 32-byte hash)
     Get {
         /// Hex string of 32-byte record hash (64 chars)
         record_hash: String,
     },
+    /// Compute the versioned, domain-separated hash of a local record JSON file
+    Hash {
+        /// Path to the record JSON file
+        record: PathBuf,
+    },
+    /// Verify a local record JSON file against its on-chain attestation
+    Verify {
+        /// Path to the record JSON file
+        record: PathBuf,
+    },
 }
+
+// ── admin transfer subcommands ────────────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+enum AdminSub {
+    /// Get the current admin address for a contract
+    Get {
+        /// Which contract: attester-registry or attestation-registry
+        #[arg(long, default_value = "attester-registry")]
+        contract: String,
+    },
+    /// Propose a new admin (requires current admin auth)
+    Propose {
+        /// New admin address (G...)
+        new_admin: String,
+        /// Which contract: attester-registry or attestation-registry
+        #[arg(long, default_value = "attester-registry")]
+        contract: String,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Accept pending admin transfer (requires pending admin auth)
+    Accept {
+        /// Which contract: attester-registry or attestation-registry
+        #[arg(long, default_value = "attester-registry")]
+        contract: String,
+        #[arg(long)]
+        source: Option<String>,
+    },
+}
+
+// ── ops (pause/unpause) subcommands ──────────────────────────────────────────
+
+#[derive(Subcommand, Debug)]
+enum OpsSub {
+    /// Pause a contract (blocks state-changing operations)
+    Pause {
+        /// Which contract: attester-registry, attestation-registry, or both
+        #[arg(long, default_value = "attester-registry")]
+        contract: String,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Unpause a contract
+    Unpause {
+        /// Which contract: attester-registry, attestation-registry, or both
+        #[arg(long, default_value = "attester-registry")]
+        contract: String,
+        #[arg(long)]
+        source: Option<String>,
+    },
+    /// Query whether a contract is currently paused
+    IsPaused {
+        /// Which contract: attester-registry or attestation-registry
+        #[arg(long, default_value = "attester-registry")]
+        contract: String,
+    },
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let _log_guard = logging::init(cli.log_format, cli.verbose);
+
+    // The audit log is local and needs no network config.
+    if let Commands::Audit { sub } = &cli.command {
+        return run_audit(sub);
+    }
+
+    if let Commands::Config {
+        sub: ConfigSub::Schema,
+    } = &cli.command
+    {
+        print!("{}", lafiya_config::json_schema());
+        return Ok(());
+    }
 
     // Validate the network name before it is used as a config key.
     validate_network_name(&cli.network)
@@ -145,11 +669,16 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let network_cfg = get_network(&networks, &cli.network).map_err(|e| anyhow::anyhow!(e))?;
+    let resolved = resolve_network(
+        &cli.network,
+        cli.config.as_deref(),
+        |var| std::env::var(var).ok(),
+        &cli.overrides,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    let network_cfg = resolved.config.clone();
 
-    // `config show` reports config problems instead of refusing to print, so an
-    // operator can see exactly which value needs fixing. Every other command
-    // requires a valid profile before touching the network.
+    // `config show` reports config problems instead of refusing to print.
     let is_config_show = matches!(
         cli.command,
         Commands::Config {
@@ -165,57 +694,98 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Commands::Audit { .. } => {} // handled above
+        Commands::Auth {
+            sub:
+                AuthSub::Decode {
+                    input,
+                    format,
+                    labels,
+                    current_ledger,
+                },
+        } => {
+            let _span = tracing::info_span!("auth.decode", network = %cli.network).entered();
+            let raw = match std::fs::read_to_string(&input) {
+                Ok(contents) => contents,
+                Err(_) => input,
+            };
+            let ctx = auth_decode::DecodeContext {
+                network_name: cli.network.clone(),
+                network_passphrase: network_cfg.network_passphrase.clone(),
+                labels: known_labels(&network_cfg, &labels)?,
+                current_ledger,
+            };
+            let entries = auth_decode::decode_input(&raw, &ctx)?;
+            match format {
+                DecodeFormat::Text => print!("{}", auth_decode::render_text(&entries, &ctx)),
+                DecodeFormat::Json => println!("{}", serde_json::to_string_pretty(&entries)?),
+            }
+        }
         Commands::Config { sub } => {
             match sub {
                 ConfigSub::Show => {
-                    let (path, _) = lafiya_config::load_network_config::<PathBuf>(
-                        &cli.network,
-                        cli.config.clone(),
-                    )?;
-                    println!("Network: {}", cli.network);
-                    println!("Config: {:?}", path);
-                    println!("RPC URL: {}", network_cfg.rpc_url);
-                    println!("Passphrase: {}", network_cfg.network_passphrase);
-                    println!(
-                        "Attester registry: {}",
-                        if network_cfg.contracts.attester_registry.is_empty() {
+                    let from = |key: &str| format!("  (from {})", resolved.sources[key]);
+                    let or_undeployed = |id: &str| {
+                        if id.is_empty() {
                             "<not deployed>".to_string()
                         } else {
-                            network_cfg.contracts.attester_registry.clone()
+                            id.to_string()
                         }
+                    };
+                    println!("Network: {}", cli.network);
+                    println!("Config: {:?}", resolved.config_path);
+                    println!("RPC URL: {}{}", network_cfg.rpc_url, from("rpc_url"));
+                    if !network_cfg.rpc_urls.is_empty() {
+                        println!(
+                            "RPC failover order: {}{}",
+                            network_cfg.rpc_urls.join(", "),
+                            from("rpc_urls")
+                        );
+                    }
+                    println!(
+                        "Passphrase: {}{}",
+                        network_cfg.network_passphrase,
+                        from("network_passphrase")
                     );
                     println!(
-                        "Attestation registry: {}",
-                        if network_cfg.contracts.attestation_registry.is_empty() {
-                            "<not deployed>".to_string()
-                        } else {
-                            network_cfg.contracts.attestation_registry.clone()
-                        }
+                        "Attester registry: {}{}",
+                        or_undeployed(&network_cfg.contracts.attester_registry),
+                        from("contracts.attester_registry")
+                    );
+                    println!(
+                        "Attestation registry: {}{}",
+                        or_undeployed(&network_cfg.contracts.attestation_registry),
+                        from("contracts.attestation_registry")
                     );
                     println!("Deployed: {}", network_cfg.is_deployed());
                     println!("Deployment status: {}", deployment_summary(&network_cfg));
                     println!("\nSecrets: NEVER stored in networks.toml. Use stellar identities or env vars.");
                 }
-                ConfigSub::List => {} // handled above
+                ConfigSub::List | ConfigSub::Schema => {} // handled above
                 ConfigSub::Env => {
                     println!(
-                        "# Source this with: eval $(lafiya-cli --network {} config env)",
+                        "# Source this with: eval \"$(lafiya-cli --network {} config env)\"",
                         cli.network
                     );
-                    println!("export LAFIYA_NETWORK={}", cli.network);
-                    println!("export LAFIYA_RPC_URL={}", network_cfg.rpc_url);
-                    println!(
-                        "export LAFIYA_NETWORK_PASSPHRASE={:?}",
-                        network_cfg.network_passphrase
-                    );
-                    println!(
-                        "export LAFIYA_ATTESTER_REGISTRY_ID={}",
-                        network_cfg.contracts.attester_registry
-                    );
-                    println!(
-                        "export LAFIYA_ATTESTATION_REGISTRY_ID={}",
-                        network_cfg.contracts.attestation_registry
-                    );
+                    for (var, value) in [
+                        ("LAFIYA_NETWORK", cli.network.as_str()),
+                        (
+                            "LAFIYA_CONFIG_PATH",
+                            &resolved.config_path.display().to_string(),
+                        ),
+                        ("LAFIYA_RPC_URL", &network_cfg.rpc_url),
+                        ("LAFIYA_NETWORK_PASSPHRASE", &network_cfg.network_passphrase),
+                        (
+                            "LAFIYA_ATTESTER_REGISTRY_ID",
+                            &network_cfg.contracts.attester_registry,
+                        ),
+                        (
+                            "LAFIYA_ATTESTATION_REGISTRY_ID",
+                            &network_cfg.contracts.attestation_registry,
+                        ),
+                    ] {
+                        println!("export {var}={}", shell_quote(value));
+                    }
                 }
             }
         }
@@ -261,7 +831,15 @@ fn main() -> anyhow::Result<()> {
                     "add_attester",
                     &["--attester", &address],
                 );
-                run_stellar(args)?;
+                run_audited(
+                    "attester add",
+                    &cli.network,
+                    contract_id,
+                    "add_attester",
+                    &[&address],
+                    source.as_deref(),
+                    args,
+                )?;
             }
             AttesterSub::Remove { address, source } => {
                 let contract_id = network_cfg
@@ -278,7 +856,237 @@ fn main() -> anyhow::Result<()> {
                     "remove_attester",
                     &["--attester", &address],
                 );
-                run_stellar(args)?;
+                run_audited(
+                    "attester remove",
+                    &cli.network,
+                    contract_id,
+                    "remove_attester",
+                    &[&address],
+                    source.as_deref(),
+                    args,
+                )?;
+            }
+            AttesterSub::Import {
+                csv_file,
+                dry_run,
+                resume,
+                source,
+            } => {
+                use attester_import::{
+                    build_report, diff_against_chain, parse_and_validate, plan, BatchItem,
+                    JournalEntry, PlanSummary, RowOutcome,
+                };
+
+                // Derive journal path: <csv_file>.journal.json unless overridden.
+                let journal_path = resume.unwrap_or_else(|| {
+                    let mut p = csv_file.clone();
+                    let ext = p
+                        .extension()
+                        .map(|e| format!("{}.journal.json", e.to_string_lossy()))
+                        .unwrap_or_else(|| "journal.json".to_string());
+                    p.set_extension(ext);
+                    p
+                });
+
+                // Validate source (not required for --dry-run).
+                let source = validated_source(source)?;
+                if !dry_run && source.is_none() {
+                    anyhow::bail!(
+                        "attester import requires --source (or STELLAR_ACCOUNT) unless --dry-run is set"
+                    );
+                }
+
+                // Read CSV.
+                let csv_text = std::fs::read_to_string(&csv_file).with_context(|| {
+                    format!("failed to read CSV file: {}", csv_file.display())
+                })?;
+
+                // Parse & validate all rows before touching the network.
+                let rows = parse_and_validate(&csv_text).map_err(|errors| {
+                    let lines: Vec<String> = errors.iter().map(|e| format!("  {e}")).collect();
+                    anyhow::anyhow!(
+                        "CSV validation failed with {} error(s):\n{}",
+                        errors.len(),
+                        lines.join("\n")
+                    )
+                })?;
+
+                println!("Parsed {} valid rows from {}", rows.len(), csv_file.display());
+
+                // Diff against chain state.
+                // For now, without a live RPC client (issue #395), every address
+                // is classified as New.  When NativeRpcClient gains
+                // get_ledger_entries, replace this closure with a real chain lookup.
+                let entries = diff_against_chain(&rows, |_addr| None);
+
+                // Plan batches.
+                let items = plan(&entries);
+                let summary = PlanSummary::from(&items);
+
+                println!(
+                    "Plan: {} new (in {} batches), {} metadata updates, {} skipped",
+                    summary.new_count,
+                    summary.batch_count,
+                    summary.update_count,
+                    summary.skip_count
+                );
+
+                if dry_run {
+                    println!("[dry-run] No transactions will be submitted.");
+                    for item in &items {
+                        match item {
+                            BatchItem::AddBatch(rows) => {
+                                println!(
+                                    "  [batch] add_attester x{} (e.g. {})",
+                                    rows.len(),
+                                    rows.first().map(|r| r.address.as_str()).unwrap_or("?")
+                                );
+                            }
+                            BatchItem::UpdateMetadata(row) => {
+                                println!("  [update] update_attester_info {}", row.address);
+                            }
+                            BatchItem::Skip { row, reason } => {
+                                println!("  [skip] {} — {}", row.address, reason);
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+
+                // --- Live execution path ---
+                // Reconcile any existing journal entries first.
+                let existing = attester_import::read_journal(&journal_path)
+                    .context("failed to read journal")?;
+                if !existing.is_empty() {
+                    println!(
+                        "Resuming: found {} journal entries from a previous run.",
+                        existing.len()
+                    );
+                    for e in &existing {
+                        println!(
+                            "  [{}] {} — outcome: {} tx: {}",
+                            e.id,
+                            e.operation,
+                            e.outcome,
+                            e.tx_hash.as_deref().unwrap_or("<none>")
+                        );
+                    }
+                }
+
+                let contract_id = network_cfg
+                    .require_contract_id(&cli.network, ContractKind::AttesterRegistry)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+
+                let mut outcomes: Vec<RowOutcome> = Vec::new();
+                let mut batch_idx: usize = 0;
+
+                for item in &items {
+                    match item {
+                        BatchItem::AddBatch(batch_rows) => {
+                            batch_idx += 1;
+                            let addresses: Vec<String> =
+                                batch_rows.iter().map(|r| r.address.clone()).collect();
+
+                            // Write journal intent before submitting.
+                            let journal_entry = JournalEntry {
+                                id: format!("batch-{}", batch_idx),
+                                addresses: addresses.clone(),
+                                operation: "add_attester".to_string(),
+                                tx_hash: None,
+                                outcome: "pending".to_string(),
+                            };
+                            attester_import::write_journal_entry(&journal_path, &journal_entry)
+                                .context("failed to write journal entry")?;
+
+                            // Submit each address individually (batch contract function
+                            // from issue #03 is not yet implemented on-chain).
+                            // TODO(#03): replace with add_attesters() batch call once landed.
+                            for addr in &addresses {
+                                let args = invoke_args(
+                                    &network_cfg,
+                                    contract_id,
+                                    source.as_deref(),
+                                    "add_attester",
+                                    &["--attester", addr],
+                                );
+                                let result = run_stellar(args);
+                                let (outcome, tx_hash_str) = match result {
+                                    Ok(()) => ("success".to_string(), String::new()),
+                                    Err(ref e) => (
+                                        format!("failed: {e}"),
+                                        String::new(),
+                                    ),
+                                };
+                                outcomes.push(RowOutcome {
+                                    address: addr.clone(),
+                                    outcome,
+                                    tx_hash: tx_hash_str,
+                                });
+                            }
+                        }
+                        BatchItem::UpdateMetadata(row) => {
+                            let journal_entry = JournalEntry {
+                                id: format!("update-{}", row.address),
+                                addresses: vec![row.address.clone()],
+                                operation: "update_attester_info".to_string(),
+                                tx_hash: None,
+                                outcome: "pending".to_string(),
+                            };
+                            attester_import::write_journal_entry(&journal_path, &journal_entry)
+                                .context("failed to write journal entry")?;
+
+                            let args = invoke_args(
+                                &network_cfg,
+                                contract_id,
+                                source.as_deref(),
+                                "update_attester_info",
+                                &["--attester", &row.address],
+                            );
+                            let outcome = match run_stellar(args) {
+                                Ok(()) => "success".to_string(),
+                                Err(e) => format!("failed: {e}"),
+                            };
+                            outcomes.push(RowOutcome {
+                                address: row.address.clone(),
+                                outcome,
+                                tx_hash: String::new(),
+                            });
+                        }
+                        BatchItem::Skip { row, reason } => {
+                            outcomes.push(RowOutcome {
+                                address: row.address.clone(),
+                                outcome: format!("skipped: {reason}"),
+                                tx_hash: String::new(),
+                            });
+                        }
+                    }
+                }
+
+                // Write final report.
+                let report = build_report(&outcomes);
+                let report_path = {
+                    let mut p = csv_file.clone();
+                    p.set_extension("report.csv");
+                    p
+                };
+                std::fs::write(&report_path, &report).with_context(|| {
+                    format!("failed to write report to {}", report_path.display())
+                })?;
+                println!(
+                    "Import complete. Report written to {}",
+                    report_path.display()
+                );
+                let success = outcomes.iter().filter(|o| o.outcome == "success").count();
+                let failed = outcomes
+                    .iter()
+                    .filter(|o| o.outcome.starts_with("failed"))
+                    .count();
+                println!(
+                    "  {} succeeded, {} failed, {} skipped",
+                    success,
+                    failed,
+                    outcomes.len() - success - failed
+                );
             }
         },
         Commands::Attestation { sub } => match sub {
@@ -308,7 +1116,83 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+            AttestationSub::Hash { record } => {
+                let content = std::fs::read_to_string(&record)?;
+                let rec: lafiya_config::record::EmergencyRecord = serde_json::from_str(&content)?;
+                let hash_bytes = rec.hash()?;
+                let hash_hex: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                println!("Canonicalized JSON: {}", rec.canonicalize()?);
+                println!("Computed Hash (hex): {}", hash_hex);
+            }
+            AttestationSub::Verify { record } => {
+                if network_cfg.contracts.attestation_registry.is_empty() {
+                    anyhow::bail!("attestation_registry not deployed for '{}'", cli.network);
+                }
+                let content = std::fs::read_to_string(&record)?;
+                let rec: lafiya_config::record::EmergencyRecord = serde_json::from_str(&content)?;
+                let hash_bytes = rec.hash()?;
+                let hash_hex: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                println!("Verifying record hash: {}", hash_hex);
+                let args = [
+                    "contract",
+                    "invoke",
+                    "--id",
+                    &network_cfg.contracts.attestation_registry,
+                    "--rpc-url",
+                    &network_cfg.rpc_url,
+                    "--network-passphrase",
+                    &network_cfg.network_passphrase,
+                    "--",
+                    "get_attestation",
+                    "--record_hash",
+                    &hash_hex,
+                ];
+                println!("> stellar {}", args.join(" "));
+                if which::which("stellar").is_ok() {
+                    let status = std::process::Command::new("stellar").args(args).status()?;
+                    if !status.success() {
+                        anyhow::bail!("stellar CLI failed");
+                    }
+                } else {
+                    eprintln!(
+                        "stellar CLI not found — install with cargo install --locked stellar-cli"
+                    );
+                }
+            }
         },
+        Commands::Interface { contract } => {
+            let (kind, req) = match contract {
+                InterfaceTarget::Attester => {
+                    (ContractKind::AttesterRegistry, interface::ATTESTER_REGISTRY)
+                }
+                InterfaceTarget::Attestation => (
+                    ContractKind::AttestationRegistry,
+                    interface::ATTESTATION_REGISTRY,
+                ),
+            };
+            let contract_id = network_cfg
+                .require_contract_id(&cli.network, kind)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if which::which("stellar").is_err() {
+                anyhow::bail!(
+                    "stellar CLI not found - install with cargo install --locked stellar-cli"
+                );
+            }
+            let args = invoke_args(&network_cfg, contract_id, None, "get_interface", &[]);
+            let output = std::process::Command::new("stellar").args(args).output()?;
+            let raw = output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).into_owned());
+            let info = interface::negotiate(contract_id, raw.as_deref(), req)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("Contract: {contract_id}");
+            println!("Kind: {}", info.contract_kind);
+            println!("Interface version: {}", info.interface_version);
+            println!("Schema version: {}", info.schema_version);
+            println!("Event version: {}", info.event_version);
+            println!("Features: {}", info.features.join(", "));
+        }
         Commands::Deploy {
             build_only,
             dry_run,
@@ -329,7 +1213,7 @@ fn main() -> anyhow::Result<()> {
             println!("Current deployment: {}", deployment_summary(&network_cfg));
             println!("Source: {}", identity.source.as_deref().unwrap_or("<none>"));
             println!("Admin: {}", identity.admin.as_deref().unwrap_or("<none>"));
-            println!("This command is a wrapper- for full deploy use:");
+            println!("This command is a wrapper — for full deploy use:");
             println!("  ./scripts/deploy.sh --network {}", cli.network);
             if build_only {
                 println!("Building WASM...");
@@ -353,23 +1237,1058 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Commands::Deployments { sub } => match sub {
+            DeploymentsSub::Record {
+                event,
+                contract_kind,
+                contract_id,
+                wasm,
+                previous_wasm_sha256,
+                tx_hash,
+                ledger,
+                operator,
+            } => {
+                let event: DeployEvent = event
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!(e))?;
+                let wasm_sha256 = wasm
+                    .as_deref()
+                    .map(wasm_sha256_hex)
+                    .transpose()
+                    .context("failed to hash --wasm")?;
+                if tx_hash.is_none() {
+                    eprintln!(
+                        "WARNING: no --tx-hash supplied; recording with tx_hash: null. \
+                         `deployments verify` cannot confirm this record against the chain."
+                    );
+                }
+                let record = DeploymentRecord {
+                    event,
+                    contract_kind,
+                    contract_id,
+                    wasm_sha256,
+                    previous_wasm_sha256,
+                    tx_hash,
+                    ledger,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    git_commit: git_commit_hash().unwrap_or_else(|_| "unknown".to_string()),
+                    release_version: env!("CARGO_PKG_VERSION").to_string(),
+                    operator,
+                    prev_record_sha256: None,
+                };
+                let dir = deployments_dir();
+                let path = deployment_ledger::append(&dir, &cli.network, record)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                println!("Appended deployment record to {}", path.display());
+            }
+            DeploymentsSub::Verify => {
+                let dir = deployments_dir();
+                let report = deployment_ledger::verify(&dir, &cli.network)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                println!(
+                    "Checked {} record(s) for network {}",
+                    report.records_checked, cli.network
+                );
+                if report.is_ok() {
+                    println!("OK: ledger is internally consistent.");
+                } else {
+                    for err in &report.errors {
+                        eprintln!("ERROR: {err}");
+                    }
+                    anyhow::bail!("{} error(s) found in deployment ledger", report.errors.len());
+                }
+            }
+        },
     }
 
     Ok(())
 }
 
+/// What a `deploy` invocation is actually allowed to do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum DeployMode {
+    /// Builds WASM only, never touches a network.
+    BuildOnly,
+    /// Prints the plan, never touches a network.
+    DryRun,
+    /// Would submit transactions, so identity configuration is mandatory.
+    Live,
+}
+
+impl DeployMode {
+    fn new(build_only: bool, dry_run: bool) -> Self {
+        // build-only and dry-run are both offline; neither needs credentials.
+        if build_only {
+            DeployMode::BuildOnly
+        } else if dry_run {
+            DeployMode::DryRun
+        } else {
+            DeployMode::Live
+        }
+    }
+
+    fn requires_identity(self) -> bool {
+        matches!(self, DeployMode::Live)
+    }
+}
+
+/// Admin / source values resolved from flags then environment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeployIdentity {
+    admin: Option<String>,
+    source: Option<String>,
+}
+
+impl DeployIdentity {
+    /// Resolve and validate deployment identity.
+    ///
+    /// Flags win over environment. Outside dry-run/build-only a live deployment
+    /// refuses to start without both an admin address and a transaction source,
+    /// because a half-configured deployment leaves contracts uninitialized.
+    fn resolve(
+        admin_flag: Option<String>,
+        source_flag: Option<String>,
+        admin_env: Option<String>,
+        source_env: Option<String>,
+        mode: DeployMode,
+    ) -> anyhow::Result<Self> {
+        let admin = first_non_empty(admin_flag, admin_env);
+        let source = first_non_empty(source_flag, source_env);
+
+        if let Some(admin) = &admin {
+            validate_account_address("admin", admin)
+                .context("invalid --admin value (expected a G... account address)")?;
+        }
+        if let Some(source) = &source {
+            validate_source_account(source).context(
+                "invalid --source value (expected a stellar identity name or G... address)",
+            )?;
+        }
+
+        if mode.requires_identity() {
+            if source.is_none() {
+                anyhow::bail!(
+                    "deployment requires a transaction source: pass --source <identity> or set {ENV_SOURCE} (use --dry-run to preview without credentials)"
+                );
+            }
+            if admin.is_none() {
+                anyhow::bail!(
+                    "deployment requires an admin address: pass --admin <G...> or set {ENV_ADMIN} (use --dry-run to preview without credentials)"
+                );
+            }
+        }
+
+        Ok(Self { admin, source })
+    }
+}
+
+fn first_non_empty(primary: Option<String>, fallback: Option<String>) -> Option<String> {
+    primary
+        .into_iter()
+        .chain(fallback)
+        .map(|v| v.trim().to_string())
+        .find(|v| !v.is_empty())
+}
+
+/// Validate an optional `--source` before it reaches the stellar CLI.
+fn validated_source(source: Option<String>) -> anyhow::Result<Option<String>> {
+    match first_non_empty(source, None) {
+        Some(src) => {
+            validate_source_account(&src).context(
+                "invalid --source value (expected a stellar identity name or G... address)",
+            )?;
+            Ok(Some(src))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Build a `stellar contract invoke` argument list for the given network profile.
+fn invoke_args(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: Option<&str>,
+    function: &str,
+    function_args: &[&str],
+) -> Vec<String> {
+    let mut args = vec![
+        "contract".to_string(),
+        "invoke".to_string(),
+        "--id".to_string(),
+        contract_id.to_string(),
+        "--rpc-url".to_string(),
+        cfg.rpc_url.clone(),
+        "--network-passphrase".to_string(),
+        cfg.network_passphrase.clone(),
+    ];
+    if let Some(src) = source {
+        args.push("--source".to_string());
+        args.push(src.to_string());
+    }
+    args.push("--".to_string());
+    args.push(function.to_string());
+    args.extend(function_args.iter().map(|a| a.to_string()));
+    args
+}
+
+/// Print and run a stellar CLI invocation, failing loudly if it is unavailable.
+/// Run a mutating stellar CLI invocation and return the submitted
+/// transaction hash when the CLI reports one. Stderr is streamed through so
+/// the operator still sees progress.
+fn run_stellar(args: Vec<String>) -> anyhow::Result<Option<String>> {
+    tracing::info!(command = %format!("stellar {}", args.join(" ")), "invoking stellar CLI");
+    if which::which("stellar").is_err() {
+        anyhow::bail!("stellar CLI not found");
+    }
+    let started = std::time::Instant::now();
+    let mut child = std::process::Command::new("stellar")
+        .args(args)
+        .stderr(std::process::Stdio::piped())
+        .spawn()?;
+    let mut tx_hash = None;
+    if let Some(stderr) = child.stderr.take() {
+        for line in BufReader::new(stderr).lines() {
+            let line = line?;
+            eprintln!("{}", logging::redact(&line));
+            if tx_hash.is_none() && line.to_ascii_lowercase().contains("transaction") {
+                tx_hash = line
+                    .split(|c: char| !c.is_ascii_hexdigit())
+                    .find(|w| w.len() == 64)
+                    .map(str::to_string);
+            }
+        }
+    }
+    let status = child.wait()?;
+    tracing::info!(
+        latency_ms = started.elapsed().as_millis() as u64,
+        success = status.success(),
+        tx_hash = tx_hash.as_deref().unwrap_or(""),
+        "stellar CLI finished"
+    );
+    if !status.success() {
+        anyhow::bail!("stellar CLI failed");
+    }
+    Ok(tx_hash)
+}
+
+/// Run a mutating command inside a tracing span and append its outcome to
+/// the local audit log, whether it succeeded or failed.
+fn run_audited(
+    command: &str,
+    network: &str,
+    contract: &str,
+    function: &str,
+    call_args: &[&str],
+    signer: Option<&str>,
+    stellar_args: Vec<String>,
+) -> anyhow::Result<()> {
+    let span = tracing::info_span!("operation", command, network, contract, function);
+    let _entered = span.enter();
+    let result = run_stellar(stellar_args);
+    let outcome = match &result {
+        Ok(_) => "success".to_string(),
+        Err(e) => format!("failure: {e}"),
+    };
+    let op = audit::Operation {
+        command,
+        network,
+        contract,
+        function,
+        args: call_args,
+        signer,
+        tx_hash: result.as_ref().ok().and_then(|h| h.as_deref()),
+        outcome: &outcome,
+    };
+    let path = audit::default_path();
+    match audit::append(&path, &op) {
+        Ok(r) => tracing::info!(seq = r.seq, path = %path.display(), "audit record written"),
+        Err(e) => {
+            tracing::error!(error = %e, path = %path.display(), "failed to write audit record")
+        }
+    }
+    result.map(|_| ())
+}
+
+fn run_audit(sub: &AuditSub) -> anyhow::Result<()> {
+    let path = audit::default_path();
+    let records = audit::read_all(&path)?;
+    match sub {
+        AuditSub::Show => {
+            for r in &records {
+                println!("{}", serde_json::to_string(r)?);
+            }
+            if records.is_empty() {
+                eprintln!("no audit records in {}", path.display());
+            }
+        }
+        AuditSub::Verify => match audit::verify(&records) {
+            Ok(n) => println!("OK: {n} records verified in {}", path.display()),
+            Err(e) => anyhow::bail!("audit log {} is broken: {e}", path.display()),
+        },
+    }
+    Ok(())
+}
+
+/// Known address labels: deployed contracts from config plus `--label` flags.
+fn known_labels(cfg: &NetworkConfig, extra: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut labels = BTreeMap::new();
+    for (id, name) in [
+        (&cfg.contracts.attester_registry, "lafiya attester-registry"),
+        (
+            &cfg.contracts.attestation_registry,
+            "lafiya attestation-registry",
+        ),
+    ] {
+        if !id.is_empty() {
+            labels.insert(id.clone(), name.to_string());
+        }
+    }
+    for pair in extra {
+        let (addr, name) = pair
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--label must be ADDRESS=NAME, got '{pair}'"))?;
+        labels.insert(addr.trim().to_string(), name.trim().to_string());
+    }
+    Ok(labels)
+}
+
+/// Human readable deployment state, including partially deployed profiles.
+fn deployment_summary(cfg: &NetworkConfig) -> String {
+    match cfg.deployment_state() {
+        DeploymentState::Deployed => "fully deployed".to_string(),
+        DeploymentState::NotDeployed => "not deployed".to_string(),
+        DeploymentState::Partial { missing } => {
+            let missing = missing
+                .iter()
+                .map(|k| k.key())
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("PARTIALLY DEPLOYED - missing contract id(s): {missing}")
+        }
+    }
+}
+
+/// `<repo-root>/deployments`, found the same way `lafiya_config::default_config_path`
+/// locates `config/networks.toml`: relative to the current working directory.
+fn deployments_dir() -> PathBuf {
+    PathBuf::from("deployments")
+}
+
+fn wasm_sha256_hex(path: &std::path::Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).with_context(|| format!("reading {path:?}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn git_commit_hash() -> anyhow::Result<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("running git rev-parse HEAD")?;
+    if !out.status.success() {
+        anyhow::bail!("git rev-parse HEAD failed");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+}
+
+/// Handle all `trust-bundle` subcommands.
+///
+/// Trust bundles are JSON files containing a signed snapshot of allowlisted
+/// attester Ed25519 public keys.  They are distributed to offline verifier apps
+/// so that responders can verify attestation receipts without a live RPC call.
+///
+/// Full signing / verification requires the attester Ed25519 keys from the
+/// on-chain registry and a supporting key management tool.  This implementation
+/// prints the planned stellar CLI invocations in dry-run style — the same
+/// pattern used by all other `lafiya-cli` commands.  The actual signing step
+/// will be wired to a hardware key or a stellar identity in a follow-up once
+/// key export APIs are available.
+fn trust_bundle_command(
+    sub: TrustBundleSub,
+    network: &str,
+    network_cfg: &NetworkConfig,
+) -> anyhow::Result<()> {
+    match sub {
+        TrustBundleSub::Generate {
+            admin_key,
+            valid_days,
+            output,
+            dry_run,
+        } => {
+            // Validate the admin key identity name (must not be empty).
+            if admin_key.trim().is_empty() {
+                anyhow::bail!("--admin-key must not be empty");
+            }
+            if valid_days == 0 {
+                anyhow::bail!("--valid-days must be at least 1");
+            }
+
+            let attester_registry = &network_cfg.contracts.attester_registry;
+            let attestation_registry = &network_cfg.contracts.attestation_registry;
+
+            println!("Trust bundle generation for network: {network}");
+            println!("Attester registry:    {attester_registry}");
+            println!("Attestation registry: {attestation_registry}");
+            println!("Admin key identity:   {admin_key}");
+            println!("Valid for:            {valid_days} day(s)");
+
+            // Step 1: fetch the active attester list from the chain.
+            println!();
+            println!("Step 1: fetch active attesters from chain (requires stellar CLI):");
+            let attester_query_args = vec![
+                "contract".to_string(),
+                "invoke".to_string(),
+                "--network".to_string(),
+                network.to_string(),
+                "--id".to_string(),
+                attester_registry.clone(),
+                "--".to_string(),
+                "get_attester_count".to_string(),
+            ];
+            println!("> stellar {}", attester_query_args.join(" "));
+
+            // Step 2: for each attester, fetch their Ed25519 public key.
+            println!();
+            println!("Step 2: for each attester, call get_attester_info to retrieve their");
+            println!("        Ed25519 public key (stored in license_hash field per ADR-0014).");
+
+            // Step 3: sign the bundle with the admin key.
+            println!();
+            println!("Step 3: sign bundle with admin key '{admin_key}' (Ed25519).");
+            println!("        Signing domain: \"lafiya:trust-bundle:v1\\0\" || network_id || ...");
+
+            // Step 4: emit bundle.
+            if dry_run {
+                println!();
+                println!("[dry-run] Bundle would be written to: {output}");
+                println!("[dry-run] Bundle schema (JSON):");
+                println!("  {{");
+                println!("    \"v\": 1,");
+                println!("    \"network_id\": \"<4-byte hex from SHA-256(passphrase)>\",");
+                println!("    \"attestation_registry\": \"{attestation_registry}\",");
+                println!("    \"created_at\": <unix-ts>,");
+                println!("    \"expires_at\": <unix-ts + {valid_days} * 86400>,");
+                println!("    \"attesters\": [\"<hex-pubkey-1>\", \"<hex-pubkey-2>\", ...],");
+                println!("    \"admin_sig\": \"<hex-64-bytes>\"");
+                println!("  }}");
+            } else {
+                println!();
+                println!("Output: {output}");
+                println!("NOTE: Full signing requires the stellar CLI identity '{}' to have", admin_key);
+                println!("      an exportable Ed25519 keypair. Use --dry-run to preview.");
+                println!("      For a production deployment, use the trust-bundle generation");
+                println!("      script: scripts/generate_trust_bundle.sh --network {network} \\");
+                println!("        --admin-key {admin_key} --valid-days {valid_days} --output {output}");
+            }
+            Ok(())
+        }
+        TrustBundleSub::Verify { bundle, admin_pubkey } => {
+            println!("Trust bundle verification");
+            println!("Bundle file: {bundle}");
+
+            // Check the bundle file exists.
+            if !std::path::Path::new(&bundle).exists() {
+                anyhow::bail!("bundle file not found: {bundle}");
+            }
+
+            // Read and print the bundle structure.
+            let content = std::fs::read_to_string(&bundle)
+                .with_context(|| format!("failed to read bundle file: {bundle}"))?;
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .with_context(|| format!("bundle file is not valid JSON: {bundle}"))?;
+
+            // Basic structural validation.
+            let v = parsed.get("v").and_then(|v| v.as_u64()).unwrap_or(0);
+            if v != 1 {
+                anyhow::bail!("unsupported bundle version: {v}");
+            }
+
+            let network_id = parsed.get("network_id").and_then(|v| v.as_str()).unwrap_or("<missing>");
+            let created_at = parsed.get("created_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let expires_at = parsed.get("expires_at").and_then(|v| v.as_u64()).unwrap_or(0);
+            let attester_count = parsed.get("attesters")
+                .and_then(|v| v.as_array())
+                .map(|a| a.len())
+                .unwrap_or(0);
+
+            println!("Version:        {v}");
+            println!("Network ID:     {network_id}");
+            println!("Created at:     {created_at}");
+            println!("Expires at:     {expires_at}");
+            println!("Attester count: {attester_count}");
+
+            if let Some(pubkey_hex) = admin_pubkey {
+                // Validate hex format (must be 64 hex chars = 32 bytes).
+                if pubkey_hex.len() != 64 {
+                    anyhow::bail!(
+                        "--admin-pubkey must be 64 hex characters (32 bytes), got {} chars",
+                        pubkey_hex.len()
+                    );
+                }
+                if pubkey_hex.chars().any(|c| !c.is_ascii_hexdigit()) {
+                    anyhow::bail!("--admin-pubkey contains non-hex characters");
+                }
+                println!("Admin pubkey:   {pubkey_hex}");
+                println!("NOTE: Ed25519 signature verification requires the ed25519-dalek");
+                println!("      crate which is not yet a dependency of lafiya-cli.");
+                println!("      Structural validation passed. Signature verification: skipped.");
+            } else {
+                println!("Admin pubkey:   <not provided, signature verification skipped>");
+            }
+
+            println!("Bundle structural validation: OK");
+            Ok(())
+        }
+        TrustBundleSub::Show { bundle } => {
+            if !std::path::Path::new(&bundle).exists() {
+                anyhow::bail!("bundle file not found: {bundle}");
+            }
+            let content = std::fs::read_to_string(&bundle)
+                .with_context(|| format!("failed to read bundle file: {bundle}"))?;
+            let parsed: serde_json::Value = serde_json::from_str(&content)
+                .with_context(|| format!("bundle file is not valid JSON: {bundle}"))?;
+
+            println!("Trust Bundle: {bundle}");
+            println!("{}", serde_json::to_string_pretty(&parsed)?);
+            Ok(())
+        }
+    }
+}
+
 mod which {
     use std::path::Path;
 
+fn handle_config(
+    sub: ConfigSub,
+    network: &str,
+    cfg: &NetworkConfig,
+    config_path: &Option<PathBuf>,
+) -> anyhow::Result<()> {
+    match sub {
+        ConfigSub::Show => {
+            let (path, _) = lafiya_config::load_network_config::<PathBuf>(
+                network,
+                config_path.clone(),
+            )?;
+            println!("Network: {}", network);
+            println!("Config: {:?}", path);
+            println!("RPC URL: {}", cfg.rpc_url);
+            println!("Passphrase: {}", cfg.network_passphrase);
+            println!(
+                "Attester registry: {}",
+                if cfg.contracts.attester_registry.is_empty() {
+                    "<not deployed>".to_string()
+                } else {
+                    cfg.contracts.attester_registry.clone()
+                }
+            );
+            println!(
+                "Attestation registry: {}",
+                if cfg.contracts.attestation_registry.is_empty() {
+                    "<not deployed>".to_string()
+                } else {
+                    cfg.contracts.attestation_registry.clone()
+                }
+            );
+            println!("Deployed: {}", cfg.is_deployed());
+            println!("Deployment status: {}", deployment_summary(cfg));
+            println!(
+                "\nSecrets: NEVER stored in networks.toml. Use stellar identities or env vars."
+            );
+        }
+        ConfigSub::List => {} // handled before network resolution
+        ConfigSub::Env => {
+            println!(
+                "# Source this with: eval $(lafiya-cli --network {} config env)",
+                network
+            );
+            println!("export LAFIYA_NETWORK={}", network);
+            println!("export LAFIYA_RPC_URL={}", cfg.rpc_url);
+            println!(
+                "export LAFIYA_NETWORK_PASSPHRASE={:?}",
+                cfg.network_passphrase
+            );
+            println!(
+                "export LAFIYA_ATTESTER_REGISTRY_ID={}",
+                cfg.contracts.attester_registry
+            );
+            println!(
+                "export LAFIYA_ATTESTATION_REGISTRY_ID={}",
+                cfg.contracts.attestation_registry
+            );
+        }
+    }
+    Ok(())
+}
+
+fn handle_attester(sub: AttesterSub, network: &str, cfg: &NetworkConfig) -> anyhow::Result<()> {
+    let contract_id = cfg
+        .require_contract_id(network, ContractKind::AttesterRegistry)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    match sub {
+        AttesterSub::Is { address } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            println!("Checking is_attester for {} on {}", address, contract_id);
+            println!("RPC: {}", cfg.rpc_url);
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                None,
+                "is_attester",
+                &["--attester", &address],
+            );
+            println!("> stellar {}", args.join(" "));
+            // Read-only query: report a missing CLI without aborting hard.
+            if which::which("stellar").is_ok() {
+                if let Err(e) = std::process::Command::new("stellar").args(args).status() {
+                    eprintln!("Failed to run stellar CLI: {e}. Install with: cargo install --locked stellar-cli");
+                }
+            } else {
+                eprintln!("stellar CLI not found — showing command only. Install with: cargo install --locked stellar-cli");
+            }
+        }
+        AttesterSub::Add { address, source } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "add_attester",
+                &["--attester", &address],
+            );
+            run_stellar(args)?;
+        }
+        AttesterSub::AddWithInfo {
+            address,
+            license_hash,
+            region,
+            source,
+        } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            if let Some(ref h) = license_hash {
+                validate_record_hash("license_hash", h)
+                    .context("license_hash must be a 64-char hex string (32 bytes)")?;
+            }
+            let source = validated_source(source)?;
+            let mut fn_args: Vec<String> = vec!["--attester".to_string(), address.clone()];
+            match &license_hash {
+                Some(h) => {
+                    fn_args.push("--license_hash".to_string());
+                    fn_args.push(format!("Some({})", h));
+                }
+                None => {
+                    fn_args.push("--license_hash".to_string());
+                    fn_args.push("None".to_string());
+                }
+            }
+            match &region {
+                Some(r) => {
+                    fn_args.push("--region".to_string());
+                    fn_args.push(format!("Some({})", r));
+                }
+                None => {
+                    fn_args.push("--region".to_string());
+                    fn_args.push("None".to_string());
+                }
+            }
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            let args = invoke_args(cfg, contract_id, source.as_deref(), "add_attester_with_info", &fn_args_ref);
+            run_stellar(args)?;
+        }
+        AttesterSub::UpdateInfo {
+            address,
+            license_hash,
+            region,
+            source,
+        } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            if let Some(ref h) = license_hash {
+                validate_record_hash("license_hash", h)
+                    .context("license_hash must be a 64-char hex string (32 bytes)")?;
+            }
+            let source = validated_source(source)?;
+            let mut fn_args: Vec<String> = vec!["--attester".to_string(), address.clone()];
+            match &license_hash {
+                Some(h) => {
+                    fn_args.push("--license_hash".to_string());
+                    fn_args.push(format!("Some({})", h));
+                }
+                None => {
+                    fn_args.push("--license_hash".to_string());
+                    fn_args.push("None".to_string());
+                }
+            }
+            match &region {
+                Some(r) => {
+                    fn_args.push("--region".to_string());
+                    fn_args.push(format!("Some({})", r));
+                }
+                None => {
+                    fn_args.push("--region".to_string());
+                    fn_args.push("None".to_string());
+                }
+            }
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            let args = invoke_args(cfg, contract_id, source.as_deref(), "update_attester_info", &fn_args_ref);
+            run_stellar(args)?;
+        }
+        AttesterSub::Remove { address, source } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "remove_attester",
+                &["--attester", &address],
+            );
+            run_stellar(args)?;
+        }
+        AttesterSub::Suspend { address, source } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "suspend_attester",
+                &["--attester", &address],
+            );
+            run_stellar(args)?;
+        }
+        AttesterSub::Reinstate { address, source } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "reinstate_attester",
+                &["--attester", &address],
+            );
+            run_stellar(args)?;
+        }
+        AttesterSub::GetInfo { address } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                None,
+                "get_attester_info",
+                &["--attester", &address],
+            );
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AttesterSub::GetStatus { address } => {
+            validate_address("attester address", &address).context("invalid attester address")?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                None,
+                "get_attester_status",
+                &["--attester", &address],
+            );
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AttesterSub::SetMaxAttesters { max, source } => {
+            let source = validated_source(source)?;
+            let max_str = max.to_string();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "set_max_attesters",
+                &["--max_attesters", &max_str],
+            );
+            run_stellar(args)?;
+        }
+        AttesterSub::GetMaxAttesters => {
+            let args = invoke_args(cfg, contract_id, None, "get_max_attesters", &[]);
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AttesterSub::GetCount => {
+            let args = invoke_args(cfg, contract_id, None, "get_attester_count", &[]);
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AttesterSub::GetSchemaVersion => {
+            let args = invoke_args(cfg, contract_id, None, "get_schema_version", &[]);
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AttesterSub::Upgrade {
+            new_wasm_hash,
+            source,
+        } => {
+            // wasm hash is 32 bytes = 64 hex chars — reuse record_hash validator
+            validate_record_hash("new_wasm_hash", &new_wasm_hash)
+                .context("new_wasm_hash must be a 64-char hex string (32 bytes)")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "upgrade",
+                &["--new_wasm_hash", &new_wasm_hash],
+            );
+            run_stellar(args)?;
+        }
+        AttesterSub::Migrate { source } => {
+            let source = validated_source(source)?;
+            let args = invoke_args(cfg, contract_id, source.as_deref(), "migrate", &[]);
+            run_stellar(args)?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_attestation(
+    sub: AttestationSub,
+    network: &str,
+    cfg: &NetworkConfig,
+) -> anyhow::Result<()> {
+    let contract_id = cfg
+        .require_contract_id(network, ContractKind::AttestationRegistry)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    match sub {
+        AttestationSub::Get { record_hash } => {
+            validate_record_hash("record_hash", &record_hash)
+                .context("invalid record hash (expected a hex encoded 32-byte hash)")?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                None,
+                "get_attestation",
+                &["--record_hash", &record_hash],
+            );
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let status = std::process::Command::new("stellar").args(args).status()?;
+                if !status.success() {
+                    anyhow::bail!("stellar CLI failed");
+                }
+            } else {
+                eprintln!(
+                    "stellar CLI not found — install with cargo install --locked stellar-cli"
+                );
+            }
+        }
+        AttestationSub::GetHistory { record_hash } => {
+            validate_record_hash("record_hash", &record_hash)
+                .context("invalid record hash (expected a hex encoded 32-byte hash)")?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                None,
+                "get_attestation_history",
+                &["--record_hash", &record_hash],
+            );
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AttestationSub::Attest {
+            attester,
+            record_hash,
+            source,
+        } => {
+            validate_address("attester", &attester).context("invalid attester address")?;
+            validate_record_hash("record_hash", &record_hash)
+                .context("invalid record hash (expected a hex encoded 32-byte hash)")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "attest",
+                &["--attester", &attester, "--record_hash", &record_hash],
+            );
+            run_stellar(args)?;
+        }
+        AttestationSub::Revoke { record_hash, source } => {
+            validate_record_hash("record_hash", &record_hash)
+                .context("invalid record hash (expected a hex encoded 32-byte hash)")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "revoke_attestation",
+                &["--record_hash", &record_hash],
+            );
+            run_stellar(args)?;
+        }
+        AttestationSub::GetAttesterRegistry => {
+            let args = invoke_args(cfg, contract_id, None, "get_attester_registry", &[]);
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AttestationSub::SetAttesterRegistry {
+            new_registry,
+            source,
+        } => {
+            validate_address("new_registry", &new_registry)
+                .context("invalid contract address")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "set_attester_registry",
+                &["--new_registry", &new_registry],
+            );
+            run_stellar(args)?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_admin(sub: AdminSub, network: &str, cfg: &NetworkConfig) -> anyhow::Result<()> {
+    let kind = parse_contract_arg(&sub_contract_str(&sub))?;
+    let contract_id = cfg
+        .require_contract_id(network, kind)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    match sub {
+        AdminSub::Get { .. } => {
+            let args = invoke_args(cfg, contract_id, None, "get_admin", &[]);
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+        AdminSub::Propose {
+            new_admin, source, ..
+        } => {
+            validate_account_address("new_admin", &new_admin)
+                .context("invalid new_admin address")?;
+            let source = validated_source(source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "propose_admin",
+                &["--new_admin", &new_admin],
+            );
+            run_stellar(args)?;
+        }
+        AdminSub::Accept { source, .. } => {
+            let source = validated_source(source)?;
+            let args = invoke_args(cfg, contract_id, source.as_deref(), "accept_admin", &[]);
+            run_stellar(args)?;
+        }
+    }
+    Ok(())
+}
+
+fn handle_ops(sub: OpsSub, network: &str, cfg: &NetworkConfig) -> anyhow::Result<()> {
+    let kind = parse_contract_arg(&sub_ops_contract_str(&sub))?;
+    let contract_id = cfg
+        .require_contract_id(network, kind)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    match sub {
+        OpsSub::Pause { source, .. } => {
+            let source = validated_source(source)?;
+            let args = invoke_args(cfg, contract_id, source.as_deref(), "pause", &[]);
+            run_stellar(args)?;
+        }
+        OpsSub::Unpause { source, .. } => {
+            let source = validated_source(source)?;
+            let args = invoke_args(cfg, contract_id, source.as_deref(), "unpause", &[]);
+            run_stellar(args)?;
+        }
+        OpsSub::IsPaused { .. } => {
+            let args = invoke_args(cfg, contract_id, None, "is_paused", &[]);
+            println!("> stellar {}", args.join(" "));
+            if which::which("stellar").is_ok() {
+                let _ = std::process::Command::new("stellar").args(args).status();
+            } else {
+                eprintln!("stellar CLI not found — showing command only.");
+            }
+        }
+    }
+    Ok(())
+}
+
+// ── small helpers for admin/ops contract routing ──────────────────────────────
+
+fn sub_contract_str(sub: &AdminSub) -> String {
+    match sub {
+        AdminSub::Get { contract } => contract.clone(),
+        AdminSub::Propose { contract, .. } => contract.clone(),
+        AdminSub::Accept { contract, .. } => contract.clone(),
+    }
+}
+
+fn sub_ops_contract_str(sub: &OpsSub) -> String {
+    match sub {
+        OpsSub::Pause { contract, .. } => contract.clone(),
+        OpsSub::Unpause { contract, .. } => contract.clone(),
+        OpsSub::IsPaused { contract } => contract.clone(),
+    }
+}
+
+/// Parse a `--contract` string into a `ContractKind`.
+fn parse_contract_arg(s: &str) -> anyhow::Result<ContractKind> {
+    match s {
+        "attester-registry" | "attester_registry" | "attester" => {
+            Ok(ContractKind::AttesterRegistry)
+        }
+        "attestation-registry" | "attestation_registry" | "attestation" => {
+            Ok(ContractKind::AttestationRegistry)
+        }
+        other => anyhow::bail!(
+            "unknown contract '{other}'; expected attester-registry or attestation-registry"
+        ),
+    }
+}
+
+// ── `which` shim (std-only, no extra dep) ────────────────────────────────────
+
+mod which {
     pub fn which(bin: &str) -> Result<std::path::PathBuf, ()> {
-        // Simple check using PATH env
         if let Some(paths) = std::env::var_os("PATH") {
             for p in std::env::split_paths(&paths) {
                 let full = p.join(bin);
                 if full.exists() {
                     return Ok(full);
                 }
-                // Windows also .exe etc, but we target unix for stellar
                 #[cfg(windows)]
                 {
                     let full_exe = p.join(format!("{}.exe", bin));
@@ -377,24 +2296,275 @@ mod which {
                         return Ok(full_exe);
                     }
                 }
-                // Also check without extension but with executable bit
-                if Path::new(&full).exists() {
-                    return Ok(full);
-                }
             }
         }
         Err(())
     }
 }
 
+// ── unit tests ────────────────────────────────────────────────────────────────
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use lafiya_config::{ContractIds, NetworkConfig};
 
-    // `attester add` requires a positional `address`. Clap's derive-generated
-    // error for a missing required argument must still name it, so a
-    // contributor testing the CLI by hand isn't left guessing which value
-    // they forgot.
+    fn test_cfg() -> NetworkConfig {
+        NetworkConfig {
+            rpc_url: "https://soroban-testnet.stellar.org".to_string(),
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            contracts: ContractIds {
+                attester_registry:
+                    "CBCRV4OYENAUXO2OXWU3JMKDXD7NGVLGXSHOXC55P7XUSHM2MD6JTFZA".to_string(),
+                attestation_registry:
+                    "CCWPKEVBYEEDBMX2T4AKBOTTPXCGWNTZQXBOQWOHLVJ7JOWAMX3G6EAX".to_string(),
+            },
+        }
+    }
+
+    const CONTRACT_ID: &str = "CBCRV4OYENAUXO2OXWU3JMKDXD7NGVLGXSHOXC55P7XUSHM2MD6JTFZA";
+    const ATTESTER_ADDR: &str = "GAHJJJKMOKYE4RVPZEWZTKH5FVI4PA3VL7GK2LFNUBSGBKM7SFGNUQ2";
+
+    // ── invoke_args argv snapshot ─────────────────────────────────────────────
+
+    #[test]
+    fn invoke_args_no_source_is_attester() {
+        let cfg = test_cfg();
+        let args = invoke_args(&cfg, CONTRACT_ID, None, "is_attester", &["--attester", ATTESTER_ADDR]);
+        assert_eq!(
+            args,
+            vec![
+                "contract",
+                "invoke",
+                "--id",
+                CONTRACT_ID,
+                "--rpc-url",
+                "https://soroban-testnet.stellar.org",
+                "--network-passphrase",
+                "Test SDF Network ; September 2015",
+                "--",
+                "is_attester",
+                "--attester",
+                ATTESTER_ADDR,
+            ]
+        );
+    }
+
+    #[test]
+    fn invoke_args_with_source() {
+        let cfg = test_cfg();
+        let args = invoke_args(&cfg, CONTRACT_ID, Some("my-identity"), "add_attester", &["--attester", ATTESTER_ADDR]);
+        let source_pos = args.iter().position(|a| a == "--source");
+        assert!(source_pos.is_some(), "expected --source in argv");
+        assert_eq!(args[source_pos.unwrap() + 1], "my-identity");
+    }
+
+    #[test]
+    fn invoke_args_empty_fn_args() {
+        let cfg = test_cfg();
+        let args = invoke_args(&cfg, CONTRACT_ID, None, "get_admin", &[]);
+        // "--" separator must precede the function name
+        let sep_pos = args.iter().position(|a| a == "--").expect("missing -- separator");
+        assert_eq!(args[sep_pos + 1], "get_admin");
+        // Nothing after function name
+        assert_eq!(args.len(), sep_pos + 2);
+    }
+
+    #[test]
+    fn invoke_args_rpc_url_and_passphrase_are_separate_elements() {
+        let cfg = test_cfg();
+        let args = invoke_args(&cfg, CONTRACT_ID, None, "is_paused", &[]);
+        // Verify --rpc-url and its value are adjacent separate strings
+        let rpc_pos = args.iter().position(|a| a == "--rpc-url").unwrap();
+        assert_eq!(args[rpc_pos + 1], "https://soroban-testnet.stellar.org");
+        let pp_pos = args.iter().position(|a| a == "--network-passphrase").unwrap();
+        assert_eq!(args[pp_pos + 1], "Test SDF Network ; September 2015");
+    }
+
+    // ── validated_source ──────────────────────────────────────────────────────
+
+    #[test]
+    fn validated_source_none_when_flag_and_env_absent() {
+        // Temporarily clear env var (if set)
+        std::env::remove_var("STELLAR_ACCOUNT");
+        let result = validated_source(None).unwrap();
+        assert!(result.is_none());
+    }
+
+    #[test]
+    fn validated_source_accepts_valid_identity_name() {
+        std::env::remove_var("STELLAR_ACCOUNT");
+        // Identity names are short alphanumeric strings
+        let result = validated_source(Some("my-identity".to_string())).unwrap();
+        assert_eq!(result.as_deref(), Some("my-identity"));
+    }
+
+    #[test]
+    fn validated_source_rejects_empty_string() {
+        std::env::remove_var("STELLAR_ACCOUNT");
+        // An empty string is treated as absent (no source)
+        let result = validated_source(Some(String::new())).unwrap();
+        assert!(result.is_none());
+    }
+
+    // ── deployment_summary ────────────────────────────────────────────────────
+
+    #[test]
+    fn deployment_summary_not_deployed() {
+        let cfg = NetworkConfig {
+            rpc_url: "https://soroban-testnet.stellar.org".to_string(),
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            contracts: ContractIds {
+                attester_registry: String::new(),
+                attestation_registry: String::new(),
+            },
+        };
+        let s = deployment_summary(&cfg);
+        assert!(s.contains("not yet deployed"), "{s}");
+    }
+
+    #[test]
+    fn deployment_summary_deployed_contains_ids() {
+        let cfg = test_cfg();
+        let s = deployment_summary(&cfg);
+        assert!(s.contains("deployed"), "{s}");
+        assert!(s.contains("CBCRV4"), "{s}");
+        assert!(s.contains("CCWPKE"), "{s}");
+    }
+
+    #[test]
+    fn deployment_summary_partial_names_missing() {
+        let cfg = NetworkConfig {
+            rpc_url: "https://soroban-testnet.stellar.org".to_string(),
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            contracts: ContractIds {
+                attester_registry:
+                    "CBCRV4OYENAUXO2OXWU3JMKDXD7NGVLGXSHOXC55P7XUSHM2MD6JTFZA".to_string(),
+                attestation_registry: String::new(),
+            },
+        };
+        let s = deployment_summary(&cfg);
+        assert!(s.contains("partially"), "{s}");
+        assert!(s.contains("attestation_registry"), "{s}");
+    }
+
+    // ── DeployMode ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn deploy_mode_new() {
+        assert_eq!(DeployMode::new(true, false), DeployMode::BuildOnly);
+        assert_eq!(DeployMode::new(false, true), DeployMode::DryRun);
+        assert_eq!(DeployMode::new(false, false), DeployMode::Deploy);
+        // build_only takes precedence
+        assert_eq!(DeployMode::new(true, true), DeployMode::BuildOnly);
+    }
+
+    // ── DeployIdentity ────────────────────────────────────────────────────────
+
+    #[test]
+    fn deploy_identity_build_only_does_not_require_admin_or_source() {
+        let id = DeployIdentity::resolve(None, None, None, None, DeployMode::BuildOnly).unwrap();
+        assert!(id.admin.is_none());
+        assert!(id.source.is_none());
+    }
+
+    #[test]
+    fn deploy_identity_deploy_requires_admin() {
+        let err = DeployIdentity::resolve(None, Some("alice".to_string()), None, None, DeployMode::Deploy)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("admin"), "{err}");
+    }
+
+    #[test]
+    fn deploy_identity_deploy_requires_source() {
+        let err = DeployIdentity::resolve(
+            Some(ATTESTER_ADDR.to_string()),
+            None,
+            None,
+            None,
+            DeployMode::Deploy,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("source"), "{err}");
+    }
+
+    #[test]
+    fn deploy_identity_env_fallback() {
+        std::env::remove_var("STELLAR_ACCOUNT");
+        std::env::remove_var("ADMIN_ADDRESS");
+        let id = DeployIdentity::resolve(
+            None,
+            None,
+            Some(ATTESTER_ADDR.to_string()),
+            Some("alice".to_string()),
+            DeployMode::Deploy,
+        )
+        .unwrap();
+        assert_eq!(id.admin.as_deref(), Some(ATTESTER_ADDR));
+        assert_eq!(id.source.as_deref(), Some("alice"));
+    }
+
+    // ── parse_contract_arg ────────────────────────────────────────────────────
+
+    #[test]
+    fn parse_contract_arg_variants() {
+        assert_eq!(
+            parse_contract_arg("attester-registry").unwrap(),
+            ContractKind::AttesterRegistry
+        );
+        assert_eq!(
+            parse_contract_arg("attestation-registry").unwrap(),
+            ContractKind::AttestationRegistry
+        );
+        assert_eq!(
+            parse_contract_arg("attester").unwrap(),
+            ContractKind::AttesterRegistry
+        );
+        assert_eq!(
+            parse_contract_arg("attestation").unwrap(),
+            ContractKind::AttestationRegistry
+        );
+        assert!(parse_contract_arg("unknown").is_err());
+    }
+
+    // ── clap missing-argument errors ──────────────────────────────────────────
+
+    #[test]
+    fn set_flag_parses_key_value_pairs() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "--set",
+            "rpc_url=https://a.example/?x=1",
+            "config",
+            "show",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.overrides,
+            vec![("rpc_url".to_string(), "https://a.example/?x=1".to_string())]
+        );
+        assert!(Cli::try_parse_from(["lafiya-cli", "--set", "rpc_url", "config", "show"]).is_err());
+    }
+
+    #[test]
+    fn with_rpc_url_replaces_the_endpoint() {
+        let args: Vec<String> = ["contract", "invoke", "--rpc-url", "https://a", "--", "f"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            with_rpc_url(&args, "https://b"),
+            ["contract", "invoke", "--rpc-url", "https://b", "--", "f"]
+        );
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("a ; b"), "'a ; b'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
+
     #[test]
     fn attester_add_missing_address_names_the_argument() {
         let err = Cli::try_parse_from(["lafiya-cli", "attester", "add"])
@@ -406,7 +2576,6 @@ mod tests {
         );
     }
 
-    // `attestation get` requires a positional `record_hash`.
     #[test]
     fn attestation_get_missing_record_hash_names_the_argument() {
         let err = Cli::try_parse_from(["lafiya-cli", "attestation", "get"])
@@ -415,6 +2584,17 @@ mod tests {
         assert!(
             message.to_uppercase().contains("RECORD_HASH"),
             "expected error to name the missing `record_hash` argument, got: {message}"
+        );
+    }
+
+    #[test]
+    fn attester_upgrade_missing_wasm_hash_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "attester", "upgrade"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("NEW_WASM_HASH"),
+            "expected error to name the missing `new_wasm_hash` argument, got: {message}"
         );
     }
 }

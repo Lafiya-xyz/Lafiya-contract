@@ -1,0 +1,3 @@
+contract,wasm_hash,wasm_in_manifest,paused,admin,last_admin_action
+CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA,,,True,GADMIN,"{""ledger"": 59500, ""event"": ""paused"", ""tx_hash"": ""015b90105db65a51b21a7d43e7b0a3d99d752567ae5b30c85b4561aab187d806""}"
+CRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR,abababababababababababababababababababababababababababababababab,False,False,GADMIN,"{""ledger"": 35000, ""event"": ""upgraded"", ""tx_hash"": ""57fea5a0e25383dac5a880eadc903ca34bc76ba6fd0e05ba09a53de0435696d9""}"

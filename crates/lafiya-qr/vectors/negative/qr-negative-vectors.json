@@ -1,0 +1,26 @@
+[
+  {
+    "name": "missing-prefix",
+    "description": "QR string missing the LFQR: prefix — must reject with INVALID_PREFIX.",
+    "qr_string": "BB8SOMEBASE45DATA",
+    "expected_error": "INVALID_PREFIX"
+  },
+  {
+    "name": "invalid-base45-chars",
+    "description": "Payload contains characters not in the base45 alphabet (! is invalid) — must reject with INVALID_BASE45.",
+    "qr_string": "LFQR:!!!INVALID!!!",
+    "expected_error": "INVALID_BASE45"
+  },
+  {
+    "name": "truncated-base45",
+    "description": "A single base45 character after the prefix — length ≡ 1 (mod 3) — must reject with INVALID_BASE45.",
+    "qr_string": "LFQR:A",
+    "expected_error": "INVALID_BASE45"
+  },
+  {
+    "name": "empty-after-prefix",
+    "description": "Nothing after the LFQR: prefix — empty base45 decodes to empty bytes — CBOR decode fails.",
+    "qr_string": "LFQR:",
+    "expected_error": "INVALID_CBOR"
+  }
+]

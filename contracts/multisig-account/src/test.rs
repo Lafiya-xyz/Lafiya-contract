@@ -278,3 +278,23 @@ fn three_of_five_signers_authorize() {
 
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
 }
+
+#[test]
+fn get_interface_reports_kind_versions_and_features() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..2], 1);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let info = client.get_interface();
+    assert_eq!(
+        info.contract_kind,
+        soroban_sdk::Symbol::new(&env, "lafiya_multisig_account")
+    );
+    assert_eq!(info.interface_version, INTERFACE_VERSION);
+    assert_eq!(info.schema_version, SCHEMA_VERSION);
+    assert_eq!(info.event_version, EVENT_VERSION);
+    assert!(info
+        .features
+        .contains(soroban_sdk::Symbol::new(&env, "unscoped_auth")));
+}

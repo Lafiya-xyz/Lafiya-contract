@@ -1,0 +1,282 @@
+{
+  "catalog_version": 1,
+  "events": [
+    {
+      "contract": "attestation-registry",
+      "name": "AdminTransferred",
+      "prefix_topics": [
+        "admin_transferred"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "previous_admin",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "new_admin",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttestationRecorded",
+      "prefix_topics": [
+        "attestation_recorded"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "data"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttestationRevoked",
+      "prefix_topics": [
+        "attestation_revoked"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttesterRegistryRepointed",
+      "prefix_topics": [
+        "attester_registry_repointed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "previous",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "new",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "Paused",
+      "prefix_topics": [
+        "paused"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "by",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "Unpaused",
+      "prefix_topics": [
+        "unpaused"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "by",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AdminTransferred",
+      "prefix_topics": [
+        "admin_transferred"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "previous_admin",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "new_admin",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterAdded",
+      "prefix_topics": [
+        "attester_added"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterInfoUpdated",
+      "prefix_topics": [
+        "attester_info_updated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterReinstated",
+      "prefix_topics": [
+        "attester_reinstated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterRemoved",
+      "prefix_topics": [
+        "attester_removed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterSuspended",
+      "prefix_topics": [
+        "attester_suspended"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Initialized",
+      "prefix_topics": [
+        "initialized"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "admin",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Paused",
+      "prefix_topics": [
+        "paused"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "by",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Unpaused",
+      "prefix_topics": [
+        "unpaused"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "by",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "Upgraded",
+      "prefix_topics": [
+        "upgraded"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "new_wasm_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        }
+      ]
+    }
+  ]
+}

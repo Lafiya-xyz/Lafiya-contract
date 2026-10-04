@@ -1,0 +1,6 @@
+{
+  "generator": "stellar-cli 28.0.0",
+  "network_passphrase": "Test SDF Network ; September 2015",
+  "entry_xdr": "AAAAAQAAAAEltPzYWa7C+mNIQ4xImzw8EMmLbSG+T9PLMMtolT75dwAAAAAAhF/tABLWhwAAAAEAAAAAAAAAAdeSi3LCcDzP6vfrn/TvTVBKVai5efybRQ6iyEK00c5hAAAADGFkZF9hdHRlc3RlcgAAAAEAAAASAAAAAAAAAABzdv3ojkzWHMD7KUoXhrPx0GH18vHKV0ZfqpMiEblG1gAAAAA=",
+  "payload_hash": "2560313ad37e8be5f4d5989074def2191fb68a6031fbbe394e0de2a332946388"
+}

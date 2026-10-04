@@ -2,7 +2,10 @@
   "version": "0.1.0",
   "name": "@lafiya/attestation-registry",
   "type": "module",
-  "exports": "./dist/index.js",
+  "exports": {
+    ".": "./dist/index.js",
+    "./catalog": "./dist/catalog.js"
+  },
   "typings": "dist/index.d.ts",
   "publishConfig": {
     "access": "public"

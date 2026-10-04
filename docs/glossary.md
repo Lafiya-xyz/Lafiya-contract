@@ -38,10 +38,9 @@ source of truth for who may attest. See `contracts/attester-registry/src/lib.rs`
 ### Attestation
 
 The on-chain record written by the *attestation registry* when an *attester* verifies a
-record: `{ attester: Address, timestamp: u64, commitment_version: u32 }`, stored keyed by
-the *record hash* with a bounded per-hash history (10 entries). The legacy `attest()` path
-writes version `0x00`; `attest_versioned()` records the explicitly supplied version.
-Written by `attest()` or `attest_versioned()`, removed by
+record with a one-time patient grant: `{ attester: Address, timestamp: u64 }`, stored keyed by
+the *record hash* with a bounded per-hash history (10 entries). A separate patient-selected
+expiry timestamp indicates when that verification should be treated as stale. Written by `attest()`, removed by
 `revoke_attestation()`. See [ADR-0006](adr/0006-attestation-revocation-semantics.md).
 
 ### Attestation registry (`attestation-registry`)
@@ -57,6 +56,19 @@ typically the last-mile health worker in the Nigerian context this project targe
 a CHW is represented by an *attester* address. CHWs are the intended recipients of USDC
 micro-payments per verified registration under the incentive layer
 ([ADR-0009](adr/0009-treasury-asset-custody-model.md)).
+
+### Federation
+
+The planned later topology ([ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md)):
+a root "registry of registries" contract that lists the recognized national *attester
+registries*. Once it exists, an *attestation registry* can accept attesters from any
+recognized member *jurisdiction*.
+
+### Jurisdiction
+
+A country or other legal territory that runs its own Lafiya deployment: its own registry
+pair, *admin* quorum, and data-protection regime. Identified by its ISO 3166-1 alpha-2 code
+(for example `NG`, `GH`). See [ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md).
 
 ### LRC-1 (Lafiya Record Commitment v1)
 
@@ -92,7 +104,8 @@ Hashes recorded before LRC-1 are treated as legacy/unversioned (version `0x00`).
 ### Schema version
 
 The version number of a contract's on-chain storage schema. Every contract carries
-`const SCHEMA_VERSION: u32` (currently `1` for both registries), writes it to instance
+`const SCHEMA_VERSION: u32` (currently `4` for `attester-registry` and `2` for
+`attestation-registry`), writes it to instance
 storage during `initialize()`, and exposes it via `get_schema_version()`. `0` means no
 version recorded (legacy pre-versioning deployment or uninitialized contract). Bumping
 `SCHEMA_VERSION` signals a schema-changing upgrade that requires `migrate()` to run the
@@ -104,9 +117,29 @@ and [docs/runbooks/contract-upgrade.md](runbooks/contract-upgrade.md).
 An *attester* that remains on the *allowlist* but is temporarily blocked from attesting
 (`suspend_attester` / `reinstate_attester`). Suspension is distinct from removal.
 
+### Trust list
+
+A signed, versioned list that verifiers pin. It maps each *jurisdiction* code to the
+`attestation-registry` contract ID and network passphrase trusted for that jurisdiction, so
+attestations from another country can be verified. It is the off-chain precursor to the
+*federation* contract ([ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md)).
+
 ### USDC incentive pool
 
 The M2 design for paying *CHWs*: grant and donor funds flow on-chain into a pool from which
 CHWs receive USDC micro-payments per verified registration. The treasury and custody model
 is defined by [ADR-0009](adr/0009-treasury-asset-custody-model.md). No payout contract is
 implemented yet.
+
+### Verdict
+
+The single result a verifier returns for a card, drawn from the finite set defined by the
+*verification model* (`Verified`, `Revoked`, `Expired`, `Indeterminate`, and so on). Only
+`Verified` is a positive result.
+
+### Verification model
+
+The normative definition of how a verifier turns a card, chain state, policy, and time into
+a *verdict*, including precedence and degraded-mode rules. Defined in
+[`docs/specs/verification-model.md`](specs/verification-model.md), with a machine-readable
+truth table every implementation runs in CI.

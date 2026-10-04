@@ -9,9 +9,11 @@ docs table, a variant renamed in one place but not the other, or a code
 value that has drifted out of sync between the contract and the docs a
 `lafiya-web` or `lafiya-verifier` developer is reading.
 """
+
 import re
 import sys
 from pathlib import Path
+from typing import Any
 
 from contracts import CONTRACTS, REPO_ROOT
 from extract_interface import extract
@@ -19,7 +21,7 @@ from extract_interface import extract
 ERROR_CODES_MD = REPO_ROOT / "docs" / "error-codes.md"
 
 
-def parse_docs_table(markdown, contract_name):
+def parse_docs_table(markdown: str, contract_name: str) -> dict[int, str] | None:
     section = re.search(
         rf"^## `{re.escape(contract_name)}`\s*\n(.*?)(?=\n## |\Z)",
         markdown,
@@ -27,20 +29,19 @@ def parse_docs_table(markdown, contract_name):
     )
     if not section:
         return None
-    rows = re.findall(
-        r"^\|\s*`(\d+)`\s*\|\s*`(\w+)`\s*\|", section.group(1), re.MULTILINE
-    )
+    rows = re.findall(r"^\|\s*`(\d+)`\s*\|\s*`(\w+)`\s*\|", section.group(1), re.MULTILINE)
     return {int(code): name for code, name in rows}
 
 
-def wasm_error_cases(cfg):
+def wasm_error_cases(cfg: dict[str, Path]) -> dict[int, str]:
     for entry in extract(cfg["wasm_path"]):
         if entry["kind"] == "udt_error_enum_v0":
-            return {c["value"]: c["name"] for c in entry["spec"]["cases"]}
+            cases: list[dict[str, Any]] = entry["spec"]["cases"]
+            return {int(c["value"]): str(c["name"]) for c in cases}
     return {}
 
 
-def check_one(name, cfg, markdown):
+def check_one(name: str, cfg: dict[str, Path], markdown: str) -> bool:
     docs = parse_docs_table(markdown, name)
     wasm = wasm_error_cases(cfg)
 
@@ -55,8 +56,7 @@ def check_one(name, cfg, markdown):
             ok = False
         elif docs[code] != variant:
             print(
-                f"[{name}] error {code} is `{variant}` in the Wasm but "
-                f"documented as `{docs[code]}`"
+                f"[{name}] error {code} is `{variant}` in the Wasm but documented as `{docs[code]}`"
             )
             ok = False
     for code, variant in sorted(docs.items()):
@@ -69,7 +69,7 @@ def check_one(name, cfg, markdown):
     return ok
 
 
-def main():
+def main() -> None:
     names = sys.argv[1:] or list(CONTRACTS)
     unknown = [n for n in names if n not in CONTRACTS]
     if unknown:

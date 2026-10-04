@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Lafiya - Shared Network Config Loader
 # Shared by deploy script and admin CLI.
-# Parses config/networks.toml for a given --network name.
+# Resolves the config for a given --network name via lafiya-cli.
 #
 # Provides:
 #   load_network_config <network> [--config <path>]
@@ -25,64 +25,21 @@ _LAFIYA_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _LAFIYA_REPO_ROOT="$(cd "$_LAFIYA_LIB_DIR/../.." && pwd)"
 _LAFIYA_DEFAULT_CONFIG="$_LAFIYA_REPO_ROOT/config/networks.toml"
 
-# Fail fast with a clear message if python3 or a TOML parser isn't available,
-# instead of letting callers hit an opaque "command not found" or traceback.
-if ! command -v python3 >/dev/null 2>&1; then
-    echo "ERROR: python3 is required to parse config/networks.toml but was not found on PATH." >&2
-    echo "Install Python 3 (e.g. 'apt install python3' or https://www.python.org/downloads/) and try again." >&2
-    exit 1
-fi
-if ! python3 -c 'import tomllib' >/dev/null 2>&1 && ! python3 -c 'import tomli' >/dev/null 2>&1; then
-    echo "ERROR: No TOML parser found for $(python3 --version 2>&1)." >&2
-    echo "Python 3.11+ includes 'tomllib' built in. For older versions, install it with: pip install tomli" >&2
-    exit 1
-fi
-
-# Internal: use python3 to parse TOML robustly
-_lafiya_parse_toml() {
-    local network="$1"
-    local config_path="$2"
-    local field="$3"
-
-    python3 - "$network" "$config_path" "$field" <<'PY'
-import sys
-network = sys.argv[1]
-config_path = sys.argv[2]
-field = sys.argv[3]
-
-# Python 3.11+ has tomllib built-in
-try:
-    import tomllib
-except ModuleNotFoundError:
-    try:
-        import tomli as tomllib
-    except ImportError:
-        print("ERROR: Need python3.11+ with tomllib or pip install tomli", file=sys.stderr)
-        sys.exit(2)
-
-with open(config_path, "rb") as f:
-    data = tomllib.load(f)
-
-if network not in data:
-    print(f"ERROR: network '{network}' not found in {config_path}", file=sys.stderr)
-    print(f"Available networks: {', '.join(sorted(data.keys()))}", file=sys.stderr)
-    sys.exit(1)
-
-net_cfg = data[network]
-
-mapping = {
-    "rpc_url": net_cfg.get("rpc_url", ""),
-    "network_passphrase": net_cfg.get("network_passphrase", ""),
-    "attester_registry": net_cfg.get("contracts", {}).get("attester_registry", ""),
-    "attestation_registry": net_cfg.get("contracts", {}).get("attestation_registry", ""),
-}
-
-if field not in mapping:
-    print(f"ERROR: unknown field '{field}'", file=sys.stderr)
-    sys.exit(1)
-
-print(mapping[field])
-PY
+# All parsing, validation and layered overrides (--set is CLI-only, then
+# LAFIYA_<NETWORK>_<KEY> env vars, config/networks.local.toml, networks.toml)
+# are done by lafiya-cli, so the Bash and Rust paths share one set of rules.
+# Uses $LAFIYA_CLI, else `lafiya-cli` on PATH, else `cargo run -p lafiya-cli`.
+_lafiya_cli() {
+    if [[ -n "${LAFIYA_CLI:-}" ]]; then
+        "$LAFIYA_CLI" "$@"
+    elif command -v lafiya-cli >/dev/null 2>&1; then
+        lafiya-cli "$@"
+    elif command -v cargo >/dev/null 2>&1; then
+        cargo run --quiet --manifest-path "$_LAFIYA_REPO_ROOT/Cargo.toml" -p lafiya-cli -- "$@"
+    else
+        echo "ERROR: lafiya-cli not found. Install Rust (https://rustup.rs) or set LAFIYA_CLI." >&2
+        return 1
+    fi
 }
 
 load_network_config() {
@@ -99,13 +56,10 @@ load_network_config() {
         return 1
     fi
 
-    # Exported globals
-    LAFIYA_NETWORK="$network"
-    LAFIYA_CONFIG_PATH="$config_path"
-    LAFIYA_RPC_URL="$(_lafiya_parse_toml "$network" "$config_path" "rpc_url")"
-    LAFIYA_NETWORK_PASSPHRASE="$(_lafiya_parse_toml "$network" "$config_path" "network_passphrase")"
-    LAFIYA_ATTESTER_REGISTRY_ID="$(_lafiya_parse_toml "$network" "$config_path" "attester_registry")"
-    LAFIYA_ATTESTATION_REGISTRY_ID="$(_lafiya_parse_toml "$network" "$config_path" "attestation_registry")"
+    local resolved
+    resolved="$(_lafiya_cli --network "$network" --config "$config_path" config env)" || return 1
+    # Values are single-quoted by lafiya-cli, so eval is safe.
+    eval "$resolved"
 
     if [[ -z "$LAFIYA_RPC_URL" ]]; then
         echo "ERROR: rpc_url empty for network '$network'" >&2
@@ -122,18 +76,7 @@ load_network_config() {
 
 list_networks() {
     local config_path="${1:-$_LAFIYA_DEFAULT_CONFIG}"
-    python3 - "$config_path" <<'PY'
-import sys
-config_path = sys.argv[1]
-try:
-    import tomllib
-except ModuleNotFoundError:
-    import tomli as tomllib
-with open(config_path, "rb") as f:
-    data = tomllib.load(f)
-for name in sorted(data.keys()):
-    print(name)
-PY
+    _lafiya_cli --config "$config_path" config list | sed -n 's/^  - //p'
 }
 
 print_network_config() {
@@ -152,14 +95,40 @@ print_network_config() {
     echo "Attestation Registry: ${LAFIYA_ATTESTATION_REGISTRY_ID:-<not deployed>}"
 }
 
+# ---------------------------------------------------------------------------
+# Shell-safe single-quote escaping (issue #396)
+# ---------------------------------------------------------------------------
+# shell_quote VALUE  -- wraps VALUE in single quotes, escaping embedded ' as '\''
+# This prevents command injection when values are eval'd or sourced.
+shell_quote() {
+    local value="$1"
+    # Replace each ' with '\'', then wrap the whole thing in single quotes.
+    local escaped="${value//\'/\'\\\'\'}"
+    printf "'%s'" "$escaped"
+}
+
+# print_env_exports  -- print shell export lines for all LAFIYA_ vars, safely quoted
+# Usage: load_network_config testnet; print_env_exports
+print_env_exports() {
+    printf 'export LAFIYA_NETWORK=%s\n'              "$(shell_quote "${LAFIYA_NETWORK:-}")"
+    printf 'export LAFIYA_RPC_URL=%s\n'              "$(shell_quote "${LAFIYA_RPC_URL:-}")"
+    printf 'export LAFIYA_NETWORK_PASSPHRASE=%s\n'   "$(shell_quote "${LAFIYA_NETWORK_PASSPHRASE:-}")"
+    printf 'export LAFIYA_ATTESTER_REGISTRY_ID=%s\n' "$(shell_quote "${LAFIYA_ATTESTER_REGISTRY_ID:-}")"
+    printf 'export LAFIYA_ATTESTATION_REGISTRY_ID=%s\n' "$(shell_quote "${LAFIYA_ATTESTATION_REGISTRY_ID:-}")"
+}
+
 # If sourced directly for testing: allow CLI
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     if [[ "${1:-}" == "--list" ]]; then
         list_networks "${2:-}"
+    elif [[ "${1:-}" == "--env" ]]; then
+        # Print safely-quoted export lines: eval $(config.sh --env testnet)
+        load_network_config "${2:-}" "${3:-}"
+        print_env_exports
     elif [[ -n "${1:-}" ]]; then
         print_network_config "$1" "${2:-}"
     else
-        echo "Usage: $0 <network> [config_path] | $0 --list [config_path]" >&2
+        echo "Usage: $0 <network> [config_path] | $0 --list [config_path] | $0 --env <network> [config_path]" >&2
         exit 1
     fi
 fi
