@@ -110,8 +110,18 @@ fn remove_attester_revokes_allowlisting() {
     client.add_attester(&attester);
     assert!(client.is_attester(&attester));
 
+    let expected_event = AttesterRemoved {
+        attester: attester.clone(),
+    };
     client.remove_attester(&attester);
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
     assert!(!client.is_attester(&attester));
+
+    client.remove_attester(&attester);
+    assert!(env.events().all().events().is_empty());
 }
 
 #[test]
@@ -122,6 +132,10 @@ fn remove_attester_never_added_is_a_no_op() {
     let attester = Address::generate(&env);
     client.remove_attester(&attester);
     assert!(!client.is_attester(&attester));
+    assert!(env.events().all().events().is_empty());
+
+    client.remove_attester(&attester);
+    assert!(env.events().all().events().is_empty());
 }
 
 #[test]
@@ -417,6 +431,47 @@ fn re_adding_an_existing_attester_does_not_consume_cap() {
 }
 
 #[test]
+fn re_adding_existing_attester_preserves_info_and_emits_no_added_event() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    let original_hash = BytesN::from_array(&env, &[1u8; 32]);
+    let original_region = Symbol::new(&env, "west");
+    client.add_attester_with_info(
+        &attester,
+        &Some(original_hash.clone()),
+        &Some(original_region.clone()),
+    );
+
+    client.add_attester(&attester);
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: Some(original_hash.clone()),
+            region: Some(original_region.clone()),
+        }),
+    );
+    assert!(env.events().all().events().is_empty());
+
+    let replacement_hash = BytesN::from_array(&env, &[2u8; 32]);
+    let replacement_region = Symbol::new(&env, "east");
+    client.add_attester_with_info(
+        &attester,
+        &Some(replacement_hash),
+        &Some(replacement_region),
+    );
+    assert_eq!(
+        client.get_attester_info(&attester),
+        Some(AttesterInfo {
+            license_hash: Some(original_hash),
+            region: Some(original_region),
+        }),
+    );
+    assert!(env.events().all().events().is_empty());
+}
+
+#[test]
 fn update_attester_info_on_unknown_attester_fails() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
@@ -587,8 +642,6 @@ fn suspend_unknown_attester_fails() {
     client.initialize(&admin);
 
     let never_added = Address::generate(&env);
-
-    // Precondition: the address has never been allowlisted.
     assert!(!client.is_attester(&never_added));
 
     assert_eq!(
