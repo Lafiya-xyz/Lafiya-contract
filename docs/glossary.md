@@ -38,19 +38,10 @@ source of truth for who may attest. See `contracts/attester-registry/src/lib.rs`
 ### Attestation
 
 The on-chain record written by the *attestation registry* when an *attester* verifies a
-record: `{ attester: Address, timestamp: u64 }`, stored keyed by the *record hash* with a
-bounded per-hash history (10 entries). `withdraw_attestation()` marks that attester's
-active verifications as withdrawn without affecting other attesters. Admin
-`revoke_attestation()` marks the hash revoked but retains its history;
-`get_attestation_status()` distinguishes `NeverAttested`, `Verified`, `Withdrawn`, and
-`Revoked`, while `get_attester_attestation_status()` reports one attester's state.
-See [ADR-0006](adr/0006-attestation-revocation-semantics.md).
-
-### Record version
-
-A new record hash explicitly linked to its predecessor by `attest_version()` or a batch
-request's optional `previous_record_hash`. The contracts treat hashes as opaque values and
-do not infer which records belong to the same patient.
+record with a one-time patient grant: `{ attester: Address, timestamp: u64 }`, stored keyed by
+the *record hash* with a bounded per-hash history (10 entries). A separate patient-selected
+expiry timestamp indicates when that verification should be treated as stale. Written by `attest()`, removed by
+`revoke_attestation()`. See [ADR-0006](adr/0006-attestation-revocation-semantics.md).
 
 ### Attestation registry (`attestation-registry`)
 
@@ -65,6 +56,19 @@ typically the last-mile health worker in the Nigerian context this project targe
 a CHW is represented by an *attester* address. CHWs are the intended recipients of USDC
 micro-payments per verified registration under the incentive layer
 ([ADR-0009](adr/0009-treasury-asset-custody-model.md)).
+
+### Federation
+
+The planned later topology ([ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md)):
+a root "registry of registries" contract that lists the recognized national *attester
+registries*. Once it exists, an *attestation registry* can accept attesters from any
+recognized member *jurisdiction*.
+
+### Jurisdiction
+
+A country or other legal territory that runs its own Lafiya deployment: its own registry
+pair, *admin* quorum, and data-protection regime. Identified by its ISO 3166-1 alpha-2 code
+(for example `NG`, `GH`). See [ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md).
 
 ### LRC-1 (Lafiya Record Commitment v1)
 
@@ -112,9 +116,29 @@ and [docs/runbooks/contract-upgrade.md](runbooks/contract-upgrade.md).
 An *attester* that remains on the *allowlist* but is temporarily blocked from attesting
 (`suspend_attester` / `reinstate_attester`). Suspension is distinct from removal.
 
+### Trust list
+
+A signed, versioned list that verifiers pin. It maps each *jurisdiction* code to the
+`attestation-registry` contract ID and network passphrase trusted for that jurisdiction, so
+attestations from another country can be verified. It is the off-chain precursor to the
+*federation* contract ([ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md)).
+
 ### USDC incentive pool
 
 The M2 design for paying *CHWs*: grant and donor funds flow on-chain into a pool from which
 CHWs receive USDC micro-payments per verified registration. The treasury and custody model
 is defined by [ADR-0009](adr/0009-treasury-asset-custody-model.md). No payout contract is
 implemented yet.
+
+### Verdict
+
+The single result a verifier returns for a card, drawn from the finite set defined by the
+*verification model* (`Verified`, `Revoked`, `Expired`, `Indeterminate`, and so on). Only
+`Verified` is a positive result.
+
+### Verification model
+
+The normative definition of how a verifier turns a card, chain state, policy, and time into
+a *verdict*, including precedence and degraded-mode rules. Defined in
+[`docs/specs/verification-model.md`](specs/verification-model.md), with a machine-readable
+truth table every implementation runs in CI.

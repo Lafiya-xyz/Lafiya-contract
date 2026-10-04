@@ -4,9 +4,7 @@ import type { u32, u64, Option } from "@stellar/stellar-sdk/contract";
 export * from "@stellar/stellar-sdk";
 export * as contract from "@stellar/stellar-sdk/contract";
 export * as rpc from "@stellar/stellar-sdk/rpc";
-/**
- * Errors returned by the attestation registry's public entry points.
- */
+export * from "./record.js";
 export declare const Errors: {
     /**
      * `initialize` has not been called yet.
@@ -52,30 +50,6 @@ export declare const Errors: {
      * The requested operation is blocked while the contract is paused.
      */
     7: {
-        message: string;
-    };
-    /**
-     * The attester has no active attestation for the given record hash.
-     */
-    8: {
-        message: string;
-    };
-    /**
-     * The supplied previous hash or version relationship is invalid.
-     */
-    9: {
-        message: string;
-    };
-    /**
-     * The batch contains more requests than the supported maximum.
-     */
-    10: {
-        message: string;
-    };
-    /**
-     * The stored schema version is already current.
-     */
-    11: {
         message: string;
     };
 };
@@ -156,13 +130,6 @@ export interface Client {
         record_hash: Buffer;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<Attestation>>>;
     /**
-     * Construct and simulate a migrate transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Mark the additive version-2 storage schema as available after upgrade.
-     * No data reshaping is required; all newly introduced keys are optional
-     * until the corresponding operation first writes them.
-     */
-    migrate: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
      * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Resume normal operation after a `pause`. Requires the admin's authorization.
      */
@@ -202,31 +169,12 @@ export interface Client {
      */
     accept_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
-     * Construct and simulate a batch_attest transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Record up to `BATCH_LIMIT` attestations in one transaction. Each
-     * attester must authorize their request; allowlist status is checked once
-     * per distinct attester in the batch.
-     */
-    batch_attest: ({ requests }: {
-        requests: Array<AttestationRequest>;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<Array<Attestation>>>>;
-    /**
      * Construct and simulate a propose_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Propose a new admin address. The caller must authorize as the current admin.
      */
     propose_admin: ({ new_admin }: {
         new_admin: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a attest_version transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Record a verification and explicitly link this record hash to its
-     * previous version. The previous hash must already have attestations.
-     */
-    attest_version: ({ attester, record_hash, previous_record_hash }: {
-        attester: string;
-        record_hash: Buffer;
-        previous_record_hash: Buffer;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<Attestation>>>;
     /**
      * Construct and simulate a get_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Look up the latest active attestation for `record_hash`, if any. Callable
@@ -237,32 +185,10 @@ export interface Client {
         record_hash: Buffer;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Option<Attestation>>>;
     /**
-     * Construct and simulate a get_schema_version transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Query the storage schema version for this contract instance.
-     */
-    get_schema_version: (options?: MethodOptions) => Promise<AssembledTransaction<u32>>;
-    /**
      * Construct and simulate a revoke_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Revoke all attestations for `record_hash` without erasing the
-     * historical entries. Gated by admin authorization.
+     * Revoke all attestations for `record_hash`. Gated by admin authorization.
      */
     revoke_attestation: ({ record_hash }: {
-        record_hash: Buffer;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a get_next_record_hash transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return the explicitly linked next record version, if any.
-     */
-    get_next_record_hash: ({ record_hash }: {
-        record_hash: Buffer;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Option<Buffer>>>;
-    /**
-     * Construct and simulate a withdraw_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Withdraw all of the caller's active attestations for `record_hash`.
-     * Other attesters' attestations are unaffected.
-     */
-    withdraw_attestation: ({ attester, record_hash }: {
-        attester: string;
         record_hash: Buffer;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
@@ -280,14 +206,6 @@ export interface Client {
         new_registry: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
-     * Construct and simulate a get_attestation_status transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return whether a record hash is unverified, verified, withdrawn, or
-     * explicitly revoked. This remains informative after admin revocation.
-     */
-    get_attestation_status: ({ record_hash }: {
-        record_hash: Buffer;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<AttestationStatus>>;
-    /**
      * Construct and simulate a get_attestation_history transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Look up the full attestation history for `record_hash`, if any.
      * Returns attestations in chronological order (oldest first).
@@ -296,22 +214,6 @@ export interface Client {
     get_attestation_history: ({ record_hash }: {
         record_hash: Buffer;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Array<Attestation>>>;
-    /**
-     * Construct and simulate a get_previous_record_hash transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return the explicitly linked previous record version, if any.
-     */
-    get_previous_record_hash: ({ record_hash }: {
-        record_hash: Buffer;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Option<Buffer>>>;
-    /**
-     * Construct and simulate a get_attester_attestation_status transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return whether `attester` has an active, withdrawn, or revoked
-     * verification for `record_hash`.
-     */
-    get_attester_attestation_status: ({ record_hash, attester }: {
-        record_hash: Buffer;
-        attester: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<AttesterAttestationStatus>>;
 }
 export declare class Client extends ContractClient {
     readonly options: ContractClientOptions;
@@ -329,25 +231,16 @@ export declare class Client extends ContractClient {
     readonly fromJSON: {
         pause: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         attest: (json: string) => AssembledTransaction<Result<Attestation, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        migrate: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         unpause: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         get_admin: (json: string) => AssembledTransaction<Result<string, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         is_paused: (json: string) => AssembledTransaction<boolean>;
         initialize: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         accept_admin: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        batch_attest: (json: string) => AssembledTransaction<Result<Attestation[], import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         propose_admin: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        attest_version: (json: string) => AssembledTransaction<Result<Attestation, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         get_attestation: (json: string) => AssembledTransaction<Option<Attestation>>;
-        get_schema_version: (json: string) => AssembledTransaction<number>;
         revoke_attestation: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        get_next_record_hash: (json: string) => AssembledTransaction<Option<Buffer>>;
-        withdraw_attestation: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         get_attester_registry: (json: string) => AssembledTransaction<Result<string, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         set_attester_registry: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        get_attestation_status: (json: string) => AssembledTransaction<AttestationStatus>;
         get_attestation_history: (json: string) => AssembledTransaction<Attestation[]>;
-        get_previous_record_hash: (json: string) => AssembledTransaction<Option<Buffer>>;
-        get_attester_attestation_status: (json: string) => AssembledTransaction<AttesterAttestationStatus>;
     };
 }

@@ -43,3 +43,5 @@ Terms used throughout these ADRs — *attester*, *CHW*, *record hash* / *record 
 | [ADR-0009](0009-treasury-asset-custody-model.md) | Stellar asset, treasury, and custody model for the USDC incentive layer | Proposed |
 | [ADR-0010](0010-release-manifest-and-compatibility.md) | Versioned release manifest for contracts, bindings, events, and deployments | Proposed |
 | [ADR-0011](0011-rpc-provider-failover-and-transaction-recovery.md) | RPC provider failover and transaction-recovery strategy | Proposed |
+| [ADR-0012](0012-per-attestation-blinded-commitments.md) | Per-attestation blinded commitments to prevent record-hash linkability | Proposed |
+| [ADR-0017](0017-attester-enumeration-strategy.md) | Derive the attester directory from events plus a mutation cursor, not on-chain enumeration storage | Proposed |

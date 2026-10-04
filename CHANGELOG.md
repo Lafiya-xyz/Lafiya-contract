@@ -5,24 +5,21 @@ All notable changes to this project are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+<!-- From the first automated release on, release-please prepends each version's
+     section from Conventional Commits (docs/releasing.md); don't edit by hand.
+     The [Unreleased] entries below predate the automation and are folded into
+     the first release's notes. -->
+
 ## [Unreleased]
 
 ### Added
 
-- `attestation-registry`: an attester can withdraw their own verification
-  without removing other attestations; admin revocation now preserves history
-  and exposes `get_attestation_status` (`NeverAttested`, `Verified`,
-  `Withdrawn`, or `Revoked`) plus `get_attester_attestation_status` so clients
-  can distinguish each attester's withdrawal from a never-verified record.
-- `attestation-registry`: `attest_version` explicitly links a newly attested
-  record hash to its previously attested version, with read methods for both
-  directions of the version relationship.
-- `attestation-registry`: `batch_attest` accepts up to 50 independently
-  authorized requests per transaction and checks allowlist membership once per
-  distinct attester, supporting queued field submissions with fewer RPC calls.
-- `attestation-registry`: bump the storage schema to version 2 and add an
-  admin-authorized `migrate` entry point for existing instances; the new
-  storage keys are additive and require no data reshaping.
+- Reproducible, provenance-carrying release pipeline: exact toolchain pin,
+  `make wasm-reproducible` (pinned container) / `cargo xtask wasm --reproducible`,
+  a CI double-build comparison, SEP-46/SEP-55 source metadata in every contract
+  wasm, signed SLSA build provenance, release-please release PRs, and the
+  `Schema-Impact:` trailer check. See `docs/releasing.md`.
+- `cargo xtask` cross-platform task runner; the `Makefile` is now a thin shim.
 - ADR-0010 and a prototype release manifest: `scripts/generate_release_manifest.py`
   binds contract wasm hashes, storage schema versions, generated bindings, event
   schemas, and per-network deployment state into one JSON document

@@ -1,0 +1,159 @@
+{
+  "catalog_version": 1,
+  "errors": [
+    {
+      "contract": "attestation-registry",
+      "code": 1,
+      "name": "NotInitialized",
+      "doc": "`initialize` has not been called yet.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attestation.not_initialized",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 2,
+      "name": "AlreadyInitialized",
+      "doc": "`initialize` was called more than once.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attestation.already_initialized",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 3,
+      "name": "AttesterNotAllowlisted",
+      "doc": "The caller is not allowlisted by the `attester-registry` contract.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.attester_not_allowlisted",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 4,
+      "name": "NoPendingTransfer",
+      "doc": "`accept_admin` was called with no pending admin transfer. Admin transfer is a two-step flow: the current admin must first call `propose_admin` to nominate a successor, then the nominated address must call `accept_admin` to complete the transfer. This error is returned when `accept_admin` is called before a corresponding `propose_admin` call has set a pending admin.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.no_pending_transfer",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 5,
+      "name": "InvalidRegistryWiring",
+      "doc": "The configured `attester-registry` address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attestation.invalid_registry_wiring",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 6,
+      "name": "AttestationNotFound",
+      "doc": "No attestation exists for the given record hash / sequence.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.attestation_not_found",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 7,
+      "name": "ContractPaused",
+      "doc": "The requested operation is blocked while the contract is paused.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.contract_paused",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 1,
+      "name": "NotInitialized",
+      "doc": "`initialize` has not been called yet; call `initialize(admin: Address)` before using the contract.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attester.not_initialized",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 2,
+      "name": "AlreadyInitialized",
+      "doc": "`initialize` was called more than once.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attester.already_initialized",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 3,
+      "name": "NoPendingTransfer",
+      "doc": "`accept_admin` was called with no pending admin transfer. Admin transfer is a two-step flow: the current admin must first call `propose_admin` to nominate a successor, then the nominated address must call `accept_admin` to complete the transfer. This error is returned when `accept_admin` is called before a corresponding `propose_admin` call has set a pending admin.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.no_pending_transfer",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 4,
+      "name": "ContractPaused",
+      "doc": "The requested operation is blocked while the contract is paused.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.contract_paused",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 5,
+      "name": "AllowlistFull",
+      "doc": "The allowlist is at its configured maximum size. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.allowlist_full",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 6,
+      "name": "MigrationNotRequired",
+      "doc": "`migrate()` was called while the stored schema version is already `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal that there is nothing pending, not a failure to react to.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attester.migration_not_required",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 7,
+      "name": "AttesterNotFound",
+      "doc": "The referenced attester is not currently allowlisted (never added, or since removed).",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.attester_not_found",
+      "since": "0.1.0",
+      "deprecated": null
+    }
+  ]
+}

@@ -1,0 +1,44 @@
+name: Sandbox
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "contracts/**"
+      - "crates/lafiya-commitment/**"
+      - "sandbox/**"
+      - "xtask/**"
+      - ".github/workflows/sandbox.yml"
+
+env:
+  CARGO_TERM_COLOR: always
+  STELLAR_CLI_VERSION: "28.0.0"
+
+jobs:
+  edge-cases:
+    name: Apply and assert edge-cases scenario
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Stellar CLI
+        run: |
+          curl -fsSL -o stellar-cli.tar.gz \
+            "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz"
+          tar -xzf stellar-cli.tar.gz stellar
+          sudo mv stellar /usr/local/bin/
+          stellar --version
+      - name: Sandbox up
+        run: cargo xtask sandbox up --scenario edge-cases
+      - name: Re-apply is idempotent
+        run: cargo xtask sandbox up --scenario edge-cases | tee rerun.log && grep -q ": 0 change(s)" rerun.log
+      - name: Assert on-chain state
+        run: cargo xtask sandbox verify --scenario edge-cases
+      - name: Sandbox down
+        if: always()
+        run: cargo xtask sandbox down

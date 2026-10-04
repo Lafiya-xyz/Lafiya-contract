@@ -1,0 +1,164 @@
+name: Deploy Testnet
+
+# Continuous testnet deployment (issue #424).
+#
+# - ephemeral: on merge to main (contracts/**), nightly, or manual dispatch,
+#   deploy a fresh system (stellar-cli picks a random salt per deploy, so every
+#   run gets new contract IDs), then run the smoke scenario against it.
+# - staging: on each release tag, upgrade (never redeploy) the long-lived
+#   staging deployment to exercise the upgrade path on real testnet state.
+#
+# The deployer key lives only in the `testnet` GitHub Environment secret
+# TESTNET_DEPLOYER_SECRET. No workflow accepts secrets as inputs.
+# Environment protection is documented in docs/runbooks/testnet-deployment.md.
+
+on:
+  push:
+    branches: [main]
+    paths: ['contracts/**']
+    tags: ['v*']
+  schedule:
+    - cron: '17 3 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-testnet-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+env:
+  NETWORK: testnet
+  RPC_URL: https://soroban-testnet.stellar.org
+  HORIZON_URL: https://horizon-testnet.stellar.org
+
+jobs:
+  ephemeral:
+    if: ${{ !startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    environment: testnet
+    outputs:
+      attester_registry: ${{ steps.deploy.outputs.attester_registry }}
+      attestation_registry: ${{ steps.deploy.outputs.attestation_registry }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Import deployer identity
+        env:
+          DEPLOYER_SECRET: ${{ secrets.TESTNET_DEPLOYER_SECRET }}
+        run: |
+          if [ -z "$DEPLOYER_SECRET" ]; then
+            echo "::error::TESTNET_DEPLOYER_SECRET is not set on the 'testnet' environment"
+            exit 1
+          fi
+          echo "$DEPLOYER_SECRET" | stellar keys add deployer --secret-key
+          echo "DEPLOYER_ADDRESS=$(stellar keys address deployer)" >> "$GITHUB_ENV"
+
+      - name: Fund deployer via friendbot
+        run: |
+          if curl -sf "$HORIZON_URL/accounts/$DEPLOYER_ADDRESS" > /dev/null; then
+            echo "Deployer account already funded."
+            exit 0
+          fi
+          if ! curl -sf --retry 3 --retry-delay 10 "https://friendbot.stellar.org/?addr=$DEPLOYER_ADDRESS" > /dev/null; then
+            echo "::error title=Friendbot unavailable::Could not fund $DEPLOYER_ADDRESS via friendbot"
+            exit 1
+          fi
+
+      - name: Deploy fresh system
+        id: deploy
+        run: |
+          ./scripts/deploy-testnet.sh --identity deployer --network "$NETWORK" --yes
+          echo "attester_registry=$(jq -r .attester_registry "deployments/$NETWORK.json")" >> "$GITHUB_OUTPUT"
+          echo "attestation_registry=$(jq -r .attestation_registry "deployments/$NETWORK.json")" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: deployment-${{ github.run_id }}
+          path: deployments/${{ env.NETWORK }}.json
+
+  smoke:
+    needs: ephemeral
+    uses: ./.github/workflows/smoke-test.yml
+    with:
+      att_registry: ${{ needs.ephemeral.outputs.attestation_registry }}
+      attester_registry: ${{ needs.ephemeral.outputs.attester_registry }}
+      network_url: https://soroban-testnet.stellar.org
+    secrets: inherit
+
+  record:
+    needs: [ephemeral, smoke]
+    if: ${{ always() && needs.ephemeral.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - name: Job summary and deployment ledger
+        env:
+          ATTESTER: ${{ needs.ephemeral.outputs.attester_registry }}
+          ATTESTATION: ${{ needs.ephemeral.outputs.attestation_registry }}
+          RESULT: ${{ needs.smoke.result }}
+        run: |
+          ROW="| $(date -u +%Y-%m-%dT%H:%M:%SZ) | ephemeral | ${GITHUB_SHA::7} | \`$ATTESTER\` | \`$ATTESTATION\` | $RESULT | [run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) |"
+          {
+            echo "## Testnet ephemeral deployment"
+            echo "| Contract | ID |"
+            echo "| --- | --- |"
+            echo "| attester-registry | \`$ATTESTER\` |"
+            echo "| attestation-registry | \`$ATTESTATION\` |"
+            echo ""
+            echo "Smoke result: **$RESULT**"
+          } >> "$GITHUB_STEP_SUMMARY"
+          ./scripts/append-deployment-ledger.sh "$ROW"
+
+  staging-upgrade:
+    if: ${{ startsWith(github.ref, 'refs/tags/v') }}
+    runs-on: ubuntu-latest
+    environment: testnet
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+
+      - name: Install Stellar CLI
+        run: cargo install --locked stellar-cli
+
+      - name: Import deployer identity
+        env:
+          DEPLOYER_SECRET: ${{ secrets.TESTNET_DEPLOYER_SECRET }}
+        run: echo "$DEPLOYER_SECRET" | stellar keys add deployer --secret-key
+
+      - name: Upgrade staging contracts
+        env:
+          STAGING_ATTESTER_REGISTRY: ${{ vars.STAGING_ATTESTER_REGISTRY }}
+          STAGING_ATTESTATION_REGISTRY: ${{ vars.STAGING_ATTESTATION_REGISTRY }}
+        run: |
+          if [ -z "$STAGING_ATTESTER_REGISTRY" ] || [ -z "$STAGING_ATTESTATION_REGISTRY" ]; then
+            echo "::error::STAGING_* environment variables are not set on the 'testnet' environment"
+            exit 1
+          fi
+          ./scripts/upgrade.sh --contract attester-registry --id "$STAGING_ATTESTER_REGISTRY" --source deployer --network "$NETWORK"
+          ./scripts/upgrade.sh --contract attestation-registry --id "$STAGING_ATTESTATION_REGISTRY" --source deployer --network "$NETWORK" --skip-build
+
+      - name: Record staging upgrade
+        env:
+          ATTESTER: ${{ vars.STAGING_ATTESTER_REGISTRY }}
+          ATTESTATION: ${{ vars.STAGING_ATTESTATION_REGISTRY }}
+        run: |
+          ROW="| $(date -u +%Y-%m-%dT%H:%M:%SZ) | staging-upgrade ${GITHUB_REF_NAME} | ${GITHUB_SHA::7} | \`$ATTESTER\` | \`$ATTESTATION\` | success | [run]($GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID) |"
+          echo "## Staging upgraded to ${GITHUB_REF_NAME}" >> "$GITHUB_STEP_SUMMARY"
+          ./scripts/append-deployment-ledger.sh "$ROW"

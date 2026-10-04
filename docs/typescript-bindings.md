@@ -11,10 +11,20 @@ make bindings
 ```
 
 This runs:
-1. `make wasm` to build both contracts to `target/wasm32v1-none/release/`.
+1. `make wasm` to build the contracts to `target/wasm32v1-none/release/`.
 2. `stellar contract bindings typescript` to output the generated TS clients to:
    - `bindings/attester-registry`
    - `bindings/attestation-registry`
+   - `bindings/multisig-account`
+
+`bindings/multisig-account` covers the contract's data types (`Signature`,
+`Errors`) but, being an account contract, has no state-changing methods of
+its own to call. Building and submitting a `__check_auth`-authorized call is
+covered instead by [`@lafiya/multisig-auth`](../packages/multisig-auth), a
+hand-maintained helper package (not generated) for computing the signature
+payload and encoding N-of-M signatures in the shape the contract expects.
+`scripts/conformance/check_bindings_drift.py` covers `multisig-account`'s
+bindings the same way it does the other two contracts.
 
 ## Publishing & Consumption Strategy
 
@@ -29,4 +39,4 @@ See [`PUBLISHING.md`](../PUBLISHING.md) for the canonical, up-to-date strategy. 
      - Standard workspace/monorepo references if they are brought into a monorepo setup in the future.
 
 2. **NPM Registry Publishing (Secondary, planned, not yet live):**
-   - Once `bindings/*/package.json` are scoped under `@lafiya` and given a `publishConfig`, a GitHub Action can pack and publish the generated `bindings/` to the npm registry whenever a release tag is pushed, coordinated with [ADR-0009](adr/0009-release-manifest-and-compatibility.md)'s release manifest.
+   - Once `bindings/*/package.json` are scoped under `@lafiya` and given a `publishConfig`, a GitHub Action can pack and publish the generated `bindings/` to the npm registry whenever a release tag is pushed, coordinated with [ADR-0010](adr/0010-release-manifest-and-compatibility.md)'s release manifest.
