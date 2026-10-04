@@ -1,0 +1,75 @@
+# Python tooling for the conformance and release-manifest gates
+# (scripts/conformance/, scripts/*.py, .github/scripts/). Not a package:
+# install the pinned lockfile instead of this project.
+#
+#   pip install -r requirements-dev.lock
+#   ruff check . && ruff format --check . && mypy && pytest
+#
+# Regenerate the lockfile after changing dependencies:
+#
+#   pip-compile --extra dev -o requirements-dev.lock pyproject.toml
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lafiya-tooling"
+version = "0.1.0"
+description = "Conformance and release-manifest tooling for Lafiya contracts"
+requires-python = ">=3.12"
+dependencies = ["jsonschema>=4.23,<5"]
+
+[project.optional-dependencies]
+dev = [
+    "mypy>=1.13",
+    "pytest>=8",
+    "pytest-cov>=5",
+    "ruff>=0.8",
+    "types-jsonschema",
+]
+
+[tool.setuptools]
+py-modules = []
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+include = ["scripts/**/*.py", ".github/scripts/**/*.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+
+[tool.ruff.lint.isort]
+known-first-party = [
+    "check_bindings_drift",
+    "check_error_docs",
+    "check_manifest_compatibility",
+    "check_readme_contracts",
+    "check_snapshot",
+    "contracts",
+    "extract_interface",
+    "gen_events_doc",
+    "generate_release_manifest",
+    "spec_types",
+    "validate_release_manifest",
+]
+
+[tool.mypy]
+strict = true
+python_version = "3.12"
+mypy_path = ["scripts/conformance", "scripts", ".github/scripts", "scripts/tests"]
+files = ["scripts/conformance", "scripts/tests", "scripts/*.py", ".github/scripts"]
+explicit_package_bases = true
+
+[tool.pytest.ini_options]
+testpaths = ["scripts/tests"]
+pythonpath = ["scripts/conformance", "scripts", ".github/scripts", "scripts/tests"]
+addopts = "--cov --cov-report=term-missing"
+
+[tool.coverage.run]
+source = ["scripts/conformance", "scripts"]
+omit = ["scripts/tests/*"]
+
+[tool.coverage.report]
+fail_under = 80

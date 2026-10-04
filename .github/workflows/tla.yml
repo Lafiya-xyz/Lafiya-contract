@@ -1,0 +1,23 @@
+name: TLA+ Model Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "verification/tla/**"
+      - "contracts/**"
+      - ".github/workflows/tla.yml"
+
+jobs:
+  tlc:
+    name: TLC
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "21"
+      - name: Model-check specs (tla2tools pinned in run.sh)
+        run: verification/tla/run.sh

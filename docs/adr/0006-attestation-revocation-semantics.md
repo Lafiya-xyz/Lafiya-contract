@@ -1,7 +1,7 @@
 # ADR: Attestation Revocation Semantics
 
 ## Status
-Accepted
+Accepted — amended for compromise cutoffs
 
 ## Context
 Currently, `attest` in `contracts/attestation-registry/src/lib.rs` stores a
@@ -23,9 +23,14 @@ an attestation when the attesting CHW has since been removed or suspended:
 
 ## Decision
 
-We adopt **Option A** for the pre-alpha milestone: attestations are immutable
-historical records, and the trust anchor they represent is the fact that *at
-the recorded timestamp* a then-allowlisted CHW attested to the record.
+Attestations remain immutable historical records. In addition, an attester
+registry suspension records a ledger timestamp cutoff. The new
+`is_attestation_trusted` read checks the latest attestation against that
+cutoff: attestations made before the cutoff remain historically valid, while
+attestations made at or after it are untrusted. Raw reads and histories remain
+available for auditability. Reinstating an attester does not erase the
+cutoff; an administrator must explicitly update the attester's trust state
+through a reviewed lifecycle operation.
 
 Rationale:
 
@@ -41,16 +46,16 @@ Rationale:
    attester is currently trusted" — are available on-chain; combining them is a
    presentation-layer concern, handled in `lafiya-web`.
 
-3. **Admin-gated explicit revocation is available.** `revoke_attestation` exists
-   for cases where a specific attestation must be erased (e.g. an error in the
-   record hash, a demonstrably fraudulent attestation that must not appear in
-   any audit trail). This is a deliberate, per-record admin action, not an
-   automatic side effect of allowlist management.
+3. **Explicit withdrawal and revocation are available.** An attester can
+   withdraw their own verification without affecting other attestations for
+   the hash. Admin `revoke_attestation` marks the entire hash revoked while
+   preserving the historical attestations. `get_attestation_status` lets a
+   responder distinguish `Revoked` from `NeverAttested`.
 
 4. **Operational simplicity for pre-alpha.** The CHW population is small and
    admin-supervised. Fraudulent attestations can be handled with explicit
    `revoke_attestation` calls, and the responder-facing UI (lafiya-web) can be
-   updated to display both attestation history and current attester status
+   updated to display attestation state and current attester status
    without requiring on-chain logic changes.
 
 This is an **explicit decision, not an accidental default**. If the operational
@@ -65,19 +70,19 @@ semantics, and its gas impact (see Consequences below).
 - `get_attestation` remains a simple, cheap, single-contract read with no
   cross-contract call and no new failure modes.
 - The contract's append-only audit trail property (ADR-0001) is preserved.
-- Admin-gated explicit revocation (`revoke_attestation`) provides a surgical
-  tool for correcting specific records without affecting the rest.
+- Per-attester withdrawal leaves other verifications intact, while
+  `get_attestation_status` preserves an explicit revoked signal after
+  administrative revocation.
 
 ### Negative / Trade-offs
 - A responder querying only `get_attestation` receives no signal that the
   attesting CHW has since been removed or suspended. The `lafiya-web` UI must
   explicitly check and display current attester status alongside the attestation
   to avoid misleading users.
-- There is no bulk "invalidate all attestations by this CHW" operation at the
-  contract level. An operator discovering a fraudulent CHW must enumerate that
-  CHW's record hashes via the `AttestationRecorded` event log and issue
-  individual `revoke_attestation` calls or build a batch CLI tool. This is
-  operationally expensive for a high-volume fraudulent attester.
+- The cutoff is checked when a consumer asks for trust, rather than deleting
+  records. Consumers must use `is_attestation_trusted` (or apply the same
+  cutoff rule) instead of treating a raw historical read as a current trust
+  decision.
 - Storing historical attestations from removed attesters consumes persistent
   storage rent indefinitely (until explicitly revoked). For a small CHW
   population this is negligible; it should be re-evaluated if the attester set

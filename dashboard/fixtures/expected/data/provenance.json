@@ -1,0 +1,25 @@
+{
+  "contracts": [
+    "CRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+    "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+  ],
+  "k_anonymity": 10,
+  "ledger_from": 1000,
+  "ledger_to": 60000,
+  "network": "synthetic",
+  "query": {
+    "endLedger": 60000,
+    "filters": [
+      {
+        "contractIds": [
+          "CRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+          "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"
+        ],
+        "type": "contract"
+      }
+    ],
+    "method": "getEvents",
+    "startLedger": 1000
+  },
+  "reproduce": "lafiya-watchdog --config watchdog.toml export --from 1000 --to 60000 > events.jsonl && python3 dashboard/generate.py --events events.jsonl --attesters attesters.json --network synthetic --ledger-from 1000 --ledger-to 60000 --contracts CRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR,CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA --out site"
+}

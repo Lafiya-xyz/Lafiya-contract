@@ -6,6 +6,10 @@ description = "Reference implementation of the Lafiya Record Commitment (LRC-1) 
 license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
+[features]
+# Enable the LRC-2 per-field selective-disclosure prototype (see ADR-0012).
+lrc2 = []
+
 [dependencies]
 sha2 = "0.10"
 

@@ -11,6 +11,8 @@ This directory holds the canonical source of truth for Lafiya's Soroban network 
 ```toml
 [testnet]
 rpc_url = "https://soroban-testnet.stellar.org"
+# Optional: ordered failover endpoints (primary first). Falls back to rpc_url when empty.
+# rpc_urls = ["https://soroban-testnet.stellar.org", "https://<second-provider>"]
 network_passphrase = "Test SDF Network ; September 2015"
 
 [testnet.contracts]
@@ -79,7 +81,43 @@ echo "$LAFIYA_NETWORK_PASSPHRASE"
 echo "$LAFIYA_ATTESTER_REGISTRY_ID"
 ```
 
-The shell loader uses `python3` with `tomllib`/`tomli` to parse TOML robustly — no hardcoded values.
+The shell loader evaluates `lafiya-cli config env`, so Bash and Rust share the same parsing, validation, and override rules. It uses `$LAFIYA_CLI`, then `lafiya-cli` on `PATH`, then `cargo run -p lafiya-cli`.
+
+### Strict validation
+
+Unknown keys are rejected, and the error names the closest valid key when one is within edit distance 2:
+
+```
+unknown key `testnet.contracts.atester_registry` in config/networks.toml (did you mean `attester_registry`?)
+```
+
+Every network needs `rpc_url`, `network_passphrase`, and a `[<network>.contracts]` table with both contract keys. Use `""` for a contract that is not deployed.
+
+### JSON Schema
+
+`networks.schema.json` is generated from the Rust types. `networks.toml` references it with a `#:schema` directive, so Taplo / Even Better TOML validate as you type. Regenerate it after changing the config structs:
+
+```bash
+make config-schema
+```
+
+`cargo test -p lafiya-config` fails in CI if the committed schema is stale.
+
+### Layered overrides
+
+Values are resolved in this order (highest first):
+
+1. CLI flag: `lafiya-cli --set <key>=<value>` (repeatable)
+2. Environment: `LAFIYA_<NETWORK>_<KEY>`, e.g. `LAFIYA_TESTNET_RPC_URL`, `LAFIYA_TESTNET_ATTESTER_REGISTRY`
+3. `config/networks.local.toml` (gitignored, same shape as `networks.toml`, every key optional)
+4. `config/networks.toml`
+
+Overridable keys: `rpc_url`, `network_passphrase`, `contracts.attester_registry`, `contracts.attestation_registry`. `config show` reports where each value came from:
+
+```bash
+LAFIYA_TESTNET_RPC_URL=https://private-rpc.example cargo run -p lafiya-cli -- config show
+# RPC URL: https://private-rpc.example  (from env LAFIYA_TESTNET_RPC_URL)
+```
 
 ## Adding a new network
 

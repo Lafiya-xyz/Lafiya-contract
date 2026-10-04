@@ -1,0 +1,20 @@
+[book]
+title = "Lafiya Contracts"
+authors = ["Lafiya contract maintainers"]
+language = "en"
+# `cargo xtask docs` stages docs/ plus imported repository Markdown here, with
+# links that leave the site rewritten to GitHub.
+src = "../target/book-src"
+
+[build]
+build-dir = "../target/book"
+create-missing = false
+
+[output.html]
+git-repository-url = "https://github.com/Lafiya-xyz/Lafiya-contract"
+edit-url-template = "https://github.com/Lafiya-xyz/Lafiya-contract/edit/main/docs/{path}"
+additional-js = ["theme/version-switcher.js"]
+additional-css = ["theme/adr-status.css"]
+
+[output.html.search]
+enable = true

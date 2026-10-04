@@ -135,7 +135,7 @@ export interface Client {
    * Construct and simulate a migrate transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Run any pending storage migration, then record the new schema
    * version. Requires the admin's authorization.
-   *
+   * 
    * Call this after `upgrade()` only when the new build bumps
    * `SCHEMA_VERSION` (a storage-schema-changing release) — including the
    * first upgrade of a legacy (pre-versioning, schema version `0`)
@@ -155,12 +155,12 @@ export interface Client {
    * Construct and simulate a upgrade transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Upgrade the contract's Wasm code to a new version.
    * Requires the admin's authorization.
-   *
+   * 
    * Runbook:
    * 1. Build the new Wasm binary (e.g. `cargo build --workspace --release --target wasm32v1-none`).
    * 2. Upload/install the new Wasm on-chain to obtain its 32-byte hash (`new_wasm_hash`).
    * 3. The admin calls this `upgrade` function passing the `new_wasm_hash`.
-   *
+   * 
    * For any accompanying state/data migrations, see the storage-versioning guidelines
    * (e.g. implementing migration scripts or handling lazy migrations on reading old schema versions).
    */
@@ -204,7 +204,36 @@ export interface Client {
    * Fails with `Error::AllowlistFull` if the allowlist is at capacity and
    * `attester` is not already present (see `set_max_attesters`).
    */
-  add_attester: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  add_attesters: ({registrar, attesters}: {registrar: string, attesters: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a propose_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Propose a new admin address. The caller must authorize as the current admin.
+   * Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
+   */
+  propose_admin: ({new_admin}: {new_admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a add_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Add multiple attesters to the allowlist in a single transaction.
+   * 
+   * Requires the admin's authorization. Blocked while the contract is paused.
+   * Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+   * Returns `Error::AllowlistFull` if adding the new (non-duplicate)
+   * addresses would exceed the configured `max_attesters` cap. Addresses
+   * that are already allowlisted are silently skipped (idempotent), so the
+   * call never fails due to duplicates in the batch and no duplicate events
+   * are emitted. Exactly one `AttesterAdded` event is emitted per newly
+   * added address.
+   */
+  add_attesters: ({attesters}: {attesters: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a propose_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Propose a new admin address. The caller must authorize as the current admin.
+   * Calling this a second time before `accept_admin` overwrites any pending proposal — the most recent call wins.
+   */
+  propose_admin: ({new_admin}: {new_admin: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a add_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -230,10 +259,73 @@ export interface Client {
 
   /**
    * Construct and simulate a remove_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Remove `attester` from the allowlist. Requires the admin's
+   * Remove `attester` from the allowlist. Requires a global registrar's
    * authorization. A no-op if the attester was never allowlisted.
    */
-  remove_attester: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  remove_attester: ({registrar, attester}: {registrar: string, attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a remove_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Remove multiple attesters from the allowlist in a single transaction.
+   *
+   * Requires a global registrar's authorization. Blocked while paused.
+   * Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+   * If the batch removes regional enrollments, its size is additionally
+   * limited to `REGIONAL_REMOVE_BATCH_LIMIT` to bound storage cleanup.
+   * Addresses that are not currently allowlisted are silently skipped
+   * (idempotent), so the call never fails if an address was already removed
+   * and no spurious events are emitted. Exactly one `AttesterRemoved` event
+   * is emitted per address that was actually removed.
+   */
+  remove_attesters: ({registrar, attesters}: {registrar: string, attesters: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a suspend_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Suspend an allowlisted attester. A global registrar may suspend any
+   * attester; a regional registrar may suspend only attesters in its region.
+   *
+   * **Note:** this function does **not** check whether `attester` was ever
+   * added via `add_attester`. If called on an address that is not in the
+   * allowlist, it silently sets the `Suspended` storage key and emits
+   * `AttesterSuspended` for that address — a no-op from an access-control
+   * perspective because `is_attester` also checks for an `Attester` storage
+   * entry, so the phantom suspension has no effect on allowlist queries.
+   * This diverges from `update_attester_info`, which returns
+   * `Error::AttesterNotFound` for unknown addresses. The inconsistency is
+   * known and documented here rather than silently changed; a follow-up
+   * issue should decide whether to align both functions.
+   */
+  suspend_attester: ({registrar, attester}: {registrar: string, attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a remove_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Remove multiple attesters from the allowlist in a single transaction.
+   * 
+   * Requires the admin's authorization. Blocked while the contract is paused.
+   * Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+   * Addresses that are not currently allowlisted are silently skipped
+   * (idempotent), so the call never fails if an address was already removed
+   * and no spurious events are emitted. Exactly one `AttesterRemoved` event
+   * is emitted per address that was actually removed.
+   */
+  remove_attesters: ({attesters}: {attesters: Array<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a suspend_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Suspend an allowlisted attester. Requires the admin's authorization.
+   * 
+   * **Note:** this function does **not** check whether `attester` was ever
+   * added via `add_attester`. If called on an address that is not in the
+   * allowlist, it silently sets the `Suspended` storage key and emits
+   * `AttesterSuspended` for that address — a no-op from an access-control
+   * perspective because `is_attester` also checks for an `Attester` storage
+   * entry, so the phantom suspension has no effect on allowlist queries.
+   * This diverges from `update_attester_info`, which returns
+   * `Error::AttesterNotFound` for unknown addresses. The inconsistency is
+   * known and documented here rather than silently changed; a follow-up
+   * issue should decide whether to align both functions.
+   */
+  suspend_attester: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
    * Construct and simulate a remove_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -330,7 +422,8 @@ export interface Client {
    * `attester` is not already present (see `set_max_attesters`).
    */
   add_attester_with_info: ({attester, license_hash, region}: {attester: string, license_hash: Option<Buffer>, region: Option<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
+  suspend_attester_with_reason: ({attester, reason}: {attester: string, reason: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+  get_attester_trust_revoked_after: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -350,18 +443,18 @@ export class Client extends ContractClient {
   constructor(public readonly options: ContractClientOptions) {
     super(
       new ContractSpec([ "AAAABAAAAD9FcnJvcnMgcmV0dXJuZWQgYnkgdGhlIGF0dGVzdGVyIHJlZ2lzdHJ5J3MgcHVibGljIGVudHJ5IHBvaW50cy4AAAAAAAAAAAVFcnJvcgAAAAAAAAgAAABiYGluaXRpYWxpemVgIGhhcyBub3QgYmVlbiBjYWxsZWQgeWV0OyBjYWxsCmBpbml0aWFsaXplKGFkbWluOiBBZGRyZXNzKWAgYmVmb3JlIHVzaW5nIHRoZSBjb250cmFjdC4AAAAAAA5Ob3RJbml0aWFsaXplZAAAAAAAAQAAACdgaW5pdGlhbGl6ZWAgd2FzIGNhbGxlZCBtb3JlIHRoYW4gb25jZS4AAAAAEkFscmVhZHlJbml0aWFsaXplZAAAAAAAAgAAAW9gYWNjZXB0X2FkbWluYCB3YXMgY2FsbGVkIHdpdGggbm8gcGVuZGluZyBhZG1pbiB0cmFuc2Zlci4gQWRtaW4gdHJhbnNmZXIgaXMgYQp0d28tc3RlcCBmbG93OiB0aGUgY3VycmVudCBhZG1pbiBtdXN0IGZpcnN0IGNhbGwgYHByb3Bvc2VfYWRtaW5gIHRvIG5vbWluYXRlIGEKc3VjY2Vzc29yLCB0aGVuIHRoZSBub21pbmF0ZWQgYWRkcmVzcyBtdXN0IGNhbGwgYGFjY2VwdF9hZG1pbmAgdG8gY29tcGxldGUgdGhlCnRyYW5zZmVyLiBUaGlzIGVycm9yIGlzIHJldHVybmVkIHdoZW4gYGFjY2VwdF9hZG1pbmAgaXMgY2FsbGVkIGJlZm9yZSBhCmNvcnJlc3BvbmRpbmcgYHByb3Bvc2VfYWRtaW5gIGNhbGwgaGFzIHNldCBhIHBlbmRpbmcgYWRtaW4uAAAAABFOb1BlbmRpbmdUcmFuc2ZlcgAAAAAAAAMAAABAVGhlIHJlcXVlc3RlZCBvcGVyYXRpb24gaXMgYmxvY2tlZCB3aGlsZSB0aGUgY29udHJhY3QgaXMgcGF1c2VkLgAAAA5Db250cmFjdFBhdXNlZAAAAAAABAAAAH1UaGUgYWxsb3dsaXN0IGlzIGF0IGl0cyBjb25maWd1cmVkIG1heGltdW0gc2l6ZS4gUmFpc2UgdGhlIGNhcCB2aWEgYHNldF9tYXhfYXR0ZXN0ZXJzYCwgb3IgZnJlZSBhIHNsb3QgdmlhIGByZW1vdmVfYXR0ZXN0ZXJgLgAAAAAAAA1BbGxvd2xpc3RGdWxsAAAAAAAABQAAAQJgbWlncmF0ZSgpYCB3YXMgY2FsbGVkIHdoaWxlIHRoZSBzdG9yZWQgc2NoZW1hIHZlcnNpb24gaXMgYWxyZWFkeQpgPj0gU0NIRU1BX1ZFUlNJT05gLiBPbmx5IGNhbGwgYG1pZ3JhdGUoKWAgYWZ0ZXIgYHVwZ3JhZGUoKWAgdG8gYQpidWlsZCB0aGF0IGJ1bXBzIGBTQ0hFTUFfVkVSU0lPTmA7IHRoaXMgZXJyb3IgaXMgYSBzYWZlIG5vLW9wIHNpZ25hbAp0aGF0IHRoZXJlIGlzIG5vdGhpbmcgcGVuZGluZywgbm90IGEgZmFpbHVyZSB0byByZWFjdCB0by4AAAAAABRNaWdyYXRpb25Ob3RSZXF1aXJlZAAAAAYAAABVVGhlIHJlZmVyZW5jZWQgYXR0ZXN0ZXIgaXMgbm90IGN1cnJlbnRseSBhbGxvd2xpc3RlZCAobmV2ZXIgYWRkZWQsCm9yIHNpbmNlIHJlbW92ZWQpLgAAAAAAABBBdHRlc3Rlck5vdEZvdW5kAAAABwAAADNUaGUgc3VwcGxpZWQgYmF0Y2ggZXhjZWVkcyBgQkFUQ0hfTElNSVRgIGFkZHJlc3Nlcy4AAAAADUJhdGNoVG9vTGFyZ2UAAAAAAAAI",
-        "AAAABQAAADJFbWl0dGVkIHdoZW4gc3RhdGUtY2hhbmdpbmcgb3BlcmF0aW9ucyBhcmUgcGF1c2VkLgAAAAAAAAAAAAZQYXVzZWQAAAAAAAEAAAAGcGF1c2VkAAAAAAADAAAAAAAAAAJieQAAAAAAEwAAAAEAAAAAAAAADWNvbnRyYWN0X2tpbmQAAAAAAAARAAAAAAAAAAAAAAAOc2NoZW1hX3ZlcnNpb24AAAAAAAQAAAAAAAAAAg==",
-        "AAAABQAAADRFbWl0dGVkIHdoZW4gc3RhdGUtY2hhbmdpbmcgb3BlcmF0aW9ucyBhcmUgdW5wYXVzZWQuAAAAAAAAAAhVbnBhdXNlZAAAAAEAAAAIdW5wYXVzZWQAAAADAAAAAAAAAAJieQAAAAAAEwAAAAEAAAAAAAAADWNvbnRyYWN0X2tpbmQAAAAAAAARAAAAAAAAAAAAAAAOc2NoZW1hX3ZlcnNpb24AAAAAAAQAAAAAAAAAAg==",
-        "AAAABQAAADJFbWl0dGVkIHdoZW4gdGhlIGNvbnRyYWN0IGlzIHVwZ3JhZGVkIHRvIG5ldyB3YXNtLgAAAAAAAAAAAAhVcGdyYWRlZAAAAAEAAAAIdXBncmFkZWQAAAADAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAABAAAAAAAAAA1jb250cmFjdF9raW5kAAAAAAAAEQAAAAAAAAAAAAAADnNjaGVtYV92ZXJzaW9uAAAAAAAEAAAAAAAAAAI=",
-        "AAAABQAAAC9FbWl0dGVkIG9uY2UsIHdoZW4gdGhlIGNvbnRyYWN0IGlzIGluaXRpYWxpemVkLgAAAAAAAAAAC0luaXRpYWxpemVkAAAAAAEAAAALaW5pdGlhbGl6ZWQAAAAAAwAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAQAAAAAAAAANY29udHJhY3Rfa2luZAAAAAAAABEAAAAAAAAAAAAAAA5zY2hlbWFfdmVyc2lvbgAAAAAABAAAAAAAAAAC",
+        "AAAABQAAADJFbWl0dGVkIHdoZW4gc3RhdGUtY2hhbmdpbmcgb3BlcmF0aW9ucyBhcmUgcGF1c2VkLgAAAAAAAAAAAAZQYXVzZWQAAAAAAAEAAAAGcGF1c2VkAAAAAAABAAAAAAAAAAJieQAAAAAAEwAAAAEAAAAC",
+        "AAAABQAAADRFbWl0dGVkIHdoZW4gc3RhdGUtY2hhbmdpbmcgb3BlcmF0aW9ucyBhcmUgdW5wYXVzZWQuAAAAAAAAAAhVbnBhdXNlZAAAAAEAAAAIdW5wYXVzZWQAAAABAAAAAAAAAAJieQAAAAAAEwAAAAEAAAAC",
+        "AAAABQAAADJFbWl0dGVkIHdoZW4gdGhlIGNvbnRyYWN0IGlzIHVwZ3JhZGVkIHRvIG5ldyB3YXNtLgAAAAAAAAAAAAhVcGdyYWRlZAAAAAEAAAAIdXBncmFkZWQAAAABAAAAAAAAAA1uZXdfd2FzbV9oYXNoAAAAAAAD7gAAACAAAAABAAAAAg==",
+        "AAAABQAAAC9FbWl0dGVkIG9uY2UsIHdoZW4gdGhlIGNvbnRyYWN0IGlzIGluaXRpYWxpemVkLgAAAAAAAAAAC0luaXRpYWxpemVkAAAAAAEAAAALaW5pdGlhbGl6ZWQAAAAAAQAAAAAAAAAFYWRtaW4AAAAAAAATAAAAAQAAAAI=",
         "AAAAAQAAADFNZXRhZGF0YSBhc3NvY2lhdGVkIHdpdGggYW4gYWxsb3dsaXN0ZWQgYXR0ZXN0ZXIuAAAAAAAAAAAAAAxBdHRlc3RlckluZm8AAAACAAAARUhhc2ggb2YgdGhlIGF0dGVzdGVyJ3Mgb2ZmLWNoYWluIGxpY2Vuc2UvY3JlZGVudGlhbCBkb2N1bWVudCwgaWYgYW55LgAAAAAAAAxsaWNlbnNlX2hhc2gAAAPoAAAD7gAAACAAAABHVGhlIGdlb2dyYXBoaWMgcmVnaW9uIHRoZSBhdHRlc3RlciBpcyBhdXRob3JpemVkIHRvIGF0dGVzdCBmb3IsIGlmIGFueS4AAAAABnJlZ2lvbgAAAAAD6AAAABE=",
-        "AAAABQAAADNFbWl0dGVkIHdoZW4gYW4gYXR0ZXN0ZXIgaXMgYWRkZWQgdG8gdGhlIGFsbG93bGlzdC4AAAAAAAAAAA1BdHRlc3RlckFkZGVkAAAAAAAAAQAAAA5hdHRlc3Rlcl9hZGRlZAAAAAAAAwAAAAAAAAAIYXR0ZXN0ZXIAAAATAAAAAQAAAAAAAAANY29udHJhY3Rfa2luZAAAAAAAABEAAAAAAAAAAAAAAA5zY2hlbWFfdmVyc2lvbgAAAAAABAAAAAAAAAAC",
+        "AAAABQAAADNFbWl0dGVkIHdoZW4gYW4gYXR0ZXN0ZXIgaXMgYWRkZWQgdG8gdGhlIGFsbG93bGlzdC4AAAAAAAAAAA1BdHRlc3RlckFkZGVkAAAAAAAAAQAAAA5hdHRlc3Rlcl9hZGRlZAAAAAAAAQAAAAAAAAAIYXR0ZXN0ZXIAAAATAAAAAQAAAAI=",
         "AAAAAQAAAHRBbiBhbGxvd2xpc3RlZCBhdHRlc3RlcidzIG1ldGFkYXRhIHRvZ2V0aGVyIHdpdGggaXRzIGN1cnJlbnQgc3VzcGVuc2lvbgpzdGF0ZSwgYXMgcmV0dXJuZWQgYnkgYGdldF9hdHRlc3Rlcl9zdGF0dXNgLgAAAAAAAAAOQXR0ZXN0ZXJTdGF0dXMAAAAAAAIAAAAfVGhlIGF0dGVzdGVyJ3Mgc3RvcmVkIG1ldGFkYXRhLgAAAAAEaW5mbwAAB9AAAAAMQXR0ZXN0ZXJJbmZvAAAALFdoZXRoZXIgdGhlIGF0dGVzdGVyIGlzIGN1cnJlbnRseSBzdXNwZW5kZWQuAAAACXN1c3BlbmRlZAAAAAAAAAE=",
-        "AAAABQAAADdFbWl0dGVkIHdoZW4gYW4gYXR0ZXN0ZXIgaXMgcmVtb3ZlZCBmcm9tIHRoZSBhbGxvd2xpc3QuAAAAAAAAAAAPQXR0ZXN0ZXJSZW1vdmVkAAAAAAEAAAAQYXR0ZXN0ZXJfcmVtb3ZlZAAAAAMAAAAAAAAACGF0dGVzdGVyAAAAEwAAAAEAAAAAAAAADWNvbnRyYWN0X2tpbmQAAAAAAAARAAAAAAAAAAAAAAAOc2NoZW1hX3ZlcnNpb24AAAAAAAQAAAAAAAAAAg==",
-        "AAAABQAAAERFbWl0dGVkIHdoZW4gYWRtaW4gb3duZXJzaGlwIGZpbmlzaGVzIHRyYW5zZmVycmluZyB0byBhIG5ldyBhZGRyZXNzLgAAAAAAAAAQQWRtaW5UcmFuc2ZlcnJlZAAAAAEAAAARYWRtaW5fdHJhbnNmZXJyZWQAAAAAAAAEAAAAAAAAAA5wcmV2aW91c19hZG1pbgAAAAAAEwAAAAEAAAAAAAAACW5ld19hZG1pbgAAAAAAABMAAAABAAAAAAAAAA1jb250cmFjdF9raW5kAAAAAAAAEQAAAAAAAAAAAAAADnNjaGVtYV92ZXJzaW9uAAAAAAAEAAAAAAAAAAI=",
-        "AAAABQAAACZFbWl0dGVkIHdoZW4gYW4gYXR0ZXN0ZXIgaXMgc3VzcGVuZGVkLgAAAAAAAAAAABFBdHRlc3RlclN1c3BlbmRlZAAAAAAAAAEAAAASYXR0ZXN0ZXJfc3VzcGVuZGVkAAAAAAADAAAAAAAAAAhhdHRlc3RlcgAAABMAAAABAAAAAAAAAA1jb250cmFjdF9raW5kAAAAAAAAEQAAAAAAAAAAAAAADnNjaGVtYV92ZXJzaW9uAAAAAAAEAAAAAAAAAAI=",
-        "AAAABQAAADBFbWl0dGVkIHdoZW4gYSBzdXNwZW5kZWQgYXR0ZXN0ZXIgaXMgcmVpbnN0YXRlZC4AAAAAAAAAEkF0dGVzdGVyUmVpbnN0YXRlZAAAAAAAAQAAABNhdHRlc3Rlcl9yZWluc3RhdGVkAAAAAAMAAAAAAAAACGF0dGVzdGVyAAAAEwAAAAEAAAAAAAAADWNvbnRyYWN0X2tpbmQAAAAAAAARAAAAAAAAAAAAAAAOc2NoZW1hX3ZlcnNpb24AAAAAAAQAAAAAAAAAAg==",
-        "AAAABQAAALFFbWl0dGVkIHdoZW4gYW4gYWxyZWFkeS1hbGxvd2xpc3RlZCBhdHRlc3RlcidzIG1ldGFkYXRhIGlzIHVwZGF0ZWQgdmlhCmB1cGRhdGVfYXR0ZXN0ZXJfaW5mb2AuIERpc3Rpbmd1aXNoYWJsZSBmcm9tIGBBdHRlc3RlckFkZGVkYCwgd2hpY2ggaXMKb25seSBlbWl0dGVkIG9uIGluaXRpYWwgZW5yb2xsbWVudC4AAAAAAAAAAAAAE0F0dGVzdGVySW5mb1VwZGF0ZWQAAAAAAQAAABVhdHRlc3Rlcl9pbmZvX3VwZGF0ZWQAAAAAAAADAAAAAAAAAAhhdHRlc3RlcgAAABMAAAABAAAAAAAAAA1jb250cmFjdF9raW5kAAAAAAAAEQAAAAAAAAAAAAAADnNjaGVtYV92ZXJzaW9uAAAAAAAEAAAAAAAAAAI=",
+        "AAAABQAAADdFbWl0dGVkIHdoZW4gYW4gYXR0ZXN0ZXIgaXMgcmVtb3ZlZCBmcm9tIHRoZSBhbGxvd2xpc3QuAAAAAAAAAAAPQXR0ZXN0ZXJSZW1vdmVkAAAAAAEAAAAQYXR0ZXN0ZXJfcmVtb3ZlZAAAAAEAAAAAAAAACGF0dGVzdGVyAAAAEwAAAAEAAAAC",
+        "AAAABQAAAERFbWl0dGVkIHdoZW4gYWRtaW4gb3duZXJzaGlwIGZpbmlzaGVzIHRyYW5zZmVycmluZyB0byBhIG5ldyBhZGRyZXNzLgAAAAAAAAAQQWRtaW5UcmFuc2ZlcnJlZAAAAAEAAAARYWRtaW5fdHJhbnNmZXJyZWQAAAAAAAACAAAAAAAAAA5wcmV2aW91c19hZG1pbgAAAAAAEwAAAAEAAAAAAAAACW5ld19hZG1pbgAAAAAAABMAAAABAAAAAg==",
+        "AAAABQAAACZFbWl0dGVkIHdoZW4gYW4gYXR0ZXN0ZXIgaXMgc3VzcGVuZGVkLgAAAAAAAAAAABFBdHRlc3RlclN1c3BlbmRlZAAAAAAAAAEAAAASYXR0ZXN0ZXJfc3VzcGVuZGVkAAAAAAABAAAAAAAAAAhhdHRlc3RlcgAAABMAAAABAAAAAg==",
+        "AAAABQAAADBFbWl0dGVkIHdoZW4gYSBzdXNwZW5kZWQgYXR0ZXN0ZXIgaXMgcmVpbnN0YXRlZC4AAAAAAAAAEkF0dGVzdGVyUmVpbnN0YXRlZAAAAAAAAQAAABNhdHRlc3Rlcl9yZWluc3RhdGVkAAAAAAEAAAAAAAAACGF0dGVzdGVyAAAAEwAAAAEAAAAC",
+        "AAAABQAAALFFbWl0dGVkIHdoZW4gYW4gYWxyZWFkeS1hbGxvd2xpc3RlZCBhdHRlc3RlcidzIG1ldGFkYXRhIGlzIHVwZGF0ZWQgdmlhCmB1cGRhdGVfYXR0ZXN0ZXJfaW5mb2AuIERpc3Rpbmd1aXNoYWJsZSBmcm9tIGBBdHRlc3RlckFkZGVkYCwgd2hpY2ggaXMKb25seSBlbWl0dGVkIG9uIGluaXRpYWwgZW5yb2xsbWVudC4AAAAAAAAAAAAAE0F0dGVzdGVySW5mb1VwZGF0ZWQAAAAAAQAAABVhdHRlc3Rlcl9pbmZvX3VwZGF0ZWQAAAAAAAABAAAAAAAAAAhhdHRlc3RlcgAAABMAAAABAAAAAg==",
         "AAAAAAAAAN1QYXVzZSB0aGUgY29udHJhY3QsIGJsb2NraW5nIGBhZGRfYXR0ZXN0ZXJgLCBgYWRkX2F0dGVzdGVyX3dpdGhfaW5mb2AsCmB1cGRhdGVfYXR0ZXN0ZXJfaW5mb2AsIGByZW1vdmVfYXR0ZXN0ZXJgLCBgc3VzcGVuZF9hdHRlc3RlcmAsIGFuZApgcmVpbnN0YXRlX2F0dGVzdGVyYCB1bnRpbCBgdW5wYXVzZWAgaXMgY2FsbGVkLiBSZXF1aXJlcyB0aGUgYWRtaW4ncwphdXRob3JpemF0aW9uLgAAAAAAAAVwYXVzZQAAAAAAAAAAAAABAAAD6QAAAAIAAAAD",
         "AAAAAAAAAe1SdW4gYW55IHBlbmRpbmcgc3RvcmFnZSBtaWdyYXRpb24sIHRoZW4gcmVjb3JkIHRoZSBuZXcgc2NoZW1hCnZlcnNpb24uIFJlcXVpcmVzIHRoZSBhZG1pbidzIGF1dGhvcml6YXRpb24uCgpDYWxsIHRoaXMgYWZ0ZXIgYHVwZ3JhZGUoKWAgb25seSB3aGVuIHRoZSBuZXcgYnVpbGQgYnVtcHMKYFNDSEVNQV9WRVJTSU9OYCAoYSBzdG9yYWdlLXNjaGVtYS1jaGFuZ2luZyByZWxlYXNlKSDigJQgaW5jbHVkaW5nIHRoZQpmaXJzdCB1cGdyYWRlIG9mIGEgbGVnYWN5IChwcmUtdmVyc2lvbmluZywgc2NoZW1hIHZlcnNpb24gYDBgKQppbnN0YW5jZSwgd2hpY2ggbXVzdCBiZSBtaWdyYXRlZCB0byB2ZXJzaW9uIDEuIFdoZW4gbm8gbWlncmF0aW9uIGlzCnBlbmRpbmcgKGBTY2hlbWFWZXJzaW9uID49IFNDSEVNQV9WRVJTSU9OYCkgdGhpcyByZXR1cm5zCmBFcnJvcjo6TWlncmF0aW9uTm90UmVxdWlyZWRgIHNvIHRoZSBjYWxsIGNhbid0IGFjY2lkZW50YWxseSByZS1ydW4uAAAAAAAAB21pZ3JhdGUAAAAAAAAAAAEAAAPpAAAAAgAAAAM=",
         "AAAAAAAAAExSZXN1bWUgbm9ybWFsIG9wZXJhdGlvbiBhZnRlciBhIGBwYXVzZWAuIFJlcXVpcmVzIHRoZSBhZG1pbidzIGF1dGhvcml6YXRpb24uAAAAB3VucGF1c2UAAAAAAAAAAAEAAAPpAAAAAgAAAAM=",
