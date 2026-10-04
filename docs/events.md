@@ -44,6 +44,16 @@ for how these events are consumed.
 |---|---|---|
 | `record_hash` | `BytesN<32>` | topic_list |
 
+### `AttestationWithdrawn`
+
+- **Prefix topics:** `attestation_withdrawn`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `record_hash` | `BytesN<32>` | topic_list |
+| `attester` | `Address` | topic_list |
+
 ### `AttesterRegistryRepointed`
 
 - **Prefix topics:** `attester_registry_repointed`
@@ -62,6 +72,26 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `by` | `Address` | topic_list |
+
+### `RateLimitHit`
+
+- **Prefix topics:** `rate_limit_hit`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `retry_after_ledger` | `u32` | data |
+
+### `RateLimitSet`
+
+- **Prefix topics:** `rate_limit_set`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `max_per_window` | `u32` | data |
+| `window_ledgers` | `u32` | data |
 
 ### `Unpaused`
 
@@ -120,6 +150,15 @@ for how these events are consumed.
 |---|---|---|
 | `attester` | `Address` | topic_list |
 
+### `AttesterRevoked`
+
+- **Prefix topics:** `attester_revoked`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+
 ### `AttesterSuspended`
 
 - **Prefix topics:** `attester_suspended`
@@ -128,6 +167,8 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `reason` | `Symbol` | data |
+| `since` | `u64` | data |
 
 ### `Initialized`
 

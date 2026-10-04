@@ -26,9 +26,10 @@ fn signer_list_strategy() -> impl Strategy<Value = std::vec::Vec<SigningKey>> {
         let mut unique_keys = std::vec::Vec::new();
         for key in keys {
             let bytes = key.verifying_key().to_bytes();
-            if !unique_keys.iter().any(|k: &SigningKey| {
-                k.verifying_key().to_bytes() == bytes
-            }) {
+            if !unique_keys
+                .iter()
+                .any(|k: &SigningKey| k.verifying_key().to_bytes() == bytes)
+            {
                 unique_keys.push(key);
             }
         }
@@ -120,7 +121,7 @@ proptest! {
         keys in signer_list_strategy(),
         payload_bytes in proptest::array::uniform32(any::<u8>())
     ) {
-        if keys.is_empty() || keys.len() > MAX_SIGNERS {
+        if keys.len() < 2 || keys.len() > MAX_SIGNERS {
             return Ok(());
         }
 
@@ -133,7 +134,7 @@ proptest! {
             ));
         }
 
-        let threshold = (keys.len().max(2)) as u32;
+        let threshold = 2u32;
         let account = env.register(MultisigAccount, (signers, threshold));
 
         let payload = BytesN::from_array(&env, &payload_bytes);

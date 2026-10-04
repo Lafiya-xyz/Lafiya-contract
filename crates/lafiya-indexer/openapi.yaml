@@ -1,0 +1,144 @@
+openapi: 3.0.3
+info:
+  title: Lafiya indexer API
+  version: 0.1.0
+  description: >
+    Read-only view of Lafiya contract state and history derived from contract
+    events. List endpoints are keyset-paginated: pass `next_cursor` from a
+    response as `cursor` to fetch the next page; it is null on the last page.
+paths:
+  /health:
+    get:
+      summary: Liveness and ingestion progress
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: { type: string, example: ok }
+                  checkpoint_ledger: { type: integer, nullable: true }
+                  lag_ledgers: { type: integer }
+        "503": { $ref: "#/components/responses/Error" }
+  /metrics:
+    get:
+      summary: Prometheus metrics
+      responses:
+        "200":
+          description: Prometheus text format
+          content:
+            text/plain: { schema: { type: string } }
+  /attesters:
+    get:
+      summary: List attesters
+      parameters:
+        - { name: region, in: query, schema: { type: string } }
+        - name: status
+          in: query
+          schema: { type: string, enum: [active, suspended, removed] }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of attesters, ordered by address
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Attester" } }
+                  next_cursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+  /attestations:
+    get:
+      summary: List attestations
+      parameters:
+        - { name: attester, in: query, schema: { type: string } }
+        - { name: record_hash, in: query, schema: { $ref: "#/components/schemas/Hash" } }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of attestations, in chain order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Attestation" } }
+                  next_cursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+  /records/{hash}/history:
+    get:
+      summary: Attestation and revocation history of one record
+      parameters:
+        - { name: hash, in: path, required: true, schema: { $ref: "#/components/schemas/Hash" } }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of history entries, in chain order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/HistoryEntry" } }
+                  next_cursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+components:
+  parameters:
+    limit:
+      name: limit
+      in: query
+      schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
+    cursor:
+      name: cursor
+      in: query
+      schema: { type: string }
+  responses:
+    Error:
+      description: Error
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error: { type: string }
+  schemas:
+    Hash:
+      type: string
+      pattern: "^[0-9a-fA-F]{64}$"
+    Attester:
+      type: object
+      properties:
+        address: { type: string }
+        status: { type: string, enum: [active, suspended, removed] }
+        region: { type: string, nullable: true }
+        license_hash: { type: string, nullable: true }
+        first_seen_ledger: { type: integer }
+        updated_ledger: { type: integer }
+    Attestation:
+      type: object
+      properties:
+        event_id: { type: string }
+        record_hash: { $ref: "#/components/schemas/Hash" }
+        attester: { type: string }
+        timestamp: { type: integer, description: Ledger close time (Unix seconds) }
+        ledger: { type: integer }
+        tx_hash: { type: string }
+        revoked: { type: boolean }
+    HistoryEntry:
+      type: object
+      properties:
+        event_id: { type: string }
+        kind: { type: string, enum: [attested, revoked] }
+        attester: { type: string, nullable: true }
+        timestamp: { type: integer, nullable: true }
+        ledger: { type: integer }
+        tx_hash: { type: string }

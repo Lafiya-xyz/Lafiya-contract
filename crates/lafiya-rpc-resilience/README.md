@@ -7,11 +7,12 @@ The decision record is
 this crate is that ADR's failure-injection prototype and transaction-state
 model, expressed as runnable code instead of prose.
 
-It is **not** a Soroban RPC client. It has no HTTP dependency and does not
-know anything about Stellar transaction envelopes. It is the reusable piece
-underneath a real client: given a submit attempt's outcome, classify whether
-retrying is safe, and if not, poll a transaction hash to a final verdict
-across an ordered list of providers before allowing a retry.
+The core state machine is provider-agnostic: given a submit attempt's
+outcome, classify whether retrying is safe, and if not, poll a transaction
+hash to a final verdict across an ordered list of providers before allowing
+a retry. `http::HttpRpcProvider` is the production provider over Soroban
+JSON-RPC, and `lafiya-cli` routes every submission through
+`FailoverClient::submit_with_recovery`.
 
 ## Why a separate crate
 
@@ -28,6 +29,10 @@ as the other.
 - `src/lib.rs` -- `TxState`, `RpcError`, `SubmitOutcome`, `RetryClass` /
   [`classify`], `backoff_schedule`, and `FailoverClient::submit_with_recovery`
   (the round-robin-submit / poll-before-retry state machine).
+- `src/http.rs` -- `HttpRpcProvider`: `sendTransaction` / `getTransaction`
+  over `ureq`, mapping each transport failure to `Definite` or `Ambiguous`
+  depending on whether the request can have been sent (the module docs list
+  how each case is detected).
 - `src/mock.rs` -- `ScriptedProvider`, a fake `RpcProvider` whose
   `submit`/`get_transaction` responses are scripted in advance, plus
   `Shared`, a small `Rc<RefCell<_>>` wrapper so a test can keep a handle to
@@ -37,6 +42,11 @@ as the other.
   or rejected, rate limiting, primary-down failover, and both retry-budget
   and poll-budget exhaustion), each asserting the final result *and* the
   exact number of calls made to each provider.
+- `tests/http_provider.rs` -- wiremock (and raw-socket) tests reproducing
+  every failure mode `HttpRpcProvider` classifies.
+- `tests/quickstart.rs` -- ignored-by-default integration test against a
+  local `stellar/quickstart` node: with the primary URL on a dead port, a
+  real transaction lands through the secondary.
 - `examples/failure_injection_demo.rs` -- the same scenarios, printed as a
   human-readable recovery-log trace. Run with:
 
@@ -48,12 +58,17 @@ as the other.
 
 ```sh
 cargo test -p lafiya-rpc-resilience
+
+# Against a local quickstart node (needs Docker and the stellar CLI):
+docker run -d -p 8000:8000 stellar/quickstart --local --enable rpc
+cargo test -p lafiya-rpc-resilience --test quickstart -- --ignored
 ```
 
 ## Scope and limitations
 
-- No jitter in `backoff_schedule`; see its doc comment. A production client
-  should add jitter before pointing many concurrent callers at one provider.
+- `backoff_schedule` is deterministic for tests; the production path
+  (`lafiya-cli`) uses `backoff_with_jitter` and real sleeps via
+  `FailoverClient::with_backoff` / `with_sleep`.
 - No async runtime. The admin CLI and scripts in this repository are
   synchronous, low-frequency callers (an operator running one command), so
   this prototype models the same shape. An indexer or high-throughput

@@ -1,0 +1,80 @@
+[
+  {
+    "name": "three-field-record",
+    "description": "Three-field record: schema type, blood group, allergy. Salts are deterministic (each salt is the index byte repeated 32 times).",
+    "fields": [
+      { "kind": "text", "value": "lafiya.emergency_record" },
+      { "kind": "text", "value": "O+" },
+      { "kind": "text", "value": "penicillin" }
+    ],
+    "salts_hex": [
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      "0101010101010101010101010101010101010101010101010101010101010101",
+      "0202020202020202020202020202020202020202020202020202020202020202"
+    ],
+    "leaves_hex": [
+      "7a4c5bd96bf6e7c9fc216a273662488bcca4097320413cc07245fe8c7dfc5db4",
+      "4cc4a315dba0d268b5b37bc96e04f33eeb1321dc9980a536246321ae92b56103",
+      "68cfb10be0a4f759b3c49f8e62057a3be233572b7e977e17b405fe5c524f7430"
+    ],
+    "root_hex": "4d4559f045b0b3a6995df5dc99ee55df525c9fbf64c03cf543fbd0270c2229e0"
+  },
+  {
+    "name": "four-field-with-absent",
+    "description": "Four-field record including an Absent field at index 2. Salts are AA, BB, CC, DD each repeated 32 times.",
+    "fields": [
+      { "kind": "text", "value": "schema:v1" },
+      { "kind": "int64", "value": "1765900800" },
+      { "kind": "absent" },
+      { "kind": "bool", "value": true }
+    ],
+    "salts_hex": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    ],
+    "leaves_hex": [
+      "f05b925e435915d8749ce34c66961855b846dfd2480c9b92265eda972e6bc035",
+      "b740d5ec4a2481d8affc745f3c561fa7682164af630be4a1f3c446389c363237",
+      "b4c634b00c0aa37e04918f55653a6b5db0279084ec55be2800245bd5ea0c2e74",
+      "b12194d38c7d9cbeb0388928ea38dc5a3e7e8c466c1f43e276cfb589c48b73b3"
+    ],
+    "root_hex": "9b57218820a20dc65c28335c13f61a944e0571bf66c1620084d2c8b2cf5255d3"
+  },
+  {
+    "name": "eight-field-paramedic-profile",
+    "description": "Eight-field record for the paramedic disclosure profile. Salts are (index * 17 % 256) repeated 32 times. Fields: schema_type, patient_id (bytes), blood_group, genotype, allergy, current_medication (null), attested_at (int64), consent (bool).",
+    "fields": [
+      { "kind": "text",  "value": "lafiya.emergency_record" },
+      { "kind": "bytes", "value": "0102030405060708090a0b0c0d0e0f10" },
+      { "kind": "text",  "value": "O+" },
+      { "kind": "text",  "value": "AS" },
+      { "kind": "text",  "value": "penicillin - anaphylaxis" },
+      { "kind": "null" },
+      { "kind": "int64", "value": "1765900800" },
+      { "kind": "bool",  "value": true }
+    ],
+    "salts_hex": [
+      "0000000000000000000000000000000000000000000000000000000000000000",
+      "1111111111111111111111111111111111111111111111111111111111111111",
+      "2222222222222222222222222222222222222222222222222222222222222222",
+      "3333333333333333333333333333333333333333333333333333333333333333",
+      "4444444444444444444444444444444444444444444444444444444444444444",
+      "5555555555555555555555555555555555555555555555555555555555555555",
+      "6666666666666666666666666666666666666666666666666666666666666666",
+      "7777777777777777777777777777777777777777777777777777777777777777"
+    ],
+    "leaves_hex": [
+      "7a4c5bd96bf6e7c9fc216a273662488bcca4097320413cc07245fe8c7dfc5db4",
+      "45e046a82bf4251a691927d5422889e354d4f31b6b7cd6168847e90c7545cfc2",
+      "806c8f0dd48e2c081bc1cc84ad20f71a4abb592d2a0930c9dac078afd228c5a2",
+      "baba1eb99b6b1c92fc52e6243fa5c09315a1063d4665e58bf0a6d3e768f2c718",
+      "b82b84d029d71a91e23600f486840bc1eb9496aaa5e8ed2f30b59719c7b54462",
+      "8faf09eef94848c751d094849969e050814896dbe3e123048474d4d6c270c571",
+      "a8f012449e8ec7a07b4b9705b2d23148e6fea8a04cd1671485fbb457f138aa61",
+      "58c88b368e7105607aebde96e6bd9fcdcf5fbfbda62d77b90cd43724f224771b"
+    ],
+    "root_hex": "65e36a9bc807451647abe7f63e58195b28a0e0a86ebaa198634bc3edf007a67c"
+  }
+]

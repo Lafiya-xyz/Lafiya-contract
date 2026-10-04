@@ -21,7 +21,7 @@ infrastructure to get started.
 **Secondary, planned:** publish `bindings/attester-registry` and `bindings/attestation-registry`
 to the `@lafiya` npm organization via a GitHub Action triggered off release tags, so consumers
 who prefer a normal `npm install` can do so instead of a git dependency. This is intended to run
-off the same tag that [ADR-0009's release manifest](docs/adr/0009-release-manifest-and-compatibility.md)
+off the same tag that [ADR-0010's release manifest](docs/adr/0010-release-manifest-and-compatibility.md)
 is generated from, so a published binding version and its `generated_from_wasm_sha256` never
 disagree with the contract it wraps.
 

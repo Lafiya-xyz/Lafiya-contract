@@ -102,6 +102,15 @@
     },
     {
       "contract": "attester-registry",
+      "name": "AttesterRevoked",
+      "topic_fields": [
+        "attester"
+      ],
+      "data_fields": [],
+      "compatibility": "unclassified"
+    },
+    {
+      "contract": "attester-registry",
       "name": "AttesterSuspended",
       "topic_fields": [
         "attester"

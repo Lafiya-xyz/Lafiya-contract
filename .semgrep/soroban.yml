@@ -1,0 +1,121 @@
+# Custom Semgrep rules for Soroban contract security patterns.
+#
+# Run locally:   semgrep scan --config .semgrep/soroban.yml contracts/
+# Rule tests:    semgrep --test --config .semgrep/soroban.yml .semgrep/soroban.rs
+#
+# Intentional exceptions are allowlisted inline with a reason, e.g.
+#   // nosemgrep: soroban-storage-write-without-auth -- permissionless by design
+rules:
+  - id: soroban-storage-write-without-auth
+    languages: [rust]
+    paths:
+      exclude: ['test.rs', '*_test.rs', 'tests/']
+    severity: ERROR
+    message: >-
+      Public contract function `$F` writes to storage but never calls
+      `require_auth()`. Add an auth check, or allowlist with
+      `// nosemgrep: soroban-storage-write-without-auth -- <reason>`.
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              pub fn $F(...) { ... }
+          - pattern-inside: |
+              pub fn $F(...) -> $R { ... }
+      # Constructors run once at deploy time, invoked by the deployer; there
+      # is no caller to authorize and the inputs are deployer-controlled.
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(?!__constructor$)
+      - pattern-either:
+          - pattern: $E.storage().$KIND().set(...)
+          - pattern: $E.storage().$KIND().remove(...)
+      - pattern-not-inside: |
+          pub fn $F(...) { ... $A.require_auth(); ... }
+      - pattern-not-inside: |
+          pub fn $F(...) -> $R { ... $A.require_auth(); ... }
+      - pattern-not-inside: |
+          pub fn $F(...) -> $R { ... $A?.require_auth(); ... }
+      - pattern-not-inside: |
+          pub fn $F(...) { ... $A.require_auth_for_args(...); ... }
+      - pattern-not-inside: |
+          pub fn $F(...) -> $R { ... $A.require_auth_for_args(...); ... }
+
+  - id: soroban-storage-write-before-auth
+    languages: [rust]
+    paths:
+      exclude: ['test.rs', '*_test.rs', 'tests/']
+    severity: ERROR
+    message: >-
+      Storage is mutated before `require_auth()` in the same function. Check
+      authorization first so no state change happens on an unauthorized call.
+    patterns:
+      - pattern-either:
+          - pattern: |
+              $E.storage().$KIND().set(...);
+              ...
+              $A.require_auth();
+          - pattern: |
+              $E.storage().$KIND().remove(...);
+              ...
+              $A.require_auth();
+
+  - id: soroban-panicking-cross-contract-call
+    languages: [rust]
+    paths:
+      exclude: ['test.rs', '*_test.rs', 'tests/']
+    severity: WARNING
+    message: >-
+      Non-`try_` generated client call `$M` panics (aborting the whole
+      transaction) if the callee fails. Prefer `try_$M` and map the error.
+    patterns:
+      - pattern-inside: |
+          let $C = $CLIENT::new(...);
+          ...
+      - pattern: $C.$M(...)
+      - metavariable-regex:
+          metavariable: $CLIENT
+          regex: ^\w+Client$
+      - metavariable-regex:
+          metavariable: $M
+          regex: ^(?!try_|address$)\w+$
+
+  - id: soroban-unbounded-param-loop
+    languages: [rust]
+    paths:
+      exclude: ['test.rs', '*_test.rs', 'tests/']
+    severity: WARNING
+    message: >-
+      Loop over caller-supplied `$V` without a preceding length bound check.
+      Bound `$V.len()` first to cap the cost of a single invocation.
+    patterns:
+      - pattern-either:
+          - pattern-inside: |
+              pub fn $F(..., $V: Vec<$T>, ...) { ... }
+          - pattern-inside: |
+              pub fn $F(..., $V: Vec<$T>, ...) -> $R { ... }
+      # Constructors run once at deploy time, invoked by the deployer; there
+      # is no caller to authorize and the inputs are deployer-controlled.
+      - metavariable-regex:
+          metavariable: $F
+          regex: ^(?!__constructor$)
+      - pattern: |
+          for $X in $V.iter() { ... }
+      - pattern-not-inside: |
+          if $V.len() > $MAX { ... }
+          ...
+      - pattern-not-inside: |
+          if $V.len() >= $MAX { ... }
+          ...
+
+  - id: soroban-admin-read-unwrap-or
+    languages: [rust]
+    paths:
+      exclude: ['test.rs', '*_test.rs', 'tests/']
+    severity: ERROR
+    message: >-
+      The admin key read falls back to a default via `unwrap_or`. A missing
+      admin must be an error (e.g. `ok_or(Error::NotInitialized)`), never a
+      silently substituted address.
+    pattern-either:
+      - pattern: $E.storage().$KIND().get(&DataKey::Admin).unwrap_or($D)
+      - pattern: $E.storage().$KIND().get::<$K, $V>(&DataKey::Admin).unwrap_or($D)

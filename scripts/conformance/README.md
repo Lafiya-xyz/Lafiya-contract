@@ -28,7 +28,13 @@ runs four independent checks against the built contract `.wasm` files in
    uses, and diffs its function/error surface against the committed
    `bindings/<contract>/src/index.ts`.
 
-All four read the *compiled* `.wasm` artifact (via
+5. **`gen_events_ts.py --check`** -- verifies the generated TypeScript
+   event decoders in `packages/events/src/generated.ts` (`@lafiya/events`)
+   match the event entries in the committed snapshots. It reads the
+   snapshots rather than the Wasm, so it also runs in CI without the
+   `stellar` CLI (the `events-package` job).
+
+The first four read the *compiled* `.wasm` artifact (via
 `stellar contract info interface`), not the Rust source -- so they catch
 drift introduced anywhere between source and the thing that actually gets
 deployed (a merge that drops a function body, a stale generated client,
@@ -40,6 +46,10 @@ etc.), not just Rust-level signature changes.
 make conformance          # build contracts, run all four checks
 make conformance-update   # regenerate snapshots + docs/events.md after a deliberate interface change
 ```
+
+These checks run on every pull request in the `conformance` job of
+`.github/workflows/ci.yml`, using the `stellar` CLI version pinned there
+(`STELLAR_CLI_VERSION`).
 
 Requires the `stellar` CLI on `PATH` (same prerequisite as `make bindings`;
 see `docs/typescript-bindings.md`).

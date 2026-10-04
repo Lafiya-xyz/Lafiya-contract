@@ -1,0 +1,43 @@
+{
+  "@context": {
+    "@version": 1.1,
+    "@protected": true,
+
+    "id": "@id",
+    "type": "@type",
+
+    "LafiyaEmergencyRecordAttestation": {
+      "@id": "https://lafiya.xyz/ns/credentials#LafiyaEmergencyRecordAttestation",
+      "@context": {
+        "@protected": true,
+        "recordCommitment": {
+          "@id": "https://lafiya.xyz/ns/credentials#recordCommitment",
+          "@type": "https://www.w3.org/2001/XMLSchema#hexBinary"
+        },
+        "commitmentVersion": {
+          "@id": "https://lafiya.xyz/ns/credentials#commitmentVersion"
+        }
+      }
+    },
+
+    "SorobanAttestationRecord": {
+      "@id": "https://lafiya.xyz/ns/credentials#SorobanAttestationRecord",
+      "@context": {
+        "@protected": true,
+        "network": {
+          "@id": "https://lafiya.xyz/ns/credentials#network"
+        },
+        "contract": {
+          "@id": "https://lafiya.xyz/ns/credentials#contract"
+        },
+        "ledger": {
+          "@id": "https://lafiya.xyz/ns/credentials#ledger",
+          "@type": "https://www.w3.org/2001/XMLSchema#integer"
+        },
+        "txHash": {
+          "@id": "https://lafiya.xyz/ns/credentials#txHash"
+        }
+      }
+    }
+  }
+}

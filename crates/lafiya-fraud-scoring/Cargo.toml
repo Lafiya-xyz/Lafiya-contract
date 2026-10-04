@@ -1,0 +1,9 @@
+[package]
+name = "lafiya-fraud-scoring"
+version = "0.1.0"
+edition = "2021"
+description = "Prototype: per-attester risk scoring over indexed attestation events (velocity, burst timing, re-attestation churn, region mismatch, revocation ratio, collusion) -- see docs/spikes/0415-attester-fraud-scoring.md"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[dependencies]

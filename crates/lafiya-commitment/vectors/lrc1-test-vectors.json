@@ -191,5 +191,389 @@
     ],
     "payload_hex": "10000000176c61666979612e656d657267656e63795f7265636f726413000000100102030405060708090a0b0c0d0e0f101300000020aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1000000007616c6c65726779110000000069418200011201",
     "commitment_hex": "bdf156d6da086690f71d19d76d22ae144273de93e9528c4b46eb54176b0e1908"
+  },
+  {
+    "name": "adversarial-empty-text",
+    "description": "ADVERSARIAL: Empty string Text(\"\") - distinct from Absent (tag 0x00) and Null (tag 0x01) and empty Bytes.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": ""
+      }
+    ],
+    "payload_hex": "1000000000",
+    "commitment_hex": "6b97abfc64d5331c99bed7cb50ec4a693a17b60e2e68e3001a2f27768b8a91e3"
+  },
+  {
+    "name": "adversarial-absent-singleton",
+    "description": "ADVERSARIAL: Single Absent field - must differ from Null, empty Text, and empty Bytes.",
+    "fields": [
+      {
+        "kind": "absent"
+      }
+    ],
+    "payload_hex": "00",
+    "commitment_hex": "17da6d00f16e4408771b26a48240b50fe508208403deef85e102d6e229b3b98f"
+  },
+  {
+    "name": "adversarial-null-singleton",
+    "description": "ADVERSARIAL: Single Null field - must differ from Absent, empty Text, and empty Bytes.",
+    "fields": [
+      {
+        "kind": "null"
+      }
+    ],
+    "payload_hex": "01",
+    "commitment_hex": "511ba15650c951bcdfc40c12634a3fbcc084dfe82d28b5b57fa4ab8f4d8bad8f"
+  },
+  {
+    "name": "adversarial-empty-bytes",
+    "description": "ADVERSARIAL: Empty Bytes([]) - must differ from Absent, Null, and empty Text.",
+    "fields": [
+      {
+        "kind": "bytes",
+        "value": ""
+      }
+    ],
+    "payload_hex": "1300000000",
+    "commitment_hex": "1537139a40d2fc70f658bd2a6f4106fb359837b52d48df2a48c953ab8a10cf92"
+  },
+  {
+    "name": "adversarial-int64-min",
+    "description": "ADVERSARIAL: i64::MIN = -9223372036854775808 boundary integer.",
+    "fields": [
+      {
+        "kind": "int64",
+        "value": "-9223372036854775808"
+      }
+    ],
+    "payload_hex": "118000000000000000",
+    "commitment_hex": "e89d0b9af1a976356b1c4a142281ef60af80f88d02b7da89871e80237844c0e0"
+  },
+  {
+    "name": "adversarial-int64-minus-one",
+    "description": "ADVERSARIAL: i64 = -1, all-ones two's complement big-endian.",
+    "fields": [
+      {
+        "kind": "int64",
+        "value": "-1"
+      }
+    ],
+    "payload_hex": "11ffffffffffffffff",
+    "commitment_hex": "1a20eef94c2ab05544eedd22fc9d4ec125a973be5b94820a1b5d5ce62b07cef3"
+  },
+  {
+    "name": "adversarial-int64-zero",
+    "description": "ADVERSARIAL: i64 = 0, all-zeros big-endian.",
+    "fields": [
+      {
+        "kind": "int64",
+        "value": "0"
+      }
+    ],
+    "payload_hex": "110000000000000000",
+    "commitment_hex": "f07dd28154e9ff7f15eff4c7c11c3aae3a6d868e610a18a0619811086145d4e1"
+  },
+  {
+    "name": "adversarial-int64-max",
+    "description": "ADVERSARIAL: i64::MAX = 9223372036854775807 boundary integer.",
+    "fields": [
+      {
+        "kind": "int64",
+        "value": "9223372036854775807"
+      }
+    ],
+    "payload_hex": "117fffffffffffffff",
+    "commitment_hex": "1cf01fde91adda3a54e833015d0b1cb76d9de51e644d36d0492edcf1e8b04e43"
+  },
+  {
+    "name": "adversarial-int64-js-unsafe-2pow53",
+    "description": "ADVERSARIAL: 2^53 = 9007199254740992, first JS-unsafe integer - implementations using Number lose precision.",
+    "fields": [
+      {
+        "kind": "int64",
+        "value": "9007199254740992"
+      }
+    ],
+    "payload_hex": "110020000000000000",
+    "commitment_hex": "c5bc03fa7d1650c6398149e3e0e6af6bbb72782b9c679e954f155719120cc302"
+  },
+  {
+    "name": "adversarial-int64-js-unsafe-2pow53-plus1",
+    "description": "ADVERSARIAL: 2^53+1 = 9007199254740993 - silently rounds to 9007199254740992 if parsed as JS Number instead of BigInt.",
+    "fields": [
+      {
+        "kind": "int64",
+        "value": "9007199254740993"
+      }
+    ],
+    "payload_hex": "110020000000000001",
+    "commitment_hex": "0f829ccebea636c5f670c5a83964a9ce199e1c0482c27a3a15aeedd30278c6d8"
+  },
+  {
+    "name": "adversarial-int64-large-negative",
+    "description": "ADVERSARIAL: -2^53-1 = -9007199254740993, negative JS-unsafe boundary.",
+    "fields": [
+      {
+        "kind": "int64",
+        "value": "-9007199254740993"
+      }
+    ],
+    "payload_hex": "11ffdfffffffffffff",
+    "commitment_hex": "c70fc5fd265cad995c2c4e59692f2bda4db61a826d8f68e48894a502e1f18bca"
+  },
+  {
+    "name": "adversarial-text-nul-byte",
+    "description": "ADVERSARIAL: Text field containing a NUL byte U+0000 in UTF-8 (0x00). Length prefix prevents confusion with tag bytes.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "\u0000"
+      }
+    ],
+    "payload_hex": "100000000100",
+    "commitment_hex": "70a1feac372f58eaf5d191221f73a88c22e0f6bb8e154da9601130ec19f97aa5"
+  },
+  {
+    "name": "adversarial-text-bom",
+    "description": "ADVERSARIAL: Text starting with UTF-8 BOM (U+FEFF = EF BB BF). BOM is part of the value.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "\uFEFFhello"
+      }
+    ],
+    "payload_hex": "1000000008efbbbf68656c6c6f",
+    "commitment_hex": "cede782cdb65f03a81a93db8b4d00b51d773db05cbeec8eee5c24260e5b98498"
+  },
+  {
+    "name": "adversarial-text-emoji-surrogate",
+    "description": "ADVERSARIAL: Emoji U+1F3E5 (hospital) requires a surrogate pair in UTF-16 but is a single codepoint in UTF-8 (4 bytes: F0 9F 8F A5).",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "\uD83C\uDFE5 hospital"
+      }
+    ],
+    "payload_hex": "100000000df09f8fa520686f73706974616c",
+    "commitment_hex": "89172b62413ad6ab19e28ac3a5164c467488310352d84ae7a0e86957f3603848"
+  },
+  {
+    "name": "adversarial-text-rtl-mark",
+    "description": "ADVERSARIAL: Text with Right-to-Left Mark U+200F (E2 80 8F). Invisible but changes the byte encoding.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "\u200Fhello"
+      }
+    ],
+    "payload_hex": "1000000008e2808f68656c6c6f",
+    "commitment_hex": "6813f8e2b9f5bdafac9e11dc9ec3ac025443acbd17f3175bbe3ca0c31488c35d"
+  },
+  {
+    "name": "adversarial-text-nfc-precomposed",
+    "description": "ADVERSARIAL: 'é' as precomposed NFC single codepoint U+00E9 (C3 A9). Callers MUST pass NFC; this is the canonical form.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "\u00E9"
+      }
+    ],
+    "payload_hex": "1000000002c3a9",
+    "commitment_hex": "0ecc4bbf9058c8d235be0e9603d31a746c9a8524b32191e68a284716a525ad4a"
+  },
+  {
+    "name": "adversarial-text-nfd-decomposed",
+    "description": "ADVERSARIAL: 'é' as NFD decomposed sequence (e U+0065 + combining acute U+0301 = 65 CC 81). MUST differ from NFC form; implementations that silently normalize NFC->NFD will produce the wrong commitment.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "e\u0301"
+      }
+    ],
+    "payload_hex": "100000000365cc81",
+    "commitment_hex": "1ef1004bfdd032a6a82fe3f13bbff62deb4aafd02f4f944514b4cc3dbacf062a"
+  },
+  {
+    "name": "adversarial-text-len-255",
+    "description": "ADVERSARIAL: Text of exactly 255 bytes (0xFF) - boundary below the 256 (0x100) where u32 length prefix increments the second byte.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "payload_hex": "10000000ff616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+    "commitment_hex": "b5cb98d77d3d63714fd2c3fd8bf889a31f289703013cf659093399156f3140a0"
+  },
+  {
+    "name": "adversarial-text-len-256",
+    "description": "ADVERSARIAL: Text of exactly 256 bytes (0x100) - u32 length prefix crosses the byte boundary; must encode as 00000100 not 000000ff.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "payload_hex": "100000010061616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161616161",
+    "commitment_hex": "4f652def7b49641fe22aa4c25d674be3cd9db86c6b62e6c57014e96e5c3a9441"
+  },
+  {
+    "name": "adversarial-bytes-len-255",
+    "description": "ADVERSARIAL: Bytes of exactly 255 length (0xFF) - boundary below 256.",
+    "fields": [
+      {
+        "kind": "bytes",
+        "value": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      }
+    ],
+    "payload_hex": "13000000ffaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "commitment_hex": "568fa9f0e438a316cc3d09a2d1caec6b6b068148f0c224e662dd1b8982f9c3c7"
+  },
+  {
+    "name": "adversarial-bytes-len-256",
+    "description": "ADVERSARIAL: Bytes of exactly 256 length (0x100) - u32 length prefix crosses byte boundary.",
+    "fields": [
+      {
+        "kind": "bytes",
+        "value": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      }
+    ],
+    "payload_hex": "1300000100bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "commitment_hex": "58723c401ee1070236e6e10b92e8a2443b74fe4d884bf41e567eb32cec5019d7"
+  },
+  {
+    "name": "adversarial-concat-ambiguity-left",
+    "description": "ADVERSARIAL: [\"ab\",\"c\"] - would collide with [\"a\",\"bc\"] under naive byte concatenation. Length-prefixed encoding prevents the collision.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "ab"
+      },
+      {
+        "kind": "text",
+        "value": "c"
+      }
+    ],
+    "payload_hex": "10000000026162100000000163",
+    "commitment_hex": "cd59b6e5867cf6eb96ce4b319b0c5eda7449b6b8a8437d953aef56d18adaa095"
+  },
+  {
+    "name": "adversarial-concat-ambiguity-right",
+    "description": "ADVERSARIAL: [\"a\",\"bc\"] - distinct from [\"ab\",\"c\"] due to length-prefixed encoding. These vectors MUST produce different commitments.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "a"
+      },
+      {
+        "kind": "text",
+        "value": "bc"
+      }
+    ],
+    "payload_hex": "10000000016110000000026263",
+    "commitment_hex": "3768948fc68cf68e022d5dc16d6474789fbbc7362d9d24c463ee5bef2bd2dfc6"
+  },
+  {
+    "name": "adversarial-triplet-absent",
+    "description": "ADVERSARIAL: Three-field record, third field Absent. Part of a quadruplet proving Absent/Null/Text(\"\")/Bytes([]) all differ.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "schema:v1"
+      },
+      {
+        "kind": "int64",
+        "value": "1000000000"
+      },
+      {
+        "kind": "absent"
+      }
+    ],
+    "payload_hex": "1000000009736368656d613a763111000000003b9aca0000",
+    "commitment_hex": "07892b6b7e1710ec481b991e6581e1498762603ab753092262b5da4ea90a0a4f"
+  },
+  {
+    "name": "adversarial-triplet-null",
+    "description": "ADVERSARIAL: Three-field record, third field Null. Must differ from Absent, Text(\"\"), and Bytes([]) at same position.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "schema:v1"
+      },
+      {
+        "kind": "int64",
+        "value": "1000000000"
+      },
+      {
+        "kind": "null"
+      }
+    ],
+    "payload_hex": "1000000009736368656d613a763111000000003b9aca0001",
+    "commitment_hex": "1616eb0ea8871e93355348f9113e9e9a2d1b45a77e0df687edc7469721e24808"
+  },
+  {
+    "name": "adversarial-triplet-empty-text",
+    "description": "ADVERSARIAL: Three-field record, third field Text(\"\"). Must differ from Absent, Null, and Bytes([]) at same position.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "schema:v1"
+      },
+      {
+        "kind": "int64",
+        "value": "1000000000"
+      },
+      {
+        "kind": "text",
+        "value": ""
+      }
+    ],
+    "payload_hex": "1000000009736368656d613a763111000000003b9aca001000000000",
+    "commitment_hex": "53fe76054f9a944c9d4af9e191dca00dc2d429c69d8dd419e674d1093146e1e4"
+  },
+  {
+    "name": "adversarial-triplet-empty-bytes",
+    "description": "ADVERSARIAL: Three-field record, third field Bytes([]). Must differ from Absent, Null, and Text(\"\") at same position.",
+    "fields": [
+      {
+        "kind": "text",
+        "value": "schema:v1"
+      },
+      {
+        "kind": "int64",
+        "value": "1000000000"
+      },
+      {
+        "kind": "bytes",
+        "value": ""
+      }
+    ],
+    "payload_hex": "1000000009736368656d613a763111000000003b9aca001300000000",
+    "commitment_hex": "43e1a03eb91ed0fa8cd29bc02aee78c96a2d9d5fb70ec37a4eb14b9690ee018a"
+  },
+  {
+    "name": "adversarial-bool-false",
+    "description": "ADVERSARIAL: Bool false (0x00). Must differ from Bool true and from Absent/Null.",
+    "fields": [
+      {
+        "kind": "bool",
+        "value": false
+      }
+    ],
+    "payload_hex": "1200",
+    "commitment_hex": "3af7755a5aea7fb39033d377672d1c0f7e581aaa98c7718f0a3149d9e1a79510"
+  },
+  {
+    "name": "adversarial-bool-true",
+    "description": "ADVERSARIAL: Bool true (0x01). Must differ from Bool false and from Absent/Null.",
+    "fields": [
+      {
+        "kind": "bool",
+        "value": true
+      }
+    ],
+    "payload_hex": "1201",
+    "commitment_hex": "6fb5d3b893d5ce2afad7287b9ed20d420d39595dc501669550d5cdb0d6f82023"
   }
 ]

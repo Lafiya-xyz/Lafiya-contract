@@ -1,0 +1,73 @@
+name: Transparency Dashboard
+
+# Rebuilds the public dashboard from chain events once a day. Events are
+# appended to dashboard/events.jsonl on the gh-pages branch, so history
+# survives RPC event retention (about 7 days on public providers).
+on:
+  schedule:
+    - cron: "17 3 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dashboard
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    # Repository variables: LAFIYA_DASHBOARD_NETWORK, LAFIYA_DASHBOARD_RPC_URL,
+    # LAFIYA_DASHBOARD_CONTRACTS (comma separated), LAFIYA_DASHBOARD_START_LEDGER.
+    if: vars.LAFIYA_DASHBOARD_CONTRACTS != ''
+    env:
+      NETWORK: ${{ vars.LAFIYA_DASHBOARD_NETWORK }}
+      RPC_URL: ${{ vars.LAFIYA_DASHBOARD_RPC_URL }}
+      CONTRACTS: ${{ vars.LAFIYA_DASHBOARD_CONTRACTS }}
+      START_LEDGER: ${{ vars.LAFIYA_DASHBOARD_START_LEDGER }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/checkout@v7
+        with:
+          ref: gh-pages
+          path: pages
+        continue-on-error: true
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Build watchdog (event exporter)
+        run: cargo build --release --locked -p lafiya-watchdog
+      - name: Export new events
+        run: |
+          mkdir -p pages/dashboard
+          touch pages/dashboard/events.jsonl
+          python3 - <<'PY' > watchdog.toml
+          import json, os
+          print(f'rpc_url = {json.dumps(os.environ["RPC_URL"])}')
+          print(f'contracts = {json.dumps(os.environ["CONTRACTS"].split(","))}')
+          PY
+          last=$(tail -n1 pages/dashboard/events.jsonl | python3 -c 'import json,sys; l=sys.stdin.read().strip(); print(json.loads(l)["ledger"]+1 if l else "")')
+          from=${last:-$START_LEDGER}
+          ./target/release/lafiya-watchdog --config watchdog.toml export --from "$from" >> pages/dashboard/events.jsonl
+      - name: Fetch attester regions
+        run: |
+          # attester -> region map maintained alongside the deployment record
+          cp config/attester-regions.${NETWORK}.json attesters.json 2>/dev/null || echo '{}' > attesters.json
+      - name: Generate site
+        run: |
+          to=$(( $(tail -n1 pages/dashboard/events.jsonl | python3 -c 'import json,sys; print(json.loads(sys.stdin.read())["ledger"])') + 1 ))
+          manifests=$(ls docs/release-manifest/*.json 2>/dev/null | grep -v schema.json | sed 's/^/--manifest /' | tr '\n' ' ')
+          python3 dashboard/generate.py --events pages/dashboard/events.jsonl \
+            --attesters attesters.json $manifests --network "$NETWORK" \
+            --ledger-from "$START_LEDGER" --ledger-to "$to" --contracts "$CONTRACTS" \
+            --out site
+          cp pages/dashboard/events.jsonl site/events.jsonl
+      - name: Deploy to GitHub Pages
+        uses: peaceiris/actions-gh-pages@v4
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          publish_dir: site
+          destination_dir: dashboard
+          keep_files: true
