@@ -107,7 +107,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest archive --workspace --all-features --locked --archive-file nextest-archive.tar.zst
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: nextest-archive
           path: nextest-archive.tar.zst
@@ -133,7 +133,7 @@ jobs:
           --workspace-remap .
           --partition count:${{ matrix.partition }}/2
           -E 'not test(fuzz_test)'
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: junit-test-${{ matrix.partition }}
@@ -198,7 +198,7 @@ jobs:
         run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
       # Reused by downstream integration/differential/budget jobs instead of
       # rebuilding the contracts.
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: release-wasm
           path: target/wasm32v1-none/release/*.wasm
