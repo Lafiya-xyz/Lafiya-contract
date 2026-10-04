@@ -368,6 +368,25 @@ enum TrustSub {
     },
 }
 
+/// Output format for `config env`.
+///
+/// - `shell`  (default): `export KEY='value'` — safe for `eval $(...)`.
+/// - `dotenv`: `KEY='value'` — safe for `set -a; source <(...); set +a`.
+/// - `json`:   `{ "KEY": "value", ... }` — for scripting with `jq`.
+///
+/// Single-quoting ensures shell metacharacters (`$`, backtick, `!`, etc.)
+/// in any value are treated as literals and cannot execute commands.
+#[derive(Debug, Clone, clap::ValueEnum, Default)]
+enum EnvFormat {
+    /// Shell export lines with single-quote-escaped values. Safe for `eval`.
+    #[default]
+    Shell,
+    /// `KEY=VALUE` pairs suitable for `set -a; source <(...)`.
+    Dotenv,
+    /// JSON object. Parse with `jq` or your language's JSON library.
+    Json,
+}
+
 #[derive(Subcommand, Debug)]
 enum ConfigSub {
     /// Show resolved config for selected network
@@ -846,6 +865,228 @@ fn main() -> anyhow::Result<()> {
                     source.as_deref(),
                     args,
                 )?;
+            }
+            AttesterSub::Import {
+                csv_file,
+                dry_run,
+                resume,
+                source,
+            } => {
+                use attester_import::{
+                    build_report, diff_against_chain, parse_and_validate, plan, BatchItem,
+                    JournalEntry, PlanSummary, RowOutcome,
+                };
+
+                // Derive journal path: <csv_file>.journal.json unless overridden.
+                let journal_path = resume.unwrap_or_else(|| {
+                    let mut p = csv_file.clone();
+                    let ext = p
+                        .extension()
+                        .map(|e| format!("{}.journal.json", e.to_string_lossy()))
+                        .unwrap_or_else(|| "journal.json".to_string());
+                    p.set_extension(ext);
+                    p
+                });
+
+                // Validate source (not required for --dry-run).
+                let source = validated_source(source)?;
+                if !dry_run && source.is_none() {
+                    anyhow::bail!(
+                        "attester import requires --source (or STELLAR_ACCOUNT) unless --dry-run is set"
+                    );
+                }
+
+                // Read CSV.
+                let csv_text = std::fs::read_to_string(&csv_file).with_context(|| {
+                    format!("failed to read CSV file: {}", csv_file.display())
+                })?;
+
+                // Parse & validate all rows before touching the network.
+                let rows = parse_and_validate(&csv_text).map_err(|errors| {
+                    let lines: Vec<String> = errors.iter().map(|e| format!("  {e}")).collect();
+                    anyhow::anyhow!(
+                        "CSV validation failed with {} error(s):\n{}",
+                        errors.len(),
+                        lines.join("\n")
+                    )
+                })?;
+
+                println!("Parsed {} valid rows from {}", rows.len(), csv_file.display());
+
+                // Diff against chain state.
+                // For now, without a live RPC client (issue #395), every address
+                // is classified as New.  When NativeRpcClient gains
+                // get_ledger_entries, replace this closure with a real chain lookup.
+                let entries = diff_against_chain(&rows, |_addr| None);
+
+                // Plan batches.
+                let items = plan(&entries);
+                let summary = PlanSummary::from(&items);
+
+                println!(
+                    "Plan: {} new (in {} batches), {} metadata updates, {} skipped",
+                    summary.new_count,
+                    summary.batch_count,
+                    summary.update_count,
+                    summary.skip_count
+                );
+
+                if dry_run {
+                    println!("[dry-run] No transactions will be submitted.");
+                    for item in &items {
+                        match item {
+                            BatchItem::AddBatch(rows) => {
+                                println!(
+                                    "  [batch] add_attester x{} (e.g. {})",
+                                    rows.len(),
+                                    rows.first().map(|r| r.address.as_str()).unwrap_or("?")
+                                );
+                            }
+                            BatchItem::UpdateMetadata(row) => {
+                                println!("  [update] update_attester_info {}", row.address);
+                            }
+                            BatchItem::Skip { row, reason } => {
+                                println!("  [skip] {} — {}", row.address, reason);
+                            }
+                        }
+                    }
+                    return Ok(());
+                }
+
+                // --- Live execution path ---
+                // Reconcile any existing journal entries first.
+                let existing = attester_import::read_journal(&journal_path)
+                    .context("failed to read journal")?;
+                if !existing.is_empty() {
+                    println!(
+                        "Resuming: found {} journal entries from a previous run.",
+                        existing.len()
+                    );
+                    for e in &existing {
+                        println!(
+                            "  [{}] {} — outcome: {} tx: {}",
+                            e.id,
+                            e.operation,
+                            e.outcome,
+                            e.tx_hash.as_deref().unwrap_or("<none>")
+                        );
+                    }
+                }
+
+                let contract_id = network_cfg
+                    .require_contract_id(&cli.network, ContractKind::AttesterRegistry)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+
+                let mut outcomes: Vec<RowOutcome> = Vec::new();
+                let mut batch_idx: usize = 0;
+
+                for item in &items {
+                    match item {
+                        BatchItem::AddBatch(batch_rows) => {
+                            batch_idx += 1;
+                            let addresses: Vec<String> =
+                                batch_rows.iter().map(|r| r.address.clone()).collect();
+
+                            // Write journal intent before submitting.
+                            let journal_entry = JournalEntry {
+                                id: format!("batch-{}", batch_idx),
+                                addresses: addresses.clone(),
+                                operation: "add_attester".to_string(),
+                                tx_hash: None,
+                                outcome: "pending".to_string(),
+                            };
+                            attester_import::write_journal_entry(&journal_path, &journal_entry)
+                                .context("failed to write journal entry")?;
+
+                            // Submit each address individually (batch contract function
+                            // from issue #03 is not yet implemented on-chain).
+                            // TODO(#03): replace with add_attesters() batch call once landed.
+                            for addr in &addresses {
+                                let args = invoke_args(
+                                    &network_cfg,
+                                    contract_id,
+                                    source.as_deref(),
+                                    "add_attester",
+                                    &["--attester", addr],
+                                );
+                                let result = run_stellar(args);
+                                let (outcome, tx_hash_str) = match result {
+                                    Ok(()) => ("success".to_string(), String::new()),
+                                    Err(ref e) => (
+                                        format!("failed: {e}"),
+                                        String::new(),
+                                    ),
+                                };
+                                outcomes.push(RowOutcome {
+                                    address: addr.clone(),
+                                    outcome,
+                                    tx_hash: tx_hash_str,
+                                });
+                            }
+                        }
+                        BatchItem::UpdateMetadata(row) => {
+                            let journal_entry = JournalEntry {
+                                id: format!("update-{}", row.address),
+                                addresses: vec![row.address.clone()],
+                                operation: "update_attester_info".to_string(),
+                                tx_hash: None,
+                                outcome: "pending".to_string(),
+                            };
+                            attester_import::write_journal_entry(&journal_path, &journal_entry)
+                                .context("failed to write journal entry")?;
+
+                            let args = invoke_args(
+                                &network_cfg,
+                                contract_id,
+                                source.as_deref(),
+                                "update_attester_info",
+                                &["--attester", &row.address],
+                            );
+                            let outcome = match run_stellar(args) {
+                                Ok(()) => "success".to_string(),
+                                Err(e) => format!("failed: {e}"),
+                            };
+                            outcomes.push(RowOutcome {
+                                address: row.address.clone(),
+                                outcome,
+                                tx_hash: String::new(),
+                            });
+                        }
+                        BatchItem::Skip { row, reason } => {
+                            outcomes.push(RowOutcome {
+                                address: row.address.clone(),
+                                outcome: format!("skipped: {reason}"),
+                                tx_hash: String::new(),
+                            });
+                        }
+                    }
+                }
+
+                // Write final report.
+                let report = build_report(&outcomes);
+                let report_path = {
+                    let mut p = csv_file.clone();
+                    p.set_extension("report.csv");
+                    p
+                };
+                std::fs::write(&report_path, &report).with_context(|| {
+                    format!("failed to write report to {}", report_path.display())
+                })?;
+                println!(
+                    "Import complete. Report written to {}",
+                    report_path.display()
+                );
+                let success = outcomes.iter().filter(|o| o.outcome == "success").count();
+                let failed = outcomes
+                    .iter()
+                    .filter(|o| o.outcome.starts_with("failed"))
+                    .count();
+                println!(
+                    "  {} succeeded, {} failed, {} skipped",
+                    success,
+                    failed,
+                    outcomes.len() - success - failed
+                );
             }
         },
         Commands::Attestation { sub } => match sub {

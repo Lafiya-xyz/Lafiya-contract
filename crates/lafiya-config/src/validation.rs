@@ -245,6 +245,32 @@ pub fn validate_source_account(value: &str) -> Result<(), ValidationError> {
     Ok(())
 }
 
+/// Validate a network passphrase before it is printed into a shell-evaluated context.
+///
+/// Requirements (issue #396):
+/// - Non-empty.
+/// - Printable ASCII only (0x20–0x7E).  No control characters, no null bytes.
+///   Control characters (including newline, tab, carriage-return, bell, etc.)
+///   can silently terminate an `export` statement or inject additional shell
+///   commands when the passphrase is embedded in `eval`'d output.
+/// - No shell metacharacters that survive single-quoting are rejected here
+///   because single-quoting already neutralises them — but the printable-ASCII
+///   gate keeps the door shut against non-printable injection vectors.
+pub fn validate_passphrase(value: &str) -> Result<(), ValidationError> {
+    const FIELD: &str = "network_passphrase";
+    if value.is_empty() {
+        return Err(ValidationError::Empty { field: FIELD });
+    }
+    if let Some(c) = value.chars().find(|c| !c.is_ascii() || (*c as u8) < 0x20 || *c == 0x7f as char) {
+        return Err(ValidationError::Charset {
+            field: FIELD,
+            character: c,
+            allowed: "printable ASCII (0x20–0x7E)",
+        });
+    }
+    Ok(())
+}
+
 /// Validate an RPC URL: non-empty, http/https, and with a host component.
 pub fn validate_rpc_url(field: &'static str, value: &str) -> Result<(), ValidationError> {
     if value.is_empty() {

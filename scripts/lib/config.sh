@@ -95,14 +95,40 @@ print_network_config() {
     echo "Attestation Registry: ${LAFIYA_ATTESTATION_REGISTRY_ID:-<not deployed>}"
 }
 
+# ---------------------------------------------------------------------------
+# Shell-safe single-quote escaping (issue #396)
+# ---------------------------------------------------------------------------
+# shell_quote VALUE  -- wraps VALUE in single quotes, escaping embedded ' as '\''
+# This prevents command injection when values are eval'd or sourced.
+shell_quote() {
+    local value="$1"
+    # Replace each ' with '\'', then wrap the whole thing in single quotes.
+    local escaped="${value//\'/\'\\\'\'}"
+    printf "'%s'" "$escaped"
+}
+
+# print_env_exports  -- print shell export lines for all LAFIYA_ vars, safely quoted
+# Usage: load_network_config testnet; print_env_exports
+print_env_exports() {
+    printf 'export LAFIYA_NETWORK=%s\n'              "$(shell_quote "${LAFIYA_NETWORK:-}")"
+    printf 'export LAFIYA_RPC_URL=%s\n'              "$(shell_quote "${LAFIYA_RPC_URL:-}")"
+    printf 'export LAFIYA_NETWORK_PASSPHRASE=%s\n'   "$(shell_quote "${LAFIYA_NETWORK_PASSPHRASE:-}")"
+    printf 'export LAFIYA_ATTESTER_REGISTRY_ID=%s\n' "$(shell_quote "${LAFIYA_ATTESTER_REGISTRY_ID:-}")"
+    printf 'export LAFIYA_ATTESTATION_REGISTRY_ID=%s\n' "$(shell_quote "${LAFIYA_ATTESTATION_REGISTRY_ID:-}")"
+}
+
 # If sourced directly for testing: allow CLI
 if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
     if [[ "${1:-}" == "--list" ]]; then
         list_networks "${2:-}"
+    elif [[ "${1:-}" == "--env" ]]; then
+        # Print safely-quoted export lines: eval $(config.sh --env testnet)
+        load_network_config "${2:-}" "${3:-}"
+        print_env_exports
     elif [[ -n "${1:-}" ]]; then
         print_network_config "$1" "${2:-}"
     else
-        echo "Usage: $0 <network> [config_path] | $0 --list [config_path]" >&2
+        echo "Usage: $0 <network> [config_path] | $0 --list [config_path] | $0 --env <network> [config_path]" >&2
         exit 1
     fi
 fi

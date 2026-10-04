@@ -169,6 +169,19 @@ pub struct AttesterStatus {
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+/// Persistent storage TTL policy for per-attester entries:
+/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
+/// - Extend to: 365 days (17280 * 365 = 6307200 ledgers)
+///
+/// Persistent entries (Attester, Suspended) are bumped on every write and
+/// on `add_attester`/`suspend_attester`/`reinstate_attester` so that an
+/// attester added once and never touched again does not silently expire.
+/// The longer "extend to" window (1 year vs. 90 days for instance storage)
+/// reflects that attester records are long-lived by design: a CHW should
+/// remain allowlisted for at least a full year without any admin action.
+const PERSISTENT_BUMP_AMOUNT: u32 = 6_307_200;
+const PERSISTENT_LIFETIME_THRESHOLD: u32 = 518_400;
+
 /// Default soft cap on the number of allowlisted attesters, used until an
 /// admin raises it via `set_max_attesters`. Sized generously above any
 /// realistic CHW allowlist so it never trips in normal operation; it exists

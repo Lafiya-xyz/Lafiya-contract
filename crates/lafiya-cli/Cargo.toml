@@ -2,7 +2,7 @@
 name = "lafiya-cli"
 version = "0.1.0"
 edition = "2021"
-description = "Lafiya admin CLI - interacts with Soroban contracts using config/networks.toml"
+description = "Lafiya admin CLI - interacts with Soroban contracts via native RPC or stellar CLI fallback"
 license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
