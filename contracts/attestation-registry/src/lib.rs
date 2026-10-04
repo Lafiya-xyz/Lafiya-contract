@@ -39,11 +39,14 @@ pub struct AdminTransferCancelled {
     pub proposed_admin: Address,
 }
 
-/// Maximum number of historical attestations to keep per record hash.
-/// This bounds storage growth per re-attestation. When exceeded,
-/// the oldest attestation is removed (FIFO eviction).
+/// Maximum number of attestations to keep per record hash. At capacity,
+/// further attestations require admin revocation rather than evicting history.
 const MAX_HISTORY: u64 = 10;
 const ADMIN_PROPOSAL_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+const CONSENT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
+const CONSENT_TTL_THRESHOLD: u32 = 60_480;
+const CONSENT_TTL_BUMP: u32 = 120_960;
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -159,6 +162,19 @@ pub struct Attestation {
     pub timestamp: u64,
 }
 
+/// An attestation together with its freshness status. Attestations written
+/// before expiry tracking was introduced have no expiry and are treated stale.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttestationStatus {
+    /// The attestation being checked.
+    pub attestation: Attestation,
+    /// Timestamp selected by the patient when authorizing this attestation.
+    pub expires_at: Option<u64>,
+    /// Whether the expiry has passed, or is unknown for a legacy attestation.
+    pub is_expired: bool,
+}
+
 /// Emitted when admin ownership finishes transferring to a new address.
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -179,6 +195,9 @@ pub struct AttestationRecorded {
     pub attester: Address,
     /// Ledger timestamp at which the attestation was recorded.
     pub timestamp: u64,
+    /// Patient-selected timestamp after which responders should treat this
+    /// verification as stale.
+    pub expires_at: u64,
 }
 
 /// Emitted when an attestation is revoked.
@@ -481,14 +500,67 @@ impl AttestationRegistry {
             .unwrap_or(false)
     }
 
+    /// Grant a one-time authorization for `attester` to attest `record_hash`.
+    /// The patient must authorize this call. The grant is bound to the patient,
+    /// attester, and record hash, expires after seven days, and is consumed by
+    /// the matching `attest` call. The patient also selects when that
+    /// attestation becomes stale.
+    pub fn consent_attestation(
+        env: Env,
+        patient: Address,
+        attester: Address,
+        record_hash: BytesN<32>,
+        attestation_expires_at: u64,
+    ) -> Result<(), Error> {
+        patient.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if attestation_expires_at <= env.ledger().timestamp() {
+            return Err(Error::InvalidAttestationExpiry);
+        }
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        if !registry.is_attester(&attester) {
+            return Err(Error::AttesterNotAllowlisted);
+        }
+
+        let expires_at = env
+            .ledger()
+            .timestamp()
+            .checked_add(CONSENT_VALIDITY_SECONDS)
+            .ok_or(Error::TimestampOverflow)?;
+        let key = DataKey::PatientConsent(record_hash.clone(), patient.clone(), attester.clone());
+        env.storage().persistent().set(&key, &expires_at);
+        let validity_key = DataKey::PatientConsentValidity(record_hash, patient, attester);
+        env.storage()
+            .persistent()
+            .set(&validity_key, &attestation_expires_at);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, CONSENT_TTL_THRESHOLD, CONSENT_TTL_BUMP);
+        env.storage().persistent().extend_ttl(
+            &validity_key,
+            CONSENT_TTL_THRESHOLD,
+            CONSENT_TTL_BUMP,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        Ok(())
+    }
+
     /// Record that `attester` verified the record hashing to `record_hash`.
-    /// Requires `attester`'s authorization and that `attester` is
-    /// currently allowlisted in the configured `attester-registry`.
+    /// Requires `attester`'s authorization, an unexpired one-time patient
+    /// consent grant for this exact patient/attester/hash tuple, and that
+    /// `attester` is currently allowlisted in the configured registry.
     /// Stores the attestation with an incrementing sequence number,
     /// maintaining a bounded history (MAX_HISTORY entries per hash).
     pub fn attest(
         env: Env,
         attester: Address,
+        patient: Address,
         record_hash: BytesN<32>,
     ) -> Result<Attestation, Error> {
         attester.require_auth();
@@ -515,11 +587,48 @@ impl AttestationRegistry {
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
             .unwrap_or(0);
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationCount(record_hash.clone()))
+            .unwrap_or(0);
+        let consent_key =
+            DataKey::PatientConsent(record_hash.clone(), patient.clone(), attester.clone());
+        let consent_expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&consent_key)
+            .ok_or(Error::PatientConsentRequired)?;
+        if env.ledger().timestamp() >= consent_expires_at {
+            return Err(Error::PatientConsentExpired);
+        }
+        let consent_validity_key =
+            DataKey::PatientConsentValidity(record_hash.clone(), patient, attester.clone());
+        let attestation_expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&consent_validity_key)
+            .ok_or(Error::PatientConsentRequired)?;
+        if env.ledger().timestamp() >= attestation_expires_at {
+            return Err(Error::InvalidAttestationExpiry);
+        }
+        env.storage().persistent().remove(&consent_key);
+        env.storage().persistent().remove(&consent_validity_key);
+
+        let attestation = Attestation {
+            attester: attester.clone(),
+            timestamp: env.ledger().timestamp(),
+        };
+
         let new_sequence = sequence + 1;
 
         env.storage().persistent().set(
             &DataKey::Attestation(record_hash.clone(), new_sequence),
             &attestation,
+        );
+        env.storage().persistent().set(
+            &DataKey::AttestationExpiry(record_hash.clone(), new_sequence),
+            &attestation_expires_at,
         );
 
         env.storage().persistent().set(
@@ -527,11 +636,6 @@ impl AttestationRegistry {
             &new_sequence,
         );
 
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
         let new_count = count + 1;
 
         if new_count > MAX_HISTORY {
@@ -552,6 +656,11 @@ impl AttestationRegistry {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
+        env.storage().persistent().extend_ttl(
+            &DataKey::AttestationExpiry(record_hash.clone(), new_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
 
         env.storage()
             .instance()
@@ -561,6 +670,7 @@ impl AttestationRegistry {
             record_hash,
             attester,
             timestamp: attestation.timestamp,
+            expires_at: attestation_expires_at,
         }
         .publish(&env);
 
@@ -576,7 +686,7 @@ impl AttestationRegistry {
             .storage()
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
-            .ok_or(Error::NotInitialized)?;
+            .ok_or(Error::AttestationNotFound)?;
 
         let count: u64 = env
             .storage()
@@ -594,6 +704,9 @@ impl AttestationRegistry {
             env.storage()
                 .persistent()
                 .remove(&DataKey::Attestation(record_hash.clone(), seq));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::AttestationExpiry(record_hash.clone(), seq));
         }
         env.storage()
             .persistent()

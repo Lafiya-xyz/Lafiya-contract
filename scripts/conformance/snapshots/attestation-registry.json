@@ -50,6 +50,39 @@
   },
   {
     "kind": "function_v0",
+    "name": "consent_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "patient",
+          "type": "address"
+        },
+        {
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "consent_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_admin",
     "spec": {
       "inputs": [],

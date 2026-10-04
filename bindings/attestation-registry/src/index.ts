@@ -111,7 +111,7 @@ export interface Client {
    * Stores the attestation with an incrementing sequence number,
    * maintaining a bounded history (MAX_HISTORY entries per hash).
    */
-  attest: ({attester, record_hash}: {attester: string, record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Attestation>>>
+  is_paused: (options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
 
   /**
    * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.

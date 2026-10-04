@@ -736,7 +736,7 @@ fn second_propose_admin_call_overwrites_pending_proposal() {
     }]);
 
     let result = client.try_accept_admin();
-    assert_eq!(result, Ok(()));
+    assert_eq!(result, Ok(Ok(())));
 }
 
 #[test]
