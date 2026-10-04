@@ -25,10 +25,6 @@
           "type": "address"
         },
         {
-          "name": "patient",
-          "type": "address"
-        },
-        {
           "name": "record_hash",
           "type": {
             "bytes_n": {
@@ -159,23 +155,18 @@
   },
   {
     "kind": "function_v0",
-    "name": "get_attestation_valid_until",
+    "name": "get_attestation_rate_limit",
     "spec": {
-      "inputs": [
-        {
-          "name": "record_hash",
-          "type": {
-            "bytes_n": {
-              "n": 32
-            }
-          }
-        }
-      ],
-      "name": "get_attestation_valid_until",
+      "inputs": [],
+      "name": "get_attestation_rate_limit",
       "outputs": [
         {
           "option": {
-            "value_type": "u64"
+            "value_type": {
+              "udt": {
+                "name": "RateLimit"
+              }
+            }
           }
         }
       ]
@@ -192,6 +183,41 @@
           "result": {
             "error_type": "error",
             "ok_type": "address"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_interface",
+    "spec": {
+      "inputs": [],
+      "name": "get_interface",
+      "outputs": [
+        {
+          "udt": {
+            "name": "InterfaceInfo"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_rate_limit_retry_after",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "get_rate_limit_retry_after",
+      "outputs": [
+        {
+          "option": {
+            "value_type": "u32"
           }
         }
       ]
@@ -272,6 +298,27 @@
   },
   {
     "kind": "function_v0",
+    "name": "remove_attester_rate_limit",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "remove_attester_rate_limit",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "revoke_attestation",
     "spec": {
       "inputs": [
@@ -285,6 +332,56 @@
         }
       ],
       "name": "revoke_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "set_attestation_rate_limit",
+    "spec": {
+      "inputs": [
+        {
+          "name": "max_per_window",
+          "type": "u32"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32"
+        }
+      ],
+      "name": "set_attestation_rate_limit",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "set_attester_rate_limit",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "name": "max_per_window",
+          "type": "u32"
+        }
+      ],
+      "name": "set_attester_rate_limit",
       "outputs": [
         {
           "result": {
@@ -366,24 +463,20 @@
           "value": 7
         },
         {
-          "name": "PatientConsentRequired",
+          "name": "InvalidAdminProposal",
           "value": 8
         },
         {
-          "name": "PatientConsentExpired",
+          "name": "ProposalExpired",
           "value": 9
         },
         {
-          "name": "TimestampOverflow",
+          "name": "RateLimited",
           "value": 10
         },
         {
-          "name": "DuplicateAttestation",
+          "name": "InvalidRateLimit",
           "value": 11
-        },
-        {
-          "name": "AttestationHistoryFull",
-          "value": 12
         }
       ],
       "lib": "",
@@ -515,6 +608,54 @@
   },
   {
     "kind": "event_v0",
+    "name": "RateLimitHit",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "RateLimitHit",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "retry_after_ledger",
+          "type": "u32"
+        }
+      ],
+      "prefix_topics": [
+        "rate_limit_hit"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "RateLimitSet",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "RateLimitSet",
+      "params": [
+        {
+          "location": "data",
+          "name": "max_per_window",
+          "type": "u32"
+        },
+        {
+          "location": "data",
+          "name": "window_ledgers",
+          "type": "u32"
+        }
+      ],
+      "prefix_topics": [
+        "rate_limit_set"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
     "name": "Unpaused",
     "spec": {
       "data_format": "map",
@@ -548,6 +689,76 @@
       ],
       "lib": "",
       "name": "Attestation"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "InterfaceInfo",
+    "spec": {
+      "fields": [
+        {
+          "name": "contract_kind",
+          "type": "symbol"
+        },
+        {
+          "name": "event_version",
+          "type": "u32"
+        },
+        {
+          "name": "features",
+          "type": {
+            "vec": {
+              "element_type": "symbol"
+            }
+          }
+        },
+        {
+          "name": "interface_version",
+          "type": "u32"
+        },
+        {
+          "name": "schema_version",
+          "type": "u32"
+        }
+      ],
+      "lib": "",
+      "name": "InterfaceInfo"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "RateLimit",
+    "spec": {
+      "fields": [
+        {
+          "name": "max_per_window",
+          "type": "u32"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32"
+        }
+      ],
+      "lib": "",
+      "name": "RateLimit"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "RateWindow",
+    "spec": {
+      "fields": [
+        {
+          "name": "count",
+          "type": "u32"
+        },
+        {
+          "name": "window_start_ledger",
+          "type": "u32"
+        }
+      ],
+      "lib": "",
+      "name": "RateWindow"
     }
   }
 ]

@@ -192,17 +192,50 @@ say "          network-reported hash:    $UPLOADED_HASH"
 
 # ------------------------------------------------------------ 5. upgrade ---
 say "step 5/7: submitting upgrade(new_wasm_hash=$UPLOADED_HASH)"
+UPGRADE_LOG="$(mktemp -t lafiya-upgrade-log-XXXXXX)"
+trap 'rm -f "$UPLOAD_LOG" "$VERSION_LOG" "$TMP_WASM" "$UPGRADE_LOG"' EXIT
 stellar contract invoke --id "$CONTRACT_ID" \
     --source-account "$SOURCE_ACCOUNT" --network "$NETWORK" --send yes \
-    -- upgrade --new-wasm-hash "$UPLOADED_HASH"
+    -- upgrade --new-wasm-hash "$UPLOADED_HASH" 2>&1 | tee "$UPGRADE_LOG"
 say "          upgrade transaction accepted"
+
+# Append a deployment-ledger record. Never fails the upgrade: the on-chain
+# effect has already happened by the time this runs. See deployments/README.md.
+UPGRADE_TX_HASH="$(grep -oE '[Tt]ransaction (hash( is)?|:) [0-9a-fA-F]{64}' "$UPGRADE_LOG" \
+    | grep -oE '[0-9a-fA-F]{64}' | tail -n1 || true)"
+PREVIOUS_WASM_SHA256=""
+LEDGER_FILE="$REPO_ROOT/deployments/$NETWORK.jsonl"
+if [ -f "$LEDGER_FILE" ]; then
+    PREVIOUS_WASM_SHA256="$(grep -F "\"contract_id\":\"$CONTRACT_ID\"" "$LEDGER_FILE" \
+        | tail -n1 | grep -oE '"wasm_sha256":"[0-9a-f]{64}"' | grep -oE '[0-9a-f]{64}' || true)"
+fi
+PREV_ARGS=()
+[ -n "$PREVIOUS_WASM_SHA256" ] && PREV_ARGS=(--previous-wasm-sha256 "$PREVIOUS_WASM_SHA256")
+TX_ARGS=()
+[ -n "$UPGRADE_TX_HASH" ] && TX_ARGS=(--tx-hash "$UPGRADE_TX_HASH")
+if ! ( cd "$REPO_ROOT" && cargo run -q -p lafiya-cli -- --network "$NETWORK" deployments record \
+        --event upgrade --contract-kind "$CONTRACT" --contract-id "$CONTRACT_ID" \
+        --wasm "$WASM_PATH" --operator "$SOURCE_ACCOUNT" "${PREV_ARGS[@]}" "${TX_ARGS[@]}" ); then
+    echo "WARNING: failed to append deployment-ledger record for $CONTRACT upgrade" >&2
+fi
 
 # ------------------------------------------------------ 6. migrate (opt) ---
 if [ "$RUN_MIGRATE" -eq 1 ]; then
     say "step 6/7: submitting migrate() for pending schema migration"
+    MIGRATE_LOG="$(mktemp -t lafiya-migrate-log-XXXXXX)"
+    trap 'rm -f "$UPLOAD_LOG" "$VERSION_LOG" "$TMP_WASM" "$UPGRADE_LOG" "$MIGRATE_LOG"' EXIT
     stellar contract invoke --id "$CONTRACT_ID" \
         --source-account "$SOURCE_ACCOUNT" --network "$NETWORK" --send yes \
-        -- migrate
+        -- migrate 2>&1 | tee "$MIGRATE_LOG"
+    MIGRATE_TX_HASH="$(grep -oE '[Tt]ransaction (hash( is)?|:) [0-9a-fA-F]{64}' "$MIGRATE_LOG" \
+        | grep -oE '[0-9a-fA-F]{64}' | tail -n1 || true)"
+    MIGRATE_TX_ARGS=()
+    [ -n "$MIGRATE_TX_HASH" ] && MIGRATE_TX_ARGS=(--tx-hash "$MIGRATE_TX_HASH")
+    if ! ( cd "$REPO_ROOT" && cargo run -q -p lafiya-cli -- --network "$NETWORK" deployments record \
+            --event migrate --contract-kind "$CONTRACT" --contract-id "$CONTRACT_ID" \
+            --wasm "$WASM_PATH" --operator "$SOURCE_ACCOUNT" "${MIGRATE_TX_ARGS[@]}" ); then
+        echo "WARNING: failed to append deployment-ledger record for $CONTRACT migrate" >&2
+    fi
 else
     say "step 6/7: skipped (code-only upgrade; pass --run-migrate for schema-changing ones)"
 fi

@@ -21,6 +21,32 @@ See [Local Setup > Prerequisites](#prerequisites) for the tools you'll need befo
 The core development environment requires Rust and the Soroban SDK.
 For the quick-start commands, see the [Getting Started](README.md#getting-started) section in the `README.md`.
 
+### Recommended: devcontainer / Codespaces
+
+The recommended setup is the devcontainer in [`.devcontainer/`](.devcontainer/).
+Open the repository in VS Code with the Dev Containers extension ("Reopen in
+Container") or create a GitHub Codespace. It provides, with every version
+pinned and every download checksum-verified:
+
+- the Rust channel from `rust-toolchain.toml` with `wasm32v1-none`, `rustfmt`,
+  `clippy`, plus nightly for `cargo-fuzz`;
+- `stellar-cli`, `cargo-nextest`, `cargo-mutants`, `cargo-fuzz`, `just`;
+- Python 3.12 with `jsonschema`, and Node 22 LTS with pnpm;
+- sidecars: `stellar/quickstart --local` (Soroban RPC on port 8000, with a
+  health check) and `postgres` for the indexer.
+
+On creation it builds the contract wasm, adds the `local` network to
+`stellar-cli`, and creates and funds a `dev` identity. After that, `make check`
+and `make test-integration` work with no manual steps.
+
+**Codespaces prebuilds:** maintainers enable them under *Settings → Codespaces
+→ Prebuild configurations* for `main`, using `.devcontainer/devcontainer.json`.
+The image build and `onCreateCommand` (wasm build) run in the prebuild, so a
+new codespace is ready in about two minutes. The `Devcontainer` workflow
+builds the container and runs `make check` inside it so the setup can't rot.
+
+If you would rather set up your machine by hand, install the prerequisites below.
+
 ### Prerequisites
 - **Rust (stable)**: Install via [rustup](https://rustup.rs).
 - **Wasm target**: `rustup target add wasm32v1-none` (pinned via `rust-toolchain.toml`).
@@ -121,18 +147,39 @@ If proptest finds a failing case, it shrinks it to a minimal repro and writes it
 
 If a crash or invariant violation surfaces while working on either fuzz target, file it as its own bug report and fix it — don't fold an unrelated fix into a feature PR.
 
+### Task Runner
+Developer and CI tasks run through `cargo xtask` (the `xtask/` workspace member, aliased
+in `.cargo/config.toml`). It needs only the Rust toolchain pinned in `rust-toolchain.toml`
+(installed automatically by rustup), so it works the same on Linux, macOS, and Windows —
+no GNU make or WSL required. Run `cargo xtask help` for the full list:
+
+| Task | What it does |
+|------|--------------|
+| `cargo xtask check` | fmt `--check`, clippy (`-D warnings`), tests, contract wasm, conformance |
+| `cargo xtask ci` | `check` plus `test --all-features` — exactly what CI runs on all three OSes |
+| `cargo xtask fmt [--check]` / `clippy` / `test [--all-features]` / `fuzz` | individual steps |
+| `cargo xtask wasm [--reproducible]` | contract wasm; `--reproducible` as used for releases (docs/releasing.md) |
+| `cargo xtask bindings` | regenerate TypeScript bindings (needs `stellar-cli`) |
+| `cargo xtask conformance [--update]` | interface snapshot, error docs, events doc, bindings drift |
+| `cargo xtask budgets` | large-allowlist resource-budget load test |
+| `cargo xtask release-manifest` / `docs` | release manifest; rustdoc with `-D warnings` |
+
+The conformance scripts are still Python (stdlib only, plus `stellar-cli` to decode the contract
+spec); `check` skips them with a warning when `stellar` isn't on `PATH`, `ci` in a full
+environment runs them. Porting them to Rust (decoding the spec with `stellar-xdr`, with
+equivalence tests against the Python output on the snapshot fixtures) is tracked as follow-up work
+to #427; until then `xtask` is the only entry point, so the port won't change how they're invoked.
+
+The `Makefile` remains for one release as a thin compatibility shim (`make check` →
+`cargo xtask check`) and will then be removed.
+
 ### Local Quality Gate
 Always run the validation suite locally before committing:
 ```bash
-make check
+cargo xtask check
 ```
-This runs:
-1. `make fmt` (code formatting verification)
-2. `make clippy` (linter checks; warnings are treated as errors)
-3. `make test` (all cargo tests)
-4. `make wasm` (building target WASM binaries)
 
-There is no `rustfmt.toml` in this repo — that's intentional, not an oversight. `make fmt` / `cargo fmt --check` run against rustfmt's default settings, and PRs should not introduce a custom formatting config.
+There is no `rustfmt.toml` in this repo — that's intentional, not an oversight. `cargo xtask fmt --check` runs against rustfmt's default settings, and PRs should not introduce a custom formatting config.
 
 
 - Every new contract function needs unit tests covering both the success
@@ -142,14 +189,38 @@ There is no `rustfmt.toml` in this repo — that's intentional, not an oversight
   interface (see `attestation-registry`'s `AttesterRegistryInterface`),
   not a direct crate dependency on the callee — depending on the whole
   crate links its contract implementation into your wasm build too.
-- Any pull request (PR) that changes contract behavior, storage schemas, or public function signatures must include a corresponding entry in `CHANGELOG.md` under the `[Unreleased]` section. Refer to [releasing.md](docs/releasing.md) for details.
-- Run `make check` locally before pushing; it's the same set of checks CI
-  runs.
+- Use [Conventional Commits](https://www.conventionalcommits.org/) for PR titles and
+  squash-merge messages: the CHANGELOG and version bump are generated from them
+  (see [releasing.md](docs/releasing.md)). A commit that changes `DataKey` or any
+  `#[contracttype]` must carry a `Schema-Impact:` trailer, or the release PR fails.
+- Run `cargo xtask check` locally before pushing; CI runs `cargo xtask ci`.
 - Keep `Cargo.lock` committed and up to date so builds are reproducible.
+
+### On-chain Data Review Checklist
+
+Anything written to the ledger is public and permanent. Before adding or
+changing a `#[contracttype]` stored under a `DataKey`, or any
+`#[contractevent]`, answer these in the PR description:
+
+- [ ] **Personal data?** Can the value, alone or combined with other on-chain
+      data, timing, or a small cohort (e.g. one LGA), identify a CHW or a
+      patient? If yes or maybe, justify why it must be on-chain.
+- [ ] **No plaintext or low-entropy health data.** Any hash over patient or
+      CHW attributes includes a mandatory random salt (≥128 bits) kept
+      off-chain, so it can be crypto-shredded.
+- [ ] **No reasons or free text** about a person (e.g. suspension reason codes).
+- [ ] **Minimised granularity.** Use the coarsest region/time precision that
+      works; prefer storage reads over events for data that doesn't need to be
+      indexed.
+- [ ] **Erasure path.** You can say what an NDPA erasure request means for
+      this element (shred salt, revoke, remove, or accepted risk).
+- [ ] **Inventory updated.** [docs/compliance/ndpa-onchain-analysis.md](docs/compliance/ndpa-onchain-analysis.md)
+      section 3 (and section 5 if risk changes) reflects the new field.
 
 ## Pull Request Process
 
 1. Fork the repository and create your branch from `main`.
-2. Ensure your changes compile and pass all quality checks locally (`make check`).
+2. Ensure your changes compile and pass all quality checks locally (`cargo xtask check`).
 3. Fill out the [Pull Request Template](.github/pull_request_template.md) completely, paying extra attention to the **Cross-Repo Impact** section if your changes touch shared interfaces.
+   If your change alters a public surface (contract functions, storage, events, error codes, bindings, CLI, or the commitment scheme), follow the [Interface Stability and Deprecation Policy](docs/stability-policy.md) and answer **Breaking change?** in the template.
 4. An admin will review your PR. All checks in CI must pass before merging.

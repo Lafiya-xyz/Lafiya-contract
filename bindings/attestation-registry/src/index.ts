@@ -24,6 +24,7 @@ import type {
 export * from "@stellar/stellar-sdk";
 export * as contract from "@stellar/stellar-sdk/contract";
 export * as rpc from "@stellar/stellar-sdk/rpc";
+export * from "./record.js";
 
 if (typeof window !== "undefined") {
   //@ts-ignore Buffer exists
@@ -68,27 +69,7 @@ export const Errors = {
   /**
    * The requested operation is blocked while the contract is paused.
    */
-  7: {message:"ContractPaused"},
-  /**
-   * No matching patient consent was granted for this attester and record.
-   */
-  8: {message:"PatientConsentRequired"},
-  /**
-   * The matching patient consent has expired.
-   */
-  9: {message:"PatientConsentExpired"},
-  /**
-   * The current ledger timestamp cannot be safely advanced to calculate a time bound.
-   */
-  10: {message:"TimestampOverflow"},
-  /**
-   * This attester has already attested the record hash.
-   */
-  11: {message:"DuplicateAttestation"},
-  /**
-   * The record hash has reached its attestation history limit.
-   */
-  12: {message:"AttestationHistoryFull"}
+  7: {message:"ContractPaused"}
 }
 
 
@@ -125,13 +106,12 @@ export interface Client {
   /**
    * Construct and simulate a attest transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Record that `attester` verified the record hashing to `record_hash`.
-   * Requires `attester`'s authorization, an unexpired one-time patient
-   * consent grant for this exact patient/attester/hash tuple, and that
-   * `attester` is currently allowlisted in the configured registry.
+   * Requires `attester`'s authorization and that `attester` is
+   * currently allowlisted in the configured `attester-registry`.
    * Stores the attestation with an incrementing sequence number,
    * maintaining a bounded history (MAX_HISTORY entries per hash).
    */
-  attest: ({attester, patient, record_hash}: {attester: string, patient: string, record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<Attestation>>>
+  is_paused: (options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
 
   /**
    * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -195,15 +175,6 @@ export interface Client {
   revoke_attestation: ({record_hash}: {record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 
   /**
-   * Construct and simulate a consent_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Grant a one-time authorization for `attester` to attest `record_hash`.
-   * The patient must authorize this call. The grant is bound to the patient,
-   * attester, and record hash, expires after seven days, and is consumed by
-   * the matching `attest` call.
-   */
-  consent_attestation: ({patient, attester, record_hash}: {patient: string, attester: string, record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
-
-  /**
    * Construct and simulate a get_attester_registry transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Return the configured attester-registry contract address.
    */
@@ -225,14 +196,6 @@ export interface Client {
    */
   get_attestation_history: ({record_hash}: {record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Array<Attestation>>>
 
-  /**
-   * Construct and simulate a get_attestation_valid_until transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Return the validity deadline for the latest attestation, if present.
-   * The deadline is computed from its timestamp so existing stored
-   * attestations remain readable after this contract upgrade.
-   */
-  get_attestation_valid_until: ({record_hash}: {record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Option<u64>>>
-
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -251,7 +214,7 @@ export class Client extends ContractClient {
   }
   constructor(public readonly options: ContractClientOptions) {
     super(
-      new ContractSpec([ "AAAABAAAAEJFcnJvcnMgcmV0dXJuZWQgYnkgdGhlIGF0dGVzdGF0aW9uIHJlZ2lzdHJ5J3MgcHVibGljIGVudHJ5IHBvaW50cy4AAAAAAAAAAAAFRXJyb3IAAAAAAAAMAAAAJWBpbml0aWFsaXplYCBoYXMgbm90IGJlZW4gY2FsbGVkIHlldC4AAAAAAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAEAAAAnYGluaXRpYWxpemVgIHdhcyBjYWxsZWQgbW9yZSB0aGFuIG9uY2UuAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAIAAABCVGhlIGNhbGxlciBpcyBub3QgYWxsb3dsaXN0ZWQgYnkgdGhlIGBhdHRlc3Rlci1yZWdpc3RyeWAgY29udHJhY3QuAAAAAAAWQXR0ZXN0ZXJOb3RBbGxvd2xpc3RlZAAAAAAAAwAAAW9gYWNjZXB0X2FkbWluYCB3YXMgY2FsbGVkIHdpdGggbm8gcGVuZGluZyBhZG1pbiB0cmFuc2Zlci4gQWRtaW4gdHJhbnNmZXIgaXMgYQp0d28tc3RlcCBmbG93OiB0aGUgY3VycmVudCBhZG1pbiBtdXN0IGZpcnN0IGNhbGwgYHByb3Bvc2VfYWRtaW5gIHRvIG5vbWluYXRlIGEKc3VjY2Vzc29yLCB0aGVuIHRoZSBub21pbmF0ZWQgYWRkcmVzcyBtdXN0IGNhbGwgYGFjY2VwdF9hZG1pbmAgdG8gY29tcGxldGUgdGhlCnRyYW5zZmVyLiBUaGlzIGVycm9yIGlzIHJldHVybmVkIHdoZW4gYGFjY2VwdF9hZG1pbmAgaXMgY2FsbGVkIGJlZm9yZSBhCmNvcnJlc3BvbmRpbmcgYHByb3Bvc2VfYWRtaW5gIGNhbGwgaGFzIHNldCBhIHBlbmRpbmcgYWRtaW4uAAAAABFOb1BlbmRpbmdUcmFuc2ZlcgAAAAAAAAQAAACzVGhlIGNvbmZpZ3VyZWQgYGF0dGVzdGVyLXJlZ2lzdHJ5YCBhZGRyZXNzIGRvZXMgbm90IGltcGxlbWVudCB0aGUgZXhwZWN0ZWQgaW50ZXJmYWNlLiBSZS1ydW4gYHNldF9hdHRlc3Rlcl9yZWdpc3RyeWAgd2l0aCB0aGUgY29ycmVjdCBhZGRyZXNzLCBvciBjaGVjayB5b3VyIG5ldHdvcmsgY29uZmlndXJhdGlvbi4AAAAAFUludmFsaWRSZWdpc3RyeVdpcmluZwAAAAAAAAUAAAA7Tm8gYXR0ZXN0YXRpb24gZXhpc3RzIGZvciB0aGUgZ2l2ZW4gcmVjb3JkIGhhc2ggLyBzZXF1ZW5jZS4AAAAAE0F0dGVzdGF0aW9uTm90Rm91bmQAAAAABgAAAEBUaGUgcmVxdWVzdGVkIG9wZXJhdGlvbiBpcyBibG9ja2VkIHdoaWxlIHRoZSBjb250cmFjdCBpcyBwYXVzZWQuAAAADkNvbnRyYWN0UGF1c2VkAAAAAAAHAAAARU5vIG1hdGNoaW5nIHBhdGllbnQgY29uc2VudCB3YXMgZ3JhbnRlZCBmb3IgdGhpcyBhdHRlc3RlciBhbmQgcmVjb3JkLgAAAAAAABZQYXRpZW50Q29uc2VudFJlcXVpcmVkAAAAAAAIAAAAKVRoZSBtYXRjaGluZyBwYXRpZW50IGNvbnNlbnQgaGFzIGV4cGlyZWQuAAAAAAAAFVBhdGllbnRDb25zZW50RXhwaXJlZAAAAAAAAAkAAABRVGhlIGN1cnJlbnQgbGVkZ2VyIHRpbWVzdGFtcCBjYW5ub3QgYmUgc2FmZWx5IGFkdmFuY2VkIHRvIGNhbGN1bGF0ZSBhIHRpbWUgYm91bmQuAAAAAAAAEVRpbWVzdGFtcE92ZXJmbG93AAAAAAAACgAAADNUaGlzIGF0dGVzdGVyIGhhcyBhbHJlYWR5IGF0dGVzdGVkIHRoZSByZWNvcmQgaGFzaC4AAAAAFER1cGxpY2F0ZUF0dGVzdGF0aW9uAAAACwAAADpUaGUgcmVjb3JkIGhhc2ggaGFzIHJlYWNoZWQgaXRzIGF0dGVzdGF0aW9uIGhpc3RvcnkgbGltaXQuAAAAAAAWQXR0ZXN0YXRpb25IaXN0b3J5RnVsbAAAAAAADA==",
+      new ContractSpec([ "AAAABAAAAEJFcnJvcnMgcmV0dXJuZWQgYnkgdGhlIGF0dGVzdGF0aW9uIHJlZ2lzdHJ5J3MgcHVibGljIGVudHJ5IHBvaW50cy4AAAAAAAAAAAAFRXJyb3IAAAAAAAAHAAAAJWBpbml0aWFsaXplYCBoYXMgbm90IGJlZW4gY2FsbGVkIHlldC4AAAAAAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAEAAAAnYGluaXRpYWxpemVgIHdhcyBjYWxsZWQgbW9yZSB0aGFuIG9uY2UuAAAAABJBbHJlYWR5SW5pdGlhbGl6ZWQAAAAAAAIAAABCVGhlIGNhbGxlciBpcyBub3QgYWxsb3dsaXN0ZWQgYnkgdGhlIGBhdHRlc3Rlci1yZWdpc3RyeWAgY29udHJhY3QuAAAAAAAWQXR0ZXN0ZXJOb3RBbGxvd2xpc3RlZAAAAAAAAwAAAW9gYWNjZXB0X2FkbWluYCB3YXMgY2FsbGVkIHdpdGggbm8gcGVuZGluZyBhZG1pbiB0cmFuc2Zlci4gQWRtaW4gdHJhbnNmZXIgaXMgYQp0d28tc3RlcCBmbG93OiB0aGUgY3VycmVudCBhZG1pbiBtdXN0IGZpcnN0IGNhbGwgYHByb3Bvc2VfYWRtaW5gIHRvIG5vbWluYXRlIGEKc3VjY2Vzc29yLCB0aGVuIHRoZSBub21pbmF0ZWQgYWRkcmVzcyBtdXN0IGNhbGwgYGFjY2VwdF9hZG1pbmAgdG8gY29tcGxldGUgdGhlCnRyYW5zZmVyLiBUaGlzIGVycm9yIGlzIHJldHVybmVkIHdoZW4gYGFjY2VwdF9hZG1pbmAgaXMgY2FsbGVkIGJlZm9yZSBhCmNvcnJlc3BvbmRpbmcgYHByb3Bvc2VfYWRtaW5gIGNhbGwgaGFzIHNldCBhIHBlbmRpbmcgYWRtaW4uAAAAABFOb1BlbmRpbmdUcmFuc2ZlcgAAAAAAAAQAAACzVGhlIGNvbmZpZ3VyZWQgYGF0dGVzdGVyLXJlZ2lzdHJ5YCBhZGRyZXNzIGRvZXMgbm90IGltcGxlbWVudCB0aGUgZXhwZWN0ZWQgaW50ZXJmYWNlLiBSZS1ydW4gYHNldF9hdHRlc3Rlcl9yZWdpc3RyeWAgd2l0aCB0aGUgY29ycmVjdCBhZGRyZXNzLCBvciBjaGVjayB5b3VyIG5ldHdvcmsgY29uZmlndXJhdGlvbi4AAAAAFUludmFsaWRSZWdpc3RyeVdpcmluZwAAAAAAAAUAAAA7Tm8gYXR0ZXN0YXRpb24gZXhpc3RzIGZvciB0aGUgZ2l2ZW4gcmVjb3JkIGhhc2ggLyBzZXF1ZW5jZS4AAAAAE0F0dGVzdGF0aW9uTm90Rm91bmQAAAAABgAAAEBUaGUgcmVxdWVzdGVkIG9wZXJhdGlvbiBpcyBibG9ja2VkIHdoaWxlIHRoZSBjb250cmFjdCBpcyBwYXVzZWQuAAAADkNvbnRyYWN0UGF1c2VkAAAAAAAH",
         "AAAABQAAADJFbWl0dGVkIHdoZW4gc3RhdGUtY2hhbmdpbmcgb3BlcmF0aW9ucyBhcmUgcGF1c2VkLgAAAAAAAAAAAAZQYXVzZWQAAAAAAAEAAAAGcGF1c2VkAAAAAAABAAAAAAAAAAJieQAAAAAAEwAAAAEAAAAC",
         "AAAABQAAADRFbWl0dGVkIHdoZW4gc3RhdGUtY2hhbmdpbmcgb3BlcmF0aW9ucyBhcmUgdW5wYXVzZWQuAAAAAAAAAAhVbnBhdXNlZAAAAAEAAAAIdW5wYXVzZWQAAAABAAAAAAAAAAJieQAAAAAAEwAAAAEAAAAC",
         "AAAAAQAAAKJBIHNpbmdsZSBhdHRlc3RhdGlvbjogcHJvb2YgdGhhdCBgYXR0ZXN0ZXJgIHZlcmlmaWVkIHRoZSBvZmYtY2hhaW4KcmVjb3JkIHdob3NlIGhhc2ggaXMgdGhlIGxvb2t1cCBrZXksIGF0IGB0aW1lc3RhbXBgLiBOZXZlciBjb250YWlucyB0aGUKdW5kZXJseWluZyBoZWFsdGggZGF0YS4AAAAAAAAAAAALQXR0ZXN0YXRpb24AAAAAAgAAADJUaGUgYWxsb3dsaXN0ZWQgYXR0ZXN0ZXIgdGhhdCB2ZXJpZmllZCB0aGUgcmVjb3JkLgAAAAAACGF0dGVzdGVyAAAAEwAAADdMZWRnZXIgdGltZXN0YW1wIGF0IHdoaWNoIHRoZSBhdHRlc3RhdGlvbiB3YXMgcmVjb3JkZWQuAAAAAAl0aW1lc3RhbXAAAAAAAAAG",
@@ -260,7 +223,7 @@ export class Client extends ContractClient {
         "AAAABQAAAD1FbWl0dGVkIHdoZW4gYSBuZXcgYXR0ZXN0YXRpb24gaXMgcmVjb3JkZWQgZm9yIGEgcmVjb3JkIGhhc2guAAAAAAAAAAAAABNBdHRlc3RhdGlvblJlY29yZGVkAAAAAAEAAAAUYXR0ZXN0YXRpb25fcmVjb3JkZWQAAAADAAAAAAAAAAtyZWNvcmRfaGFzaAAAAAPuAAAAIAAAAAEAAAAyVGhlIGFsbG93bGlzdGVkIGF0dGVzdGVyIHRoYXQgdmVyaWZpZWQgdGhlIHJlY29yZC4AAAAAAAhhdHRlc3RlcgAAABMAAAAAAAAAN0xlZGdlciB0aW1lc3RhbXAgYXQgd2hpY2ggdGhlIGF0dGVzdGF0aW9uIHdhcyByZWNvcmRlZC4AAAAACXRpbWVzdGFtcAAAAAAAAAYAAAAAAAAAAg==",
         "AAAABQAAAFJFbWl0dGVkIHdoZW4gdGhlIGBhdHRlc3Rlci1yZWdpc3RyeWAgY29udHJhY3QgdGhpcyByZWdpc3RyeSBjb25zdWx0cyBpcyByZXBvaW50ZWQuAAAAAAAAAAAAGUF0dGVzdGVyUmVnaXN0cnlSZXBvaW50ZWQAAAAAAAABAAAAG2F0dGVzdGVyX3JlZ2lzdHJ5X3JlcG9pbnRlZAAAAAACAAAAAAAAAAhwcmV2aW91cwAAABMAAAABAAAAAAAAAANuZXcAAAAAEwAAAAEAAAAC",
         "AAAAAAAAAGRQYXVzZSB0aGUgY29udHJhY3QsIGJsb2NraW5nIGBhdHRlc3RgIHVudGlsIGB1bnBhdXNlYCBpcyBjYWxsZWQuClJlcXVpcmVzIHRoZSBhZG1pbidzIGF1dGhvcml6YXRpb24uAAAABXBhdXNlAAAAAAAAAAAAAAEAAAPpAAAAAgAAAAM=",
-        "AAAAAAAAAYVSZWNvcmQgdGhhdCBgYXR0ZXN0ZXJgIHZlcmlmaWVkIHRoZSByZWNvcmQgaGFzaGluZyB0byBgcmVjb3JkX2hhc2hgLgpSZXF1aXJlcyBgYXR0ZXN0ZXJgJ3MgYXV0aG9yaXphdGlvbiwgYW4gdW5leHBpcmVkIG9uZS10aW1lIHBhdGllbnQKY29uc2VudCBncmFudCBmb3IgdGhpcyBleGFjdCBwYXRpZW50L2F0dGVzdGVyL2hhc2ggdHVwbGUsIGFuZCB0aGF0CmBhdHRlc3RlcmAgaXMgY3VycmVudGx5IGFsbG93bGlzdGVkIGluIHRoZSBjb25maWd1cmVkIHJlZ2lzdHJ5LgpTdG9yZXMgdGhlIGF0dGVzdGF0aW9uIHdpdGggYW4gaW5jcmVtZW50aW5nIHNlcXVlbmNlIG51bWJlciwKbWFpbnRhaW5pbmcgYSBib3VuZGVkIGhpc3RvcnkgKE1BWF9ISVNUT1JZIGVudHJpZXMgcGVyIGhhc2gpLgAAAAAAAAZhdHRlc3QAAAAAAAMAAAAAAAAACGF0dGVzdGVyAAAAEwAAAAAAAAAHcGF0aWVudAAAAAATAAAAAAAAAAtyZWNvcmRfaGFzaAAAAAPuAAAAIAAAAAEAAAPpAAAH0AAAAAtBdHRlc3RhdGlvbgAAAAAD",
+        "AAAAAAAAATdSZWNvcmQgdGhhdCBgYXR0ZXN0ZXJgIHZlcmlmaWVkIHRoZSByZWNvcmQgaGFzaGluZyB0byBgcmVjb3JkX2hhc2hgLgpSZXF1aXJlcyBgYXR0ZXN0ZXJgJ3MgYXV0aG9yaXphdGlvbiBhbmQgdGhhdCBgYXR0ZXN0ZXJgIGlzCmN1cnJlbnRseSBhbGxvd2xpc3RlZCBpbiB0aGUgY29uZmlndXJlZCBgYXR0ZXN0ZXItcmVnaXN0cnlgLgpTdG9yZXMgdGhlIGF0dGVzdGF0aW9uIHdpdGggYW4gaW5jcmVtZW50aW5nIHNlcXVlbmNlIG51bWJlciwKbWFpbnRhaW5pbmcgYSBib3VuZGVkIGhpc3RvcnkgKE1BWF9ISVNUT1JZIGVudHJpZXMgcGVyIGhhc2gpLgAAAAAGYXR0ZXN0AAAAAAACAAAAAAAAAAhhdHRlc3RlcgAAABMAAAAAAAAAC3JlY29yZF9oYXNoAAAAA+4AAAAgAAAAAQAAA+kAAAfQAAAAC0F0dGVzdGF0aW9uAAAAAAM=",
         "AAAAAAAAAExSZXN1bWUgbm9ybWFsIG9wZXJhdGlvbiBhZnRlciBhIGBwYXVzZWAuIFJlcXVpcmVzIHRoZSBhZG1pbidzIGF1dGhvcml6YXRpb24uAAAAB3VucGF1c2UAAAAAAAAAAAEAAAPpAAAAAgAAAAM=",
         "AAAAAAAAACFSZXR1cm4gdGhlIGN1cnJlbnQgYWRtaW4gYWRkcmVzcy4AAAAAAAAJZ2V0X2FkbWluAAAAAAAAAAAAAAEAAAPpAAAAEwAAAAM=",
         "AAAAAAAAAClXaGV0aGVyIHRoZSBjb250cmFjdCBpcyBjdXJyZW50bHkgcGF1c2VkLgAAAAAAAAlpc19wYXVzZWQAAAAAAAAAAAAAAQAAAAE=",
@@ -269,11 +232,9 @@ export class Client extends ContractClient {
         "AAAAAAAAAExQcm9wb3NlIGEgbmV3IGFkbWluIGFkZHJlc3MuIFRoZSBjYWxsZXIgbXVzdCBhdXRob3JpemUgYXMgdGhlIGN1cnJlbnQgYWRtaW4uAAAADXByb3Bvc2VfYWRtaW4AAAAAAAABAAAAAAAAAAluZXdfYWRtaW4AAAAAAAATAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAAK9Mb29rIHVwIHRoZSBsYXRlc3QgYXR0ZXN0YXRpb24gZm9yIGByZWNvcmRfaGFzaGAsIGlmIGFueS4gQ2FsbGFibGUKYnkgYW55b25lIOKAlCB0aGlzIGlzIHdoYXQgbGV0cyBhIHJlc3BvbmRlcidzIFFSIHNjYW4gaW5kZXBlbmRlbnRseQpjaGVjayBhIGNhcmQgd2l0aG91dCBhbiBleHRlcm5hbCBvcmFjbGUuAAAAAA9nZXRfYXR0ZXN0YXRpb24AAAAAAQAAAAAAAAALcmVjb3JkX2hhc2gAAAAD7gAAACAAAAABAAAD6AAAB9AAAAALQXR0ZXN0YXRpb24A",
         "AAAAAAAAAEhSZXZva2UgYWxsIGF0dGVzdGF0aW9ucyBmb3IgYHJlY29yZF9oYXNoYC4gR2F0ZWQgYnkgYWRtaW4gYXV0aG9yaXphdGlvbi4AAAAScmV2b2tlX2F0dGVzdGF0aW9uAAAAAAABAAAAAAAAAAtyZWNvcmRfaGFzaAAAAAPuAAAAIAAAAAEAAAPpAAAAAgAAAAM=",
-        "AAAAAAAAAPNHcmFudCBhIG9uZS10aW1lIGF1dGhvcml6YXRpb24gZm9yIGBhdHRlc3RlcmAgdG8gYXR0ZXN0IGByZWNvcmRfaGFzaGAuClRoZSBwYXRpZW50IG11c3QgYXV0aG9yaXplIHRoaXMgY2FsbC4gVGhlIGdyYW50IGlzIGJvdW5kIHRvIHRoZSBwYXRpZW50LAphdHRlc3RlciwgYW5kIHJlY29yZCBoYXNoLCBleHBpcmVzIGFmdGVyIHNldmVuIGRheXMsIGFuZCBpcyBjb25zdW1lZCBieQp0aGUgbWF0Y2hpbmcgYGF0dGVzdGAgY2FsbC4AAAAAE2NvbnNlbnRfYXR0ZXN0YXRpb24AAAAAAwAAAAAAAAAHcGF0aWVudAAAAAATAAAAAAAAAAhhdHRlc3RlcgAAABMAAAAAAAAAC3JlY29yZF9oYXNoAAAAA+4AAAAgAAAAAQAAA+kAAAACAAAAAw==",
         "AAAAAAAAADlSZXR1cm4gdGhlIGNvbmZpZ3VyZWQgYXR0ZXN0ZXItcmVnaXN0cnkgY29udHJhY3QgYWRkcmVzcy4AAAAAAAAVZ2V0X2F0dGVzdGVyX3JlZ2lzdHJ5AAAAAAAAAAAAAAEAAAPpAAAAEwAAAAM=",
         "AAAAAAAAALZDaGFuZ2UgdGhlIGF0dGVzdGVyLXJlZ2lzdHJ5IGNvbnRyYWN0IHRoaXMgcmVnaXN0cnkgY29uc3VsdHMgZm9yCmFsbG93bGlzdCBjaGVja3MuIFJlcXVpcmVzIHRoZSBhZG1pbidzIGF1dGhvcml6YXRpb24uIEVtaXRzCmBBdHRlc3RlclJlZ2lzdHJ5UmVwb2ludGVkYCBmb3IgaW5kZXhlci9hdWRpdCB2aXNpYmlsaXR5LgAAAAAAFXNldF9hdHRlc3Rlcl9yZWdpc3RyeQAAAAAAAAEAAAAAAAAADG5ld19yZWdpc3RyeQAAABMAAAABAAAD6QAAAAIAAAAD",
-        "AAAAAAAAAI9Mb29rIHVwIHRoZSBmdWxsIGF0dGVzdGF0aW9uIGhpc3RvcnkgZm9yIGByZWNvcmRfaGFzaGAsIGlmIGFueS4KUmV0dXJucyBhdHRlc3RhdGlvbnMgaW4gY2hyb25vbG9naWNhbCBvcmRlciAob2xkZXN0IGZpcnN0KS4KQ2FsbGFibGUgYnkgYW55b25lLgAAAAAXZ2V0X2F0dGVzdGF0aW9uX2hpc3RvcnkAAAAAAQAAAAAAAAALcmVjb3JkX2hhc2gAAAAD7gAAACAAAAABAAAD6gAAB9AAAAALQXR0ZXN0YXRpb24A",
-        "AAAAAAAAAL1SZXR1cm4gdGhlIHZhbGlkaXR5IGRlYWRsaW5lIGZvciB0aGUgbGF0ZXN0IGF0dGVzdGF0aW9uLCBpZiBwcmVzZW50LgpUaGUgZGVhZGxpbmUgaXMgY29tcHV0ZWQgZnJvbSBpdHMgdGltZXN0YW1wIHNvIGV4aXN0aW5nIHN0b3JlZAphdHRlc3RhdGlvbnMgcmVtYWluIHJlYWRhYmxlIGFmdGVyIHRoaXMgY29udHJhY3QgdXBncmFkZS4AAAAAAAAbZ2V0X2F0dGVzdGF0aW9uX3ZhbGlkX3VudGlsAAAAAAEAAAAAAAAAC3JlY29yZF9oYXNoAAAAA+4AAAAgAAAAAQAAA+gAAAAG" ]),
+        "AAAAAAAAAI9Mb29rIHVwIHRoZSBmdWxsIGF0dGVzdGF0aW9uIGhpc3RvcnkgZm9yIGByZWNvcmRfaGFzaGAsIGlmIGFueS4KUmV0dXJucyBhdHRlc3RhdGlvbnMgaW4gY2hyb25vbG9naWNhbCBvcmRlciAob2xkZXN0IGZpcnN0KS4KQ2FsbGFibGUgYnkgYW55b25lLgAAAAAXZ2V0X2F0dGVzdGF0aW9uX2hpc3RvcnkAAAAAAQAAAAAAAAALcmVjb3JkX2hhc2gAAAAD7gAAACAAAAABAAAD6gAAB9AAAAALQXR0ZXN0YXRpb24A" ]),
       options
     )
   }
@@ -288,10 +249,8 @@ export class Client extends ContractClient {
         propose_admin: this.txFromJSON<Result<void>>,
         get_attestation: this.txFromJSON<Option<Attestation>>,
         revoke_attestation: this.txFromJSON<Result<void>>,
-        consent_attestation: this.txFromJSON<Result<void>>,
         get_attester_registry: this.txFromJSON<Result<string>>,
         set_attester_registry: this.txFromJSON<Result<void>>,
-        get_attestation_history: this.txFromJSON<Array<Attestation>>,
-        get_attestation_valid_until: this.txFromJSON<Option<u64>>
+        get_attestation_history: this.txFromJSON<Array<Attestation>>
   }
 }

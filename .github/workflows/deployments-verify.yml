@@ -1,0 +1,31 @@
+name: Deployment Ledger Verify
+
+# Nightly, offline check that deployments/<network>.jsonl's hash chain is
+# intact and internally consistent (see deployments/README.md and issue
+# #409). Does not touch any network -- it only re-derives the file's hash
+# chain and checks ledger monotonicity, so it catches a tampered or corrupted
+# ledger file even between human deploys.
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # nightly, off the hour to avoid GitHub Actions load spikes
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - "deployments/**"
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  verify-testnet-ledger:
+    name: Verify testnet deployment ledger
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: deployments verify --network testnet
+        run: cargo run -q -p lafiya-cli -- --network testnet deployments verify

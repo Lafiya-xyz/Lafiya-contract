@@ -4,19 +4,26 @@
 
 Lafiya contracts currently declare the following on-chain event schemas:
 
-- `AdminTransferred` (`attester-registry` and `attestation-registry`)
-- `Initialized`
+- `AdminTransferred` (`attester-registry`, `attestation-registry`, `incentive-pool`)
+- `Initialized` (`attester-registry`, `incentive-pool`)
 - `AttesterAdded`
 - `AttesterInfoUpdated` (`attester-registry`)
 - `AttesterRemoved`
+- `AttesterRevoked`
 - `AttesterSuspended`
 - `AttesterReinstated`
 - `AttestationRecorded`
 - `AttestationRevoked`
 - `Upgraded` (`attester-registry`)
-- `Paused` (`attester-registry` and `attestation-registry`)
-- `Unpaused` (`attester-registry` and `attestation-registry`)
-- `AttesterRegistryRepointed` (`attestation-registry`)
+- `Paused` (`attester-registry`, `attestation-registry`, `incentive-pool`)
+- `Unpaused` (`attester-registry`, `attestation-registry`, `incentive-pool`)
+- `AttesterRegistryRepointed` (`attestation-registry`, `incentive-pool`)
+- `PoolFunded` (`incentive-pool`)
+- `PoolWithdrawn` (`incentive-pool`)
+- `WorkItemApproved` (`incentive-pool`)
+- `PayoutClaimed` (`incentive-pool`)
+- `RateLimitHit` (`attestation-registry`) — published at most once per attester per rate-limit window, on the attestation that fills the window
+- `RateLimitSet` (`attestation-registry`)
 
 `Initialized` is currently a declared schema only: neither registry publishes it
 during initialization. Indexers must not rely on receiving it unless contract
@@ -61,10 +68,14 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
 2. **Profile Updater**
    - For `AttestationRecorded`, update the `profiles` table (e.g., set `verified = true`, store attestation metadata).
    - For `AttestationRevoked`, remove the indexed attestation and set the corresponding profile's `verified` state to false.
-   - For `AttesterAdded` / `AttesterRemoved`, add or remove the account in a secondary `attesters` table.
+   - For `AttesterAdded`, add the account in a secondary `attesters` table; for `AttesterRemoved` / `AttesterRevoked`, remove it while retaining its historical status transitions.
    - For `AttesterSuspended` / `AttesterReinstated`, update the account's active status without losing its allowlist history.
    - Record `AdminTransferred` as a contract-administration audit event; it does not directly change profile verification state.
    - If a future contract release begins publishing `Initialized`, record it as an administration audit event as well.
+   - For `PoolFunded`, record donor funding events for the incentive pool audit trail.
+   - For `PoolWithdrawn`, record recovery/withdrawal events.
+   - For `WorkItemApproved`, record work-item approval events linking attesters to specific items.
+   - For `PayoutClaimed`, update the CHW incentive ledger and deduct from pool balance tracking.
 3. **Webhook Interface**
    - Expose a simple HTTP endpoint that **lafiya‑web** can call (or use Supabase realtime listeners) to receive push notifications when a profile changes.
    - The webhook payload contains the profile ID and the updated verification state.
@@ -79,18 +90,19 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
   - Polling errors or RPC timeouts.
   - Event processing failures (e.g., DB write errors).
 
-## Repository Ownership
+## Implementation
 
-- The indexer code should live in a **dedicated repository** (e.g., `lafiya-event-indexer`). This keeps the on‑chain contracts repository focused on smart‑contract logic.
-- A short‑term plan is to create the repository under the organization and add a `README.md` linking to this design doc.
-- Follow‑up implementation tickets will be created in that repo (e.g., `#1 Implement streaming client`, `#2 Supabase schema migration`).
+The reference implementation lives in this repository as
+[`crates/lafiya-indexer`](../../crates/lafiya-indexer). It uses the polling
+approach above, with a Postgres store rather than Supabase, and adds:
 
-## Next Steps
+- cursor checkpointing that is transactional with each applied page;
+- a hard failure (never a silent skip) when the checkpoint falls outside
+  RPC retention, plus a `backfill` command for archived history;
+- a reconciler that samples `get_attester_status` / `get_attestation`
+  and reports mismatches as metrics;
+- a read-only, paginated HTTP API with an OpenAPI spec, a health endpoint,
+  and Prometheus metrics.
 
-1. **Create repository** `lafiya-event-indexer` (or decide to host within `lafiya‑web` if maintainers prefer).
-2. Add the `event-indexing.md` design doc (this file) to the repo's `docs/architecture` folder.
-3. Draft implementation tickets as described above.
-4. Review the design with the maintainer of `lafiya‑web` and update according to feedback.
-
----
-*This design spec is intended for review only; no code changes are made in this repository.*
+Supabase profile updates and webhooks, described above, can consume the
+indexer's API or tables. See the [deployment guide](../indexer.md).
