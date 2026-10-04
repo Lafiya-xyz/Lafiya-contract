@@ -90,18 +90,19 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
   - Polling errors or RPC timeouts.
   - Event processing failures (e.g., DB write errors).
 
-## Repository Ownership
+## Implementation
 
-- The indexer code should live in a **dedicated repository** (e.g., `lafiya-event-indexer`). This keeps the on‑chain contracts repository focused on smart‑contract logic.
-- A short‑term plan is to create the repository under the organization and add a `README.md` linking to this design doc.
-- Follow‑up implementation tickets will be created in that repo (e.g., `#1 Implement streaming client`, `#2 Supabase schema migration`).
+The reference implementation lives in this repository as
+[`crates/lafiya-indexer`](../../crates/lafiya-indexer). It uses the polling
+approach above, with a Postgres store rather than Supabase, and adds:
 
-## Next Steps
+- cursor checkpointing that is transactional with each applied page;
+- a hard failure (never a silent skip) when the checkpoint falls outside
+  RPC retention, plus a `backfill` command for archived history;
+- a reconciler that samples `get_attester_status` / `get_attestation`
+  and reports mismatches as metrics;
+- a read-only, paginated HTTP API with an OpenAPI spec, a health endpoint,
+  and Prometheus metrics.
 
-1. **Create repository** `lafiya-event-indexer` (or decide to host within `lafiya‑web` if maintainers prefer).
-2. Add the `event-indexing.md` design doc (this file) to the repo's `docs/architecture` folder.
-3. Draft implementation tickets as described above.
-4. Review the design with the maintainer of `lafiya‑web` and update according to feedback.
-
----
-*This design spec is intended for review only; no code changes are made in this repository.*
+Supabase profile updates and webhooks, described above, can consume the
+indexer's API or tables. See the [deployment guide](../indexer.md).

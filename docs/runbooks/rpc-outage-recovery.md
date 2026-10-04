@@ -78,7 +78,16 @@ Read `result.status`:
 - `"FAILED"` — the transaction was included but failed on-chain. Read `result.resultXdr` (or
   re-run with `--network` pointed at a block explorer if you have one configured) for why.
   Treat as **do not retry this transaction** (§3, last row).
-- `"NOT_FOUND"` — this provider has no record of the hash. This means either it never
+- `"NOT_FOUND"` **and** `result.latestLedger` is greater than the transaction's
+  `maxLedger` (the CLI prints `valid through ledger N` when it submits) — the transaction
+  has **expired** and can never be included. Nothing was applied. It is safe to re-run the
+  original command, which builds a fresh transaction with new bounds. `lafiya-cli` already
+  does this automatically, up to two times.
+- `"NOT_FOUND"` and the source account's sequence number (`stellar keys` / `getLedgerEntries`)
+  is at or past the transaction's sequence number — a **different** transaction consumed the
+  sequence number, so this one can never be included. Check what that transaction did
+  before re-running anything, since it may already have made the same change.
+- `"NOT_FOUND"` otherwise — this provider has no record of the hash. This means either it never
   arrived, or it aged out of this provider's retention window. If you have more than one RPC
   URL available for this network, repeat the query against each before concluding "not
   found" — see [§4](#4-if-the-provider-itself-is-down).
