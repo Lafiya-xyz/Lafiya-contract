@@ -48,7 +48,7 @@ const CONSENT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const CONSENT_TTL_THRESHOLD: u32 = 60_480;
 const CONSENT_TTL_BUMP: u32 = 120_960;
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 2;
 
 /// Interface kind reported by `get_interface`, used by clients as a weak
 /// identity check when wiring contracts (not proof of authenticity).
@@ -381,6 +381,33 @@ impl AttestationRegistry {
         Self::attester_registry(&env)
     }
 
+    /// Query the storage schema version for this contract instance.
+    pub fn get_schema_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::SchemaVersion)
+            .unwrap_or(1)
+    }
+
+    /// Mark the additive version-2 storage schema as available after upgrade.
+    /// No data reshaping is required; all newly introduced keys are optional
+    /// until the corresponding operation first writes them.
+    pub fn migrate(env: Env) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+
+        if Self::get_schema_version(env.clone()) >= SCHEMA_VERSION {
+            return Err(Error::MigrationNotRequired);
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
     /// Propose a new admin address. The caller must authorize as the current admin.
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let current_admin = Self::admin(&env)?;
@@ -565,6 +592,35 @@ impl AttestationRegistry {
     ) -> Result<Attestation, Error> {
         attester.require_auth();
         Self::require_not_paused(&env)?;
+        Self::require_allowlisted_attester(&env, &attester)?;
+        Self::record_attestation(&env, attester, record_hash, None)
+    }
+
+    /// Record a verification and explicitly link this record hash to its
+    /// previous version. The previous hash must already have attestations.
+    pub fn attest_version(
+        env: Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+        previous_record_hash: BytesN<32>,
+    ) -> Result<Attestation, Error> {
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_allowlisted_attester(&env, &attester)?;
+        Self::record_attestation(&env, attester, record_hash, Some(previous_record_hash))
+    }
+
+    /// Record up to `BATCH_LIMIT` attestations in one transaction. Each
+    /// attester must authorize their request; allowlist status is checked once
+    /// per distinct attester in the batch.
+    pub fn batch_attest(
+        env: Env,
+        requests: Vec<AttestationRequest>,
+    ) -> Result<Vec<Attestation>, Error> {
+        if requests.len() > BATCH_LIMIT {
+            return Err(Error::BatchTooLarge);
+        }
+        Self::require_not_paused(&env)?;
 
         let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
@@ -622,9 +678,12 @@ impl AttestationRegistry {
 
         let new_sequence = sequence + 1;
 
+        env.storage()
+            .persistent()
+            .set(&DataKey::RecordRevoked(record_hash.clone()), &true);
         env.storage().persistent().set(
-            &DataKey::Attestation(record_hash.clone(), new_sequence),
-            &attestation,
+            &DataKey::RevokedThroughSequence(record_hash.clone()),
+            &sequence,
         );
         env.storage().persistent().set(
             &DataKey::AttestationExpiry(record_hash.clone(), new_sequence),
@@ -662,9 +721,27 @@ impl AttestationRegistry {
             INSTANCE_BUMP_AMOUNT,
         );
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        for seq in (start_sequence..=sequence).rev() {
+            if seq <= revoked_through {
+                continue;
+            }
+            let key = DataKey::Attestation(record_hash.clone(), seq);
+            let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&key) else {
+                continue;
+            };
+            if attestation.attester == attester
+                && !env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::AttestationWithdrawn(record_hash.clone(), seq))
+            {
+                env.storage().persistent().set(
+                    &DataKey::AttestationWithdrawn(record_hash.clone(), seq),
+                    &true,
+                );
+                found = true;
+            }
+        }
 
         AttestationRecorded {
             record_hash,
@@ -672,65 +749,116 @@ impl AttestationRegistry {
             timestamp: attestation.timestamp,
             expires_at: attestation_expires_at,
         }
-        .publish(&env);
-
-        Ok(attestation)
     }
 
-    /// Revoke all attestations for `record_hash`. Gated by admin authorization.
-    pub fn revoke_attestation(env: Env, record_hash: BytesN<32>) -> Result<(), Error> {
-        let admin: Address = Self::admin(&env)?;
-        admin.require_auth();
+    /// Look up the latest active attestation for `record_hash`, if any. Callable
+    /// by anyone — this is what lets a responder's QR scan independently
+    /// check a card without an external oracle.
+    pub fn get_attestation(env: Env, record_hash: BytesN<32>) -> Option<Attestation> {
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::RecordRevoked(record_hash.clone()))
+            .unwrap_or(false)
+        {
+            return None;
+        }
+        Self::latest_active_attestation(&env, record_hash)
+    }
 
-        let sequence: u64 = env
+    /// Return whether a record hash is unverified, verified, withdrawn, or
+    /// explicitly revoked. This remains informative after admin revocation.
+    pub fn get_attestation_status(env: Env, record_hash: BytesN<32>) -> AttestationStatus {
+        if env
+            .storage()
+            .persistent()
+            .get::<_, bool>(&DataKey::RecordRevoked(record_hash.clone()))
+            .unwrap_or(false)
+        {
+            return AttestationStatus::Revoked;
+        }
+        if Self::latest_active_attestation(&env, record_hash.clone()).is_some() {
+            return AttestationStatus::Verified;
+        }
+        if env
+            .storage()
+            .persistent()
+            .has(&DataKey::AttestationSequence(record_hash))
+        {
+            return AttestationStatus::Withdrawn;
+        }
+        AttestationStatus::NeverAttested
+    }
+
+    /// Return whether `attester` has an active, withdrawn, or revoked
+    /// verification for `record_hash`.
+    pub fn get_attester_attestation_status(
+        env: Env,
+        record_hash: BytesN<32>,
+        attester: Address,
+    ) -> AttesterAttestationStatus {
+        if env
             .storage()
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
             .ok_or(Error::AttestationNotFound)?;
 
+        let Some(sequence) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::AttestationSequence(record_hash.clone()))
+        else {
+            return AttesterAttestationStatus::NeverAttested;
+        };
         let count: u64 = env
             .storage()
             .persistent()
             .get(&DataKey::AttestationCount(record_hash.clone()))
             .unwrap_or(0);
-
         let start_sequence = if count > MAX_HISTORY {
             sequence.saturating_sub(MAX_HISTORY - 1)
         } else {
             1
         };
+        let revoked_through: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RevokedThroughSequence(record_hash.clone()))
+            .unwrap_or(0);
+        let mut found = false;
+        let mut withdrawn = false;
 
         for seq in start_sequence..=sequence {
-            env.storage()
+            let Some(attestation) = env
+                .storage()
                 .persistent()
                 .remove(&DataKey::Attestation(record_hash.clone(), seq));
             env.storage()
                 .persistent()
                 .remove(&DataKey::AttestationExpiry(record_hash.clone(), seq));
         }
-        env.storage()
-            .persistent()
-            .remove(&DataKey::AttestationSequence(record_hash.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::AttestationCount(record_hash.clone()));
 
-        AttestationRevoked { record_hash }.publish(&env);
-
-        Ok(())
+        if withdrawn {
+            AttesterAttestationStatus::Withdrawn
+        } else if found {
+            AttesterAttestationStatus::Revoked
+        } else {
+            AttesterAttestationStatus::NeverAttested
+        }
     }
 
-    /// Look up the latest attestation for `record_hash`, if any. Callable
-    /// by anyone — this is what lets a responder's QR scan independently
-    /// check a card without an external oracle.
-    pub fn get_attestation(env: Env, record_hash: BytesN<32>) -> Option<Attestation> {
-        let sequence: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
+    /// Return the explicitly linked previous record version, if any.
+    pub fn get_previous_record_hash(env: Env, record_hash: BytesN<32>) -> Option<BytesN<32>> {
         env.storage()
             .persistent()
-            .get(&DataKey::Attestation(record_hash, sequence))
+            .get(&DataKey::PreviousRecordHash(record_hash))
+    }
+
+    /// Return the explicitly linked next record version, if any.
+    pub fn get_next_record_hash(env: Env, record_hash: BytesN<32>) -> Option<BytesN<32>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::NextRecordHash(record_hash))
     }
 
     /// Report the contract kind, interface version, enabled features, and
@@ -969,6 +1097,185 @@ impl AttestationRegistry {
             return Err(Error::ContractPaused);
         }
         Ok(())
+    }
+
+    fn require_allowlisted_attester(env: &Env, attester: &Address) -> Result<(), Error> {
+        let registry_id = Self::attester_registry(env)?;
+        let registry = AttesterRegistryClient::new(env, &registry_id);
+        if registry.is_attester(attester) {
+            Ok(())
+        } else {
+            Err(Error::AttesterNotAllowlisted)
+        }
+    }
+
+    fn record_attestation(
+        env: &Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+        previous_record_hash: Option<BytesN<32>>,
+    ) -> Result<Attestation, Error> {
+        let new_previous_link = if let Some(previous_hash) = previous_record_hash {
+            if previous_hash == record_hash
+                || !env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::AttestationSequence(previous_hash.clone()))
+            {
+                return Err(Error::InvalidRecordVersion);
+            }
+
+            let existing_previous: Option<BytesN<32>> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::PreviousRecordHash(record_hash.clone()));
+            let existing_next: Option<BytesN<32>> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::NextRecordHash(previous_hash.clone()));
+            let current_next: Option<BytesN<32>> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::NextRecordHash(record_hash.clone()));
+            if existing_previous
+                .as_ref()
+                .is_some_and(|existing| existing != &previous_hash)
+                || existing_next
+                    .as_ref()
+                    .is_some_and(|existing| existing != &record_hash)
+                || (existing_previous.is_none() && current_next.is_some())
+            {
+                return Err(Error::InvalidRecordVersion);
+            }
+            existing_previous.is_none().then_some(previous_hash)
+        } else {
+            None
+        };
+
+        let attestation = Attestation {
+            attester: attester.clone(),
+            timestamp: env.ledger().timestamp(),
+        };
+
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))
+            .unwrap_or(0);
+        let new_sequence = sequence + 1;
+
+        env.storage().persistent().set(
+            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            &attestation,
+        );
+        env.storage().persistent().set(
+            &DataKey::AttestationSequence(record_hash.clone()),
+            &new_sequence,
+        );
+
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationCount(record_hash.clone()))
+            .unwrap_or(0);
+        let new_count = count + 1;
+        if new_count > MAX_HISTORY {
+            let oldest_sequence = new_count.saturating_sub(MAX_HISTORY);
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::AttestationCount(record_hash.clone()), &new_count);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::RecordRevoked(record_hash.clone()));
+
+        env.storage().persistent().extend_ttl(
+            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        if let Some(previous_hash) = new_previous_link {
+            env.storage().persistent().set(
+                &DataKey::PreviousRecordHash(record_hash.clone()),
+                &previous_hash,
+            );
+            env.storage().persistent().set(
+                &DataKey::NextRecordHash(previous_hash.clone()),
+                &record_hash,
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKey::PreviousRecordHash(record_hash.clone()),
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+            env.storage().persistent().extend_ttl(
+                &DataKey::NextRecordHash(previous_hash.clone()),
+                INSTANCE_LIFETIME_THRESHOLD,
+                INSTANCE_BUMP_AMOUNT,
+            );
+            RecordVersionLinked {
+                previous_record_hash: previous_hash,
+                record_hash: record_hash.clone(),
+            }
+            .publish(env);
+        }
+
+        AttestationRecorded {
+            record_hash,
+            attester,
+            timestamp: attestation.timestamp,
+        }
+        .publish(env);
+
+        Ok(attestation)
+    }
+
+    fn latest_active_attestation(env: &Env, record_hash: BytesN<32>) -> Option<Attestation> {
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
+        let count: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationCount(record_hash.clone()))
+            .unwrap_or(0);
+        let start_sequence = if count > MAX_HISTORY {
+            sequence.saturating_sub(MAX_HISTORY - 1)
+        } else {
+            1
+        };
+        let revoked_through: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::RevokedThroughSequence(record_hash.clone()))
+            .unwrap_or(0);
+
+        for seq in (start_sequence..=sequence).rev() {
+            if seq <= revoked_through
+                || env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::AttestationWithdrawn(record_hash.clone(), seq))
+            {
+                continue;
+            }
+            if let Some(attestation) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Attestation(record_hash.clone(), seq))
+            {
+                return Some(attestation);
+            }
+        }
+        None
     }
 }
 

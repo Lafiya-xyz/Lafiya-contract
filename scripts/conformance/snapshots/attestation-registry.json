@@ -261,6 +261,22 @@
   },
   {
     "kind": "function_v0",
+    "name": "migrate",
+    "spec": {
+      "inputs": [],
+      "name": "migrate",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "pause",
     "spec": {
       "inputs": [],
@@ -430,6 +446,35 @@
     }
   },
   {
+    "kind": "function_v0",
+    "name": "withdraw_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type_": "address"
+        },
+        {
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "withdraw_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
     "kind": "udt_error_enum_v0",
     "name": "Error",
     "spec": {
@@ -560,6 +605,34 @@
       ],
       "prefix_topics": [
         "attestation_revoked"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttestationWithdrawn",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttestationWithdrawn",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type_": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type_": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attestation_withdrawn"
       ]
     }
   },

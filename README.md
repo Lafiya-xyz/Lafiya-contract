@@ -157,9 +157,10 @@ In the repository: [glossary](docs/glossary.md) · [ADRs](docs/adr/README.md) ·
 ### Contract upgrades
 
 `attester-registry` is upgradeable by its admin (`upgrade`/`migrate`/`get_schema_version`
-above), with storage schema versioning (`SCHEMA_VERSION` starts at `1`) to make
-schema-changing upgrades explicit and verifiable. `attestation-registry` does not
-currently expose an `upgrade`/`migrate` path. **Operators** must follow
+above), with storage schema versioning to make schema-changing upgrades explicit
+and verifiable. `attestation-registry` now exposes `get_schema_version` and
+`migrate` for its additive v1-to-v2 storage change, but still has no in-contract
+`upgrade` entry point. **Operators** must follow
 [docs/runbooks/contract-upgrade.md](docs/runbooks/contract-upgrade.md) — it covers the
 pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
 reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The

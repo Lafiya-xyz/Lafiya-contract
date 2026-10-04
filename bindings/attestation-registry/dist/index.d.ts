@@ -1,6 +1,6 @@
 import { Buffer } from "buffer";
 import { AssembledTransaction, Client as ContractClient, ClientOptions as ContractClientOptions, MethodOptions, Result } from "@stellar/stellar-sdk/contract";
-import type { u64, Option } from "@stellar/stellar-sdk/contract";
+import type { u32, u64, Option } from "@stellar/stellar-sdk/contract";
 export * from "@stellar/stellar-sdk";
 export * as contract from "@stellar/stellar-sdk/contract";
 export * as rpc from "@stellar/stellar-sdk/rpc";
@@ -68,6 +68,48 @@ export interface Attestation {
    */
     timestamp: u64;
 }
+/**
+ * Summary state for a record hash, distinguishing absent verification from
+ * an explicit withdrawal or administrative revocation.
+ */
+export type AttestationStatus = {
+    tag: "NeverAttested";
+    values: void;
+} | {
+    tag: "Verified";
+    values: void;
+} | {
+    tag: "Withdrawn";
+    values: void;
+} | {
+    tag: "Revoked";
+    values: void;
+};
+/**
+ * One attestation to submit in a batch, optionally linked to a previous
+ * record version.
+ */
+export interface AttestationRequest {
+    attester: string;
+    previous_record_hash: Option<Buffer>;
+    record_hash: Buffer;
+}
+/**
+ * Status of one attester's verification for a record hash.
+ */
+export type AttesterAttestationStatus = {
+    tag: "NeverAttested";
+    values: void;
+} | {
+    tag: "Active";
+    values: void;
+} | {
+    tag: "Withdrawn";
+    values: void;
+} | {
+    tag: "Revoked";
+    values: void;
+};
 export interface Client {
     /**
      * Construct and simulate a pause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -135,7 +177,7 @@ export interface Client {
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a get_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Look up the latest attestation for `record_hash`, if any. Callable
+     * Look up the latest active attestation for `record_hash`, if any. Callable
      * by anyone — this is what lets a responder's QR scan independently
      * check a card without an external oracle.
      */

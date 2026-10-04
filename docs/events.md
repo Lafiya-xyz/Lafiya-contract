@@ -44,6 +44,16 @@ for how these events are consumed.
 |---|---|---|
 | `record_hash` | `BytesN<32>` | topic_list |
 
+### `AttestationWithdrawn`
+
+- **Prefix topics:** `attestation_withdrawn`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `record_hash` | `BytesN<32>` | topic_list |
+| `attester` | `Address` | topic_list |
+
 ### `AttesterRegistryRepointed`
 
 - **Prefix topics:** `attester_registry_repointed`

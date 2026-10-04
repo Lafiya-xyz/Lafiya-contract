@@ -132,6 +132,32 @@ export interface Client {
   is_paused: (options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
 
   /**
+   * Construct and simulate a migrate transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Mark the additive version-2 storage schema as available after upgrade.
+   * No data reshaping is required; all newly introduced keys are optional
+   * until the corresponding operation first writes them.
+   */
+  migrate: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Resume normal operation after a `pause`. Requires the admin's authorization.
+   */
+  unpause: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the current admin address.
+   */
+  get_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Result<string>>>
+
+  /**
+   * Construct and simulate a is_paused transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Whether the contract is currently paused.
+   */
+  is_paused: (options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
+
+  /**
    * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
    * Set the admin and the `attester-registry` contract this registry
    * consults for allowlist checks. Can only be called once; the caller
@@ -162,7 +188,7 @@ export interface Client {
 
   /**
    * Construct and simulate a get_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-   * Look up the latest attestation for `record_hash`, if any. Callable
+   * Look up the latest active attestation for `record_hash`, if any. Callable
    * by anyone — this is what lets a responder's QR scan independently
    * check a card without an external oracle.
    */
