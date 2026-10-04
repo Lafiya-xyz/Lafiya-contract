@@ -19,27 +19,26 @@ also reported as informational context (line counts only) since it also
 picks up doc-comment/formatting/SDK-dependency-version churn tied to the
 `stellar` CLI version rather than the contract interface itself.
 """
+
 import re
 import subprocess
 import sys
 import tempfile
 from pathlib import Path
 
-from contracts import CONTRACTS
+from contracts import BINDINGS_CONTRACTS as CONTRACTS
 
 FUNCTION_RE = re.compile(r"^\s{2}(\w+):\s*\(.*?options\?: MethodOptions\)", re.MULTILINE)
 ERROR_RE = re.compile(r"^\s*(\d+):\s*\{message:\"(\w+)\"\}", re.MULTILINE)
 
 
-def client_surface(index_ts):
+def client_surface(index_ts: str) -> tuple[set[str], dict[int, str]]:
     functions = set(FUNCTION_RE.findall(index_ts))
-    errors = dict(
-        (int(code), name) for code, name in ERROR_RE.findall(index_ts)
-    )
+    errors = {int(code): name for code, name in ERROR_RE.findall(index_ts)}
     return functions, errors
 
 
-def regenerate(cfg, out_dir):
+def regenerate(cfg: dict[str, Path], out_dir: Path) -> None:
     proc = subprocess.run(
         [
             "stellar",
@@ -59,7 +58,7 @@ def regenerate(cfg, out_dir):
         sys.exit(f"error: bindings generation failed:\n{proc.stderr}")
 
 
-def check_one(name, cfg, scratch_root):
+def check_one(name: str, cfg: dict[str, Path], scratch_root: Path) -> bool:
     committed_ts = cfg["bindings_dir"] / "src" / "index.ts"
     if not committed_ts.exists():
         print(f"[{name}] no committed bindings at {committed_ts}")
@@ -78,9 +77,7 @@ def check_one(name, cfg, scratch_root):
     missing_errs = sorted(set(fresh_errs) - set(committed_errs))
     extra_errs = sorted(set(committed_errs) - set(fresh_errs))
     changed_errs = sorted(
-        c
-        for c in set(fresh_errs) & set(committed_errs)
-        if fresh_errs[c] != committed_errs[c]
+        c for c in set(fresh_errs) & set(committed_errs) if fresh_errs[c] != committed_errs[c]
     )
 
     ok = not (missing_fns or extra_fns or missing_errs or extra_errs or changed_errs)
@@ -116,7 +113,7 @@ def check_one(name, cfg, scratch_root):
     return False
 
 
-def main():
+def main() -> None:
     names = sys.argv[1:] or list(CONTRACTS)
     unknown = [n for n in names if n not in CONTRACTS]
     if unknown:

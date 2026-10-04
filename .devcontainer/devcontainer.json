@@ -1,0 +1,14 @@
+{
+  "name": "Lafiya contracts (audit)",
+  "image": "mcr.microsoft.com/devcontainers/rust:1-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:2": {},
+    "ghcr.io/devcontainers/features/python:1": { "version": "3.12" }
+  },
+  "postCreateCommand": "rustup show && rustup target add wasm32v1-none && cargo install --locked stellar-cli cargo-llvm-cov",
+  "customizations": {
+    "vscode": {
+      "extensions": ["rust-lang.rust-analyzer"]
+    }
+  }
+}

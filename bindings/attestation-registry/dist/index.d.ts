@@ -1,22 +1,10 @@
 import { Buffer } from "buffer";
 import { AssembledTransaction, Client as ContractClient, ClientOptions as ContractClientOptions, MethodOptions, Result } from "@stellar/stellar-sdk/contract";
-import type { u64, Option } from "@stellar/stellar-sdk/contract";
+import type { u32, u64, Option } from "@stellar/stellar-sdk/contract";
 export * from "@stellar/stellar-sdk";
 export * as contract from "@stellar/stellar-sdk/contract";
 export * as rpc from "@stellar/stellar-sdk/rpc";
-/**
- * Operational capabilities managed by the owner.
- */
-export type Role = {
-    tag: "Guardian";
-    values: void;
-} | {
-    tag: "Revoker";
-    values: void;
-};
-/**
- * Errors returned by the attestation registry's public entry points.
- */
+export * from "./record.js";
 export declare const Errors: {
     /**
      * `initialize` has not been called yet.
@@ -64,18 +52,6 @@ export declare const Errors: {
     7: {
         message: string;
     };
-    /**
-     * The supplied address has not been granted the required role.
-     */
-    8: {
-        message: string;
-    };
-    /**
-     * `migrate()` was called when no storage migration is pending.
-     */
-    9: {
-        message: string;
-    };
 };
 /**
  * A single attestation: proof that `attester` verified the off-chain
@@ -92,15 +68,55 @@ export interface Attestation {
    */
     timestamp: u64;
 }
+/**
+ * Summary state for a record hash, distinguishing absent verification from
+ * an explicit withdrawal or administrative revocation.
+ */
+export type AttestationStatus = {
+    tag: "NeverAttested";
+    values: void;
+} | {
+    tag: "Verified";
+    values: void;
+} | {
+    tag: "Withdrawn";
+    values: void;
+} | {
+    tag: "Revoked";
+    values: void;
+};
+/**
+ * One attestation to submit in a batch, optionally linked to a previous
+ * record version.
+ */
+export interface AttestationRequest {
+    attester: string;
+    previous_record_hash: Option<Buffer>;
+    record_hash: Buffer;
+}
+/**
+ * Status of one attester's verification for a record hash.
+ */
+export type AttesterAttestationStatus = {
+    tag: "NeverAttested";
+    values: void;
+} | {
+    tag: "Active";
+    values: void;
+} | {
+    tag: "Withdrawn";
+    values: void;
+} | {
+    tag: "Revoked";
+    values: void;
+};
 export interface Client {
     /**
      * Construct and simulate a pause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Pause the contract, blocking `attest` until `unpause` is called.
-     * Requires the Guardian role.
+     * Requires the admin's authorization.
      */
-    pause: ({ guardian }: {
-        guardian: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    pause: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a attest transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Record that `attester` verified the record hashing to `record_hash` in
@@ -116,30 +132,10 @@ export interface Client {
         region: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<Attestation>>>;
     /**
-     * Construct and simulate a migrate transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Complete a pending storage migration after an upgrade.
-     */
-    migrate: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
      * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Resume normal operation after a `pause`. Requires the owner's authorization.
+     * Resume normal operation after a `pause`. Requires the admin's authorization.
      */
     unpause: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a upgrade transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Upgrade the contract's Wasm code. Only the owner may authorize upgrades.
-     */
-    upgrade: ({ new_wasm_hash }: {
-        new_wasm_hash: Buffer;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a has_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return whether `account` holds `role`.
-     */
-    has_role: ({ role, account }: {
-        role: Role;
-        account: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<boolean>>;
     /**
      * Construct and simulate a get_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Return the current admin address.
@@ -151,14 +147,6 @@ export interface Client {
      */
     is_paused: (options?: MethodOptions) => Promise<AssembledTransaction<boolean>>;
     /**
-     * Construct and simulate a grant_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Grant a guardian or revoker capability. Only the owner may change roles.
-     */
-    grant_role: ({ role, account }: {
-        role: Role;
-        account: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
      * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Set the admin and the `attester-registry` contract this registry
      * consults for allowlist checks. Can only be called once; the caller
@@ -167,22 +155,15 @@ export interface Client {
      * ## Best-effort interface check
      *
      * This function performs a lightweight sanity check against
-     * `attester_registry`: it calls `is_attester_for_region` with a
-     * throwaway address and region, and confirms the call does not trap.
-     * This confirms the address implements the expected interface — it does
-     * **not** prove the address is the canonical, trusted deployment.
+     * `attester_registry`: it calls `is_attester` with a throwaway address
+     * and confirms the call does not trap. This confirms the address
+     * implements the expected interface — it does **not** prove the address
+     * is the canonical, trusted `attester-registry` deployment. A malicious
+     * contract that happens to expose `is_attester` would pass this check.
      */
     initialize: ({ admin, attester_registry }: {
         admin: string;
         attester_registry: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a revoke_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Revoke a guardian or revoker capability. Only the owner may change roles.
-     */
-    revoke_role: ({ role, account }: {
-        role: Role;
-        account: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a accept_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -198,7 +179,7 @@ export interface Client {
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a get_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Look up the latest attestation for `record_hash`, if any. Callable
+     * Look up the latest active attestation for `record_hash`, if any. Callable
      * by anyone — this is what lets a responder's QR scan independently
      * check a card without an external oracle.
      */
@@ -207,10 +188,9 @@ export interface Client {
     }, options?: MethodOptions) => Promise<AssembledTransaction<Option<Attestation>>>;
     /**
      * Construct and simulate a revoke_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Revoke all attestations for `record_hash`. Requires the Revoker role.
+     * Revoke all attestations for `record_hash`. Gated by admin authorization.
      */
-    revoke_attestation: ({ revoker, record_hash }: {
-        revoker: string;
+    revoke_attestation: ({ record_hash }: {
         record_hash: Buffer;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
@@ -221,8 +201,7 @@ export interface Client {
     /**
      * Construct and simulate a set_attester_registry transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Change the attester-registry contract this registry consults for
-     * allowlist checks. Requires the admin's authorization and a compatible
-     * regional allowlist interface. Emits
+     * allowlist checks. Requires the admin's authorization. Emits
      * `AttesterRegistryRepointed` for indexer/audit visibility.
      */
     set_attester_registry: ({ new_registry }: {
@@ -254,15 +233,10 @@ export declare class Client extends ContractClient {
     readonly fromJSON: {
         pause: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         attest: (json: string) => AssembledTransaction<Result<Attestation, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        migrate: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         unpause: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        upgrade: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        has_role: (json: string) => AssembledTransaction<boolean>;
         get_admin: (json: string) => AssembledTransaction<Result<string, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         is_paused: (json: string) => AssembledTransaction<boolean>;
-        grant_role: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         initialize: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        revoke_role: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         accept_admin: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         propose_admin: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         get_attestation: (json: string) => AssembledTransaction<Option<Attestation>>;

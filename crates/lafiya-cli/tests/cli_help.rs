@@ -46,10 +46,14 @@ fn assert_help_ok(args: &[&str]) {
     );
 }
 
+// ── top-level ─────────────────────────────────────────────────────────────────
+
 #[test]
 fn top_level_help_prints_usage() {
     assert_help_ok(&[]);
 }
+
+// ── config ────────────────────────────────────────────────────────────────────
 
 #[test]
 fn config_help_prints_usage() {
@@ -71,6 +75,8 @@ fn config_env_help_prints_usage() {
     assert_help_ok(&["config", "env"]);
 }
 
+// ── attester ──────────────────────────────────────────────────────────────────
+
 #[test]
 fn attester_help_prints_usage() {
     assert_help_ok(&["attester"]);
@@ -87,9 +93,71 @@ fn attester_add_help_prints_usage() {
 }
 
 #[test]
+fn attester_add_with_info_help_prints_usage() {
+    assert_help_ok(&["attester", "add-with-info"]);
+}
+
+#[test]
+fn attester_update_info_help_prints_usage() {
+    assert_help_ok(&["attester", "update-info"]);
+}
+
+#[test]
 fn attester_remove_help_prints_usage() {
     assert_help_ok(&["attester", "remove"]);
 }
+
+#[test]
+fn attester_suspend_help_prints_usage() {
+    assert_help_ok(&["attester", "suspend"]);
+}
+
+#[test]
+fn attester_reinstate_help_prints_usage() {
+    assert_help_ok(&["attester", "reinstate"]);
+}
+
+#[test]
+fn attester_get_info_help_prints_usage() {
+    assert_help_ok(&["attester", "get-info"]);
+}
+
+#[test]
+fn attester_get_status_help_prints_usage() {
+    assert_help_ok(&["attester", "get-status"]);
+}
+
+#[test]
+fn attester_set_max_attesters_help_prints_usage() {
+    assert_help_ok(&["attester", "set-max-attesters"]);
+}
+
+#[test]
+fn attester_get_max_attesters_help_prints_usage() {
+    assert_help_ok(&["attester", "get-max-attesters"]);
+}
+
+#[test]
+fn attester_get_count_help_prints_usage() {
+    assert_help_ok(&["attester", "get-count"]);
+}
+
+#[test]
+fn attester_get_schema_version_help_prints_usage() {
+    assert_help_ok(&["attester", "get-schema-version"]);
+}
+
+#[test]
+fn attester_upgrade_help_prints_usage() {
+    assert_help_ok(&["attester", "upgrade"]);
+}
+
+#[test]
+fn attester_migrate_help_prints_usage() {
+    assert_help_ok(&["attester", "migrate"]);
+}
+
+// ── attestation ───────────────────────────────────────────────────────────────
 
 #[test]
 fn attestation_help_prints_usage() {
@@ -100,6 +168,77 @@ fn attestation_help_prints_usage() {
 fn attestation_get_help_prints_usage() {
     assert_help_ok(&["attestation", "get"]);
 }
+
+#[test]
+fn attestation_get_history_help_prints_usage() {
+    assert_help_ok(&["attestation", "get-history"]);
+}
+
+#[test]
+fn attestation_attest_help_prints_usage() {
+    assert_help_ok(&["attestation", "attest"]);
+}
+
+#[test]
+fn attestation_revoke_help_prints_usage() {
+    assert_help_ok(&["attestation", "revoke"]);
+}
+
+#[test]
+fn attestation_get_attester_registry_help_prints_usage() {
+    assert_help_ok(&["attestation", "get-attester-registry"]);
+}
+
+#[test]
+fn attestation_set_attester_registry_help_prints_usage() {
+    assert_help_ok(&["attestation", "set-attester-registry"]);
+}
+
+// ── admin ─────────────────────────────────────────────────────────────────────
+
+#[test]
+fn admin_help_prints_usage() {
+    assert_help_ok(&["admin"]);
+}
+
+#[test]
+fn admin_get_help_prints_usage() {
+    assert_help_ok(&["admin", "get"]);
+}
+
+#[test]
+fn admin_propose_help_prints_usage() {
+    assert_help_ok(&["admin", "propose"]);
+}
+
+#[test]
+fn admin_accept_help_prints_usage() {
+    assert_help_ok(&["admin", "accept"]);
+}
+
+// ── ops ───────────────────────────────────────────────────────────────────────
+
+#[test]
+fn ops_help_prints_usage() {
+    assert_help_ok(&["ops"]);
+}
+
+#[test]
+fn ops_pause_help_prints_usage() {
+    assert_help_ok(&["ops", "pause"]);
+}
+
+#[test]
+fn ops_unpause_help_prints_usage() {
+    assert_help_ok(&["ops", "unpause"]);
+}
+
+#[test]
+fn ops_is_paused_help_prints_usage() {
+    assert_help_ok(&["ops", "is-paused"]);
+}
+
+// ── deploy ────────────────────────────────────────────────────────────────────
 
 #[test]
 fn deploy_help_prints_usage() {

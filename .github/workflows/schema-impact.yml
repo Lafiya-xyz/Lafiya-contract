@@ -1,0 +1,23 @@
+name: Schema impact
+
+# Every commit in a release that changes DataKey / #[contracttype] must carry
+# a `Schema-Impact:` trailer (docs/releasing.md). Enforced on the release PR,
+# which spans every commit since the last tag.
+
+on:
+  pull_request:
+
+jobs:
+  schema-impact:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Unit tests for the trailer check
+        run: python3 -m unittest discover -s scripts -p 'test_*.py' -v
+      - name: Require Schema-Impact trailers since the last release
+        if: startsWith(github.head_ref, 'release-please--')
+        run: |
+          base=$(git describe --tags --abbrev=0 2>/dev/null || echo "${{ github.event.pull_request.base.sha }}")
+          python3 scripts/check_schema_impact.py "$base..HEAD"

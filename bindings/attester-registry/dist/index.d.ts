@@ -1,19 +1,9 @@
 import { Buffer } from "buffer";
 import { AssembledTransaction, Client as ContractClient, ClientOptions as ContractClientOptions, MethodOptions, Result } from "@stellar/stellar-sdk/contract";
-import type { u32, u64, Option } from "@stellar/stellar-sdk/contract";
+import type { u32, Option } from "@stellar/stellar-sdk/contract";
 export * from "@stellar/stellar-sdk";
 export * as contract from "@stellar/stellar-sdk/contract";
 export * as rpc from "@stellar/stellar-sdk/rpc";
-/**
- * Operational capabilities managed by the owner.
- */
-export type Role = {
-    tag: "Registrar";
-    values: void;
-} | {
-    tag: "Guardian";
-    values: void;
-};
 /**
  * Errors returned by the attester registry's public entry points.
  */
@@ -75,36 +65,6 @@ export declare const Errors: {
     8: {
         message: string;
     };
-    /**
-     * The supplied address has not been granted the required role.
-     */
-    9: {
-        message: string;
-    };
-    /**
-     * The attester validity window is empty or reversed.
-     */
-    10: {
-        message: string;
-    };
-    /**
-     * The requested attester region is outside the registrar's assigned region.
-     */
-    11: {
-        message: string;
-    };
-    /**
-     * The registrar's concurrent enrollment quota has been reached.
-     */
-    12: {
-        message: string;
-    };
-    /**
-     * The registrar's region cannot change while its attesters remain enrolled.
-     */
-    13: {
-        message: string;
-    };
 };
 /**
  * Metadata associated with an allowlisted attester.
@@ -118,17 +78,14 @@ export interface AttesterInfo {
    * The geographic region the attester is authorized to attest for, if any.
    */
     region: Option<string>;
-    /**
-   * Ledger timestamp when the authorization becomes valid, inclusive.
-   */
-    valid_from: Option<u64>;
-    /**
-   * Ledger timestamp when the authorization expires, exclusive.
-   */
-    valid_until: Option<u64>;
+    suspended: boolean;
+    removed: boolean;
+    suspension_reason: Option<string>;
+    suspended_since: Option<bigint>;
+    trust_revoked_after: Option<bigint>;
 }
 /**
- * An allowlisted attester's metadata, suspension state, and computed validity
+ * An allowlisted attester's metadata together with its current suspension
  * state, as returned by `get_attester_status`.
  */
 export interface AttesterStatus {
@@ -137,47 +94,19 @@ export interface AttesterStatus {
    */
     info: AttesterInfo;
     /**
-   * Computed status using the current ledger timestamp.
-   */
-    status: AttesterStatusKind;
-    /**
    * Whether the attester is currently suspended.
    */
     suspended: boolean;
-}
-/**
- * Computed authorization state for an allowlisted attester.
- */
-export type AttesterStatusKind = {
-    tag: "Active";
-    values: void;
-} | {
-    tag: "Suspended";
-    values: void;
-} | {
-    tag: "NotYetValid";
-    values: void;
-} | {
-    tag: "Expired";
-    values: void;
-};
-/**
- * Region and concurrent enrollment quota granted to a delegated registrar.
- */
-export interface RegionalRegistrarInfo {
-    quota: u32;
-    region: string;
 }
 export interface Client {
     /**
      * Construct and simulate a pause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Pause the contract, blocking `add_attester`, `add_attester_with_info`,
      * `update_attester_info`, `remove_attester`, `suspend_attester`, and
-     * `reinstate_attester` until `unpause` is called. Requires a Guardian.
+     * `reinstate_attester` until `unpause` is called. Requires the admin's
+     * authorization.
      */
-    pause: ({ guardian }: {
-        guardian: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    pause: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a migrate transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Run any pending storage migration, then record the new schema
@@ -193,7 +122,7 @@ export interface Client {
     migrate: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a unpause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Resume normal operation after a `pause`. Requires the owner's authorization.
+     * Resume normal operation after a `pause`. Requires the admin's authorization.
      */
     unpause: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
@@ -213,14 +142,6 @@ export interface Client {
         new_wasm_hash: Buffer;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
-     * Construct and simulate a has_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return whether `account` holds `role`.
-     */
-    has_role: ({ role, account }: {
-        role: Role;
-        account: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<boolean>>;
-    /**
      * Construct and simulate a get_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Return the current admin address.
      */
@@ -231,14 +152,6 @@ export interface Client {
      */
     is_paused: (options?: MethodOptions) => Promise<AssembledTransaction<boolean>>;
     /**
-     * Construct and simulate a grant_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Grant a registrar or guardian capability. Only the owner may change roles.
-     */
-    grant_role: ({ role, account }: {
-        role: Role;
-        account: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
      * Construct and simulate a initialize transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Set the admin address authorized to manage the allowlist. Can only
      * be called once; the caller must authorize as the given `admin`.
@@ -248,20 +161,12 @@ export interface Client {
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a is_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Whether `attester` is allowlisted, not suspended, and within its validity
-     * window. Callable by anyone, including other contracts.
+     * Whether `attester` is currently allowlisted (and not suspended). Callable by anyone,
+     * including other contracts (e.g. `attestation-registry`).
      */
     is_attester: ({ attester }: {
         attester: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<boolean>>;
-    /**
-     * Construct and simulate a revoke_role transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Revoke a registrar or guardian capability. Only the owner may change roles.
-     */
-    revoke_role: ({ role, account }: {
-        role: Role;
-        account: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a accept_admin transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Accept the proposed admin transfer. The caller must authorize as the pending admin.
@@ -269,7 +174,7 @@ export interface Client {
     accept_admin: (options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a add_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Add `attester` to the allowlist. Requires a global or regional registrar.
+     * Add `attester` to the allowlist. Requires the admin's authorization.
      * Fails with `Error::AllowlistFull` if the allowlist is at capacity and
      * `attester` is not already present (see `set_max_attesters`).
      */
@@ -281,10 +186,8 @@ export interface Client {
      * Construct and simulate a add_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Add multiple attesters to the allowlist in a single transaction.
      *
-     * Requires a global or regional registrar. Regional registrars are
-     * limited to `REGIONAL_BATCH_LIMIT` entries to bound per-address quota
-     * accounting. Blocked while paused.
-     * Returns `Error::BatchTooLarge` if the applicable batch limit is exceeded.
+     * Requires the admin's authorization. Blocked while the contract is paused.
+     * Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
      * Returns `Error::AllowlistFull` if adding the new (non-duplicate)
      * addresses would exceed the configured `max_attesters` cap. Addresses
      * that are already allowlisted are silently skipped (idempotent), so the
@@ -292,8 +195,7 @@ export interface Client {
      * are emitted. Exactly one `AttesterAdded` event is emitted per newly
      * added address.
      */
-    add_attesters: ({ registrar, attesters }: {
-        registrar: string;
+    add_attesters: ({ attesters }: {
         attesters: Array<string>;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
@@ -351,6 +253,38 @@ export interface Client {
         attester: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
+     * Construct and simulate a remove_attesters transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+     * Remove multiple attesters from the allowlist in a single transaction.
+     *
+     * Requires the admin's authorization. Blocked while the contract is paused.
+     * Returns `Error::BatchTooLarge` if `attesters.len() > BATCH_LIMIT`.
+     * Addresses that are not currently allowlisted are silently skipped
+     * (idempotent), so the call never fails if an address was already removed
+     * and no spurious events are emitted. Exactly one `AttesterRemoved` event
+     * is emitted per address that was actually removed.
+     */
+    remove_attesters: ({ attesters }: {
+        attesters: Array<string>;
+    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    /**
+     * Construct and simulate a suspend_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+     * Suspend an allowlisted attester. Requires the admin's authorization.
+     *
+     * **Note:** this function does **not** check whether `attester` was ever
+     * added via `add_attester`. If called on an address that is not in the
+     * allowlist, it silently sets the `Suspended` storage key and emits
+     * `AttesterSuspended` for that address — a no-op from an access-control
+     * perspective because `is_attester` also checks for an `Attester` storage
+     * entry, so the phantom suspension has no effect on allowlist queries.
+     * This diverges from `update_attester_info`, which returns
+     * `Error::AttesterNotFound` for unknown addresses. The inconsistency is
+     * known and documented here rather than silently changed; a follow-up
+     * issue should decide whether to align both functions.
+     */
+    suspend_attester: ({ attester }: {
+        attester: string;
+    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
+    /**
      * Construct and simulate a get_attester_info transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Get the optional metadata associated with `attester` if they are allowlisted.
      */
@@ -383,17 +317,16 @@ export interface Client {
     get_schema_version: (options?: MethodOptions) => Promise<AssembledTransaction<u32>>;
     /**
      * Construct and simulate a reinstate_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Reinstate a suspended attester. Requires a global registrar's authorization.
+     * Reinstate a suspended attester. Requires the admin's authorization.
      */
-    reinstate_attester: ({ registrar, attester }: {
-        registrar: string;
+    reinstate_attester: ({ attester }: {
         attester: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a get_attester_status transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Get `attester`'s metadata with computed validity status. The status
-     * prioritizes suspension, then not-yet-valid and expired windows.
-     * Returns `None` if the attester is not allowlisted.
+     * Get `attester`'s metadata together with its current suspension state
+     * in a single call. Returns `None` if `attester` is not currently
+     * allowlisted (never added, or since removed).
      */
     get_attester_status: ({ attester }: {
         attester: string;
@@ -401,25 +334,21 @@ export interface Client {
     /**
      * Construct and simulate a update_attester_info transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
      * Update the metadata of an already-allowlisted `attester`. Requires
-     * a global registrar's authorization. Unlike `add_attester_with_info`, this
+     * the admin's authorization. Unlike `add_attester_with_info`, this
      * never enrolls a new attester: it fails with `Error::AttesterNotFound`
      * if `attester` is not currently allowlisted (never added, or since
      * removed), and always emits `AttesterInfoUpdated` rather than
      * `AttesterAdded`, so profile changes are distinguishable from
      * enrollment.
      */
-    update_attester_info: ({ registrar, attester, license_hash, region, valid_from, valid_until }: {
-        registrar: string;
+    update_attester_info: ({ attester, license_hash, region }: {
         attester: string;
         license_hash: Option<Buffer>;
         region: Option<string>;
-        valid_from: Option<u64>;
-        valid_until: Option<u64>;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
     /**
      * Construct and simulate a add_attester_with_info transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Add `attester` with optional metadata to the allowlist. Requires a global
-     * or regional registrar. Regional enrollments inherit the assigned region.
+     * Add `attester` with optional metadata to the allowlist. Requires the admin's authorization.
      * Fails with `Error::AllowlistFull` if the allowlist is at capacity and
      * `attester` is not already present (see `set_max_attesters`).
      */
@@ -431,47 +360,13 @@ export interface Client {
         valid_from: Option<u64>;
         valid_until: Option<u64>;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a get_regional_registrar transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return a registrar's current regional assignment, if any.
-     */
-    get_regional_registrar: ({ registrar }: {
-        registrar: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Option<RegionalRegistrarInfo>>>;
-    /**
-     * Construct and simulate a is_attester_for_region transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Whether `attester` is active and authorized for `region`. Attesters
-     * without a configured region remain globally scoped for compatibility.
-     */
-    is_attester_for_region: ({ attester, region }: {
+    suspend_attester_with_reason: ({ attester, reason }: {
         attester: string;
-        region: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<boolean>>;
-    /**
-     * Construct and simulate a set_regional_registrar transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Assign a delegated registrar to one region with a concurrent enrollment quota.
-     * Only the owner may create or update this assignment.
-     */
-    set_regional_registrar: ({ registrar, region, quota }: {
-        registrar: string;
-        region: string;
-        quota: u32;
+        reason: string;
     }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a revoke_regional_registrar transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Revoke a delegated registrar assignment. Existing enrollments remain
-     * attributed to the address and continue to count if it is later re-granted.
-     */
-    revoke_regional_registrar: ({ registrar }: {
-        registrar: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>;
-    /**
-     * Construct and simulate a get_regional_registrar_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
-     * Return the number of enrolled attesters attributed to `registrar`.
-     */
-    get_regional_registrar_count: ({ registrar }: {
-        registrar: string;
-    }, options?: MethodOptions) => Promise<AssembledTransaction<u32>>;
+    get_attester_trust_revoked_after: ({ attester }: {
+        attester: string;
+    }, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>;
 }
 export declare class Client extends ContractClient {
     readonly options: ContractClientOptions;
@@ -491,13 +386,10 @@ export declare class Client extends ContractClient {
         migrate: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         unpause: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         upgrade: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
-        has_role: (json: string) => AssembledTransaction<boolean>;
         get_admin: (json: string) => AssembledTransaction<Result<string, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         is_paused: (json: string) => AssembledTransaction<boolean>;
-        grant_role: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         initialize: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         is_attester: (json: string) => AssembledTransaction<boolean>;
-        revoke_role: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         accept_admin: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         add_attester: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;
         add_attesters: (json: string) => AssembledTransaction<Result<void, import("@stellar/stellar-sdk/contract").ErrorMessage>>;

@@ -17,7 +17,8 @@ const TOTAL_ATTESTERS: usize = 1_000;
 // Native contract tests omit Wasm execution and transaction-envelope costs. These
 // ceilings therefore guard relative regressions in add_attester, not network fees.
 // Each is deliberately far below the network invocation limit while retaining
-// headroom for cost-model adjustments in compatible SDK releases.
+// headroom for cost-model adjustments in compatible SDK releases. The 1,000
+// attester ceilings include the per-enrollment stale-suspension check.
 const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
     BudgetCheckpoint {
         attesters: 10,
@@ -31,8 +32,8 @@ const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
     },
     BudgetCheckpoint {
         attesters: 1_000,
-        max_cpu_instructions: 2_000_000,
-        max_memory_bytes: 1_000_000,
+        max_cpu_instructions: 4_000_000,
+        max_memory_bytes: 1_600_000,
     },
 ];
 
