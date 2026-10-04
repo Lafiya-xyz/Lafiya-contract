@@ -1,0 +1,17 @@
+Network:     Test SDF Network ; September 2015  (config 'testnet')
+Authorizer:  CCVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKUD2U (known: registry-admin multisig)
+Nonce:       42
+Expires:     ledger 1234567  (~6h0m from now)
+Invocation:
+  └─ CABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGCK3 (UNKNOWN)
+       proxy()
+       └─ CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ (UNKNOWN)
+            execute()
+            └─ CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526 (known: attester-registry)
+                 pause()
+                 Sub-invocations: none
+Asset movements: none
+Payload hash:  e40ca9fb0f2fb220be8cf6ba08acb308f761224f280958c21ca60cff6d6b16db  (recomputed locally)
+WARNING: UNKNOWN contract CABQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGAYDAMBQGCK3 (not in config or --label)
+WARNING: UNKNOWN contract CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ (not in config or --label)
+WARNING: DEEP invocation tree: nesting exceeds 2 levels

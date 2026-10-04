@@ -78,7 +78,16 @@ Read `result.status`:
 - `"FAILED"` — the transaction was included but failed on-chain. Read `result.resultXdr` (or
   re-run with `--network` pointed at a block explorer if you have one configured) for why.
   Treat as **do not retry this transaction** (§3, last row).
-- `"NOT_FOUND"` — this provider has no record of the hash. This means either it never
+- `"NOT_FOUND"` **and** `result.latestLedger` is greater than the transaction's
+  `maxLedger` (the CLI prints `valid through ledger N` when it submits) — the transaction
+  has **expired** and can never be included. Nothing was applied. It is safe to re-run the
+  original command, which builds a fresh transaction with new bounds. `lafiya-cli` already
+  does this automatically, up to two times.
+- `"NOT_FOUND"` and the source account's sequence number (`stellar keys` / `getLedgerEntries`)
+  is at or past the transaction's sequence number — a **different** transaction consumed the
+  sequence number, so this one can never be included. Check what that transaction did
+  before re-running anything, since it may already have made the same change.
+- `"NOT_FOUND"` otherwise — this provider has no record of the hash. This means either it never
   arrived, or it aged out of this provider's retention window. If you have more than one RPC
   URL available for this network, repeat the query against each before concluding "not
   found" — see [§4](#4-if-the-provider-itself-is-down).
@@ -109,6 +118,12 @@ extending this to a list; until that lands, do this manually):
 
 ## 5. Escalate
 
+The security watchdog raises `watchdog_failing` / `watchdog_lag` (critical) when it
+cannot reach RPC or falls behind; during an outage expect those alerts and follow
+[watchdog.md](watchdog.md#alert-types). Every admin command run with `lafiya-cli`
+during the incident is recorded in `~/.lafiya/audit.jsonl` (`lafiya-cli audit show`),
+including the transaction hash when the stellar CLI reported one.
+
 If §3a's poll budget is exhausted and no provider will confirm either `SUCCESS`, `FAILED`,
 or a consistent `NOT_FOUND`, stop retrying. Record: the transaction hash, the command that
 was run, the network, and every provider URL queried with its response. This is exactly the
@@ -116,3 +131,38 @@ was run, the network, and every provider URL queried with its response. This is 
 automated model also gives up at this point rather than guessing, and hands the same
 information back for a human to resolve (e.g. by inspecting a block explorer, or waiting out
 a provider's indexing lag before trying again later).
+
+## 6. Transaction stuck pending (fee escalation)
+
+**Scope:** the transaction is not ambiguous -- §3a's `getTransaction` poll returns
+`"PENDING"` consistently across providers -- it is simply not being included, usually because
+its inclusion fee lost a surge-pricing auction. This is a different problem from an RPC
+outage: retrying or polling harder does not help; the transaction needs a higher bid. See
+issue #408 and `crates/lafiya-rpc-resilience/src/fees.rs` for the calculator this section
+describes.
+
+1. **Confirm it's a fee problem, not an outage.** If `getTransaction` returns `"PENDING"`
+   consistently (not `NOT_FOUND` on some providers), and several ledgers have closed since
+   submission, the transaction reached the network but isn't winning inclusion. Compare its
+   inclusion fee against current network conditions:
+   ```sh
+   curl -s "$LAFIYA_RPC_URL" -H 'content-type: application/json' \
+     -d '{"jsonrpc":"2.0","id":1,"method":"getFeeStats"}' | python3 -m json.tool
+   ```
+2. **Resubmit as a fee-bump transaction**, not a fresh transaction: wrap the *same* signed
+   envelope in a `FeeBumpTransaction` with a higher inclusion fee (`fees::decide_fee_bump`
+   picks the new bid -- p90 of current `getFeeStats` by default, strictly above the original
+   bid). The inner transaction's hash is unchanged by a fee bump, so §3a's poll-by-hash
+   instructions apply unmodified to the wrapped submission -- keep polling the *inner* hash.
+3. **Respect `--max-fee`.** If the computed bump would exceed the operator-set budget
+   ceiling, `fees::enforce_budget` refuses it (`FeeError::ExceedsBudget`). Do not override
+   this by hand without deliberately raising `--max-fee` first -- it exists so an automated
+   or scripted retry can't runaway-bid during a fee spike.
+4. **Emergency commands (`pause`, `emergency-stop`, `revoke`) start at high priority** (p90)
+   rather than going through this escalation path from p50, since they're the case where
+   minutes of delay matter most.
+5. If a fee-bumped resubmission also sits pending past the same threshold, repeat from step
+   2 with fresh `getFeeStats` data -- congestion can worsen between attempts. If it's still
+   unresolved after a few rounds, escalate per [§5](#5-escalate); note in the escalation that
+   this was a fee-congestion case, not an ambiguous-outcome case, so the next operator
+   doesn't re-walk §3a expecting a different answer.

@@ -9,6 +9,46 @@ use soroban_sdk::{
 };
 
 const SCHEMA_VERSION: u32 = 1;
+const ADMIN_PROPOSAL_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+/// Interface kind reported by `get_interface`, used by clients as a weak
+/// identity check when wiring contracts (not proof of authenticity).
+pub const CONTRACT_KIND: &str = "lafiya_attester_registry";
+
+/// Version of the public contract interface (functions, errors, types).
+/// Bump on any breaking ABI change; `scripts/conformance/check_snapshot.py`
+/// refuses a breaking snapshot update without a bump.
+pub const INTERFACE_VERSION: u32 = 1;
+
+/// Version of the emitted event schemas (see `docs/events.md`).
+pub const EVENT_VERSION: u32 = 1;
+
+/// Optional features this build supports, reported by `get_interface`.
+pub const FEATURES: [&str; 6] = [
+    "pause",
+    "metadata",
+    "suspension",
+    "batch",
+    "max_attesters",
+    "migrate",
+];
+
+/// Interface and capability metadata returned by `get_interface`, so
+/// clients can negotiate features with one call instead of probing.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InterfaceInfo {
+    /// Contract kind, e.g. `lafiya_attester_registry`.
+    pub contract_kind: Symbol,
+    /// Public interface version; bumped on any breaking ABI change.
+    pub interface_version: u32,
+    /// Optional features enabled in this build.
+    pub features: Vec<Symbol>,
+    /// Storage schema version (see `get_schema_version`).
+    pub schema_version: u32,
+    /// Event schema version.
+    pub event_version: u32,
+}
 
 /// Storage keys for the attester registry.
 ///
@@ -37,6 +77,24 @@ enum DataKey {
     MaxAttesters,
     /// Current count of allowlisted attesters.
     AttesterCount,
+    /// Ledger timestamp at which the pending admin proposal expires.
+    PendingAdminExpiresAt,
+    /// The latest successor address for a rotated attester.
+    AttesterRotation(Address),
+    /// A point-in-time attester status transition.
+    AttesterStatusChange(Address, u32),
+    /// Number of recorded status transitions for an attester.
+    AttesterStatusChangeCount(Address),
+}
+
+/// Emitted when an attester rotates its key while retaining its enrollment.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterRotated {
+    #[topic]
+    pub previous_attester: Address,
+    #[topic]
+    pub new_attester: Address,
 }
 
 /// Metadata associated with an allowlisted attester.
@@ -47,6 +105,14 @@ pub struct AttesterInfo {
     pub license_hash: Option<BytesN<32>>,
     /// The geographic region the attester is authorized to attest for, if any.
     pub region: Option<Symbol>,
+}
+
+/// A status transition retained for point-in-time allowlist queries.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AttesterStatusChange {
+    pub timestamp: u64,
+    pub active: bool,
 }
 
 /// An allowlisted attester's metadata together with its current suspension
@@ -91,8 +157,10 @@ pub const BATCH_LIMIT: u32 = 40;
 pub enum Error {
     /// `initialize` has not been called yet; call
     /// `initialize(admin: Address)` before using the contract.
+    /// @severity operator
     NotInitialized = 1,
     /// `initialize` was called more than once.
+    /// @severity operator
     AlreadyInitialized = 2,
     /// `accept_admin` was called with no pending admin transfer. Admin transfer is a
     /// two-step flow: the current admin must first call `propose_admin` to nominate a
@@ -108,12 +176,17 @@ pub enum Error {
     /// `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a
     /// build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal
     /// that there is nothing pending, not a failure to react to.
+    /// @severity operator
     MigrationNotRequired = 6,
     /// The referenced attester is not currently allowlisted (never added,
     /// or since removed).
     AttesterNotFound = 7,
     /// The supplied batch exceeds `BATCH_LIMIT` addresses.
     BatchTooLarge = 8,
+    /// The proposed admin address is not a valid successor.
+    InvalidAdminProposal = 9,
+    /// The pending admin proposal has expired.
+    ProposalExpired = 10,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -124,6 +197,27 @@ pub struct AdminTransferred {
     pub previous_admin: Address,
     #[topic]
     pub new_admin: Address,
+}
+
+/// Emitted when the current admin nominates a successor.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferProposed {
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
+    pub expires_at: u64,
+}
+
+/// Emitted when a pending admin transfer is cancelled.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferCancelled {
+    #[topic]
+    pub admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
 }
 
 /// Emitted once, when the contract is initialized.
@@ -156,6 +250,14 @@ pub struct AttesterInfoUpdated {
 #[contractevent]
 #[derive(Clone, Debug)]
 pub struct AttesterRemoved {
+    #[topic]
+    pub attester: Address,
+}
+
+/// Emitted when an attester revokes its own key.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterRevoked {
     #[topic]
     pub attester: Address,
 }
@@ -200,6 +302,18 @@ pub struct Unpaused {
     pub by: Address,
 }
 
+// Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
+// "Contract Build Verification"). Deterministic for a given commit:
+// LAFIYA_GIT_COMMIT is injected by build.rs, see docs/releasing.md.
+soroban_sdk::contractmeta!(
+    key = "source_repo",
+    val = "github:Lafiya-xyz/Lafiya-contract"
+);
+soroban_sdk::contractmeta!(key = "home_domain", val = "lafiya-xyz.github.io");
+soroban_sdk::contractmeta!(key = "crate_name", val = env!("CARGO_PKG_NAME"));
+soroban_sdk::contractmeta!(key = "crate_version", val = env!("CARGO_PKG_VERSION"));
+soroban_sdk::contractmeta!(key = "source_rev", val = env!("LAFIYA_GIT_COMMIT"));
+
 /// The attester registry contract.
 #[contract]
 pub struct AttesterRegistry;
@@ -223,6 +337,106 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Rotate an allowlisted attester key without losing metadata or enrollment history.
+    /// Both the old and new addresses must authorize the operation.
+    pub fn rotate_attester(
+        env: Env,
+        previous_attester: Address,
+        new_attester: Address,
+    ) -> Result<(), Error> {
+        previous_attester.require_auth();
+        new_attester.require_auth();
+        Self::require_not_paused(&env)?;
+        if previous_attester == new_attester
+            || !env
+                .storage()
+                .persistent()
+                .has(&DataKey::Attester(previous_attester.clone()))
+            || env
+                .storage()
+                .persistent()
+                .has(&DataKey::Attester(new_attester.clone()))
+        {
+            return Err(Error::AttesterNotFound);
+        }
+
+        let info: AttesterInfo = env
+            .storage()
+            .persistent()
+            .get(&DataKey::Attester(previous_attester.clone()))
+            .ok_or(Error::AttesterNotFound)?;
+        let suspended = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Suspended(previous_attester.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Attester(previous_attester.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::Suspended(previous_attester.clone()));
+        env.storage()
+            .persistent()
+            .set(&DataKey::Attester(new_attester.clone()), &info);
+        if suspended {
+            env.storage()
+                .persistent()
+                .set(&DataKey::Suspended(new_attester.clone()), &true);
+        }
+        env.storage().persistent().set(
+            &DataKey::AttesterRotation(previous_attester.clone()),
+            &new_attester,
+        );
+        Self::record_status_change(&env, &previous_attester, false);
+        Self::record_status_change(&env, &new_attester, !suspended);
+        AttesterRotated {
+            previous_attester,
+            new_attester,
+        }
+        .publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Revoke the caller's own attester key immediately. This remains available
+    /// while paused so a compromised key can be stopped without admin action.
+    pub fn revoke_attester(env: Env, attester: Address) -> Result<(), Error> {
+        attester.require_auth();
+        let was_present = env
+            .storage()
+            .persistent()
+            .has(&DataKey::Attester(attester.clone()));
+        if was_present {
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Attester(attester.clone()));
+            env.storage()
+                .persistent()
+                .remove(&DataKey::Suspended(attester.clone()));
+            let count = Self::attester_count(&env);
+            if count > 0 {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AttesterCount, &(count - 1));
+            }
+            Self::record_status_change(&env, &attester, false);
+        }
+        AttesterRevoked { attester }.publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Return the latest address to which `attester` was rotated, if any.
+    pub fn get_attester_rotation(env: Env, attester: Address) -> Option<Address> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttesterRotation(attester))
+    }
+
     /// Return the current admin address.
     pub fn get_admin(env: Env) -> Result<Address, Error> {
         Self::admin(&env)
@@ -233,9 +447,25 @@ impl AttesterRegistry {
     pub fn propose_admin(env: Env, new_admin: Address) -> Result<(), Error> {
         let current_admin = Self::admin(&env)?;
         current_admin.require_auth();
+        if new_admin == current_admin || new_admin == env.current_contract_address() {
+            return Err(Error::InvalidAdminProposal);
+        }
+        let expires_at = env
+            .ledger()
+            .timestamp()
+            .saturating_add(ADMIN_PROPOSAL_TTL_SECONDS);
         env.storage()
             .instance()
             .set(&DataKey::PendingAdmin, &new_admin);
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingAdminExpiresAt, &expires_at);
+        AdminTransferProposed {
+            current_admin,
+            proposed_admin: new_admin,
+            expires_at,
+        }
+        .publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -250,6 +480,18 @@ impl AttesterRegistry {
             .instance()
             .get(&DataKey::PendingAdmin)
             .ok_or(Error::NoPendingTransfer)?;
+        let expires_at: u64 = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdminExpiresAt)
+            .unwrap_or(0);
+        if env.ledger().timestamp() > expires_at {
+            env.storage().instance().remove(&DataKey::PendingAdmin);
+            env.storage()
+                .instance()
+                .remove(&DataKey::PendingAdminExpiresAt);
+            return Err(Error::ProposalExpired);
+        }
 
         pending_admin.require_auth();
 
@@ -257,6 +499,9 @@ impl AttesterRegistry {
             .instance()
             .set(&DataKey::Admin, &pending_admin);
         env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminExpiresAt);
 
         AdminTransferred {
             previous_admin,
@@ -268,6 +513,27 @@ impl AttesterRegistry {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
+        Ok(())
+    }
+
+    /// Cancel the pending admin transfer. Requires the current admin's authorization.
+    pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+        let proposed_admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingAdmin)
+            .ok_or(Error::NoPendingTransfer)?;
+        env.storage().instance().remove(&DataKey::PendingAdmin);
+        env.storage()
+            .instance()
+            .remove(&DataKey::PendingAdminExpiresAt);
+        AdminTransferCancelled {
+            admin,
+            proposed_admin,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -333,6 +599,7 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        Self::record_status_change(&env, &attester, true);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -372,6 +639,7 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        Self::record_status_change(&env, &attester, true);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -447,6 +715,7 @@ impl AttesterRegistry {
                     region: None,
                 };
                 env.storage().persistent().set(&key, &info);
+                Self::record_status_change(&env, &attester, true);
                 count += 1;
                 AttesterAdded {
                     attester: attester.clone(),
@@ -493,6 +762,7 @@ impl AttesterRegistry {
                 if count > 0 {
                     count -= 1;
                 }
+                Self::record_status_change(&env, &attester, false);
                 AttesterRemoved {
                     attester: attester.clone(),
                 }
@@ -532,6 +802,7 @@ impl AttesterRegistry {
                     .instance()
                     .set(&DataKey::AttesterCount, &(count - 1));
             }
+            Self::record_status_change(&env, &attester, false);
         }
         AttesterRemoved { attester }.publish(&env);
         env.storage()
@@ -582,6 +853,7 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Suspended(attester.clone()), &true);
+        Self::record_status_change(&env, &attester, false);
         AttesterSuspended { attester }.publish(&env);
         env.storage()
             .instance()
@@ -618,6 +890,29 @@ impl AttesterRegistry {
             .has(&DataKey::Suspended(attester))
     }
 
+    /// Whether `attester` was active at the supplied ledger timestamp.
+    pub fn is_attester_at(env: Env, attester: Address, timestamp: u64) -> bool {
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttesterStatusChangeCount(attester.clone()))
+            .unwrap_or(0);
+        let mut active = false;
+        for sequence in 1..=count {
+            let change: Option<AttesterStatusChange> = env
+                .storage()
+                .persistent()
+                .get(&DataKey::AttesterStatusChange(attester.clone(), sequence));
+            if let Some(change) = change {
+                if change.timestamp > timestamp {
+                    break;
+                }
+                active = change.active;
+            }
+        }
+        active
+    }
+
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
         env.storage().persistent().get(&DataKey::Attester(attester))
@@ -636,6 +931,23 @@ impl AttesterRegistry {
             .persistent()
             .has(&DataKey::Suspended(attester));
         Some(AttesterStatus { info, suspended })
+    }
+
+    /// Report the contract kind, interface version, enabled features, and
+    /// storage/event schema versions for runtime compatibility negotiation.
+    /// Callable by anyone.
+    pub fn get_interface(env: Env) -> InterfaceInfo {
+        let mut features = Vec::new(&env);
+        for feature in FEATURES {
+            features.push_back(Symbol::new(&env, feature));
+        }
+        InterfaceInfo {
+            contract_kind: Symbol::new(&env, CONTRACT_KIND),
+            interface_version: INTERFACE_VERSION,
+            features,
+            schema_version: Self::get_schema_version(env.clone()),
+            event_version: EVENT_VERSION,
+        }
     }
 
     /// Query the current storage schema version of the contract.
@@ -734,8 +1046,31 @@ impl AttesterRegistry {
             .get(&DataKey::AttesterCount)
             .unwrap_or(0)
     }
+
+    fn record_status_change(env: &Env, attester: &Address, active: bool) {
+        let count: u32 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttesterStatusChangeCount(attester.clone()))
+            .unwrap_or(0);
+        let sequence = count + 1;
+        env.storage().persistent().set(
+            &DataKey::AttesterStatusChange(attester.clone(), sequence),
+            &AttesterStatusChange {
+                timestamp: env.ledger().timestamp(),
+                active,
+            },
+        );
+        env.storage().persistent().set(
+            &DataKey::AttesterStatusChangeCount(attester.clone()),
+            &sequence,
+        );
+    }
 }
 
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod enumeration_spike;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod large_test;

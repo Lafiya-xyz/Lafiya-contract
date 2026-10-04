@@ -1,0 +1,19 @@
+[package]
+name = "xtask"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Developer tasks for Lafiya-contract (cargo xtask ...)"
+publish = false
+
+[dependencies]
+lafiya-commitment = { path = "../crates/lafiya-commitment" }
+anyhow = "1.0"
+clap = { version = "4.5", features = ["derive"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+toml = "1.1"
+soroban-spec = "27.0.6"
+stellar-xdr = { version = "=27.0.0", default-features = false, features = ["std", "serde"] }

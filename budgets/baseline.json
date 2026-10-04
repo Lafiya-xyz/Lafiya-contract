@@ -1,0 +1,96 @@
+{
+  "attester-registry": {
+    "add_attester": {
+      "cpu_instructions": 125000,
+      "memory_bytes": 8192,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 512,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 256,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 42000,
+      "worst_case_scenario": "max attesters, full history"
+    },
+    "remove_attester": {
+      "cpu_instructions": 95000,
+      "memory_bytes": 6144,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 256,
+      "ledger_write_entries": 1,
+      "ledger_write_bytes": 128,
+      "events_size_bytes": 96,
+      "estimated_fee_stroops": 35000,
+      "worst_case_scenario": "full allowlist scan"
+    },
+    "pause": {
+      "cpu_instructions": 45000,
+      "memory_bytes": 2048,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 64,
+      "ledger_write_entries": 1,
+      "ledger_write_bytes": 64,
+      "events_size_bytes": 64,
+      "estimated_fee_stroops": 20000,
+      "worst_case_scenario": "admin verification"
+    },
+    "is_attester": {
+      "cpu_instructions": 25000,
+      "memory_bytes": 1024,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 128,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 10000,
+      "worst_case_scenario": "cache miss"
+    }
+  },
+  "attestation-registry": {
+    "attest": {
+      "cpu_instructions": 180000,
+      "memory_bytes": 16384,
+      "ledger_read_entries": 5,
+      "ledger_read_bytes": 1024,
+      "ledger_write_entries": 3,
+      "ledger_write_bytes": 512,
+      "events_size_bytes": 256,
+      "estimated_fee_stroops": 65000,
+      "worst_case_scenario": "max history, full signature verification"
+    },
+    "revoke_attestation": {
+      "cpu_instructions": 95000,
+      "memory_bytes": 8192,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 512,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 256,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 38000,
+      "worst_case_scenario": "max history entries"
+    },
+    "get_attestation": {
+      "cpu_instructions": 35000,
+      "memory_bytes": 4096,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 512,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 15000,
+      "worst_case_scenario": "latest in max history"
+    }
+  },
+  "multisig-account": {
+    "__check_auth": {
+      "cpu_instructions": 150000,
+      "memory_bytes": 12288,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 768,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 55000,
+      "worst_case_scenario": "5-of-5 multisig signature verification"
+    }
+  }
+}

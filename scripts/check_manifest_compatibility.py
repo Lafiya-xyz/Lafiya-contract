@@ -15,14 +15,18 @@ which requirement was violated.
 Usage:
     scripts/check_manifest_compatibility.py MANIFEST.json REQUIREMENTS.json
 """
+
 import argparse
 import json
 import re
 import sys
 from pathlib import Path
+from typing import Any
+
+Version = tuple[int, int, int]
 
 
-def parse_caret_range(range_str):
+def parse_caret_range(range_str: str) -> tuple[Version, Version]:
     """'^X.Y.Z' SemVer caret range, per npm semver rules: the leftmost
     non-zero component is pinned, so ^1.2.3 allows <2.0.0 but ^0.2.3 allows
     only <0.3.0 and ^0.0.3 allows only <0.0.4 (0.x releases are not assumed
@@ -32,6 +36,7 @@ def parse_caret_range(range_str):
         raise ValueError(f"unsupported version range syntax: {range_str!r} (only ^X.Y.Z supported)")
     major, minor, patch = (int(g) for g in m.groups())
     lo = (major, minor, patch)
+    hi: Version
     if major > 0:
         hi = (major + 1, 0, 0)
     elif minor > 0:
@@ -41,21 +46,22 @@ def parse_caret_range(range_str):
     return lo, hi
 
 
-def parse_version(version_str):
+def parse_version(version_str: str) -> Version:
     m = re.match(r"^(\d+)\.(\d+)\.(\d+)", version_str)
     if not m:
         raise ValueError(f"unsupported version syntax: {version_str!r}")
-    return tuple(int(g) for g in m.groups())
+    major, minor, patch = (int(g) for g in m.groups())
+    return major, minor, patch
 
 
-def version_in_range(version_str, range_str):
+def version_in_range(version_str: str, range_str: str) -> bool:
     lo, hi = parse_caret_range(range_str)
     v = parse_version(version_str)
     return lo <= v < hi
 
 
-def check(manifest, requirements):
-    errors = []
+def check(manifest: dict[str, Any], requirements: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
     contracts_by_name = {c["name"]: c for c in manifest.get("contracts", [])}
     bindings_by_contract = {b["contract"]: b for b in manifest.get("bindings", [])}
 
@@ -105,7 +111,7 @@ def check(manifest, requirements):
     return errors
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path, help="path to the release manifest JSON to check")
     parser.add_argument("requirements", type=Path, help="path to the consumer's requirements JSON")

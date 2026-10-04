@@ -1,0 +1,47 @@
+{
+  "model_version": "1.0.0",
+  "verdicts": [
+    "WrongNetwork",
+    "Indeterminate",
+    "NotFound",
+    "Revoked",
+    "AttesterCompromised",
+    "AttesterRemoved",
+    "Expired",
+    "AttesterSuspended",
+    "Superseded",
+    "Verified"
+  ],
+  "default_input": {
+    "network_matches": true,
+    "attestation_read": "ok",
+    "attester_status_read": "ok",
+    "attestation_found": true,
+    "revoked": false,
+    "attester_status": "active",
+    "attested_in_compromise_window": false,
+    "age_exceeds_policy": false,
+    "superseded": false,
+    "offline": false
+  },
+  "cases": [
+    { "id": "clean", "input": {}, "verdict": "Verified" },
+    { "id": "wrong-network", "input": { "network_matches": false, "revoked": true }, "verdict": "WrongNetwork" },
+    { "id": "rpc-failure", "input": { "attestation_read": "failed" }, "verdict": "Indeterminate" },
+    { "id": "attester-status-unreadable", "input": { "attester_status_read": "failed" }, "verdict": "Indeterminate" },
+    { "id": "partial-read-with-revocation", "input": { "attester_status_read": "failed", "revoked": true }, "verdict": "Revoked" },
+    { "id": "not-found", "input": { "attestation_found": false }, "verdict": "NotFound" },
+    { "id": "revoked", "input": { "revoked": true }, "verdict": "Revoked" },
+    { "id": "revoked-beats-compromised", "input": { "revoked": true, "attested_in_compromise_window": true }, "verdict": "Revoked" },
+    { "id": "compromised", "input": { "attested_in_compromise_window": true }, "verdict": "AttesterCompromised" },
+    { "id": "compromised-beats-expired", "input": { "attested_in_compromise_window": true, "age_exceeds_policy": true }, "verdict": "AttesterCompromised" },
+    { "id": "removed", "input": { "attester_status": "removed" }, "verdict": "AttesterRemoved" },
+    { "id": "expired", "input": { "age_exceeds_policy": true }, "verdict": "Expired" },
+    { "id": "expired-beats-suspended", "input": { "age_exceeds_policy": true, "attester_status": "suspended" }, "verdict": "Expired" },
+    { "id": "suspended", "input": { "attester_status": "suspended" }, "verdict": "AttesterSuspended" },
+    { "id": "suspended-beats-superseded", "input": { "attester_status": "suspended", "superseded": true }, "verdict": "AttesterSuspended" },
+    { "id": "superseded", "input": { "superseded": true }, "verdict": "Superseded" },
+    { "id": "offline-clean", "input": { "offline": true }, "verdict": "Verified", "qualifier": "as_of_bundle" },
+    { "id": "offline-revoked", "input": { "offline": true, "revoked": true }, "verdict": "Revoked", "qualifier": "as_of_bundle" }
+  ]
+}

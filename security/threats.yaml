@@ -1,0 +1,179 @@
+# Security Threat Registry
+# Issue #380: Build security regression suite with threat-to-test traceability
+#
+# Each threat is mapped to:
+# - ADR or design document reference
+# - Mitigation strategy
+# - Test IDs that verify the mitigation
+# - Status: mitigated | accepted | open
+
+threats:
+  # Initialization & Setup
+  T-001:
+    title: "Uninitialized Admin (missing check_auth)"
+    component: "attester-registry"
+    mitigation: "Initialize must call admin.require_auth(); prevent double-init"
+    adr: "ADR-0002 (Admin Authority)"
+    status: "mitigated"
+    tests:
+      - "sec_t001_init_requires_auth"
+      - "sec_t001_init_double_init_fails"
+
+  T-002:
+    title: "Admin Transfer Without Multi-Step Verification"
+    component: "attester-registry"
+    mitigation: "Two-step admin transfer: propose → accept (ADR-0003)"
+    adr: "ADR-0003 (Upgrade Authority Renunciation)"
+    status: "mitigated"
+    tests:
+      - "sec_t002_admin_propose_requires_new_admin_auth"
+      - "sec_t002_admin_accept_requires_new_admin"
+      - "sec_t002_admin_confirm_after_threshold"
+
+  # Pause & Emergency
+  T-003:
+    title: "Pause Bypass (missing guard on state mutations)"
+    component: "attestation-registry"
+    mitigation: "All state mutations guarded with require_not_paused()"
+    adr: "ADR-0005 (Emergency Pause)"
+    status: "mitigated"
+    tests:
+      - "sec_t003_attest_blocked_when_paused"
+      - "sec_t003_revoke_blocked_when_paused"
+      - "sec_t003_get_attestation_works_when_paused"
+
+  T-004:
+    title: "Unauthorized Pause (wrong role checks)"
+    component: "attestation-registry"
+    mitigation: "Only Guardian role can call pause()"
+    adr: "ADR-0005 (Emergency Pause)"
+    status: "mitigated"
+    tests:
+      - "sec_t004_pause_requires_guardian"
+      - "sec_t004_unpause_requires_guardian"
+
+  # Authorization & Gating
+  T-005:
+    title: "Allowlist Bypass (missing cross-contract check)"
+    component: "attestation-registry"
+    mitigation: "Check attester-registry allowlist in every attest()"
+    adr: "ADR-0004 (Registry Wiring)"
+    status: "mitigated"
+    tests:
+      - "sec_t005_attest_gated_by_allowlist"
+      - "sec_t005_non_registered_attester_rejected"
+
+  T-006:
+    title: "Impersonation (caller != attester)"
+    component: "attestation-registry"
+    mitigation: "require_auth(attester) before attest()"
+    adr: "ADR-0001 (Record Commitment)"
+    status: "mitigated"
+    tests:
+      - "sec_t006_attest_requires_auth_from_attester"
+      - "sec_t006_impersonation_attempt_fails"
+
+  # Commitment & Canonicalization
+  T-007:
+    title: "Dictionary Attack on Low-Entropy Fields"
+    component: "lafiya-commitment"
+    mitigation: "Require high-entropy salt; salted commitment in commit_v1_salted()"
+    adr: "ADR-0008 (LRC-1 Canonicalization)"
+    status: "mitigated"
+    tests:
+      - "sec_t007_unsalted_brute_force_demo"
+      - "sec_t007_salted_resists_brute_force"
+
+  T-008:
+    title: "Unicode Normalization Divergence (NFC vs NFD)"
+    component: "lafiya-commitment"
+    mitigation: "Enforce NFC; reject or normalize (ADR update needed)"
+    adr: "ADR-0008 (LRC-1 Canonicalization)"
+    status: "mitigated"
+    tests:
+      - "sec_t008_nfc_rejected_or_normalized"
+      - "sec_t008_yoruba_text_consistent"
+      - "sec_t008_hausa_combining_marks_handled"
+
+  T-009:
+    title: "Silent Length Truncation (u32 overflow on encoding)"
+    component: "lafiya-commitment"
+    mitigation: "Use u32::try_from; return EncodeError::FieldTooLarge"
+    adr: "ADR-0008 (LRC-1 Canonicalization)"
+    status: "mitigated"
+    tests:
+      - "sec_t009_oversized_field_rejected"
+      - "sec_t010_payload_size_limit_enforced"
+
+  # Revocation & State
+  T-010:
+    title: "Revocation Doesn't Reset Sequence Counters"
+    component: "attestation-registry"
+    mitigation: "Revoke resets sequence counter to enable new attestations"
+    adr: "ADR-0006 (Revocation Semantics)"
+    status: "mitigated"
+    tests:
+      - "sec_t010_revoke_clears_sequence"
+      - "sec_t010_re_attest_after_revoke"
+
+  T-011:
+    title: "History Overflow (MAX_HISTORY FIFO not enforced)"
+    component: "attestation-registry"
+    mitigation: "FIFO eviction by sequence number when MAX_HISTORY reached"
+    adr: "ADR-0007 (History Bounds)"
+    status: "mitigated"
+    tests:
+      - "sec_t011_max_history_enforced"
+      - "sec_t011_oldest_evicted_on_overflow"
+
+  # Multisig & Proposals
+  T-012:
+    title: "Multisig Threshold Bypass (wrong comparison)"
+    component: "multisig"
+    mitigation: "Enforce threshold >= required_signatures"
+    adr: "ADR-0009 (Multisig Authority)"
+    status: "mitigated"
+    tests:
+      - "sec_t012_threshold_1_of_1"
+      - "sec_t012_threshold_2_of_3"
+      - "sec_t012_undersigned_rejected"
+
+  T-013:
+    title: "Signature Ordering Attack (sigs accepted out of order)"
+    component: "multisig"
+    mitigation: "Sort signatures by signer address before verification"
+    adr: "ADR-0009 (Multisig Authority)"
+    status: "mitigated"
+    tests:
+      - "sec_t013_unordered_sigs_rejected"
+      - "sec_t013_ordered_sigs_accepted"
+
+  T-014:
+    title: "Duplicate Signature Attack (same signer twice)"
+    component: "multisig"
+    mitigation: "Deduplicate by signer; count unique signers"
+    adr: "ADR-0009 (Multisig Authority)"
+    status: "mitigated"
+    tests:
+      - "sec_t014_duplicate_sig_counts_once"
+      - "sec_t014_duplicate_still_fails_threshold"
+
+  # Registry Wiring
+  T-015:
+    title: "Registry Repointing (attester-registry re-init to new address)"
+    component: "attestation-registry"
+    mitigation: "Single immutable attester-registry reference; timelock on repoint"
+    adr: "ADR-0004 (Registry Wiring)"
+    status: "mitigated"
+    tests:
+      - "sec_t015_repoint_blocked_or_timelocked"
+      - "sec_t015_inconsistent_registry_prevented"
+
+test_naming_convention: "sec_t<threat_id>_<description>"
+test_doc_example: |
+  /// Security test for T-001: Uninitialized Admin
+  /// Verifies that initialize() requires auth from the proposed admin.
+  #[test]
+  fn sec_t001_init_requires_auth() {
+      // Test implementation
+  }

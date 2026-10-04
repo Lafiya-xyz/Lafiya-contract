@@ -7,3 +7,4 @@ license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
 [dependencies]
+tracing = "0.1"

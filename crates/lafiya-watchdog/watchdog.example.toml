@@ -1,0 +1,70 @@
+# Example lafiya-watchdog configuration. See docs/runbooks/watchdog.md.
+rpc_url = "https://soroban-testnet.stellar.org"
+contracts = [
+  # attester-registry, attestation-registry, multisig-account
+]
+poll_interval_secs = 5
+explorer_tx_url = "https://stellar.expert/explorer/testnet/tx/"
+# Upgrades to any wasm hash not listed in these manifests are critical.
+release_manifests = ["../../docs/release-manifest/examples/v0.1.0-dev.json"]
+known_wasm_hashes = []
+
+# Omit [[rules]] entirely to use the built-in defaults (admin transfer,
+# upgrade, repoint, multisig changes -> critical; pause/unpause -> high).
+[[rules]]
+kind = "admin_transferred"
+events = ["admin_transferred"]
+severity = "critical"
+
+[[rules]]
+kind = "upgraded"
+events = ["upgraded"]
+severity = "critical"
+
+[[rules]]
+kind = "attester_registry_repointed"
+events = ["attester_registry_repointed"]
+severity = "critical"
+
+[[rules]]
+kind = "multisig_reconfigured"
+events = ["multisig_*", "signers_*", "threshold_*", "recovery_*"]
+severity = "critical"
+
+[[rules]]
+kind = "pause_toggled"
+events = ["paused", "unpaused"]
+severity = "high"
+
+[mass_enrollment]
+event = "attester_added"
+max_count = 10
+window_ledgers = 100
+severity = "high"
+
+[heartbeat]
+max_lag_ledgers = 60
+max_consecutive_failures = 5
+# ping_url = "https://hc-ping.com/<uuid>"
+
+[[sinks]]
+type = "webhook"
+format = "slack"
+url = "https://hooks.slack.com/services/REPLACE_ME"
+
+# [[sinks]]
+# type = "pagerduty"
+# routing_key = "REPLACE_ME"
+# min_severity = "critical"
+
+# [[sinks]]
+# type = "opsgenie"
+# api_key = "REPLACE_ME"
+# min_severity = "critical"
+
+# Email through SMTP via msmtp or sendmail:
+# [[sinks]]
+# type = "command"
+# program = "msmtp"
+# args = ["oncall@example.org"]
+# min_severity = "high"

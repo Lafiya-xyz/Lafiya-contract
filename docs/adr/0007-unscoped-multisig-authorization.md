@@ -45,6 +45,11 @@ must apply all of these controls:
 3. Require every signer to inspect the decoded authorization tree, including contract address,
    function, arguments, asset movements, and sub-invocations, using independently obtained
    expected registry addresses. A payload hash or transaction label alone is insufficient.
+   The required review step is `lafiya-cli --network <net> auth decode <xdr|file>`, which renders
+   the tree with named arguments, labels known contracts, flags unknown contracts, token
+   transfers, and deep sub-invocation trees, and recomputes the payload hash locally. Every signer
+   runs it on their own machine against the exact XDR they are asked to sign and compares the
+   printed payload hash with the one their signer tool shows.
 4. Treat signer tooling as part of the security boundary. Use independently maintained tooling
    or an out-of-band review for quorum approval; one compromised interface must not be the only
    representation all signers inspect.
@@ -104,3 +109,4 @@ limits, and operator duties are reviewable.
 - [ADR-0003: Use a single admin address for the pre-alpha contracts](0003-single-admin-initial-model.md)
 - [SEC-03 audit finding](https://github.com/Lafiya-xyz/Lafiya-contract/issues/109)
 - [`multisig-account::__check_auth`](../../contracts/multisig-account/src/lib.rs)
+- [Authorization decoder (`lafiya-cli auth decode`)](../../crates/lafiya-cli/src/auth_decode.rs)

@@ -21,27 +21,9 @@ test_snapshots/
 
 # Python bytecode and caches
 __pycache__/
-*.pyc
-*.pyo
+.coverage
+coverage.xml
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
 .pytest_cache/
-
-# Editor and IDE directories
-.idea/
-.vscode/
-*.swp
-*.swo
-*~
-
-# Node / npm artefacts (generated bindings build output)
-node_modules/
-bindings/**/dist/
-bindings/**/node_modules/
-
-# Coverage reports
-lcov.info
-*.profraw
-tarpaulin-report.html
-
-# Temporary files
-*.tmp
-*.bak

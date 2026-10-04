@@ -5,15 +5,46 @@ on:
     branches: [main]
   pull_request:
 
+permissions:
+  contents: read
+
 env:
   CARGO_TERM_COLOR: always
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    outputs:
+      rust: ${{ steps.filter.outputs.rust }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            rust:
+              - 'contracts/**'
+              - 'crates/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.config/nextest.toml'
+              - '.github/workflows/ci.yml'
+
   shell-lint:
     name: Shell lint (smoke-test.sh)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Syntax check (bash -n)
         run: |
           bash -n scripts/smoke-test.sh
@@ -23,62 +54,178 @@ jobs:
       - name: Run smoke-test.sh regression test
         run: bash scripts/smoke-test.test.sh
 
-  fmt:
-    name: Format
+  dashboard:
+    name: Dashboard generator + reproducibility
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      # Includes the reproducibility check: regenerates the site from the
+      # pinned synthetic ledger range and compares it with the committed output.
+      - run: python -m unittest discover -s dashboard -v
+      - run: git diff --exit-code dashboard/fixtures
+
+  fmt:
+    name: Format
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
 
   clippy:
     name: Clippy
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
-  test:
-    name: Test
+  # Build once, test many: compile every test binary a single time and fan
+  # the archive out to partitioned test jobs. The only workspace feature is
+  # `testutils`, which the test builds already enable, so one --all-features
+  # build replaces the former default + --all-features double run.
+  build-tests:
+    name: Build test archive
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --locked
-      - run: cargo test --workspace --all-features --locked
+      - uses: taiki-e/install-action@nextest
+      - run: cargo nextest archive --workspace --all-features --locked --archive-file nextest-archive.tar.zst
+      - uses: actions/upload-artifact@v4
+        with:
+          name: nextest-archive
+          path: nextest-archive.tar.zst
+          retention-days: 1
+
+  test:
+    name: Test (partition ${{ matrix.partition }}/2)
+    needs: build-tests
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        partition: [1, 2]
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+      - run: >-
+          cargo nextest run --profile ci
+          --archive-file nextest-archive.tar.zst
+          --workspace-remap .
+          --partition count:${{ matrix.partition }}/2
+          -E 'not test(fuzz_test)'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: junit-test-${{ matrix.partition }}
+          path: target/nextest/ci/junit.xml
+
+  fuzz:
+    name: Fuzz (proptest, non-blocking)
+    needs: build-tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: taiki-e/install-action@nextest
+      - uses: actions/download-artifact@v4
+        with:
+          name: nextest-archive
+      - run: >-
+          cargo nextest run --profile ci
+          --archive-file nextest-archive.tar.zst
+          --workspace-remap .
+          -E 'test(fuzz_test)' --no-capture
+        env:
+          PROPTEST_CASES: 256
+
+  test-report:
+    name: Test report
+    needs: test
+    if: always() && needs.test.result != 'skipped'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      checks: write
+      pull-requests: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: junit-test-*
+          path: junit
+      - uses: dorny/test-reporter@v1
+        # Fork PRs get a read-only token; the JUnit artifacts are still uploaded.
+        continue-on-error: true
+        with:
+          name: Test results
+          path: junit/**/junit.xml
+          reporter: java-junit
 
   build-wasm:
     name: Build (wasm32v1-none)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: wasm32v1-none
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Only the Soroban contract crates target wasm32v1-none; the other
       # workspace members (lafiya-cli, lafiya-config, lafiya-commitment) are
       # std binaries/libs that can't build for this no_std-only target.
       - name: Build contract crates
         run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
-      - name: Check README contract tables
-        run: python .github/scripts/check_readme_contracts.py
+      # Reused by downstream integration/differential/budget jobs instead of
+      # rebuilding the contracts.
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-wasm
+          path: target/wasm32v1-none/release/*.wasm
+          retention-days: 7
 
-  fuzz:
-    name: Fuzz (proptest, non-blocking)
+  docs-checks:
+    name: Docs & catalog checks
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - run: cargo test --workspace --locked fuzz_test -- --nocapture
-        env:
-          PROPTEST_CASES: 256
+      - name: Check README contract tables
+        run: python .github/scripts/check_readme_contracts.py
+      - name: Check README versions match Cargo.toml
+        run: python .github/scripts/check_readme_versions.py
+      - name: Check error/event catalogs are regenerated
+        run: python3 scripts/conformance/gen_catalog.py --check
+      - name: Run the verification-model truth table
+        run: python3 scripts/verification_model.py
+
+  # Single required check for branch protection. Jobs skipped by the path
+  # filter count as success; any failure or cancellation fails this job.
+  ci-success:
+    name: ci-success
+    if: always()
+    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, build-wasm, docs-checks]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Aggregate results
+        run: |
+          echo '${{ toJSON(needs) }}' | jq -e 'to_entries | all(.value.result == "success" or .value.result == "skipped")'

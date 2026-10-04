@@ -13,10 +13,13 @@ Output is normalized (docstrings stripped, entries sorted by kind+name) so
 that snapshot diffs only fire on actual interface changes, not comment
 edits or non-deterministic ordering.
 """
+
 import json
 import shutil
 import subprocess
 import sys
+from pathlib import Path
+from typing import Any
 
 KIND_ORDER = {
     "function_v0": 0,
@@ -28,7 +31,7 @@ KIND_ORDER = {
 }
 
 
-def _strip_docs(node):
+def _strip_docs(node: Any) -> Any:
     """Recursively drop `doc` fields so wording-only edits don't diff."""
     if isinstance(node, dict):
         return {k: _strip_docs(v) for k, v in node.items() if k != "doc"}
@@ -37,13 +40,13 @@ def _strip_docs(node):
     return node
 
 
-def _entry_name(kind, body):
+def _entry_name(kind: str, body: dict[str, Any]) -> str:
     if kind == "function_v0":
-        return body["name"]
-    return body.get("name", "")
+        return str(body["name"])
+    return str(body.get("name", ""))
 
 
-def require_stellar_cli():
+def require_stellar_cli() -> None:
     if shutil.which("stellar") is None:
         sys.exit(
             "error: `stellar` CLI not found on PATH.\n"
@@ -52,7 +55,7 @@ def require_stellar_cli():
         )
 
 
-def extract(wasm_path):
+def extract(wasm_path: Path) -> list[dict[str, Any]]:
     """Return a normalized, deterministic interface snapshot for one contract.
 
     Raises FileNotFoundError if the wasm hasn't been built yet, and exits
@@ -61,9 +64,7 @@ def extract(wasm_path):
     """
     require_stellar_cli()
     if not wasm_path.exists():
-        raise FileNotFoundError(
-            f"{wasm_path} does not exist -- build it first, e.g. `make wasm`"
-        )
+        raise FileNotFoundError(f"{wasm_path} does not exist -- build it first, e.g. `make wasm`")
 
     proc = subprocess.run(
         [
@@ -80,13 +81,10 @@ def extract(wasm_path):
         text=True,
     )
     if proc.returncode != 0:
-        sys.exit(
-            f"error: `stellar contract info interface` failed for {wasm_path}:\n"
-            f"{proc.stderr}"
-        )
+        sys.exit(f"error: `stellar contract info interface` failed for {wasm_path}:\n{proc.stderr}")
 
     raw = json.loads(proc.stdout)
-    entries = []
+    entries: list[tuple[str, str, Any]] = []
     for entry in raw:
         ((kind, body),) = entry.items()
         entries.append((kind, _entry_name(kind, body), _strip_docs(body)))
@@ -95,10 +93,9 @@ def extract(wasm_path):
     return [{"kind": k, "name": n, "spec": s} for k, n, s in entries]
 
 
-def main():
+def main() -> None:
     if len(sys.argv) != 2:
         sys.exit(f"usage: {sys.argv[0]} <path-to-wasm>")
-    from pathlib import Path
 
     snapshot = extract(Path(sys.argv[1]))
     json.dump(snapshot, sys.stdout, indent=2, sort_keys=True)
