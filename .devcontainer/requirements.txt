@@ -1,0 +1,2 @@
+# Python tooling for scripts/ (release manifest + conformance checks).
+jsonschema==4.26.0

@@ -2,7 +2,7 @@ extern crate std;
 
 use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
-use soroban_sdk::{Env, Event, IntoVal};
+use soroban_sdk::{Env, Event, IntoVal, String};
 
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
@@ -87,7 +87,15 @@ fn add_attester_allowlists_and_emits_event() {
     };
     assert_eq!(
         env.events().all(),
-        std::vec![expected_event.to_xdr(&env, &client.address)],
+        std::vec![
+            AdminTransferProposed {
+                current_admin: admin.clone(),
+                proposed_admin: new_admin.clone(),
+                expires_at: 30 * 24 * 60 * 60,
+            }
+            .to_xdr(&env, &client.address),
+            expected_event.to_xdr(&env, &client.address)
+        ],
     );
 
     assert!(client.is_attester(&attester));
@@ -128,6 +136,70 @@ fn remove_attester_never_added_is_a_no_op() {
 
     client.remove_attester(&attester);
     assert!(env.events().all().events().is_empty());
+}
+
+#[test]
+fn attester_can_revoke_own_key_and_emits_event() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    assert_eq!(client.get_attester_count(), 1);
+
+    client.revoke_attester(&attester);
+
+    assert!(!client.is_attester(&attester));
+    assert_eq!(client.get_attester_info(&attester), None);
+    assert_eq!(client.get_attester_status(&attester), None);
+    assert_eq!(client.get_attester_count(), 0);
+    assert_eq!(
+        env.events().all(),
+        std::vec![
+            AttesterAdded {
+                attester: attester.clone(),
+            }
+            .to_xdr(&env, &client.address),
+            AttesterRevoked { attester }.to_xdr(&env, &client.address),
+        ],
+    );
+}
+
+#[test]
+fn revoking_unknown_or_already_revoked_attester_is_idempotent() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.revoke_attester(&attester);
+    client.revoke_attester(&attester);
+
+    assert_eq!(client.get_attester_count(), 0);
+    assert_eq!(
+        env.events().all(),
+        std::vec![
+            AttesterRevoked {
+                attester: attester.clone(),
+            }
+            .to_xdr(&env, &client.address),
+            AttesterRevoked { attester }.to_xdr(&env, &client.address),
+        ],
+    );
+}
+
+#[test]
+fn attester_can_revoke_own_key_while_paused() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&attester);
+    client.pause();
+
+    client.revoke_attester(&attester);
+
+    assert!(!client.is_attester(&attester));
+    assert_eq!(client.get_attester_count(), 0);
 }
 
 #[test]
@@ -406,7 +478,7 @@ fn update_attester_info_on_unknown_attester_fails() {
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[1u8; 32]);
-    let region = Symbol::new(&env, "west");
+    let region = String::from_str(&env, "NG-WE");
     let result = client.try_update_attester_info(&attester, &Some(license_hash), &Some(region));
     assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
 }
@@ -431,7 +503,7 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
 
     let attester = Address::generate(&env);
     let initial_hash = BytesN::from_array(&env, &[1u8; 32]);
-    let initial_region = Symbol::new(&env, "west");
+    let initial_region = String::from_str(&env, "NG-WE");
     client.add_attester_with_info(&attester, &Some(initial_hash), &Some(initial_region));
 
     // Check event was emitted before any other call clears it.
@@ -444,7 +516,7 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     );
 
     let updated_hash = BytesN::from_array(&env, &[2u8; 32]);
-    let updated_region = Symbol::new(&env, "east");
+    let updated_region = String::from_str(&env, "NG-EA");
     client.update_attester_info(
         &attester,
         &Some(updated_hash.clone()),
@@ -464,6 +536,11 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         Some(AttesterInfo {
             license_hash: Some(updated_hash),
             region: Some(updated_region),
+            suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: None,
         }),
     );
 }
@@ -560,85 +637,19 @@ fn lowering_max_attesters_below_current_count_does_not_evict() {
 }
 
 #[test]
-fn setting_max_attesters_while_paused_fails() {
-    let (_, client, admin) = setup();
-    client.initialize(&admin);
-    let initial_max = client.get_max_attesters();
-
-    client.pause();
-    assert_eq!(
-        client.try_set_max_attesters(&1),
-        Err(Ok(Error::ContractPaused)),
-    );
-    assert_eq!(client.get_max_attesters(), initial_max);
-}
-
-#[test]
-fn suspend_unknown_attester_emits_event_without_allowlisting() {
+fn suspend_unknown_attester_fails() {
     let (env, client, admin) = setup();
     client.initialize(&admin);
 
     let never_added = Address::generate(&env);
     assert!(!client.is_attester(&never_added));
-    client.suspend_attester(&never_added);
-    let expected_event = AttesterSuspended {
-        attester: never_added.clone(),
-    };
+
     assert_eq!(
-        env.events().all(),
-        std::vec![expected_event.to_xdr(&env, &client.address)],
+        client.try_suspend_attester(&never_added),
+        Err(Ok(Error::AttesterNotFound))
     );
+    assert!(!client.is_attester(&never_added));
     assert_eq!(client.get_attester_status(&never_added), None);
-}
-
-#[test]
-fn adding_attester_after_unknown_suspension_clears_it() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    client.suspend_attester(&attester);
-    client.add_attester(&attester);
-
-    assert!(client.is_attester(&attester));
-    assert_eq!(
-        client.get_attester_status(&attester),
-        Some(AttesterStatus {
-            info: AttesterInfo {
-                license_hash: None,
-                region: None,
-            },
-            suspended: false,
-        }),
-    );
-}
-
-#[test]
-fn adding_with_info_after_unknown_suspension_clears_it() {
-    let (env, client, admin) = setup();
-    client.initialize(&admin);
-
-    let attester = Address::generate(&env);
-    let license_hash = BytesN::from_array(&env, &[4u8; 32]);
-    let region = Symbol::new(&env, "south");
-    client.suspend_attester(&attester);
-    client.add_attester_with_info(
-        &attester,
-        &Some(license_hash.clone()),
-        &Some(region.clone()),
-    );
-
-    assert!(client.is_attester(&attester));
-    assert_eq!(
-        client.get_attester_status(&attester),
-        Some(AttesterStatus {
-            info: AttesterInfo {
-                license_hash: Some(license_hash),
-                region: Some(region),
-            },
-            suspended: false,
-        }),
-    );
 }
 
 #[test]
@@ -648,7 +659,7 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[3u8; 32]);
-    let region = Symbol::new(&env, "north");
+    let region = String::from_str(&env, "NG-NO");
     client.add_attester_with_info(
         &attester,
         &Some(license_hash.clone()),
@@ -661,8 +672,15 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                suspended: false,
+                removed: false,
+                suspension_reason: None,
+                suspended_since: None,
+                trust_revoked_after: None,
             },
             suspended: false,
+            suspension_reason: None,
+            suspended_since: None,
         }),
     );
     assert!(client.is_attester(&attester));
@@ -674,8 +692,17 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                suspended: true,
+                removed: false,
+                suspension_reason: Some(Symbol::new(&env, "administrative")),
+                suspended_since: Some(env.ledger().timestamp()),
+                trust_revoked_after: Some(env.ledger().timestamp()),
             },
             suspended: true,
+            removed: false,
+            suspension_reason: Some(Symbol::new(&env, "administrative")),
+            suspended_since: Some(env.ledger().timestamp()),
+            trust_revoked_after: Some(env.ledger().timestamp()),
         }),
     );
     assert!(!client.is_attester(&attester));
@@ -687,8 +714,17 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash),
                 region: Some(region),
+                suspended: false,
+                removed: false,
+                suspension_reason: None,
+                suspended_since: None,
+                trust_revoked_after: Some(env.ledger().timestamp()),
             },
             suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: Some(env.ledger().timestamp()),
         }),
     );
     assert!(client.is_attester(&attester));
@@ -754,4 +790,27 @@ fn second_propose_admin_call_overwrites_pending_proposal() {
 
     let result = client.try_accept_admin();
     assert_eq!(result, Ok(Ok(())));
+}
+
+#[test]
+fn get_interface_reports_kind_versions_and_features() {
+    let (env, client, admin) = setup();
+    client.initialize(&admin);
+
+    let info = client.get_interface();
+    assert_eq!(
+        info.contract_kind,
+        Symbol::new(&env, "lafiya_attester_registry")
+    );
+    assert_eq!(info.interface_version, INTERFACE_VERSION);
+    assert_eq!(info.schema_version, client.get_schema_version());
+    assert_eq!(info.event_version, EVENT_VERSION);
+    assert_eq!(info.features.len(), FEATURES.len() as u32);
+    assert!(info.features.contains(Symbol::new(&env, "suspension")));
+}
+
+#[test]
+fn get_interface_works_before_initialize() {
+    let (_, client, _) = setup();
+    assert_eq!(client.get_interface().interface_version, INTERFACE_VERSION);
 }

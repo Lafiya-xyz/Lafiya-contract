@@ -1,0 +1,20 @@
+# gitleaks configuration: default ruleset plus Stellar-specific rules.
+# Used by .github/workflows/security-scan.yml and .pre-commit-config.yaml.
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "stellar-secret-seed"
+description = "Stellar secret seed (ed25519 private key, StrKey 'S...' encoding)"
+regex = '''\bS[A-Z2-7]{55}\b'''
+keywords = ["s"]
+tags = ["stellar", "key"]
+
+[[rules]]
+id = "mnemonic-phrase"
+description = "BIP-39/SEP-5 style mnemonic assigned to a seed/mnemonic variable"
+regex = '''(?i)(?:mnemonic|seed[_ -]?phrase|recovery[_ -]?phrase|secret[_ -]?phrase)["']?\s*[:=]\s*["']?((?:[a-z]{3,8}[ \t]+){11,23}[a-z]{3,8})'''
+secretGroup = 1
+keywords = ["mnemonic", "phrase"]
+tags = ["stellar", "mnemonic"]

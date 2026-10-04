@@ -1,0 +1,77 @@
+# Every lifecycle state and revocation path. CI applies this scenario and then
+# asserts the on-chain state with `lafiya-cli sandbox verify`.
+
+# Recent admin transfer: deployed by `admin`, handed over to `admin-2`.
+[admin]
+initial = "admin"
+current = "admin-2"
+
+[[attesters]]
+name = "chw-lagos-1"
+region = "NG_LA"
+status = "active"
+
+[[attesters]]
+name = "clinician-2"
+region = "NG_LA"
+status = "active"
+
+# Suspended after attesting: its attestations stay on chain.
+[[attesters]]
+name = "chw-kano-3"
+region = "NG_KN"
+status = "suspended"
+
+# Removed after attesting.
+[[attesters]]
+name = "chw-rivers-4"
+region = "NG_RI"
+status = "removed"
+
+# Suspended without ever attesting.
+[[attesters]]
+name = "chw-enugu-5"
+region = "NG_EN"
+status = "suspended"
+
+# Allowlisted but idle.
+[[attesters]]
+name = "chw-abuja-6"
+region = "NG_FC"
+
+# Multi-entry history from two attesters.
+[[attestations]]
+record = "patient-001"
+by = ["chw-lagos-1", "clinician-2"]
+
+# Re-attested by the same attester.
+[[attestations]]
+record = "patient-002"
+by = ["chw-lagos-1", "chw-lagos-1"]
+
+[[attestations]]
+record = "patient-003"
+by = ["chw-kano-3"]
+
+[[attestations]]
+record = "patient-004"
+by = ["chw-rivers-4"]
+
+# History longer than MAX_HISTORY (10) entries.
+[[attestations]]
+record = "patient-005"
+by = [
+  "chw-lagos-1", "clinician-2", "chw-lagos-1", "clinician-2",
+  "chw-lagos-1", "clinician-2", "chw-lagos-1", "clinician-2",
+  "chw-lagos-1", "clinician-2", "chw-lagos-1", "clinician-2",
+]
+
+# Revoked single attestation.
+[[revocations]]
+record = "patient-007"
+by = ["chw-lagos-1"]
+
+# Revoked multi-entry history, including a now-removed attester.
+[[revocations]]
+record = "patient-008"
+by = ["clinician-2", "chw-rivers-4"]

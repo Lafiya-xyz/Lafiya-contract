@@ -1,0 +1,26 @@
+[package]
+name = "lafiya-indexer"
+version = "0.1.0"
+edition = "2021"
+description = "Reference event indexer for Lafiya contracts: Postgres storage, reconciliation, and a read-only query API"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[dependencies]
+anyhow = "1.0"
+axum = "0.8"
+clap = { version = "4.5", features = ["derive", "env"] }
+hex = "0.4"
+prometheus = { version = "0.14", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "migrate", "macros", "json"] }
+stellar-xdr = { version = "27.0.0", default-features = false, features = ["std", "base64"] }
+thiserror = "2.0"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "time"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[dev-dependencies]
+rand = "0.9"

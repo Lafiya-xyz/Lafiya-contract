@@ -1,0 +1,26 @@
+{
+  "contract_ids": [
+    "CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526",
+    "CABAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAFNSZ"
+  ],
+  "getLatestLedger": {
+    "sequence": 1200720,
+    "protocolVersion": 23
+  },
+  "getNetwork": {
+    "passphrase": "Test SDF Network ; September 2015"
+  },
+  "getLedgerEntries": {
+    "entries": [
+      {
+        "key": "AAAABgAAAAEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQAAABQAAAAB",
+        "xdr": "AAAA"
+      },
+      {
+        "key": "AAAABgAAAAECAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgAAABQAAAAB",
+        "xdr": "AAAA"
+      }
+    ],
+    "latestLedger": 1200720
+  }
+}
