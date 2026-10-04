@@ -73,6 +73,36 @@ always transitions to polling by hash. The failure-injection tests
 `ambiguous_timeout_after_send_polls_instead_of_resubmitting` asserts exactly one submit call
 occurred even though the transaction was ultimately confirmed two poll rounds later.
 
+### Deterministic resolution with ledger bounds (issue #407)
+
+Polling by hash alone cannot settle an ambiguous submission: `NOT_FOUND` now does not rule
+out inclusion later. Every CLI-built transaction is therefore bounded, which makes each
+outcome final:
+
+- **Ledger bounds.** `lafiya-cli` sets `PreconditionsV2.ledgerBounds.maxLedger = latest +
+  --ledger-window` (default `DEFAULT_LEDGER_WINDOW` = 60 ledgers, about 5 minutes) on every
+  state-changing transaction, and sets each Soroban address-credential auth entry's
+  `signature_expiration_ledger` to the same ledger, so a signed authorization cannot outlive
+  its transaction (`lafiya_rpc_resilience::xdr::apply_ledger_bounds`, feature `xdr`).
+- **Expiry.** Once a ledger above `maxLedger` has closed and the hash is still `NOT_FOUND`,
+  the transaction can never be included. `TxState::Expired` / `RecoveryResult::Expired`
+  report this, and `classify` maps it to `RetryClass::SafeToRebuild`: building and
+  submitting a fresh transaction (new sequence number, new bounds) is safe. The CLI does
+  this automatically, up to two times.
+- **Sequence tracking.** If the source account's sequence number has reached or passed the
+  transaction's while the hash is unknown, a different transaction consumed that sequence
+  number, so this one can never be included (`RecoveryResult::SequenceConsumed`, with the
+  consuming hash when a provider can look it up). The CLI does not rebuild in this case,
+  because the consuming transaction may already have made the same change.
+
+The pure `resolve()` function decides whether an observation is final.
+`FailoverClient::submit_with_bounds` polls until it is. It is not capped at
+`max_poll_rounds`, because `maxLedger` guarantees termination; only `max_poll_rounds`
+consecutive rounds in which no provider reports the latest ledger escalate to the operator.
+The state machine is covered in `src/lib.rs` (unit tests for `resolve`),
+`tests/deterministic_resolution.rs` (a dropped submission resolving to `Expired` and being
+safely rebuilt), and `src/xdr.rs` (XDR assertions on the bounded envelope).
+
 ### Timeout and ambiguous-submit behavior, demonstrated
 
 `crates/lafiya-rpc-resilience` reproduces the specific failure modes named in the issue
@@ -195,6 +225,9 @@ nothing, since it actively creates duplicate on-chain records instead of just bl
   `RpcProvider` implementation (HTTP + `getTransaction` polling) and use it from
   `crates/lafiya-cli` in place of the direct `std::process::Command::new("stellar")` calls in
   `crates/lafiya-cli/src/main.rs`.
+- Run the dropped-submission scenario from `tests/deterministic_resolution.rs` against a
+  local quickstart node (for example, by pointing the CLI at a proxy that swallows
+  `sendTransaction`) as an end-to-end integration test.
 - Add a `lafiya-cli tx status <hash>` subcommand so an operator (or the runbook) can poll a
   specific transaction hash directly, independent of a retry flow.
 - Persist an in-flight transaction's hash and intent (which command, which network, which

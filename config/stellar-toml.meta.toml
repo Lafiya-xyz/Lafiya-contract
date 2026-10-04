@@ -1,0 +1,23 @@
+# Organization metadata for the generated SEP-1 stellar.toml (config/stellar.toml).
+# Contract IDs come from config/networks.toml and wasm hashes from the release
+# manifest; edit only this file by hand, then run `make stellar-toml`.
+# Spec: docs/specs/stellar-toml.md
+
+# Domain that serves https://<domain>/.well-known/stellar.toml.
+domain = "lafiya.xyz"
+
+# G... key that signs trust bundles and off-chain artifacts. Left empty (and
+# omitted from the output) until the key is provisioned.
+signing_key = ""
+
+# URL of a release's manifest; {version} is the workspace version.
+release_manifest_url = "https://github.com/Lafiya-xyz/Lafiya-contract/releases/download/v{version}/release-manifest.json"
+
+[documentation]
+ORG_NAME = "Lafiya"
+ORG_URL = "https://lafiya.xyz"
+ORG_GITHUB = "Lafiya-xyz"
+
+[[principals]]
+name = "Lafiya security contact (private advisories)"
+github = "Lafiya-xyz"

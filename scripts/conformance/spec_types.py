@@ -3,6 +3,9 @@ short human-readable string, e.g. {"option": {"value_type": "address"}} ->
 "Option<Address>".
 """
 
+import json
+from typing import Any
+
 _SCALARS = {
     "address": "Address",
     "bool": "bool",
@@ -24,7 +27,7 @@ _SCALARS = {
 }
 
 
-def render_type(t):
+def render_type(t: Any) -> str:
     if isinstance(t, str):
         return _SCALARS.get(t, t)
     ((kind, body),) = t.items()
@@ -41,11 +44,9 @@ def render_type(t):
     if kind == "tuple":
         return "(" + ", ".join(render_type(v) for v in body["value_types"]) + ")"
     if kind == "udt":
-        return body["name"]
+        return str(body["name"])
     return json_fallback(t)
 
 
-def json_fallback(t):
-    import json
-
+def json_fallback(t: Any) -> str:
     return json.dumps(t)

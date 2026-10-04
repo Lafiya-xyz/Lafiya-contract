@@ -1,0 +1,46 @@
+services:
+  dev:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      additional_contexts:
+        root: ..
+    volumes:
+      - ..:/workspaces/Lafiya-contract:cached
+    command: sleep infinity
+    environment:
+      SOROBAN_RPC_URL: http://stellar:8000/soroban/rpc
+      SOROBAN_HEALTH_URL: http://stellar:8000/health
+      SOROBAN_NETWORK_PASSPHRASE: "Standalone Network ; February 2017"
+      DATABASE_URL: postgres://lafiya:lafiya@postgres:5432/lafiya_indexer
+    depends_on:
+      stellar:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+
+  # Local Stellar network (core + horizon + Soroban RPC + friendbot).
+  stellar:
+    image: stellar/quickstart@sha256:bed2d4b5fa0bc569ec2214eb6e58312e6b09eb230c5194bcb0eec59a89a5399c
+    command: ["--local"]
+    ports:
+      - "8000:8000"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:8000/friendbot || curl -sf http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 30s
+
+  # Database for the indexer.
+  postgres:
+    image: postgres@sha256:721873c34ceb9f8d8fc265984940dc982404c105f19ad51be9fdc5970a6080ea # 16-alpine
+    environment:
+      POSTGRES_USER: lafiya
+      POSTGRES_PASSWORD: lafiya
+      POSTGRES_DB: lafiya_indexer
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lafiya -d lafiya_indexer"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
