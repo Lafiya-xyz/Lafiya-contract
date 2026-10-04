@@ -172,7 +172,7 @@ jobs:
         with:
           pattern: junit-test-*
           path: junit
-      - uses: dorny/test-reporter@v1
+      - uses: dorny/test-reporter@v2
         # Fork PRs get a read-only token; the JUnit artifacts are still uploaded.
         continue-on-error: true
         with:
