@@ -14,12 +14,18 @@ mod logging;
 use anyhow::Context;
 use clap::{Parser, Subcommand};
 use lafiya_config::{
-    get_network, load_networks, validate_account_address, validate_address, validate_network_name,
-    validate_record_hash, validate_source_account, ContractKind, DeploymentState, NetworkConfig,
+    load_networks, resolve_network, validate_account_address, validate_address,
+    validate_network_name, validate_record_hash, validate_source_account, ContractKind,
+    DeploymentState, NetworkConfig,
+};
+use lafiya_rpc_resilience::{
+    backoff_with_jitter, http::HttpRpcProvider, FailoverClient, RecoveryLog, RecoveryResult,
+    RetryPolicy, RpcProvider, SignedTx,
 };
 use std::collections::BTreeMap;
 use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
+use std::process::{Command, Stdio};
 
 mod interface;
 mod deployment_ledger;
@@ -239,6 +245,11 @@ struct Cli {
 
 #[derive(Subcommand, Debug)]
 enum Commands {
+    /// Verify published trust data (SEP-1 stellar.toml)
+    Trust {
+        #[command(subcommand)]
+        sub: TrustSub,
+    },
     /// Show / list network config
     Config {
         #[command(subcommand)]
@@ -341,6 +352,23 @@ enum InterfaceTarget {
 }
 
 #[derive(Subcommand, Debug)]
+enum TrustSub {
+    /// Fetch https://<domain>/.well-known/stellar.toml and compare its contract ids and
+    /// wasm hashes with the local config and on-chain instance data
+    Verify {
+        /// Domain serving the stellar.toml, e.g. lafiya.xyz
+        #[arg(long)]
+        domain: String,
+        /// PEM root certificate to trust instead of the WebPKI roots (staging hosts)
+        #[arg(long)]
+        ca_cert: Option<PathBuf>,
+        /// Skip the on-chain wasm hash comparison
+        #[arg(long, default_value_t = false)]
+        skip_chain: bool,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 enum ConfigSub {
     /// Show resolved config for selected network
     Show,
@@ -348,6 +376,19 @@ enum ConfigSub {
     List,
     /// Print shell export lines for current network (for use with eval or sourcing)
     Env,
+    /// Print the JSON Schema for networks.toml (committed as config/networks.schema.json)
+    Schema,
+}
+
+fn parse_override(raw: &str) -> Result<(String, String), String> {
+    raw.split_once('=')
+        .map(|(k, v)| (k.trim().to_string(), v.to_string()))
+        .ok_or_else(|| format!("expected KEY=VALUE, got `{raw}`"))
+}
+
+/// Single-quote a value for safe use in `eval`.
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', r"'\''"))
 }
 
 // ── attester subcommands ──────────────────────────────────────────────────────
@@ -573,6 +614,14 @@ fn main() -> anyhow::Result<()> {
         return run_audit(sub);
     }
 
+    if let Commands::Config {
+        sub: ConfigSub::Schema,
+    } = &cli.command
+    {
+        print!("{}", lafiya_config::json_schema());
+        return Ok(());
+    }
+
     // Validate the network name before it is used as a config key.
     validate_network_name(&cli.network)
         .map_err(|e| anyhow::anyhow!("invalid --network value: {e}"))?;
@@ -601,7 +650,14 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
-    let network_cfg = get_network(&networks, &cli.network).map_err(|e| anyhow::anyhow!(e))?;
+    let resolved = resolve_network(
+        &cli.network,
+        cli.config.as_deref(),
+        |var| std::env::var(var).ok(),
+        &cli.overrides,
+    )
+    .map_err(|e| anyhow::anyhow!(e))?;
+    let network_cfg = resolved.config.clone();
 
     // `config show` reports config problems instead of refusing to print.
     let is_config_show = matches!(
@@ -649,54 +705,68 @@ fn main() -> anyhow::Result<()> {
         Commands::Config { sub } => {
             match sub {
                 ConfigSub::Show => {
-                    let (path, _) = lafiya_config::load_network_config::<PathBuf>(
-                        &cli.network,
-                        cli.config.clone(),
-                    )?;
-                    println!("Network: {}", cli.network);
-                    println!("Config: {:?}", path);
-                    println!("RPC URL: {}", network_cfg.rpc_url);
-                    println!("Passphrase: {}", network_cfg.network_passphrase);
-                    println!(
-                        "Attester registry: {}",
-                        if network_cfg.contracts.attester_registry.is_empty() {
+                    let from = |key: &str| format!("  (from {})", resolved.sources[key]);
+                    let or_undeployed = |id: &str| {
+                        if id.is_empty() {
                             "<not deployed>".to_string()
                         } else {
-                            network_cfg.contracts.attester_registry.clone()
+                            id.to_string()
                         }
+                    };
+                    println!("Network: {}", cli.network);
+                    println!("Config: {:?}", resolved.config_path);
+                    println!("RPC URL: {}{}", network_cfg.rpc_url, from("rpc_url"));
+                    if !network_cfg.rpc_urls.is_empty() {
+                        println!(
+                            "RPC failover order: {}{}",
+                            network_cfg.rpc_urls.join(", "),
+                            from("rpc_urls")
+                        );
+                    }
+                    println!(
+                        "Passphrase: {}{}",
+                        network_cfg.network_passphrase,
+                        from("network_passphrase")
                     );
                     println!(
-                        "Attestation registry: {}",
-                        if network_cfg.contracts.attestation_registry.is_empty() {
-                            "<not deployed>".to_string()
-                        } else {
-                            network_cfg.contracts.attestation_registry.clone()
-                        }
+                        "Attester registry: {}{}",
+                        or_undeployed(&network_cfg.contracts.attester_registry),
+                        from("contracts.attester_registry")
+                    );
+                    println!(
+                        "Attestation registry: {}{}",
+                        or_undeployed(&network_cfg.contracts.attestation_registry),
+                        from("contracts.attestation_registry")
                     );
                     println!("Deployed: {}", network_cfg.is_deployed());
                     println!("Deployment status: {}", deployment_summary(&network_cfg));
                     println!("\nSecrets: NEVER stored in networks.toml. Use stellar identities or env vars.");
                 }
-                ConfigSub::List => {} // handled above
+                ConfigSub::List | ConfigSub::Schema => {} // handled above
                 ConfigSub::Env => {
                     println!(
-                        "# Source this with: eval $(lafiya-cli --network {} config env)",
+                        "# Source this with: eval \"$(lafiya-cli --network {} config env)\"",
                         cli.network
                     );
-                    println!("export LAFIYA_NETWORK={}", cli.network);
-                    println!("export LAFIYA_RPC_URL={}", network_cfg.rpc_url);
-                    println!(
-                        "export LAFIYA_NETWORK_PASSPHRASE={:?}",
-                        network_cfg.network_passphrase
-                    );
-                    println!(
-                        "export LAFIYA_ATTESTER_REGISTRY_ID={}",
-                        network_cfg.contracts.attester_registry
-                    );
-                    println!(
-                        "export LAFIYA_ATTESTATION_REGISTRY_ID={}",
-                        network_cfg.contracts.attestation_registry
-                    );
+                    for (var, value) in [
+                        ("LAFIYA_NETWORK", cli.network.as_str()),
+                        (
+                            "LAFIYA_CONFIG_PATH",
+                            &resolved.config_path.display().to_string(),
+                        ),
+                        ("LAFIYA_RPC_URL", &network_cfg.rpc_url),
+                        ("LAFIYA_NETWORK_PASSPHRASE", &network_cfg.network_passphrase),
+                        (
+                            "LAFIYA_ATTESTER_REGISTRY_ID",
+                            &network_cfg.contracts.attester_registry,
+                        ),
+                        (
+                            "LAFIYA_ATTESTATION_REGISTRY_ID",
+                            &network_cfg.contracts.attestation_registry,
+                        ),
+                    ] {
+                        println!("export {var}={}", shell_quote(value));
+                    }
                 }
             }
         }
@@ -2055,6 +2125,40 @@ mod tests {
     }
 
     // ── clap missing-argument errors ──────────────────────────────────────────
+
+    #[test]
+    fn set_flag_parses_key_value_pairs() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "--set",
+            "rpc_url=https://a.example/?x=1",
+            "config",
+            "show",
+        ])
+        .unwrap();
+        assert_eq!(
+            cli.overrides,
+            vec![("rpc_url".to_string(), "https://a.example/?x=1".to_string())]
+        );
+        assert!(Cli::try_parse_from(["lafiya-cli", "--set", "rpc_url", "config", "show"]).is_err());
+    }
+
+    #[test]
+    fn with_rpc_url_replaces_the_endpoint() {
+        let args: Vec<String> = ["contract", "invoke", "--rpc-url", "https://a", "--", "f"]
+            .map(String::from)
+            .to_vec();
+        assert_eq!(
+            with_rpc_url(&args, "https://b"),
+            ["contract", "invoke", "--rpc-url", "https://b", "--", "f"]
+        );
+    }
+
+    #[test]
+    fn shell_quote_escapes_single_quotes() {
+        assert_eq!(shell_quote("a ; b"), "'a ; b'");
+        assert_eq!(shell_quote("it's"), r"'it'\''s'");
+    }
 
     #[test]
     fn attester_add_missing_address_names_the_argument() {

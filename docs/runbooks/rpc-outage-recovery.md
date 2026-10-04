@@ -19,6 +19,36 @@ retry-classification model and the failure-injection prototype this runbook mirr
 
 ---
 
+## 0. What `lafiya-cli` already does for you
+
+`lafiya-cli attester add` / `attester remove` do **not** hand submission to a single
+`stellar contract invoke` call any more. The CLI:
+
+1. builds and simulates the transaction with `stellar contract invoke --build-only` and
+   `stellar tx simulate`, trying each endpoint in `rpc_urls` in order (these steps are
+   read-only);
+2. signs it locally (`stellar tx sign`) and computes its hash (`stellar tx hash`);
+3. submits it through `FailoverClient::submit_with_recovery` with the production
+   `HttpRpcProvider`, across every endpoint in `rpc_urls` (or just `rpc_url` when the list
+   is empty):
+   - connection refused, DNS failure, TLS failure, HTTP 429/503, or `TRY_AGAIN_LATER`:
+     nothing was recorded, so it retries on the next endpoint after a jittered backoff;
+   - timeout after the request was written, a reset mid-response, or another 5xx: the
+     outcome is ambiguous, so it **polls `getTransaction` on every endpoint** instead of
+     resubmitting;
+   - `ERROR` from `sendTransaction`, or `FAILED` from `getTransaction`: final, never retried.
+
+Pass `-v` to print the full recovery log (`[rpc] round 1: submit <hash> via <url>` …).
+The command ends in one of three ways:
+
+| CLI output | Meaning | What to do |
+| --- | --- | --- |
+| `Transaction <hash> succeeded in ledger <n> (via <url>)` | Landed. | Nothing. |
+| `transaction <hash> was rejected (<code>); do not resubmit it` | Final on-chain verdict. | See §3, last row. |
+| `outcome of transaction <hash> is unknown …` | Every endpoint exhausted without a verdict. | Keep the hash and go to [§3a](#3a-poll-the-transaction-hash), then [§5](#5-escalate). |
+
+The rest of this runbook covers the Bash scripts, other commands, and the "unknown" case.
+
 ## 1. Is this a read or a write?
 
 - **Read-only** (`config show`, `attester is`, `attestation get`, `stellar tx simulate`):
@@ -33,7 +63,10 @@ retry-classification model and the failure-injection prototype this runbook mirr
 check the command's stderr/stdout output first. If the process was killed before printing
 one (or you don't have the terminal output anymore):
 
-- For `attester add`/`remove` and `attest`: these are single-invocation calls signed and
+- For `lafiya-cli attester add`/`remove`: the hash is computed before anything is sent and
+  printed in every final message (and in the `-v` log). If the CLI stopped before printing
+  one, it failed while building, simulating, or signing, so nothing was submitted.
+- For `attest` and the Bash `scripts/admin.sh`: these are single-invocation calls signed and
   submitted in one step; if no hash was printed, the request most likely never reached the
   network (Definite failure — see §3, retry directly). This is the one case where "no hash"
   is itself informative.
@@ -98,8 +131,19 @@ Read `result.status`:
 
 ## 4. If the provider itself is down
 
-`config/networks.toml` currently defines one `rpc_url` per network (ADR-0011 proposes
-extending this to a list; until that lands, do this manually):
+List fallback endpoints per network in `rpc_urls` (primary first; `rpc_url` is used when
+the list is empty). `lafiya-cli` then fails over automatically (§0):
+
+```toml
+[testnet]
+rpc_url = "https://soroban-testnet.stellar.org"
+rpc_urls = ["https://soroban-testnet.stellar.org", "https://<second-provider>"]
+```
+
+For a one-off, don't edit the tracked file. Put the list in the gitignored
+`config/networks.local.toml`, or point `rpc_url` at a working provider with
+`LAFIYA_<NETWORK>_RPC_URL=...` or `--set rpc_url=...` (either one replaces the whole list;
+see `config/README.md`). For the Bash scripts and manual checks:
 
 1. Get a second known-good RPC URL for the same network (a different SDF endpoint, a
    self-hosted node, or a third-party provider — see ADR-0011's provider comparison matrix
@@ -111,10 +155,9 @@ extending this to a list; until that lands, do this manually):
    `NOT_FOUND` everywhere, treat it as safe to retry and re-run the original command,
    pointed at the working provider:
    ```sh
-   ./scripts/admin.sh --network testnet --config /path/to/alt-networks.toml attester add G...
+   LAFIYA_TESTNET_RPC_URL=https://<working-provider> ./scripts/admin.sh --network testnet attester add G...
    ```
-   (Use a scratch copy of `networks.toml` with `rpc_url` swapped — do not commit a
-   temporary provider override into the tracked config file.)
+   (Do not commit a temporary provider override into the tracked config file.)
 
 ## 5. Escalate
 

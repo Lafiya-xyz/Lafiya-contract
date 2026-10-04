@@ -14,12 +14,12 @@
 //! double-spend). Blindly giving up risks losing an operation that actually
 //! succeeded.
 //!
-//! This crate is not a Soroban RPC client. It is a small, dependency-free
-//! state machine that a real client can wrap: it classifies a submit
-//! failure as safe-to-retry or must-poll-first, and it implements the
-//! poll-before-retry recovery loop across an ordered list of providers.
-//! [`mock`] provides a scriptable fake provider so the exact failure
-//! sequences described in the ADR (timeout-before-send, ambiguous
+//! The core is a small state machine: it classifies a submit failure as
+//! safe-to-retry or must-poll-first, and it implements the poll-before-retry
+//! recovery loop across an ordered list of providers. [`http::HttpRpcProvider`]
+//! is the production provider over Soroban JSON-RPC. [`mock`] provides a
+//! scriptable fake provider so the exact failure sequences described in the
+//! ADR (timeout-before-send, ambiguous
 //! timeout-after-send, rate limiting, and a hard-down primary) can be
 //! reproduced deterministically in `tests/failure_injection.rs` and
 //! `examples/failure_injection_demo.rs` without a network or a live RPC
@@ -27,6 +27,9 @@
 
 use std::fmt;
 use std::time::Duration;
+
+/// Production [`RpcProvider`] over Soroban JSON-RPC.
+pub mod http;
 
 /// A scriptable fake [`RpcProvider`] for deterministically reproducing the
 /// failure sequences described in the ADR.
@@ -144,6 +147,25 @@ pub fn classify(outcome: &SubmitOutcome) -> RetryClass {
     }
 }
 
+/// A signed transaction ready for submission.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignedTx {
+    /// Hex hash of the signed envelope, computed locally. It does not change on
+    /// retry, which is what makes polling by hash meaningful.
+    pub hash: String,
+    /// Base64 `TransactionEnvelope` XDR sent to `sendTransaction`.
+    pub envelope_xdr: String,
+}
+
+impl SignedTx {
+    pub fn new(hash: impl Into<String>, envelope_xdr: impl Into<String>) -> Self {
+        SignedTx {
+            hash: hash.into(),
+            envelope_xdr: envelope_xdr.into(),
+        }
+    }
+}
+
 /// A Soroban RPC provider, reduced to the two calls this model cares about.
 /// A real implementation wraps an HTTP client and a provider's base URL; the
 /// [`mock::ScriptedProvider`] wraps a scripted sequence of outcomes instead.
@@ -151,10 +173,8 @@ pub trait RpcProvider {
     /// Human-readable identifier used in logs (e.g. a provider's hostname).
     fn name(&self) -> &str;
 
-    /// Attempt to submit the transaction with the given hash. `tx_hash` is
-    /// the hash of the already-signed envelope, computed locally -- it does
-    /// not change on retry, which is what makes polling by hash meaningful.
-    fn submit(&mut self, tx_hash: &str) -> SubmitOutcome;
+    /// Attempt to submit the already-signed transaction.
+    fn submit(&mut self, tx: &SignedTx) -> SubmitOutcome;
 
     /// Query the current on-chain state of a transaction by hash.
     fn get_transaction(&mut self, tx_hash: &str) -> Result<TxState, RpcError>;
@@ -276,6 +296,27 @@ pub fn backoff_schedule(attempt: u32, base: Duration, max: Duration) -> Duration
     base.checked_mul(factor).unwrap_or(max).min(max)
 }
 
+/// [`backoff_schedule`] with "equal jitter": a uniformly random delay in
+/// `[d/2, d]`, so clients retrying after a shared outage don't stampede the
+/// provider in lockstep. Used on the production path; tests keep the
+/// deterministic [`backoff_schedule`].
+pub fn backoff_with_jitter(attempt: u32, base: Duration, max: Duration) -> Duration {
+    let half = backoff_schedule(attempt, base, max) / 2;
+    half + half.mul_f64(random_unit())
+}
+
+/// Uniform value in `[0, 1)` from std's randomly keyed hasher; good enough for
+/// jitter without a `rand` dependency.
+fn random_unit() -> f64 {
+    use std::hash::BuildHasher;
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or_default();
+    let bits = std::collections::hash_map::RandomState::new().hash_one(nanos);
+    (bits >> 11) as f64 / (1u64 << 53) as f64
+}
+
 /// Tunables for [`FailoverClient`]. Defaults are deliberately conservative
 /// for an admin CLI making low-frequency, high-consequence calls, not a
 /// high-throughput indexer.
@@ -358,6 +399,8 @@ pub enum RecoveryResult {
 pub struct FailoverClient {
     providers: Vec<Box<dyn RpcProvider>>,
     policy: RetryPolicy,
+    backoff: fn(u32, Duration, Duration) -> Duration,
+    sleep: Box<dyn FnMut(Duration)>,
 }
 
 impl FailoverClient {
@@ -368,7 +411,26 @@ impl FailoverClient {
             !providers.is_empty(),
             "FailoverClient requires at least one RPC provider"
         );
-        FailoverClient { providers, policy }
+        FailoverClient {
+            providers,
+            policy,
+            backoff: backoff_schedule,
+            // No real waiting by default so tests stay fast; production callers
+            // pass `std::thread::sleep` via `with_sleep`.
+            sleep: Box::new(|_| {}),
+        }
+    }
+
+    /// Replace the backoff function (e.g. [`backoff_with_jitter`] in production).
+    pub fn with_backoff(mut self, backoff: fn(u32, Duration, Duration) -> Duration) -> Self {
+        self.backoff = backoff;
+        self
+    }
+
+    /// Wait between rounds with `sleep` (e.g. `std::thread::sleep`).
+    pub fn with_sleep(mut self, sleep: impl FnMut(Duration) + 'static) -> Self {
+        self.sleep = Box::new(sleep);
+        self
     }
 
     /// Submit `tx_hash` and drive it to a final verdict, failing over
@@ -466,7 +528,7 @@ impl FailoverClient {
                     return self.poll(tx_hash, bounds, submit_round, log);
                 }
                 SubmitOutcome::Definite(err) => {
-                    let backoff = backoff_schedule(
+                    let backoff = (self.backoff)(
                         submit_round,
                         self.policy.base_backoff,
                         self.policy.max_backoff,
@@ -480,6 +542,7 @@ impl FailoverClient {
                             last_known: TxState::NotSubmitted,
                         };
                     }
+                    (self.sleep)(backoff);
                 }
             }
         }
@@ -692,12 +755,15 @@ impl FailoverClient {
                 }
             }
 
-            let backoff = backoff_schedule(
+            let backoff = (self.backoff)(
                 poll_round,
                 self.policy.base_backoff,
                 self.policy.max_backoff,
             );
             log.record(format!("backing off {backoff:?} before next poll round"));
+            if poll_round < self.policy.max_poll_rounds {
+                (self.sleep)(backoff);
+            }
         }
 
         log.record(
@@ -731,6 +797,17 @@ mod tests {
             max,
             "large attempts must still cap, not overflow"
         );
+    }
+
+    #[test]
+    fn jittered_backoff_stays_within_half_to_full_delay() {
+        let base = Duration::from_millis(100);
+        let max = Duration::from_secs(5);
+        for attempt in 1..=10 {
+            let full = backoff_schedule(attempt, base, max);
+            let d = backoff_with_jitter(attempt, base, max);
+            assert!(d >= full / 2 && d <= full, "attempt {attempt}: {d:?}");
+        }
     }
 
     #[test]

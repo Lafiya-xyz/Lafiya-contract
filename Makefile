@@ -77,6 +77,12 @@ config-check:
 	./scripts/admin.sh --network $(NETWORK) config show
 	cargo test -p lafiya-config
 
+config-schema:
+	cargo run --quiet -p lafiya-cli -- config schema > config/networks.schema.json
+
+stellar-toml:
+	python3 scripts/generate_stellar_toml.py
+
 config-list:
 	./scripts/admin.sh --network $(NETWORK) config list
 

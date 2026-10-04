@@ -62,7 +62,7 @@ cargo run -p lafiya-cli -- --network local config env
 
 | Script | Purpose | Config Usage |
 |--------|---------|--------------|
-| `lib/config.sh` | Shared loader, parses TOML via python3 `tomllib`/`tomli`, exports `LAFIYA_*` vars | Source of truth |
+| `lib/config.sh` | Shared loader, evaluates `lafiya-cli config env` (same rules and overrides as the Rust CLI), exports `LAFIYA_*` vars | Source of truth |
 | `deploy.sh` | Builds WASM and deploys both contracts via `stellar contract deploy`, then `initialize`, updates `networks.toml` | `--network` flag, no hardcoded RPC/passphrase |
 | `deploy-testnet.sh` | Simpler deploy: relies on the `stellar` CLI's own configured networks (not `networks.toml`), writes results to `deployments/<network>.json` instead of updating the config | `--network`/`-n` flag, does **not** read `networks.toml` |
 | `admin.sh` | Bash admin CLI: attester allowlist mgmt, attestation queries | `--network` flag, same loader |

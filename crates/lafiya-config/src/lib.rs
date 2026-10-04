@@ -6,12 +6,18 @@
 
 pub mod record;
 
+pub mod layered;
 pub mod validation;
 
+use schemars::JsonSchema;
 use serde::Deserialize;
 use std::{collections::BTreeMap, fmt, fs, path::Path, path::PathBuf};
 use thiserror::Error;
 
+pub use layered::{
+    check_unknown_keys, env_var_name, local_override_path, resolve_network, suggest,
+    ResolvedNetwork, Source, OVERRIDE_KEYS,
+};
 pub use validation::{
     validate_account_address, validate_address, validate_contract_id, validate_network_name,
     validate_record_hash, validate_rpc_url, validate_source_account, AddressKind, ValidationError,
@@ -47,23 +53,42 @@ pub enum ConfigError {
     },
     #[error("{0}")]
     NotDeployed(String),
+    #[error("unknown key `{key}` in {location}{hint}")]
+    UnknownKey {
+        location: String,
+        key: String,
+        /// ` (did you mean `...`?)` when a close valid key exists, else empty.
+        hint: String,
+    },
+    #[error("{location}: `{key}` must be a string")]
+    OverrideNotString { location: String, key: String },
 }
 
-#[derive(Debug, Clone, Deserialize, Default)]
+/// Deployed contract ids of a network. An empty string means "not deployed".
+#[derive(Debug, Clone, Deserialize, Default, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct ContractIds {
-    #[serde(default)]
+    /// `C...` contract id of the attester registry, or "" when not deployed.
     pub attester_registry: String,
-    #[serde(default)]
+    /// `C...` contract id of the attestation registry, or "" when not deployed.
     pub attestation_registry: String,
     #[serde(default)]
     pub incentive_pool: String,
 }
 
-#[derive(Debug, Clone, Deserialize)]
+/// One network profile in `config/networks.toml`.
+#[derive(Debug, Clone, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct NetworkConfig {
+    /// Soroban JSON-RPC endpoint (http:// or https://). Used when `rpc_urls` is empty.
     pub rpc_url: String,
-    pub network_passphrase: String,
+    /// Ordered RPC endpoints for failover (primary first). Falls back to
+    /// `rpc_url` when empty (ADR-0011).
     #[serde(default)]
+    pub rpc_urls: Vec<String>,
+    /// Stellar network passphrase.
+    pub network_passphrase: String,
+    /// Deployed contract ids for this network.
     pub contracts: ContractIds,
 }
 
@@ -107,6 +132,15 @@ impl NetworkConfig {
             && !self.contracts.attestation_registry.is_empty()
     }
 
+    /// RPC endpoints in failover order: `rpc_urls`, or `[rpc_url]` when it is empty.
+    pub fn rpc_endpoints(&self) -> Vec<&str> {
+        if self.rpc_urls.is_empty() {
+            vec![self.rpc_url.as_str()]
+        } else {
+            self.rpc_urls.iter().map(String::as_str).collect()
+        }
+    }
+
     /// Contract id for `kind`, or an empty string when it has not been deployed.
     pub fn contract_id(&self, kind: ContractKind) -> &str {
         match kind {
@@ -145,6 +179,9 @@ impl NetworkConfig {
             };
 
         validate_rpc_url("rpc_url", &self.rpc_url).map_err(|e| invalid("rpc_url", e))?;
+        for url in &self.rpc_urls {
+            validate_rpc_url("rpc_urls", url).map_err(|e| invalid("rpc_urls", e))?;
+        }
         if self.network_passphrase.trim().is_empty() {
             return Err(invalid(
                 "network_passphrase",
@@ -204,6 +241,17 @@ impl NetworkConfig {
 
 pub type Networks = BTreeMap<String, NetworkConfig>;
 
+/// JSON Schema for `config/networks.toml`, committed as
+/// `config/networks.schema.json` so editors (Taplo / Even Better TOML) can
+/// validate the file as it is typed.
+pub fn json_schema() -> String {
+    let mut schema = schemars::schema_for!(Networks);
+    schema.insert("title".into(), "Lafiya networks.toml".into());
+    let mut out = serde_json::to_string_pretty(&schema).expect("schema serializes");
+    out.push('\n');
+    out
+}
+
 /// Default path resolution: try current dir config/networks.toml, then parent vyhled up to 3 levels,
 /// and finally relative to this crate if used in repo.
 pub fn default_config_path() -> PathBuf {
@@ -248,10 +296,15 @@ pub fn load_networks<P: AsRef<Path>>(path: Option<P>) -> Result<Networks, Config
         source: e,
     })?;
 
-    let networks: Networks = toml::from_str(&content).map_err(|e| ConfigError::ParseError {
+    let parse_error = |e| ConfigError::ParseError {
         path: config_path.clone(),
         source: Box::new(e),
-    })?;
+    };
+    // Check keys first so a typo is reported with a suggestion instead of
+    // serde's generic "unknown field" error.
+    let table: toml::Table = toml::from_str(&content).map_err(parse_error)?;
+    check_unknown_keys(&config_path.display().to_string(), &table)?;
+    let networks: Networks = toml::from_str(&content).map_err(parse_error)?;
 
     Ok(networks)
 }
@@ -364,6 +417,7 @@ incentive_pool = ""
     fn network(attester: &str, attestation: &str) -> NetworkConfig {
         NetworkConfig {
             rpc_url: "https://soroban-testnet.stellar.org".to_string(),
+            rpc_urls: Vec::new(),
             network_passphrase: "Test SDF Network ; September 2015".to_string(),
             contracts: ContractIds {
                 attester_registry: attester.to_string(),
@@ -503,10 +557,93 @@ incentive_pool = ""
     #[test]
     fn missing_config_error_includes_path() {
         let missing = PathBuf::from("/tmp/lafiya-missing-config/networks.toml");
-        let err = load_networks::<PathBuf>(Some(&missing)).unwrap_err();
+        let err = load_networks(Some(&missing)).unwrap_err();
         let msg = err.to_string();
         assert!(msg.contains("config/networks.toml not found at"));
         assert!(msg.contains(&missing.to_string_lossy().to_string()));
+    }
+
+    fn load_str(content: &str) -> Result<Networks, ConfigError> {
+        let mut file = NamedTempFile::new().unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        load_networks(Some(file.path()))
+    }
+
+    #[test]
+    fn unknown_contract_key_fails_with_suggestion() {
+        let err = load_str(&sample_toml().replace(
+            "attester_registry = \"CA6P...\"",
+            "atester_registry = \"CA6P...\"",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("unknown key `testnet.contracts.atester_registry`"),
+            "{err}"
+        );
+        assert!(err.contains("did you mean `attester_registry`?"), "{err}");
+    }
+
+    #[test]
+    fn unknown_section_fails_with_suggestion() {
+        let err = load_str(&sample_toml().replace("[testnet.contracts]", "[testnet.contract]"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown key `testnet.contract`"), "{err}");
+        assert!(err.contains("did you mean `contracts`?"), "{err}");
+    }
+
+    #[test]
+    fn unknown_key_without_close_match_has_no_suggestion() {
+        let err = load_str(&sample_toml().replace(
+            "[local.contracts]",
+            "private_key = \"S...\"\n\n[local.contracts]",
+        ))
+        .unwrap_err()
+        .to_string();
+        assert!(err.contains("unknown key `local.private_key`"), "{err}");
+        assert!(!err.contains("did you mean"), "{err}");
+    }
+
+    #[test]
+    fn missing_contracts_section_is_rejected() {
+        let err =
+            load_str("[local]\nrpc_url = \"http://localhost:8000\"\nnetwork_passphrase = \"x\"\n")
+                .unwrap_err()
+                .to_string();
+        assert!(err.contains("contracts"), "{err}");
+    }
+
+    #[test]
+    fn rpc_urls_take_precedence_over_rpc_url() {
+        let mut cfg = network("", "");
+        assert_eq!(
+            cfg.rpc_endpoints(),
+            vec!["https://soroban-testnet.stellar.org"]
+        );
+        cfg.rpc_urls = vec!["https://a.example".into(), "https://b.example".into()];
+        assert_eq!(
+            cfg.rpc_endpoints(),
+            vec!["https://a.example", "https://b.example"]
+        );
+        assert!(cfg.validate("testnet").is_ok());
+        cfg.rpc_urls.push("ftp://bad".into());
+        assert!(cfg.validate("testnet").is_err());
+    }
+
+    #[test]
+    fn committed_json_schema_is_up_to_date() {
+        let path =
+            PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../config/networks.schema.json");
+        let expected = json_schema();
+        if std::env::var_os("LAFIYA_UPDATE_SCHEMA").is_some() {
+            fs::write(&path, &expected).unwrap();
+        }
+        let committed = fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == expected,
+            "config/networks.schema.json is stale; regenerate with `make config-schema`"
+        );
     }
 
     #[test]

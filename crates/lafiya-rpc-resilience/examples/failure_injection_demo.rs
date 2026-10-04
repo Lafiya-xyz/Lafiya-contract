@@ -15,7 +15,8 @@
 
 use lafiya_rpc_resilience::mock::ScriptedProvider;
 use lafiya_rpc_resilience::{
-    FailoverClient, RecoveryLog, RetryPolicy, RpcError, RpcProvider, SubmitOutcome, TxState,
+    FailoverClient, RecoveryLog, RetryPolicy, RpcError, RpcProvider, SignedTx, SubmitOutcome,
+    TxState,
 };
 use std::time::Duration;
 
@@ -32,7 +33,7 @@ fn run(title: &str, tx_hash: &str, providers: Vec<Box<dyn RpcProvider>>) {
     println!("=== {title} ===");
     let mut client = FailoverClient::new(providers, policy());
     let mut log = RecoveryLog::new();
-    let result = client.submit_with_recovery(tx_hash, &mut log);
+    let result = client.submit_with_recovery(&SignedTx::new(tx_hash, ""), &mut log);
     for line in log.lines() {
         println!("  {line}");
     }
