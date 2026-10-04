@@ -1,0 +1,242 @@
+[
+  {
+    "kind": "AdminTransferred",
+    "raw": {
+      "id": "0000004294967296000-0000000000",
+      "ledger": 1000,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABFhZG1pbl90cmFuc2ZlcnJlZAAAAA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "AAAAEgAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "previousAdmin": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR",
+      "newAdmin": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+    }
+  },
+  {
+    "kind": "AttestationRecorded",
+    "raw": {
+      "id": "0000004299262263296-0000000000",
+      "ledger": 1001,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0101010101010101010101010101010101010101010101010101010101010101",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABRhdHRlc3RhdGlvbl9yZWNvcmRlZA==",
+        "AAAADQAAACCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoA=="
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAAhhdHRlc3RlcgAAABIAAAAAAAAAAIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOUAAAADwAAAAl0aW1lc3RhbXAAAAAAAAAFAAAAAGlBggA="
+    },
+    "expected": {
+      "recordHash": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0",
+      "attester": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "timestamp": "1765900800"
+    }
+  },
+  {
+    "kind": "AttestationRevoked",
+    "raw": {
+      "id": "0000004303557230592-0000000000",
+      "ledger": 1002,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0202020202020202020202020202020202020202020202020202020202020202",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABNhdHRlc3RhdGlvbl9yZXZva2VkAA==",
+        "AAAADQAAACCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoA=="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "recordHash": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+    }
+  },
+  {
+    "kind": "AttesterAdded",
+    "raw": {
+      "id": "0000004307852197888-0000000000",
+      "ledger": 1003,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0303030303030303030303030303030303030303030303030303030303030303",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAA5hdHRlc3Rlcl9hZGRlZAAA",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "attester": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "AttesterInfoUpdated",
+    "raw": {
+      "id": "0000004312147165184-0000000000",
+      "ledger": 1004,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0404040404040404040404040404040404040404040404040404040404040404",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABVhdHRlc3Rlcl9pbmZvX3VwZGF0ZWQAAAA=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "attester": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "AttesterRegistryRepointed",
+    "raw": {
+      "id": "0000004316442132480-0000000000",
+      "ledger": 1005,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0505050505050505050505050505050505050505050505050505050505050505",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABthdHRlc3Rlcl9yZWdpc3RyeV9yZXBvaW50ZWQA",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "AAAAEgAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "previous": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR",
+      "new": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+    }
+  },
+  {
+    "kind": "AttesterReinstated",
+    "raw": {
+      "id": "0000004320737099776-0000000000",
+      "ledger": 1006,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0606060606060606060606060606060606060606060606060606060606060606",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABNhdHRlc3Rlcl9yZWluc3RhdGVkAA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "attester": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "AttesterRemoved",
+    "raw": {
+      "id": "0000004325032067072-0000000000",
+      "ledger": 1007,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0707070707070707070707070707070707070707070707070707070707070707",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABBhdHRlc3Rlcl9yZW1vdmVk",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "attester": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "AttesterSuspended",
+    "raw": {
+      "id": "0000004329327034368-0000000000",
+      "ledger": 1008,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0808080808080808080808080808080808080808080808080808080808080808",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABJhdHRlc3Rlcl9zdXNwZW5kZWQAAA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "attester": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "Initialized",
+    "raw": {
+      "id": "0000004333622001664-0000000000",
+      "ledger": 1009,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0909090909090909090909090909090909090909090909090909090909090909",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAAtpbml0aWFsaXplZAA=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "admin": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "Paused",
+    "raw": {
+      "id": "0000004337916968960-0000000000",
+      "ledger": 1010,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAAZwYXVzZWQAAA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "by": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "Unpaused",
+    "raw": {
+      "id": "0000004342211936256-0000000000",
+      "ledger": 1011,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAAh1bnBhdXNlZA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "by": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "Upgraded",
+    "raw": {
+      "id": "0000004346506903552-0000000000",
+      "ledger": 1012,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAAh1cGdyYWRlZA==",
+        "AAAADQAAACCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoA=="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "newWasmHash": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+    }
+  }
+]

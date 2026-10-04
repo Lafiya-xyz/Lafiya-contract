@@ -14,6 +14,7 @@
   "events": [
     { "contract": "attester-registry", "name": "AttesterAdded" },
     { "contract": "attester-registry", "name": "AttesterRemoved" },
+    { "contract": "attester-registry", "name": "AttesterRevoked" },
     { "contract": "attestation-registry", "name": "AttestationRecorded" },
     { "contract": "attestation-registry", "name": "AttestationRevoked" }
   ]

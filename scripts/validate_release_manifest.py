@@ -11,17 +11,19 @@ cross-check internal consistency the JSON Schema alone can't express:
 Usage:
     scripts/validate_release_manifest.py MANIFEST.json
 """
+
 import argparse
 import json
 import sys
 from pathlib import Path
+from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "docs" / "release-manifest" / "schema.json"
 
 
-def cross_check(manifest):
-    errors = []
+def cross_check(manifest: dict[str, Any]) -> list[str]:
+    errors: list[str] = []
     wasm_by_contract = {c["name"]: c["wasm"]["sha256"] for c in manifest.get("contracts", [])}
     for binding in manifest.get("bindings", []):
         contract = binding["contract"]
@@ -35,7 +37,7 @@ def cross_check(manifest):
     return errors
 
 
-def main():
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("manifest", type=Path, help="path to the release manifest JSON to validate")
     args = parser.parse_args()
@@ -53,7 +55,7 @@ def main():
         return 2
 
     validator = jsonschema.Draft202012Validator(schema)
-    schema_errors = sorted(validator.iter_errors(manifest), key=lambda e: e.path)
+    schema_errors = sorted(validator.iter_errors(manifest), key=lambda e: list(e.path))
     for err in schema_errors:
         path = "/".join(str(p) for p in err.path) or "<root>"
         print(f"schema error at {path}: {err.message}", file=sys.stderr)
@@ -64,7 +66,8 @@ def main():
 
     if schema_errors or consistency_errors:
         print(
-            f"FAIL: {len(schema_errors)} schema error(s), {len(consistency_errors)} consistency error(s)",
+            f"FAIL: {len(schema_errors)} schema error(s), "
+            f"{len(consistency_errors)} consistency error(s)",
             file=sys.stderr,
         )
         return 1

@@ -1,0 +1,10 @@
+Network:     Test SDF Network ; September 2015  (config 'testnet')
+Authorizer:  CCVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKVKUD2U (known: registry-admin multisig)
+Nonce:       42
+Expires:     ledger 1234567  (~6h0m from now)
+Invocation:
+  └─ CAAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQCAIBAEAQC526 (known: attester-registry)
+       upgrade(new_wasm_hash: BytesN<32> = 9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f9f)
+       Sub-invocations: none
+Asset movements: none
+Payload hash:  2aea9e1e1115e0767ff00bd924b6470bb0bea6ca8ea4b94704b450b223445ff0  (recomputed locally)

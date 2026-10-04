@@ -7,7 +7,9 @@
 //! hash, admin/source account) is validated locally before the stellar CLI is
 //! invoked, so malformed input fails fast with an actionable message.
 
-mod trust;
+mod audit;
+mod auth_decode;
+mod logging;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -20,9 +22,14 @@ use lafiya_rpc_resilience::{
     backoff_with_jitter, http::HttpRpcProvider, FailoverClient, RecoveryLog, RecoveryResult,
     RetryPolicy, RpcProvider, SignedTx,
 };
-use std::io::Write;
+use std::collections::BTreeMap;
+use std::io::{BufRead, BufReader};
 use std::path::PathBuf;
 use std::process::{Command, Stdio};
+
+mod interface;
+mod deployment_ledger;
+use deployment_ledger::{DeployEvent, DeploymentRecord};
 
 /// Env var holding the stellar CLI identity used as transaction source.
 const ENV_SOURCE: &str = "STELLAR_ACCOUNT";
@@ -43,14 +50,13 @@ struct Cli {
     #[arg(long, global = true)]
     config: Option<PathBuf>,
 
-    /// Override one config value for this invocation, e.g. `--set rpc_url=https://...`.
-    /// Takes precedence over LAFIYA_<NETWORK>_<KEY> env vars and networks.local.toml.
-    #[arg(long = "set", value_name = "KEY=VALUE", global = true, value_parser = parse_override)]
-    overrides: Vec<(String, String)>,
+    /// Log output format (logs go to stderr)
+    #[arg(long, value_enum, default_value = "text", global = true)]
+    log_format: logging::LogFormat,
 
-    /// Print the RPC recovery log of every submitted transaction
-    #[arg(short, long, global = true)]
-    verbose: bool,
+    /// Increase log verbosity (-v debug, -vv trace)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
 
     #[command(subcommand)]
     command: Commands,
@@ -78,6 +84,22 @@ enum Commands {
         #[command(subcommand)]
         sub: AttestationSub,
     },
+    /// Decode authorization entries for signer review (ADR-0007)
+    Auth {
+        #[command(subcommand)]
+        sub: AuthSub,
+    },
+    /// Inspect the local operation audit log
+    Audit {
+        #[command(subcommand)]
+        sub: AuditSub,
+    },
+    /// Negotiate the interface of a deployed contract via `get_interface`
+    Interface {
+        /// Which contract to query
+        #[arg(value_enum)]
+        contract: InterfaceTarget,
+    },
     /// Deploy contracts (wrapper around scripts/deploy.sh logic, but uses same config)
     Deploy {
         /// Build only, don't deploy
@@ -93,6 +115,59 @@ enum Commands {
         #[arg(long)]
         admin: Option<String>,
     },
+    /// Append-only per-network deployment history (deployments/<network>.jsonl)
+    Deployments {
+        #[command(subcommand)]
+        sub: DeploymentsSub,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum DeploymentsSub {
+    /// Append one event record to deployments/<network>.jsonl.
+    ///
+    /// Called automatically by scripts/deploy.sh and scripts/upgrade.sh after
+    /// on-chain confirmation; can also be run by hand for an out-of-band
+    /// change (e.g. admin_transfer).
+    Record {
+        /// deploy | initialize | upgrade | migrate | admin_transfer | repoint
+        #[arg(long)]
+        event: String,
+        /// attester-registry | attestation-registry | multisig-account
+        #[arg(long)]
+        contract_kind: String,
+        /// The affected contract's Stellar contract ID (C...)
+        #[arg(long)]
+        contract_id: String,
+        /// Path to the wasm now running, to compute wasm_sha256 (omit for
+        /// events that don't change code, e.g. admin_transfer)
+        #[arg(long)]
+        wasm: Option<PathBuf>,
+        /// sha256 of the wasm this event replaced (upgrade/migrate)
+        #[arg(long)]
+        previous_wasm_sha256: Option<String>,
+        /// Confirmed transaction hash. Omit only if it genuinely could not
+        /// be captured -- the record is still appended with tx_hash: null,
+        /// but `deployments verify` cannot confirm it against the chain.
+        #[arg(long)]
+        tx_hash: Option<String>,
+        /// Ledger sequence the transaction closed in, if known
+        #[arg(long)]
+        ledger: Option<u32>,
+        /// Identity/signer-set that authorized this event
+        #[arg(long)]
+        operator: String,
+    },
+    /// Verify a network's ledger file: hash chain intact, ledgers
+    /// monotonic, required fields present. Offline check only -- does not
+    /// query the chain (see deployments/README.md).
+    Verify,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug)]
+enum InterfaceTarget {
+    Attester,
+    Attestation,
 }
 
 #[derive(Subcommand, Debug)]
@@ -159,16 +234,65 @@ enum AttesterSub {
 }
 
 #[derive(Subcommand, Debug)]
+enum AuthSub {
+    /// Render a SorobanAuthorizationEntry or TransactionEnvelope (base64 XDR,
+    /// or a path to a file containing it) as a human-readable tree
+    Decode {
+        /// Base64 XDR, or a path to a file containing it
+        input: String,
+        /// Output format
+        #[arg(long, value_enum, default_value = "text")]
+        format: DecodeFormat,
+        /// Extra known address label, as ADDRESS=NAME (repeatable)
+        #[arg(long = "label")]
+        labels: Vec<String>,
+        /// Current ledger sequence, to show how soon the entry expires
+        #[arg(long)]
+        current_ledger: Option<u32>,
+    },
+}
+
+#[derive(Debug, Clone, Copy, clap::ValueEnum)]
+enum DecodeFormat {
+    Text,
+    Json,
+}
+
+#[derive(Subcommand, Debug)]
+enum AuditSub {
+    /// Print the audit log (LAFIYA_AUDIT_LOG or ~/.lafiya/audit.jsonl)
+    Show,
+    /// Verify the audit log hash chain
+    Verify,
+}
+
+#[derive(Subcommand, Debug)]
 enum AttestationSub {
     /// Get attestation for a record hash (hex encoded 32-byte hash)
     Get {
         /// Hex string of 32-byte record hash (64 chars)
         record_hash: String,
     },
+    /// Compute the versioned, domain-separated hash of a local record JSON file
+    Hash {
+        /// Path to the record JSON file
+        record: PathBuf,
+    },
+    /// Verify a local record JSON file against its on-chain attestation
+    Verify {
+        /// Path to the record JSON file
+        record: PathBuf,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
+    let _log_guard = logging::init(cli.log_format, cli.verbose);
+
+    // The audit log is local and needs no network config.
+    if let Commands::Audit { sub } = &cli.command {
+        return run_audit(sub);
+    }
 
     if let Commands::Config {
         sub: ConfigSub::Schema,
@@ -233,6 +357,33 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
+        Commands::Audit { .. } => {} // handled above
+        Commands::Auth {
+            sub:
+                AuthSub::Decode {
+                    input,
+                    format,
+                    labels,
+                    current_ledger,
+                },
+        } => {
+            let _span = tracing::info_span!("auth.decode", network = %cli.network).entered();
+            let raw = match std::fs::read_to_string(&input) {
+                Ok(contents) => contents,
+                Err(_) => input,
+            };
+            let ctx = auth_decode::DecodeContext {
+                network_name: cli.network.clone(),
+                network_passphrase: network_cfg.network_passphrase.clone(),
+                labels: known_labels(&network_cfg, &labels)?,
+                current_ledger,
+            };
+            let entries = auth_decode::decode_input(&raw, &ctx)?;
+            match format {
+                DecodeFormat::Text => print!("{}", auth_decode::render_text(&entries, &ctx)),
+                DecodeFormat::Json => println!("{}", serde_json::to_string_pretty(&entries)?),
+            }
+        }
         Commands::Config { sub } => {
             match sub {
                 ConfigSub::Show => {
@@ -343,7 +494,15 @@ fn main() -> anyhow::Result<()> {
                     "add_attester",
                     &["--attester", &address],
                 );
-                submit_invocation(&network_cfg, args, source, cli.verbose)?;
+                run_audited(
+                    "attester add",
+                    &cli.network,
+                    contract_id,
+                    "add_attester",
+                    &[&address],
+                    source.as_deref(),
+                    args,
+                )?;
             }
             AttesterSub::Remove { address, source } => {
                 let contract_id = network_cfg
@@ -360,7 +519,15 @@ fn main() -> anyhow::Result<()> {
                     "remove_attester",
                     &["--attester", &address],
                 );
-                submit_invocation(&network_cfg, args, source, cli.verbose)?;
+                run_audited(
+                    "attester remove",
+                    &cli.network,
+                    contract_id,
+                    "remove_attester",
+                    &[&address],
+                    source.as_deref(),
+                    args,
+                )?;
             }
         },
         Commands::Attestation { sub } => match sub {
@@ -390,61 +557,82 @@ fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+            AttestationSub::Hash { record } => {
+                let content = std::fs::read_to_string(&record)?;
+                let rec: lafiya_config::record::EmergencyRecord = serde_json::from_str(&content)?;
+                let hash_bytes = rec.hash()?;
+                let hash_hex: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                println!("Canonicalized JSON: {}", rec.canonicalize()?);
+                println!("Computed Hash (hex): {}", hash_hex);
+            }
+            AttestationSub::Verify { record } => {
+                if network_cfg.contracts.attestation_registry.is_empty() {
+                    anyhow::bail!("attestation_registry not deployed for '{}'", cli.network);
+                }
+                let content = std::fs::read_to_string(&record)?;
+                let rec: lafiya_config::record::EmergencyRecord = serde_json::from_str(&content)?;
+                let hash_bytes = rec.hash()?;
+                let hash_hex: String = hash_bytes.iter().map(|b| format!("{:02x}", b)).collect();
+                println!("Verifying record hash: {}", hash_hex);
+                let args = [
+                    "contract",
+                    "invoke",
+                    "--id",
+                    &network_cfg.contracts.attestation_registry,
+                    "--rpc-url",
+                    &network_cfg.rpc_url,
+                    "--network-passphrase",
+                    &network_cfg.network_passphrase,
+                    "--",
+                    "get_attestation",
+                    "--record_hash",
+                    &hash_hex,
+                ];
+                println!("> stellar {}", args.join(" "));
+                if which::which("stellar").is_ok() {
+                    let status = std::process::Command::new("stellar").args(args).status()?;
+                    if !status.success() {
+                        anyhow::bail!("stellar CLI failed");
+                    }
+                } else {
+                    eprintln!(
+                        "stellar CLI not found — install with cargo install --locked stellar-cli"
+                    );
+                }
+            }
         },
-        Commands::Trust {
-            sub:
-                TrustSub::Verify {
-                    domain,
-                    ca_cert,
-                    skip_chain,
-                },
-        } => {
-            let ca_pem = ca_cert
-                .map(|p| std::fs::read(&p).with_context(|| format!("reading {}", p.display())))
-                .transpose()?;
-            println!("Fetching {}", trust::stellar_toml_url(&domain));
-            let published = trust::parse(&trust::fetch(&domain, ca_pem.as_deref())?)?;
-            let (matched, mut problems) =
-                trust::compare_with_config(&published, &cli.network, &network_cfg);
-            for entry in &matched {
-                println!(
-                    "OK   {} contract id {} matches local config",
-                    entry.name, entry.contract_id
-                );
-                if skip_chain {
-                    continue;
+        Commands::Interface { contract } => {
+            let (kind, req) = match contract {
+                InterfaceTarget::Attester => {
+                    (ContractKind::AttesterRegistry, interface::ATTESTER_REGISTRY)
                 }
-                let mut onchain = Err(anyhow::anyhow!("no RPC endpoint configured"));
-                for url in network_cfg.rpc_endpoints() {
-                    onchain = trust::onchain_wasm_hash(url, &entry.contract_id);
-                    if onchain.is_ok() {
-                        break;
-                    }
-                }
-                match onchain {
-                    Ok(hash) if hash.eq_ignore_ascii_case(&entry.wasm_hash) => {
-                        println!("OK   {} on-chain wasm hash {hash}", entry.name)
-                    }
-                    Ok(hash) => problems.push(format!(
-                        "{}: stellar.toml wasm hash {} but on-chain instance runs {hash}",
-                        entry.name, entry.wasm_hash
-                    )),
-                    Err(e) => problems.push(format!("{}: {e:#}", entry.name)),
-                }
-            }
-            for problem in &problems {
-                eprintln!("FAIL {problem}");
-            }
-            if !problems.is_empty() {
+                InterfaceTarget::Attestation => (
+                    ContractKind::AttestationRegistry,
+                    interface::ATTESTATION_REGISTRY,
+                ),
+            };
+            let contract_id = network_cfg
+                .require_contract_id(&cli.network, kind)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            if which::which("stellar").is_err() {
                 anyhow::bail!(
-                    "stellar.toml for {domain} has {} mismatch(es)",
-                    problems.len()
+                    "stellar CLI not found - install with cargo install --locked stellar-cli"
                 );
             }
-            println!(
-                "stellar.toml for {domain} matches network '{}'",
-                cli.network
-            );
+            let args = invoke_args(&network_cfg, contract_id, None, "get_interface", &[]);
+            let output = std::process::Command::new("stellar").args(args).output()?;
+            let raw = output
+                .status
+                .success()
+                .then(|| String::from_utf8_lossy(&output.stdout).into_owned());
+            let info = interface::negotiate(contract_id, raw.as_deref(), req)
+                .map_err(|e| anyhow::anyhow!(e))?;
+            println!("Contract: {contract_id}");
+            println!("Kind: {}", info.contract_kind);
+            println!("Interface version: {}", info.interface_version);
+            println!("Schema version: {}", info.schema_version);
+            println!("Event version: {}", info.event_version);
+            println!("Features: {}", info.features.join(", "));
         }
         Commands::Deploy {
             build_only,
@@ -490,6 +678,68 @@ fn main() -> anyhow::Result<()> {
                 );
             }
         }
+        Commands::Deployments { sub } => match sub {
+            DeploymentsSub::Record {
+                event,
+                contract_kind,
+                contract_id,
+                wasm,
+                previous_wasm_sha256,
+                tx_hash,
+                ledger,
+                operator,
+            } => {
+                let event: DeployEvent = event
+                    .parse()
+                    .map_err(|e: String| anyhow::anyhow!(e))?;
+                let wasm_sha256 = wasm
+                    .as_deref()
+                    .map(wasm_sha256_hex)
+                    .transpose()
+                    .context("failed to hash --wasm")?;
+                if tx_hash.is_none() {
+                    eprintln!(
+                        "WARNING: no --tx-hash supplied; recording with tx_hash: null. \
+                         `deployments verify` cannot confirm this record against the chain."
+                    );
+                }
+                let record = DeploymentRecord {
+                    event,
+                    contract_kind,
+                    contract_id,
+                    wasm_sha256,
+                    previous_wasm_sha256,
+                    tx_hash,
+                    ledger,
+                    timestamp: chrono::Utc::now().to_rfc3339(),
+                    git_commit: git_commit_hash().unwrap_or_else(|_| "unknown".to_string()),
+                    release_version: env!("CARGO_PKG_VERSION").to_string(),
+                    operator,
+                    prev_record_sha256: None,
+                };
+                let dir = deployments_dir();
+                let path = deployment_ledger::append(&dir, &cli.network, record)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                println!("Appended deployment record to {}", path.display());
+            }
+            DeploymentsSub::Verify => {
+                let dir = deployments_dir();
+                let report = deployment_ledger::verify(&dir, &cli.network)
+                    .map_err(|e| anyhow::anyhow!(e))?;
+                println!(
+                    "Checked {} record(s) for network {}",
+                    report.records_checked, cli.network
+                );
+                if report.is_ok() {
+                    println!("OK: ledger is internally consistent.");
+                } else {
+                    for err in &report.errors {
+                        eprintln!("ERROR: {err}");
+                    }
+                    anyhow::bail!("{} error(s) found in deployment ledger", report.errors.len());
+                }
+            }
+        },
     }
 
     Ok(())
@@ -608,7 +858,7 @@ fn invoke_args(
         "--id".to_string(),
         contract_id.to_string(),
         "--rpc-url".to_string(),
-        cfg.rpc_endpoints()[0].to_string(),
+        cfg.rpc_url.clone(),
         "--network-passphrase".to_string(),
         cfg.network_passphrase.clone(),
     ];
@@ -622,152 +872,125 @@ fn invoke_args(
     args
 }
 
-/// Run `stellar` with `args`, feeding `stdin`, and return its trimmed stdout.
-fn stellar_output(args: &[String], stdin: Option<&str>) -> anyhow::Result<String> {
+/// Print and run a stellar CLI invocation, failing loudly if it is unavailable.
+/// Run a mutating stellar CLI invocation and return the submitted
+/// transaction hash when the CLI reports one. Stderr is streamed through so
+/// the operator still sees progress.
+fn run_stellar(args: Vec<String>) -> anyhow::Result<Option<String>> {
+    tracing::info!(command = %format!("stellar {}", args.join(" ")), "invoking stellar CLI");
     if which::which("stellar").is_err() {
         anyhow::bail!("stellar CLI not found");
     }
-    let mut child = Command::new("stellar")
+    let started = std::time::Instant::now();
+    let mut child = std::process::Command::new("stellar")
         .args(args)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::inherit())
+        .stderr(std::process::Stdio::piped())
         .spawn()?;
-    if let Some(input) = stdin {
-        child
-            .stdin
-            .take()
-            .expect("stdin is piped")
-            .write_all(input.as_bytes())?;
+    let mut tx_hash = None;
+    if let Some(stderr) = child.stderr.take() {
+        for line in BufReader::new(stderr).lines() {
+            let line = line?;
+            eprintln!("{}", logging::redact(&line));
+            if tx_hash.is_none() && line.to_ascii_lowercase().contains("transaction") {
+                tx_hash = line
+                    .split(|c: char| !c.is_ascii_hexdigit())
+                    .find(|w| w.len() == 64)
+                    .map(str::to_string);
+            }
+        }
     }
-    let output = child.wait_with_output()?;
-    if !output.status.success() {
-        anyhow::bail!("stellar {} failed", args.first().map_or("", |a| a.as_str()));
+    let status = child.wait()?;
+    tracing::info!(
+        latency_ms = started.elapsed().as_millis() as u64,
+        success = status.success(),
+        tx_hash = tx_hash.as_deref().unwrap_or(""),
+        "stellar CLI finished"
+    );
+    if !status.success() {
+        anyhow::bail!("stellar CLI failed");
     }
-    Ok(String::from_utf8(output.stdout)?.trim().to_string())
+    Ok(tx_hash)
 }
 
-/// `args` with every `--rpc-url` value replaced by `url`.
-fn with_rpc_url(args: &[String], url: &str) -> Vec<String> {
-    let mut args = args.to_vec();
-    if let Some(i) = args.iter().position(|a| a == "--rpc-url") {
-        args[i + 1] = url.to_string();
-    }
-    args
-}
-
-/// Build, simulate and sign a `stellar contract invoke` transaction, then
-/// submit it through [`FailoverClient`] across every configured RPC endpoint.
-///
-/// Building and simulating are read-only, so they simply move on to the next
-/// endpoint on failure. Submission uses poll-before-retry recovery (ADR-0011):
-/// an ambiguous failure is never "fixed" by sending a new transaction.
-fn submit_invocation(
-    cfg: &NetworkConfig,
-    invoke: Vec<String>,
-    source: Option<String>,
-    verbose: bool,
+/// Run a mutating command inside a tracing span and append its outcome to
+/// the local audit log, whether it succeeded or failed.
+fn run_audited(
+    command: &str,
+    network: &str,
+    contract: &str,
+    function: &str,
+    call_args: &[&str],
+    signer: Option<&str>,
+    stellar_args: Vec<String>,
 ) -> anyhow::Result<()> {
-    let source = source
-        .or_else(|| first_non_empty(std::env::var(ENV_SOURCE).ok(), None))
-        .ok_or_else(|| {
-            anyhow::anyhow!("signing requires a transaction source: pass --source <identity> or set {ENV_SOURCE}")
-        })?;
-    let passphrase = cfg.network_passphrase.clone();
-    let endpoints = cfg.rpc_endpoints();
-
-    let mut build = invoke.clone();
-    let separator = build.iter().position(|a| a == "--").unwrap_or(build.len());
-    build.insert(separator, "--build-only".to_string());
-    if !build.iter().any(|a| a == "--source") {
-        build.splice(
-            separator..separator,
-            ["--source".to_string(), source.clone()],
-        );
-    }
-    println!("> stellar {}", build.join(" "));
-
-    let mut simulated = Err(anyhow::anyhow!("no RPC endpoint configured"));
-    for url in &endpoints {
-        simulated = stellar_output(&with_rpc_url(&build, url), None).and_then(|unsigned| {
-            let simulate = [
-                "tx",
-                "simulate",
-                "--source-account",
-                &source,
-                "--rpc-url",
-                url,
-                "--network-passphrase",
-                &passphrase,
-            ]
-            .map(String::from);
-            stellar_output(&simulate, Some(&unsigned))
-        });
-        match &simulated {
-            Ok(_) => break,
-            Err(e) => eprintln!("build/simulate via {url} failed: {e}"),
-        }
-    }
-    let simulated = simulated?;
-
-    let sign = [
-        "tx",
-        "sign",
-        "--sign-with-key",
-        &source,
-        "--rpc-url",
-        endpoints[0],
-        "--network-passphrase",
-        &passphrase,
-    ]
-    .map(String::from);
-    let envelope = stellar_output(&sign, Some(&simulated))?;
-    let hash_args = [
-        "tx",
-        "hash",
-        "--rpc-url",
-        endpoints[0],
-        "--network-passphrase",
-        &passphrase,
-    ]
-    .map(String::from);
-    let hash = stellar_output(&hash_args, Some(&envelope))?;
-
-    let providers: Vec<Box<dyn RpcProvider>> = endpoints
-        .iter()
-        .map(|url| Box::new(HttpRpcProvider::new(*url)) as Box<dyn RpcProvider>)
-        .collect();
-    let policy = RetryPolicy {
-        // Leave time for the transaction to land in a ledger (~5s each).
-        max_poll_rounds: 10,
-        ..RetryPolicy::default()
+    let span = tracing::info_span!("operation", command, network, contract, function);
+    let _entered = span.enter();
+    let result = run_stellar(stellar_args);
+    let outcome = match &result {
+        Ok(_) => "success".to_string(),
+        Err(e) => format!("failure: {e}"),
     };
-    let mut client = FailoverClient::new(providers, policy)
-        .with_backoff(backoff_with_jitter)
-        .with_sleep(std::thread::sleep);
-    let mut log = RecoveryLog::new();
-    let result = client.submit_with_recovery(&SignedTx::new(&hash, envelope), &mut log);
-    if verbose {
-        for line in log.lines() {
-            eprintln!("[rpc] {line}");
+    let op = audit::Operation {
+        command,
+        network,
+        contract,
+        function,
+        args: call_args,
+        signer,
+        tx_hash: result.as_ref().ok().and_then(|h| h.as_deref()),
+        outcome: &outcome,
+    };
+    let path = audit::default_path();
+    match audit::append(&path, &op) {
+        Ok(r) => tracing::info!(seq = r.seq, path = %path.display(), "audit record written"),
+        Err(e) => {
+            tracing::error!(error = %e, path = %path.display(), "failed to write audit record")
         }
     }
+    result.map(|_| ())
+}
 
-    match result {
-        RecoveryResult::Accepted {
-            ledger, provider, ..
-        } => {
-            println!("Transaction {hash} succeeded in ledger {ledger} (via {provider})");
-            Ok(())
+fn run_audit(sub: &AuditSub) -> anyhow::Result<()> {
+    let path = audit::default_path();
+    let records = audit::read_all(&path)?;
+    match sub {
+        AuditSub::Show => {
+            for r in &records {
+                println!("{}", serde_json::to_string(r)?);
+            }
+            if records.is_empty() {
+                eprintln!("no audit records in {}", path.display());
+            }
         }
-        RecoveryResult::RejectedOnChain { reason } => {
-            anyhow::bail!("transaction {hash} was rejected ({reason}); do not resubmit it")
-        }
-        RecoveryResult::ExhaustedNeedsOperator { last_known } => anyhow::bail!(
-            "outcome of transaction {hash} is unknown ({last_known:?}) after retrying every RPC endpoint. \
-             Check it with `stellar tx fetch --hash {hash}` before retrying; see docs/runbooks/rpc-outage-recovery.md"
-        ),
+        AuditSub::Verify => match audit::verify(&records) {
+            Ok(n) => println!("OK: {n} records verified in {}", path.display()),
+            Err(e) => anyhow::bail!("audit log {} is broken: {e}", path.display()),
+        },
     }
+    Ok(())
+}
+
+/// Known address labels: deployed contracts from config plus `--label` flags.
+fn known_labels(cfg: &NetworkConfig, extra: &[String]) -> anyhow::Result<BTreeMap<String, String>> {
+    let mut labels = BTreeMap::new();
+    for (id, name) in [
+        (&cfg.contracts.attester_registry, "lafiya attester-registry"),
+        (
+            &cfg.contracts.attestation_registry,
+            "lafiya attestation-registry",
+        ),
+    ] {
+        if !id.is_empty() {
+            labels.insert(id.clone(), name.to_string());
+        }
+    }
+    for pair in extra {
+        let (addr, name) = pair
+            .split_once('=')
+            .ok_or_else(|| anyhow::anyhow!("--label must be ADDRESS=NAME, got '{pair}'"))?;
+        labels.insert(addr.trim().to_string(), name.trim().to_string());
+    }
+    Ok(labels)
 }
 
 /// Human readable deployment state, including partially deployed profiles.
@@ -784,6 +1007,29 @@ fn deployment_summary(cfg: &NetworkConfig) -> String {
             format!("PARTIALLY DEPLOYED - missing contract id(s): {missing}")
         }
     }
+}
+
+/// `<repo-root>/deployments`, found the same way `lafiya_config::default_config_path`
+/// locates `config/networks.toml`: relative to the current working directory.
+fn deployments_dir() -> PathBuf {
+    PathBuf::from("deployments")
+}
+
+fn wasm_sha256_hex(path: &std::path::Path) -> anyhow::Result<String> {
+    use sha2::{Digest, Sha256};
+    let bytes = std::fs::read(path).with_context(|| format!("reading {path:?}"))?;
+    Ok(format!("{:x}", Sha256::digest(bytes)))
+}
+
+fn git_commit_hash() -> anyhow::Result<String> {
+    let out = std::process::Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .output()
+        .context("running git rev-parse HEAD")?;
+    if !out.status.success() {
+        anyhow::bail!("git rev-parse HEAD failed");
+    }
+    Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
 }
 
 mod which {

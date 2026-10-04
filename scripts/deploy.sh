@@ -227,6 +227,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
     fi
 fi
 
+# deploy_contract's stdout is captured with `$(...)` by its callers, which
+# runs it in a subshell -- a plain variable it sets would not be visible to
+# the caller. It writes the tx hash it parses to this file instead, which
+# record_deployment then reads.
+LAST_DEPLOY_TX_HASH_FILE="$(mktemp)"
+trap 'rm -f "$LAST_DEPLOY_TX_HASH_FILE"' EXIT
+
 deploy_contract() {
     local wasm_path="$1"
     local network="$2"
@@ -245,11 +252,44 @@ deploy_contract() {
         return
     fi
 
-    stellar contract deploy \
+    local stderr_capture
+    stderr_capture="$(mktemp)"
+    local contract_id
+    contract_id="$(stellar contract deploy \
         --wasm "$wasm_path" \
         --rpc-url "$rpc_url" \
         --network-passphrase "$passphrase" \
-        "${STELLAR_SOURCE_ARGS[@]}"
+        "${STELLAR_SOURCE_ARGS[@]}" 2>"$stderr_capture")"
+    cat "$stderr_capture" >&2
+
+    # The `stellar` CLI prints a "Signing transaction: <hash>" (or similar)
+    # progress line to stderr; capture it for the deployment ledger. If the
+    # CLI's wording changes and this doesn't match, the file is left empty
+    # and record_deployment appends the record with tx_hash: null, loudly,
+    # rather than silently dropping the event -- see deployments/README.md.
+    grep -oE '[Tt]ransaction (hash( is)?|:) [0-9a-fA-F]{64}' "$stderr_capture" \
+        | grep -oE '[0-9a-fA-F]{64}' | tail -n1 > "$LAST_DEPLOY_TX_HASH_FILE" || true
+    rm -f "$stderr_capture"
+
+    echo "$contract_id"
+}
+
+# Append a deployment-ledger record via lafiya-cli. Never fails the deploy:
+# a ledger-write problem is logged but the deploy has already happened
+# on-chain by the time this runs.
+record_deployment() {
+    local event="$1" contract_kind="$2" contract_id="$3" wasm_path="$4"
+    local tx_hash=""
+    [[ -f "$LAST_DEPLOY_TX_HASH_FILE" ]] && tx_hash="$(cat "$LAST_DEPLOY_TX_HASH_FILE")"
+    local tx_args=()
+    if [[ -n "$tx_hash" ]]; then
+        tx_args=(--tx-hash "$tx_hash")
+    fi
+    if ! ( cd "$REPO_ROOT" && cargo run -q -p lafiya-cli -- --network "$NETWORK" deployments record \
+        --event "$event" --contract-kind "$contract_kind" --contract-id "$contract_id" \
+        --wasm "$wasm_path" --operator "${SOURCE_ACCOUNT:-unknown}" "${tx_args[@]}" ); then
+        echo "WARNING: failed to append deployment-ledger record for $contract_kind ($event)" >&2
+    fi
 }
 
 initialize_contract() {
@@ -276,11 +316,13 @@ initialize_contract() {
 ATTESTER_ID="$(deploy_contract "$ATTESTER_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attester-registry")"
 ATTESTER_ID="$(echo "$ATTESTER_ID" | tr -d '\n' | xargs)" # trim
 echo "    attester-registry ID: $ATTESTER_ID"
+[[ "$DRY_RUN" == "true" ]] || record_deployment deploy attester-registry "$ATTESTER_ID" "$ATTESTER_WASM"
 
 # Deploy attestation-registry
 ATTESTATION_ID="$(deploy_contract "$ATTESTATION_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attestation-registry")"
 ATTESTATION_ID="$(echo "$ATTESTATION_ID" | tr -d '\n' | xargs)"
 echo "    attestation-registry ID: $ATTESTATION_ID"
+[[ "$DRY_RUN" == "true" ]] || record_deployment deploy attestation-registry "$ATTESTATION_ID" "$ATTESTATION_WASM"
 
 # Guard against a truncated or noisy deploy output being written back to config.
 if [[ "$DRY_RUN" != "true" ]]; then

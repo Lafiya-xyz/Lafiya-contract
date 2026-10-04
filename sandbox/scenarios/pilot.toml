@@ -1,0 +1,23 @@
+# Pilot-sized state: 50 generated CHWs (batch-added, no metadata) and 500 attested
+# records, plus a few hand-written lifecycle cases.
+[admin]
+initial = "admin"
+current = "admin-2"
+
+[generate]
+attesters = 50
+attestations = 500
+
+[[attesters]]
+name = "chw-kano-3"
+region = "NG_KN"
+status = "suspended"
+
+[[attesters]]
+name = "chw-oyo-9"
+region = "NG_OY"
+status = "removed"
+
+[[revocations]]
+record = "patient-revoked-001"
+by = ["chw-kano-3"]

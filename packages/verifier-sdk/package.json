@@ -1,0 +1,45 @@
+{
+  "name": "@lafiya/verifier",
+  "version": "0.1.0",
+  "description": "Verify Lafiya emergency-card QR codes against on-chain attestations",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/cjs/index.js",
+  "module": "./dist/esm/index.js",
+  "types": "./dist/esm/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/esm/index.d.ts",
+        "default": "./dist/esm/index.js"
+      },
+      "require": {
+        "types": "./dist/cjs/index.d.ts",
+        "default": "./dist/cjs/index.js"
+      }
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.19"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/mark-cjs.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "size": "node scripts/check-size.mjs"
+  },
+  "dependencies": {
+    "@lafiya/attestation-registry": "file:../../bindings/attestation-registry",
+    "@lafiya/attester-registry": "file:../../bindings/attester-registry",
+    "buffer": "6.0.3"
+  },
+  "devDependencies": {
+    "@stellar/stellar-sdk": "^14.5.0",
+    "typescript": "^5.6.2",
+    "vitest": "^2.1.9"
+  }
+}

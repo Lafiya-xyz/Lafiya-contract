@@ -1,0 +1,14 @@
+[[package]]
+name = "attester-registry"
+timeout = 60
+
+[[package]]
+name = "attestation-registry"
+timeout = 60
+
+[[package]]
+name = "multisig-account"
+timeout = 60
+
+[mutants]
+jobs = 4

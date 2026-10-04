@@ -1,55 +1,122 @@
-name: Release Manifest (prototype)
+name: Release
 
-# Prototype from the [Spike] issue #135 / ADR-0010: generates and validates a
-# release manifest binding contract wasm, bindings, events, and deployment
-# state into one verifiable record. Not yet a required check — see
-# docs/adr/0010-release-manifest-and-compatibility.md "Follow-up" before
-# wiring this into the release process for real.
+# Tag pipeline (docs/releasing.md#automated-release-flow): reproducible wasm ->
+# SHA256SUMS -> provenance metadata assertion -> release manifest (generated +
+# validated + checked against SHA256SUMS) -> bindings -> signed SLSA build
+# provenance -> GitHub release -> follow-up PR adding the wasm to the
+# upgrade-compatibility fixtures.
+#
+# Triggers:
+#   - workflow_call from release-please.yml after a release PR merges (a tag
+#     created with GITHUB_TOKEN doesn't fire `push: tags` itself);
+#   - `push: tags` for a tag pushed by hand;
+#   - workflow_dispatch, dry-run by default, on any branch: builds the full
+#     artifact set and uploads it as a workflow artifact, publishes nothing.
 
 on:
-  workflow_dispatch:
   push:
     tags:
       - "v*.*.*"
+  workflow_call:
+    inputs:
+      tag:
+        type: string
+        required: true
+      dry_run:
+        type: boolean
+        default: false
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Build and upload artifacts only; no attestation, release, or fixtures PR"
+        type: boolean
+        default: true
+
+permissions:
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
+  TAG: ${{ inputs.tag || github.ref_name }}
+  DRY_RUN: ${{ inputs.dry_run && 'true' || 'false' }}
 
 jobs:
-  release-manifest:
-    name: Generate & validate release manifest
+  release:
+    name: Build, attest, and publish release
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v7
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
+        with:
+          # Start in audit mode; switch to `block` with an allowed-endpoints
+          # list once the egress baseline from audit runs is reviewed.
+          egress-policy: audit
 
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: wasm32v1-none
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
 
-      # Only the Soroban contract crates target wasm32v1-none; see ci.yml.
-      - name: Build contract wasm (unoptimized — matches upgrade-hash verification)
-        run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
+      - name: Reproducible contract wasm (pinned container)
+        run: make wasm-reproducible
 
-      - uses: actions/setup-python@v7
+      - name: Assert provenance metadata in every wasm
+        run: python3 scripts/check_wasm_meta.py --commit "$(git rev-parse HEAD)" target/wasm32v1-none/release/*.wasm
+
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:
           python-version: "3.12"
-      - run: pip install jsonschema
+      - run: pip install -r requirements-dev.lock
 
-      - name: Generate manifest
+      - name: Generate + validate release manifest
         run: |
           python3 scripts/generate_release_manifest.py --pretty -o release-manifest.json
-
-      - name: Validate manifest against schema + internal consistency
-        run: python3 scripts/validate_release_manifest.py release-manifest.json
-
-      - name: Demonstrate a consumer compatibility check
-        run: |
+          python3 scripts/validate_release_manifest.py release-manifest.json
           python3 scripts/check_manifest_compatibility.py \
             release-manifest.json \
             docs/release-manifest/examples/lafiya-web.requirements.json
 
-      - uses: actions/upload-artifact@v7
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: release-manifest
-          path: release-manifest.json
+          name: release-${{ env.TAG }}
+          path: dist/
+
+      - name: Publish GitHub release
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          assets=$(ls dist/* | grep -v RELEASE_NOTES.md)
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" $assets --clobber
+            gh release view "$TAG" --json body -q .body > body.md
+            printf '\n\n' >> body.md && cat dist/RELEASE_NOTES.md >> body.md
+            gh release edit "$TAG" --notes-file body.md
+          else
+            gh release create "$TAG" $assets --title "$TAG" --notes-file dist/RELEASE_NOTES.md --verify-tag
+          fi
+
+      - name: Open PR adding wasm to upgrade-compatibility fixtures
+        if: env.DRY_RUN != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          branch="chore/upgrade-fixtures-$TAG"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git fetch origin main && git switch -c "$branch" origin/main
+          mkdir -p "tests/fixtures/upgrade-compat/$TAG"
+          cp dist/*.wasm dist/SHA256SUMS "tests/fixtures/upgrade-compat/$TAG/"
+          git add tests/fixtures/upgrade-compat
+          git commit -m "chore(fixtures): add $TAG wasm to upgrade-compatibility fixtures"
+          git push origin "$branch"
+          gh pr create --base main --head "$branch" \
+            --title "chore(fixtures): add $TAG wasm to upgrade-compatibility fixtures" \
+            --body "Automated follow-up to the $TAG release: the released wasm (see SHA256SUMS) as the \`previous\` side of future upgrade-compatibility tests."

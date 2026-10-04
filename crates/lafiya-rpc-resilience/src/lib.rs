@@ -35,6 +35,10 @@ pub mod http;
 /// failure sequences described in the ADR.
 pub mod mock;
 
+/// Resource-fee margins, inclusion-fee percentile bidding, and fee-bump
+/// decisions (issue #408). See the module doc in `fees.rs`.
+pub mod fees;
+
 /// Where a transaction currently stands, as observed via a status query
 /// (Soroban RPC `getTransaction`) rather than assumed from a submit call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +56,10 @@ pub enum TxState {
     /// This provider has no record of the hash (never seen it, or it has
     /// aged out of the provider's retention window).
     Unknown,
+    /// The hash is unknown *and* a ledger past the transaction's
+    /// `maxLedger` bound has closed, so the transaction can never be
+    /// included. Unlike [`TxState::Unknown`] this is final.
+    Expired { max_ledger: u32, latest_ledger: u32 },
 }
 
 /// An RPC-level failure. Distinct from an on-chain rejection: this is about
@@ -119,6 +127,10 @@ pub enum RetryClass {
     DoNotRetrySameTx,
     /// Already resolved successfully. No retry applies.
     NoRetryNeeded,
+    /// The transaction's ledger bound has passed without it being included,
+    /// so it can never land. Building and submitting a *fresh* transaction
+    /// (new sequence number, new bounds) is safe.
+    SafeToRebuild,
 }
 
 /// Classify a single submit outcome. Pure and total: every [`SubmitOutcome`]
@@ -130,6 +142,7 @@ pub fn classify(outcome: &SubmitOutcome) -> RetryClass {
         SubmitOutcome::Definite(_) => RetryClass::SafeToRetry,
         SubmitOutcome::Ambiguous(_) => RetryClass::MustPollFirst,
         SubmitOutcome::Ack(TxState::Rejected { .. }) => RetryClass::DoNotRetrySameTx,
+        SubmitOutcome::Ack(TxState::Expired { .. }) => RetryClass::SafeToRebuild,
         SubmitOutcome::Ack(_) => RetryClass::NoRetryNeeded,
     }
 }
@@ -165,6 +178,109 @@ pub trait RpcProvider {
 
     /// Query the current on-chain state of a transaction by hash.
     fn get_transaction(&mut self, tx_hash: &str) -> Result<TxState, RpcError>;
+
+    /// The sequence number of the most recently closed ledger (Soroban RPC
+    /// `getLatestLedger`). Needed to decide when a `maxLedger`-bounded
+    /// transaction has expired. Providers that cannot answer return an
+    /// error, which leaves the outcome uncertain rather than guessing.
+    fn latest_ledger(&mut self) -> Result<u32, RpcError> {
+        Err(RpcError::Other("latest_ledger not supported".to_string()))
+    }
+
+    /// The current sequence number of `account` (from its ledger entry).
+    fn account_sequence(&mut self, _account: &str) -> Result<i64, RpcError> {
+        Err(RpcError::Other(
+            "account_sequence not supported".to_string(),
+        ))
+    }
+
+    /// Hash of the transaction that consumed `sequence` for `account`, if
+    /// the provider can find it (e.g. via a Horizon/indexer history lookup).
+    fn find_transaction_by_sequence(
+        &mut self,
+        _account: &str,
+        _sequence: i64,
+    ) -> Result<Option<String>, RpcError> {
+        Ok(None)
+    }
+}
+
+/// Validity bounds a transaction was built with. They are what turn a
+/// "hash not found" answer into a final one: once `max_ledger` has closed,
+/// or once the source account's sequence number has reached `sequence`, the
+/// transaction can no longer be included.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxBounds {
+    /// `PreconditionsV2.ledgerBounds.maxLedger` of the envelope.
+    pub max_ledger: u32,
+    /// Source account (`G...`) of the envelope.
+    pub source_account: String,
+    /// Sequence number of the envelope.
+    pub sequence: i64,
+}
+
+/// Default validity window, in ledgers, for CLI-built transactions: about
+/// five minutes at Stellar's ~5 second ledger close time.
+pub const DEFAULT_LEDGER_WINDOW: u32 = 60;
+
+/// `maxLedger` for a transaction built now: `latest + window`, saturating.
+pub fn max_ledger_for(latest_ledger: u32, window: u32) -> u32 {
+    latest_ledger.saturating_add(window)
+}
+
+/// Whether a poll observation settles the transaction's fate.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Resolution {
+    /// Final: the transaction was included (successfully or not).
+    Included(TxState),
+    /// Final: the transaction can never be included; rebuild safely.
+    Expired { max_ledger: u32, latest_ledger: u32 },
+    /// Final: the source account's sequence number has moved past (or
+    /// reached) the transaction's while its hash is unknown, so a different
+    /// transaction consumed the sequence number. `consumed_by` is that
+    /// transaction's hash when it could be looked up.
+    SequenceConsumed { consumed_by: Option<String> },
+    /// Not yet certain; keep polling.
+    Uncertain,
+}
+
+/// Decide whether an observation is final. Pure so every branch of the
+/// deterministic-resolution state machine can be tested directly.
+///
+/// `latest_ledger` and `account_sequence` are `None` when no provider could
+/// report them; missing data never produces a final answer.
+pub fn resolve(
+    observed: &TxState,
+    bounds: &TxBounds,
+    latest_ledger: Option<u32>,
+    account_sequence: Option<i64>,
+) -> Resolution {
+    match observed {
+        TxState::Accepted { .. } | TxState::Rejected { .. } => {
+            return Resolution::Included(observed.clone())
+        }
+        TxState::Expired {
+            max_ledger,
+            latest_ledger,
+        } => {
+            return Resolution::Expired {
+                max_ledger: *max_ledger,
+                latest_ledger: *latest_ledger,
+            }
+        }
+        TxState::Pending | TxState::Submitted => return Resolution::Uncertain,
+        TxState::Unknown | TxState::NotSubmitted => {}
+    }
+    if matches!(account_sequence, Some(seq) if seq >= bounds.sequence) {
+        return Resolution::SequenceConsumed { consumed_by: None };
+    }
+    match latest_ledger {
+        Some(latest) if latest > bounds.max_ledger => Resolution::Expired {
+            max_ledger: bounds.max_ledger,
+            latest_ledger: latest,
+        },
+        _ => Resolution::Uncertain,
+    }
 }
 
 /// Exponential backoff, capped at `max`. `attempt` is 1-based.
@@ -247,7 +363,9 @@ impl RecoveryLog {
 
     /// Append one line to the log.
     pub fn record(&mut self, line: impl Into<String>) {
-        self.0.push(line.into());
+        let line = line.into();
+        tracing::debug!(recovery = %line);
+        self.0.push(line);
     }
 
     /// The recorded lines, in the order they were added.
@@ -318,8 +436,30 @@ impl FailoverClient {
     /// Submit `tx_hash` and drive it to a final verdict, failing over
     /// between providers on definite failures and polling (never blind
     /// resubmitting) on ambiguous ones.
-    pub fn submit_with_recovery(&mut self, tx: &SignedTx, log: &mut RecoveryLog) -> RecoveryResult {
-        let tx_hash = tx.hash.as_str();
+    pub fn submit_with_recovery(&mut self, tx_hash: &str, log: &mut RecoveryLog) -> RecoveryResult {
+        self.submit_inner(tx_hash, None, log)
+    }
+
+    /// Like [`submit_with_recovery`](Self::submit_with_recovery), for a
+    /// transaction built with ledger bounds. Instead of giving up after a
+    /// fixed number of poll rounds, it polls until the outcome is certain:
+    /// included, expired (`maxLedger` closed), or sequence consumed. It stops
+    /// the moment the result is certain.
+    pub fn submit_with_bounds(
+        &mut self,
+        tx_hash: &str,
+        bounds: &TxBounds,
+        log: &mut RecoveryLog,
+    ) -> RecoveryResult {
+        self.submit_inner(tx_hash, Some(bounds), log)
+    }
+
+    fn submit_inner(
+        &mut self,
+        tx_hash: &str,
+        bounds: Option<&TxBounds>,
+        log: &mut RecoveryLog,
+    ) -> RecoveryResult {
         let provider_count = self.providers.len();
         let mut submit_round: u32 = 0;
 
@@ -333,7 +473,16 @@ impl FailoverClient {
                     "round {submit_round}: submit {tx_hash} via {}",
                     provider.name()
                 ));
-                provider.submit(tx)
+                let started = std::time::Instant::now();
+                let outcome = provider.submit(tx_hash);
+                tracing::info!(
+                    provider = provider.name(),
+                    latency_ms = started.elapsed().as_millis() as u64,
+                    classified = ?classify(&outcome),
+                    round = submit_round,
+                    "rpc submit"
+                );
+                outcome
             };
 
             match outcome {
@@ -354,17 +503,29 @@ impl FailoverClient {
                     ));
                     return RecoveryResult::RejectedOnChain { reason };
                 }
+                SubmitOutcome::Ack(TxState::Expired {
+                    max_ledger,
+                    latest_ledger,
+                }) => {
+                    log.record(format!(
+                        "expired on submit (latest ledger {latest_ledger} > max ledger {max_ledger}); safe to rebuild"
+                    ));
+                    return RecoveryResult::Expired {
+                        max_ledger,
+                        latest_ledger,
+                    };
+                }
                 SubmitOutcome::Ack(_queued) => {
                     log.record(
                         "provider queued the transaction; polling for a final verdict".to_string(),
                     );
-                    return self.poll_until_resolved(tx_hash, submit_round, log);
+                    return self.poll(tx_hash, bounds, submit_round, log);
                 }
                 SubmitOutcome::Ambiguous(err) => {
                     log.record(format!(
                         "ambiguous failure ({err}) -- outcome unknown, polling before any retry"
                     ));
-                    return self.poll_until_resolved(tx_hash, submit_round, log);
+                    return self.poll(tx_hash, bounds, submit_round, log);
                 }
                 SubmitOutcome::Definite(err) => {
                     let backoff = (self.backoff)(
@@ -387,6 +548,138 @@ impl FailoverClient {
         }
     }
 
+    fn poll(
+        &mut self,
+        tx_hash: &str,
+        bounds: Option<&TxBounds>,
+        attempts: u32,
+        log: &mut RecoveryLog,
+    ) -> RecoveryResult {
+        match bounds {
+            Some(bounds) => self.poll_until_certain(tx_hash, bounds, attempts, log),
+            None => self.poll_until_resolved(tx_hash, attempts, log),
+        }
+    }
+
+    /// Poll every provider each round and resolve with [`resolve`]. Rounds
+    /// are not capped by `max_poll_rounds` while providers keep reporting
+    /// the latest ledger, since `maxLedger` guarantees termination. Only
+    /// `max_poll_rounds` consecutive rounds in which *no* provider reports a
+    /// ledger escalate to the operator.
+    fn poll_until_certain(
+        &mut self,
+        tx_hash: &str,
+        bounds: &TxBounds,
+        mut attempts: u32,
+        log: &mut RecoveryLog,
+    ) -> RecoveryResult {
+        let mut blind_rounds: u32 = 0;
+        let mut poll_round: u32 = 0;
+        let mut last_known = TxState::Unknown;
+
+        loop {
+            poll_round += 1;
+            attempts += 1;
+            let mut latest: Option<u32> = None;
+            let mut account_seq: Option<i64> = None;
+
+            for provider in self.providers.iter_mut() {
+                let observed = match provider.get_transaction(tx_hash) {
+                    Ok(state) => state,
+                    Err(err) => {
+                        log.record(format!(
+                            "poll {poll_round} via {}: error ({err})",
+                            provider.name()
+                        ));
+                        continue;
+                    }
+                };
+                if let Ok(l) = provider.latest_ledger() {
+                    latest = Some(latest.map_or(l, |cur| cur.max(l)));
+                }
+                if let Ok(seq) = provider.account_sequence(&bounds.source_account) {
+                    account_seq = Some(account_seq.map_or(seq, |cur| cur.max(seq)));
+                }
+
+                match resolve(&observed, bounds, latest, account_seq) {
+                    Resolution::Included(TxState::Accepted { ledger }) => {
+                        let name = provider.name().to_string();
+                        log.record(format!(
+                            "poll {poll_round} via {name}: accepted at ledger {ledger}"
+                        ));
+                        return RecoveryResult::Accepted {
+                            ledger,
+                            provider: name,
+                            submit_attempts: attempts,
+                        };
+                    }
+                    Resolution::Included(TxState::Rejected { reason }) => {
+                        log.record(format!(
+                            "poll {poll_round} via {}: rejected on-chain ({reason})",
+                            provider.name()
+                        ));
+                        return RecoveryResult::RejectedOnChain { reason };
+                    }
+                    Resolution::Included(other) => last_known = other,
+                    Resolution::Expired {
+                        max_ledger,
+                        latest_ledger,
+                    } => {
+                        log.record(format!(
+                            "poll {poll_round} via {}: hash unknown and ledger {latest_ledger} > max ledger {max_ledger} -- expired, safe to rebuild",
+                            provider.name()
+                        ));
+                        return RecoveryResult::Expired {
+                            max_ledger,
+                            latest_ledger,
+                        };
+                    }
+                    Resolution::SequenceConsumed { .. } => {
+                        let consumed_by = provider
+                            .find_transaction_by_sequence(&bounds.source_account, bounds.sequence)
+                            .ok()
+                            .flatten();
+                        log.record(format!(
+                            "poll {poll_round} via {}: sequence {} consumed by {}",
+                            provider.name(),
+                            bounds.sequence,
+                            consumed_by.as_deref().unwrap_or("an unknown transaction")
+                        ));
+                        return RecoveryResult::SequenceConsumed { consumed_by };
+                    }
+                    Resolution::Uncertain => {
+                        log.record(format!(
+                            "poll {poll_round} via {}: not yet certain ({observed:?}, latest ledger {latest:?}, max ledger {})",
+                            provider.name(),
+                            bounds.max_ledger
+                        ));
+                        last_known = observed;
+                    }
+                }
+            }
+
+            if latest.is_none() {
+                blind_rounds += 1;
+                if blind_rounds >= self.policy.max_poll_rounds {
+                    log.record(
+                        "no provider reported the latest ledger -- escalate to operator"
+                            .to_string(),
+                    );
+                    return RecoveryResult::ExhaustedNeedsOperator { last_known };
+                }
+            } else {
+                blind_rounds = 0;
+            }
+
+            let backoff = backoff_schedule(
+                poll_round,
+                self.policy.base_backoff,
+                self.policy.max_backoff,
+            );
+            log.record(format!("backing off {backoff:?} before next poll round"));
+        }
+    }
+
     fn poll_until_resolved(
         &mut self,
         tx_hash: &str,
@@ -400,7 +693,16 @@ impl FailoverClient {
 
             for i in 0..provider_count {
                 let provider = &mut self.providers[i];
-                match provider.get_transaction(tx_hash) {
+                let started = std::time::Instant::now();
+                let polled = provider.get_transaction(tx_hash);
+                tracing::info!(
+                    provider = provider.name(),
+                    latency_ms = started.elapsed().as_millis() as u64,
+                    outcome = ?polled,
+                    poll_round,
+                    "rpc get_transaction"
+                );
+                match polled {
                     Ok(TxState::Accepted { ledger }) => {
                         let name = provider.name().to_string();
                         log.record(format!(
@@ -424,6 +726,19 @@ impl FailoverClient {
                             "poll {poll_round} via {}: still pending",
                             provider.name()
                         ));
+                    }
+                    Ok(TxState::Expired {
+                        max_ledger,
+                        latest_ledger,
+                    }) => {
+                        log.record(format!(
+                            "poll {poll_round} via {}: expired (latest ledger {latest_ledger} > max ledger {max_ledger})",
+                            provider.name()
+                        ));
+                        return RecoveryResult::Expired {
+                            max_ledger,
+                            latest_ledger,
+                        };
                     }
                     Ok(TxState::Unknown) | Ok(TxState::NotSubmitted) => {
                         log.record(format!(
@@ -515,5 +830,86 @@ mod tests {
             classify(&SubmitOutcome::Ack(TxState::Accepted { ledger: 42 })),
             RetryClass::NoRetryNeeded
         );
+        assert_eq!(
+            classify(&SubmitOutcome::Ack(TxState::Expired {
+                max_ledger: 10,
+                latest_ledger: 11
+            })),
+            RetryClass::SafeToRebuild
+        );
+    }
+
+    fn bounds() -> TxBounds {
+        TxBounds {
+            max_ledger: 100,
+            source_account: "GSOURCE".to_string(),
+            sequence: 42,
+        }
+    }
+
+    #[test]
+    fn max_ledger_is_latest_plus_window_and_saturates() {
+        assert_eq!(max_ledger_for(1_000, DEFAULT_LEDGER_WINDOW), 1_060);
+        assert_eq!(max_ledger_for(u32::MAX - 1, 60), u32::MAX);
+    }
+
+    #[test]
+    fn resolve_included_states_are_final() {
+        let accepted = TxState::Accepted { ledger: 90 };
+        assert_eq!(
+            resolve(&accepted, &bounds(), Some(200), Some(42)),
+            Resolution::Included(accepted)
+        );
+        let rejected = TxState::Rejected { reason: "x".into() };
+        assert_eq!(
+            resolve(&rejected, &bounds(), None, None),
+            Resolution::Included(rejected)
+        );
+    }
+
+    #[test]
+    fn resolve_unknown_before_max_ledger_is_uncertain() {
+        assert_eq!(
+            resolve(&TxState::Unknown, &bounds(), Some(100), Some(41)),
+            Resolution::Uncertain,
+            "maxLedger itself can still include the transaction"
+        );
+    }
+
+    #[test]
+    fn resolve_unknown_after_max_ledger_is_expired() {
+        assert_eq!(
+            resolve(&TxState::Unknown, &bounds(), Some(101), Some(41)),
+            Resolution::Expired {
+                max_ledger: 100,
+                latest_ledger: 101
+            }
+        );
+    }
+
+    #[test]
+    fn resolve_pending_is_never_expired() {
+        assert_eq!(
+            resolve(&TxState::Pending, &bounds(), Some(500), Some(41)),
+            Resolution::Uncertain
+        );
+    }
+
+    #[test]
+    fn resolve_without_ledger_data_is_uncertain() {
+        assert_eq!(
+            resolve(&TxState::Unknown, &bounds(), None, None),
+            Resolution::Uncertain
+        );
+    }
+
+    #[test]
+    fn resolve_sequence_reached_or_passed_is_consumed() {
+        for seq in [42, 43] {
+            assert_eq!(
+                resolve(&TxState::Unknown, &bounds(), Some(50), Some(seq)),
+                Resolution::SequenceConsumed { consumed_by: None }
+            );
+        }
     }
 }

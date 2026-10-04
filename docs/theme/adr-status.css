@@ -1,0 +1,13 @@
+/* Status badges in the ADR index (added while staging by `cargo xtask docs`). */
+.adr-status {
+  display: inline-block;
+  padding: 0 0.5em;
+  border-radius: 1em;
+  font-size: 0.85em;
+  font-weight: 600;
+  color: #fff;
+}
+.adr-status.accepted { background: #2e7d32; }
+.adr-status.proposed { background: #b26a00; }
+.adr-status.deprecated { background: #616161; }
+.adr-status.superseded { background: #5c6bc0; }

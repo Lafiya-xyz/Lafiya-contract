@@ -7,4 +7,9 @@
 .soroban
 test_snapshots/
 __pycache__/
-config/networks.local.toml
+.coverage
+coverage.xml
+*.egg-info/
+.mypy_cache/
+.ruff_cache/
+.pytest_cache/

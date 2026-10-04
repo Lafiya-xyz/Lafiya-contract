@@ -1,0 +1,26 @@
+name: Devcontainer
+
+on:
+  push:
+    branches: [main]
+    paths: ['.devcontainer/**', 'rust-toolchain.toml', '.github/workflows/devcontainer.yml']
+  pull_request:
+    paths: ['.devcontainer/**', 'rust-toolchain.toml', '.github/workflows/devcontainer.yml']
+  schedule:
+    - cron: '0 6 * * 1'
+
+permissions:
+  contents: read
+
+jobs:
+  devcontainer:
+    name: Build devcontainer and run checks inside it
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: devcontainers/ci@513af61f4de4f75d37e4438f184ba4358f0fc1ca # v0.3.1900000450
+        with:
+          push: never
+          runCmd: make check

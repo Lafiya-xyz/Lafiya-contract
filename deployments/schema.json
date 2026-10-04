@@ -1,0 +1,74 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/Lafiya-xyz/Lafiya-contract/deployments/schema.json",
+  "title": "Lafiya deployment ledger record",
+  "description": "One line of a deployments/<network>.jsonl append-only ledger. See docs/adr/0010-release-manifest-and-compatibility.md and deployments/README.md.",
+  "type": "object",
+  "required": [
+    "event",
+    "contract_kind",
+    "contract_id",
+    "wasm_sha256",
+    "tx_hash",
+    "ledger",
+    "timestamp",
+    "git_commit",
+    "release_version",
+    "operator",
+    "prev_record_sha256"
+  ],
+  "properties": {
+    "event": {
+      "type": "string",
+      "enum": ["deploy", "initialize", "upgrade", "migrate", "admin_transfer", "repoint"],
+      "description": "What kind of on-chain change this record describes."
+    },
+    "contract_kind": {
+      "type": "string",
+      "enum": ["attester-registry", "attestation-registry", "multisig-account"]
+    },
+    "contract_id": {
+      "type": "string",
+      "description": "The Stellar contract ID (C...) affected by this event."
+    },
+    "wasm_sha256": {
+      "type": ["string", "null"],
+      "description": "sha256 of the wasm now running at contract_id, hex-encoded. Null only for events that don't change code (e.g. admin_transfer)."
+    },
+    "previous_wasm_sha256": {
+      "type": ["string", "null"],
+      "description": "sha256 of the wasm this event replaced, for upgrade/migrate events."
+    },
+    "tx_hash": {
+      "type": ["string", "null"],
+      "description": "Hash of the confirmed transaction that performed this event. Null only when the CLI could not capture it (see deployments/README.md); such records must be treated as unverified."
+    },
+    "ledger": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Ledger sequence the transaction was included in, when known."
+    },
+    "timestamp": {
+      "type": "string",
+      "format": "date-time",
+      "description": "UTC timestamp the record was appended, RFC 3339."
+    },
+    "git_commit": {
+      "type": "string",
+      "description": "git rev-parse HEAD of the repo state used to build the deployed wasm."
+    },
+    "release_version": {
+      "type": "string",
+      "description": "workspace.package.version at the time of this event."
+    },
+    "operator": {
+      "type": "string",
+      "description": "Identifier of the signer set / identity that authorized this event (e.g. a stellar CLI identity name, or a multisig ceremony id)."
+    },
+    "prev_record_sha256": {
+      "type": ["string", "null"],
+      "description": "sha256 of the exact previous JSON line in this file (null for the first record). Makes the file a hash chain: editing or deleting any earlier line invalidates every record after it."
+    }
+  },
+  "additionalProperties": false
+}

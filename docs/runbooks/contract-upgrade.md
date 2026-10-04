@@ -207,6 +207,23 @@ stellar contract invoke \
 Authorization: the admin must sign; contracts call `admin.require_auth()` first
 thing, so any other signer fails the transaction.
 
+**Required review step when the admin is the multisig (ADR-0007):** every signer
+decodes the exact authorization entry or transaction they are asked to sign
+before signing, and confirms the contract, `upgrade(new_wasm_hash = <H_uploaded>)`,
+no sub-invocations, no asset movements, and the payload hash:
+
+```bash
+lafiya-cli --network testnet auth decode tx.xdr            # or --format json
+```
+
+Any `WARNING:` line (unknown contract, token movement, deep tree) stops the
+signing round until it is explained.
+
+The security watchdog raises `upgraded` (critical) for every upgrade and
+`unknown_wasm_upgrade` (critical) when the new hash is not in a release
+manifest; announce the maintenance window to on-call before submitting. See
+[watchdog.md](watchdog.md#alert-types).
+
 ### 4.5 Verify the swap landed
 
 ```bash

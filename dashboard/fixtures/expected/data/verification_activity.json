@@ -1,0 +1,212 @@
+[
+  {
+    "new": 20,
+    "region": "fct",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W36"
+  },
+  {
+    "new": 23,
+    "region": "kano",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W36"
+  },
+  {
+    "new": 26,
+    "region": "lagos",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W36"
+  },
+  {
+    "new": 21,
+    "region": "oyo",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W36"
+  },
+  {
+    "new": 15,
+    "region": "rivers",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W36"
+  },
+  {
+    "new": 24,
+    "region": "fct",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W37"
+  },
+  {
+    "new": 37,
+    "region": "kano",
+    "reverified": 14,
+    "revoked": null,
+    "week": "2026-W37"
+  },
+  {
+    "new": 34,
+    "region": "lagos",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W37"
+  },
+  {
+    "new": 37,
+    "region": "oyo",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W37"
+  },
+  {
+    "new": 18,
+    "region": "rivers",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W37"
+  },
+  {
+    "new": 18,
+    "region": "fct",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W38"
+  },
+  {
+    "new": 41,
+    "region": "kano",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W38"
+  },
+  {
+    "new": 36,
+    "region": "lagos",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W38"
+  },
+  {
+    "new": 25,
+    "region": "oyo",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W38"
+  },
+  {
+    "new": 31,
+    "region": "rivers",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W38"
+  },
+  {
+    "new": 25,
+    "region": "fct",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W39"
+  },
+  {
+    "new": 46,
+    "region": "kano",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W39"
+  },
+  {
+    "new": 33,
+    "region": "lagos",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W39"
+  },
+  {
+    "new": 34,
+    "region": "oyo",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W39"
+  },
+  {
+    "new": 25,
+    "region": "rivers",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W39"
+  },
+  {
+    "new": 28,
+    "region": "fct",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W40"
+  },
+  {
+    "new": 38,
+    "region": "kano",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W40"
+  },
+  {
+    "new": 40,
+    "region": "lagos",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W40"
+  },
+  {
+    "new": 27,
+    "region": "oyo",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W40"
+  },
+  {
+    "new": 21,
+    "region": "rivers",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W40"
+  },
+  {
+    "new": 23,
+    "region": "fct",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W41"
+  },
+  {
+    "new": 45,
+    "region": "kano",
+    "reverified": null,
+    "revoked": null,
+    "week": "2026-W41"
+  },
+  {
+    "new": 42,
+    "region": "lagos",
+    "reverified": 10,
+    "revoked": null,
+    "week": "2026-W41"
+  },
+  {
+    "new": 30,
+    "region": "oyo",
+    "reverified": null,
+    "revoked": 0,
+    "week": "2026-W41"
+  },
+  {
+    "new": 14,
+    "region": "rivers",
+    "reverified": 10,
+    "revoked": null,
+    "week": "2026-W41"
+  }
+]
