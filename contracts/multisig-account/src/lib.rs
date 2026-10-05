@@ -15,7 +15,7 @@
 
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
-    contract, contracterror, contractimpl, contracttype,
+    contract, contracterror, contractevent, contractimpl, contracttype,
     crypto::Hash,
     panic_with_error, BytesN, Env, Symbol, Vec,
 };
@@ -612,6 +612,13 @@ impl CustomAccountInterface for MultisigAccount {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        AuthorizationApproved {
+            timestamp: env.ledger().timestamp(),
+            payload: signature_payload.clone().into(),
+            signers: authorized_signers,
+        }
+        .publish(&env);
 
         Ok(())
     }

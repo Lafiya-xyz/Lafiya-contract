@@ -23,7 +23,7 @@ Every contract must maintain an explicit schema version in its instance storage.
 ### Implementation Details
 1. **Schema Version Variant**: A `SchemaVersion` variant is included in the `DataKey` enum.
 2. **Current Version Constant**: A `const SCHEMA_VERSION: u32` defines the schema version supported by the current bytecode.
-3. **Initialization**: During `initialize()`, the contract sets `SchemaVersion` in instance storage:
+3. **Construction**: The deployment constructor sets `SchemaVersion` in instance storage:
    ```rust
    env.storage().instance().set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
    ```

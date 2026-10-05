@@ -20,13 +20,14 @@ custom threshold-signature logic in each registry.
 
 ## Decision
 
-For the pre-alpha contracts, each registry stores one `Admin` address during `initialize`.
-Admin-gated functions retrieve that address and call `require_auth()`.
+For the pre-alpha contracts, each registry stores one `Admin` address in its deployment
+constructor. Constructor arguments and the initial state are committed atomically with
+deployment; admin-gated functions retrieve that address and call `require_auth()`.
 
 This is an initial implementation simplification, not the intended production custody model.
 Before a production or mainnet deployment, Lafiya must complete the multisig work tracked in
 [issue #19](https://github.com/Lafiya-xyz/Lafiya-contract/issues/19). The preferred direction is
-to initialize the registries with a Soroban multisig or smart-account contract that satisfies
+to deploy the registries with a Soroban multisig or smart-account contract as admin that satisfies
 standard authorization, rather than adding bespoke N-of-M logic to each registry.
 
 Until that migration is validated, operators must treat the configured admin credential as a

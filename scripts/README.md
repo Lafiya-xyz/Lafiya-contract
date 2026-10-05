@@ -78,12 +78,12 @@ cargo run -p lafiya-cli -- --network local config env
 
 - Builds `wasm32v1-none` artifacts
 - Deploys via `stellar contract deploy --rpc-url $LAFIYA_RPC_URL --network-passphrase ...`
-- Initializes with admin and links contracts
+- Supplies the admin and attester-registry address to each constructor as part of deployment
 - Prompts to update `config/networks.toml` with new IDs
 
 ### deploy-testnet.sh vs deploy.sh
 
-Both deploy `attester-registry` and `attestation-registry` and initialize them, but they are **not interchangeable**:
+Both deploy `attester-registry` and `attestation-registry` with atomic constructor arguments, but they are **not interchangeable**:
 
 - **`deploy.sh`** (preferred) — reads RPC URL/passphrase from `config/networks.toml`, supports `--dry-run`/`--build-only`, and can auto-update `networks.toml` with the new contract IDs. Use this for any network already defined in `networks.toml`.
 - **`deploy-testnet.sh`** — relies on the `stellar` CLI's own pre-configured network (via `stellar network add`), skips `networks.toml` entirely, and instead writes a `deployments/<network>.json` record. Use this only if you manage networks directly through the `stellar` CLI rather than `config/networks.toml`.

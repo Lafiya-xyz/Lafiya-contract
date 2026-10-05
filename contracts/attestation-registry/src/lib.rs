@@ -342,9 +342,8 @@ pub struct AttestationRegistry;
 
 #[contractimpl]
 impl AttestationRegistry {
-    /// Set the admin and the `attester-registry` contract this registry
-    /// consults for allowlist checks. Can only be called once; the caller
-    /// must authorize as the given `admin`.
+    /// Configure the admin and `attester-registry` atomically at deployment.
+    /// The caller must authorize as the given `admin`.
     ///
     /// ## Best-effort interface check
     ///
@@ -379,7 +378,6 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
-        Ok(())
     }
 
     /// Cancel the pending admin transfer. Requires the current admin's authorization.
@@ -837,7 +835,7 @@ impl AttestationRegistry {
         // Extend TTL on the specific attestation entry just written, so it is
         // not subject to state-archival independently of the instance storage.
         env.storage().persistent().extend_ttl(
-            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            &DataKey::Attestation(record_hash.clone(), stored_sequence),
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
@@ -1010,9 +1008,14 @@ impl AttestationRegistry {
     }
 
     /// Look up the full attestation history for `record_hash`, if any.
-    /// Returns attestations in chronological order (oldest first).
+    /// Returns attestations ordered by the first submission of each retained
+    /// attester slot.
     /// Callable by anyone.
     pub fn get_attestation_history(env: Env, record_hash: BytesN<32>) -> Vec<Attestation> {
+        Self::attestation_history(&env, record_hash)
+    }
+
+    fn attestation_history(env: &Env, record_hash: BytesN<32>) -> Vec<Attestation> {
         let sequence: u64 = match env
             .storage()
             .persistent()

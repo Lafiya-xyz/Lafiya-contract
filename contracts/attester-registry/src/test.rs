@@ -7,9 +7,9 @@ use soroban_sdk::{Env, Event, IntoVal, String};
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
     let env = Env::default();
     env.mock_all_auths();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     (env, client, admin)
 }
 
@@ -26,14 +26,14 @@ fn get_schema_version_succeeds() {
     // and must be deliberate, paired with a migration plan (see
     // `needs_migration`/`migrate` in lib.rs), and not an accidental side
     // effect of an unrelated change.
-    let (_, client, admin) = setup();
+    let (_, client, _admin) = setup();
     assert_eq!(client.get_schema_version(), 1);
     initialize_for_tests(&client, &admin);
     assert_eq!(client.get_schema_version(), 4);
 }
 
 #[test]
-fn initialize_sets_admin() {
+fn constructor_sets_admin() {
     let (_, client, admin) = setup();
     initialize_for_tests(&client, &admin);
     assert_eq!(client.get_admin(), admin);
@@ -235,9 +235,10 @@ fn add_attester_before_initialize_fails() {
 fn add_attester_without_admin_auth_fails() {
     // No mock_all_auths(): calls must present a real, matching auth entry.
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let attester = Address::generate(&env);
 
     env.mock_all_auths();
@@ -263,9 +264,10 @@ fn add_attester_without_admin_auth_fails() {
 #[test]
 fn propose_admin_by_non_admin_fails() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let new_admin = Address::generate(&env);
     let malicious = Address::generate(&env);
 
@@ -289,9 +291,10 @@ fn propose_admin_by_non_admin_fails() {
 #[test]
 fn accept_admin_by_wrong_address_fails() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let new_admin = Address::generate(&env);
     let malicious = Address::generate(&env);
 
@@ -579,9 +582,10 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
 #[test]
 fn update_attester_info_without_admin_auth_fails() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let attester = Address::generate(&env);
 
     env.mock_all_auths();
@@ -1064,9 +1068,10 @@ fn contract_address_can_be_added_as_attester() {
 #[test]
 fn second_propose_admin_call_overwrites_pending_proposal() {
     let env = Env::default();
-    let contract_id = env.register(AttesterRegistry, ());
-    let client = AttesterRegistryClient::new(&env, &contract_id);
+    env.mock_all_auths();
     let admin = Address::generate(&env);
+    let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+    let client = AttesterRegistryClient::new(&env, &contract_id);
     let address1 = Address::generate(&env);
     let address2 = Address::generate(&env);
 

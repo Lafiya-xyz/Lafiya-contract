@@ -20,8 +20,8 @@ manually below, so the procedure can be followed — and audited — without it.
 
 ## 1. How upgrades work here (background)
 
-Each contract exposes three upgrade-related functions, gated by the admin address set
-at `initialize` time:
+Each contract exposes three upgrade-related functions, gated by the admin address
+supplied to its deployment constructor:
 
 | Function | Auth | Effect |
 | --- | --- | --- |
@@ -326,8 +326,8 @@ in production.
 
 | Symptom | Likely cause | Action |
 | --- | --- | --- |
-| `upgrade` tx fails with contract error `1` (`NotInitialized`) | wrong contract id, or instance never initialized | verify `--id`; initialize first |
-| tx fails: authorization errors / `require_auth` | signer is not the admin | `stellar keys ls`; sign with the admin identity set at `initialize` |
+| `upgrade` tx fails with contract error `1` (`NotInitialized`) | wrong contract id, or legacy instance lacks configuration | verify `--id`; redeploy if the instance was never configured |
+| tx fails: authorization errors / `require_auth` | signer is not the admin | `stellar keys ls`; sign with the admin identity or multisig configured at deployment |
 | host error: wasm hash not found / update fails | blob never uploaded (step skipped) | run step 4.3 (`upload`) before `upgrade()` |
 | `sha256sum` ≠ `upload` output | CLI optimized the wasm (`--optimize` default) | re-upload with `--optimize=false`; never mix artifacts |
 | operator hash ≠ reviewer hash | dirty tree, wrong tag, toolchain drift | both rebuild clean with `--locked` and the pinned toolchain (§3) |

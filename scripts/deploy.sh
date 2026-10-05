@@ -192,7 +192,7 @@ if [[ -z "$ADMIN_ADDRESS" ]]; then
         fi
     fi
     if [[ -z "$ADMIN_ADDRESS" ]]; then
-        echo "WARNING: --admin not provided. Contracts will need an admin address at initialization." >&2
+        echo "WARNING: --admin not provided. Contracts need an admin address at deployment." >&2
         echo "Provide --admin G... or ensure --source resolves to an address." >&2
         # For dry-run, use placeholder. This is NOT a real Stellar address --
         # it must never be used to fund, invoke, or otherwise interact with
@@ -240,13 +240,14 @@ deploy_contract() {
     local rpc_url="$3"
     local passphrase="$4"
     local label="$5"
+    shift 5
 
     echo "==> Deploying $label..." >&2
     if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[DRY RUN] stellar contract deploy \\" >&2
-        echo "  --wasm $wasm_path \\" >&2
-        echo "  --rpc-url $rpc_url \\" >&2
-        echo "  --network-passphrase \"$passphrase\" ${STELLAR_SOURCE_ARGS[*]}" >&2
+        printf '[DRY RUN] stellar contract deploy --wasm %s --rpc-url %s --network-passphrase "%s" %s --' \
+            "$wasm_path" "$rpc_url" "$passphrase" "${STELLAR_SOURCE_ARGS[*]}" >&2
+        printf ' %q' "$@" >&2
+        printf '\n' >&2
         # Fake contract ID, dry-run only -- never a real deployed address.
         echo "CPLACEHOLDER${label}XXX" # placeholder ID
         return
@@ -309,17 +310,19 @@ initialize_contract() {
         --rpc-url "$LAFIYA_RPC_URL" \
         --network-passphrase "$LAFIYA_NETWORK_PASSPHRASE" \
         "${STELLAR_SOURCE_ARGS[@]}" \
-        -- "$func" "$@"
+        -- "$@"
 }
 
 # Deploy attester-registry
-ATTESTER_ID="$(deploy_contract "$ATTESTER_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attester-registry")"
+ATTESTER_ID="$(deploy_contract "$ATTESTER_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attester-registry" \
+    --admin "$ADMIN_ADDRESS")"
 ATTESTER_ID="$(echo "$ATTESTER_ID" | tr -d '\n' | xargs)" # trim
 echo "    attester-registry ID: $ATTESTER_ID"
 [[ "$DRY_RUN" == "true" ]] || record_deployment deploy attester-registry "$ATTESTER_ID" "$ATTESTER_WASM"
 
 # Deploy attestation-registry
-ATTESTATION_ID="$(deploy_contract "$ATTESTATION_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attestation-registry")"
+ATTESTATION_ID="$(deploy_contract "$ATTESTATION_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attestation-registry" \
+    --admin "$ADMIN_ADDRESS" --attester_registry "$ATTESTER_ID")"
 ATTESTATION_ID="$(echo "$ATTESTATION_ID" | tr -d '\n' | xargs)"
 echo "    attestation-registry ID: $ATTESTATION_ID"
 [[ "$DRY_RUN" == "true" ]] || record_deployment deploy attestation-registry "$ATTESTATION_ID" "$ATTESTATION_WASM"
@@ -328,35 +331,6 @@ echo "    attestation-registry ID: $ATTESTATION_ID"
 if [[ "$DRY_RUN" != "true" ]]; then
     lafiya_validate_contract_id "deployed attester_registry id" "$ATTESTER_ID" || exit 1
     lafiya_validate_contract_id "deployed attestation_registry id" "$ATTESTATION_ID" || exit 1
-fi
-
-# Initialize contracts
-echo "==> Initializing attester-registry with admin $ADMIN_ADDRESS"
-if [[ "$DRY_RUN" == "true" ]]; then
-    echo "[DRY RUN] initialize --admin $ADMIN_ADDRESS on $ATTESTER_ID"
-else
-    stellar contract invoke \
-        --id "$ATTESTER_ID" \
-        --rpc-url "$LAFIYA_RPC_URL" \
-        --network-passphrase "$LAFIYA_NETWORK_PASSPHRASE" \
-        "${STELLAR_SOURCE_ARGS[@]}" \
-        -- initialize --admin "$ADMIN_ADDRESS" || {
-            echo "Note: initialize may have failed if already initialized (expected on re-deploy)" >&2
-        }
-fi
-
-echo "==> Initializing attestation-registry with admin $ADMIN_ADDRESS and attester-registry $ATTESTER_ID"
-if [[ "$DRY_RUN" == "true" ]]; then
-    echo "[DRY RUN] initialize --admin $ADMIN_ADDRESS --attester_registry $ATTESTER_ID on $ATTESTATION_ID"
-else
-    stellar contract invoke \
-        --id "$ATTESTATION_ID" \
-        --rpc-url "$LAFIYA_RPC_URL" \
-        --network-passphrase "$LAFIYA_NETWORK_PASSPHRASE" \
-        "${STELLAR_SOURCE_ARGS[@]}" \
-        -- initialize --admin "$ADMIN_ADDRESS" --attester_registry "$ATTESTER_ID" || {
-            echo "Note: initialize may have failed if already initialized" >&2
-        }
 fi
 
 echo ""

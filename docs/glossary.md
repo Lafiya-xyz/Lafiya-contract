@@ -10,7 +10,8 @@ Terms in *italics* within a definition are themselves defined in this glossary.
 
 ### Admin
 
-The address authorized to perform administrative operations on a registry: `initialize`,
+The address authorized to perform administrative operations on a registry, supplied to the
+deployment constructor,
 attester add/remove/suspend/reinstate, pause/unpause, `upgrade`, and `migrate`. Pre-alpha
 contracts start with a single admin address ([ADR-0003](adr/0003-single-admin-initial-model.md));
 the intended shape is a *multisig account* ([ADR-0007](adr/0007-unscoped-multisig-authorization.md)).

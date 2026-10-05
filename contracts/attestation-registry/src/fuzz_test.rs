@@ -1,6 +1,6 @@
 //! Property-based fuzz testing for `attest`. Targets two things the issue
 //! called out specifically: panics on arbitrary/adversarial `record_hash`
-//! byte patterns, and unusual call orderings relative to `initialize`.
+//! byte patterns and re-attestation behavior.
 //!
 //! Run just this target locally with more cases via:
 //! `PROPTEST_CASES=10000 cargo test -p attestation-registry fuzz_test -- --nocapture`
@@ -24,12 +24,15 @@ proptest! {
         let env = Env::default();
         env.mock_all_auths();
 
-        let attester_registry_id = env.register(AttesterRegistry, ());
+        let admin = Address::generate(&env);
+        let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
         let attester_registry_client = AttesterRegistryClient::new(&env, &attester_registry_id);
-        let contract_id = env.register(AttestationRegistry, ());
+        let contract_id = env.register(
+            AttestationRegistry,
+            (admin, attester_registry_id.clone()),
+        );
         let client = AttestationRegistryClient::new(&env, &contract_id);
 
-        let admin = Address::generate(&env);
         let attester = Address::generate(&env);
         attester_registry_client.initialize(&admin);
         attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
@@ -71,9 +74,13 @@ proptest! {
         let env = Env::default();
         env.mock_all_auths();
 
-        let attester_registry_id = env.register(AttesterRegistry, ());
+        let admin = Address::generate(&env);
+        let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
         let attester_registry_client = AttesterRegistryClient::new(&env, &attester_registry_id);
-        let contract_id = env.register(AttestationRegistry, ());
+        let contract_id = env.register(
+            AttestationRegistry,
+            (admin, attester_registry_id.clone()),
+        );
         let client = AttestationRegistryClient::new(&env, &contract_id);
 
         let admin = Address::generate(&env);
@@ -98,10 +105,7 @@ proptest! {
 
         if let Some(expected) = last_attester {
             let stored = client.get_attestation(&record_hash);
-            prop_assert!(stored.is_some());
-            if let Some(attestation) = stored {
-                prop_assert_eq!(attestation.attester, expected);
-            }
+            prop_assert!(stored.iter().any(|attestation| attestation.attester == expected));
         }
     }
 }

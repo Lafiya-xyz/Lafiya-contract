@@ -394,10 +394,7 @@ pub struct AttesterRegistry;
 impl AttesterRegistry {
     /// Set the admin address authorized to manage the allowlist. Can only
     /// be called once; the caller must authorize as the given `admin`.
-    pub fn initialize(env: Env, admin: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
+    pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
         env.storage().instance().set(&DataKey::Admin, &admin);
         env.storage()
@@ -406,7 +403,7 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        Ok(())
+        Initialized { admin }.publish(&env);
     }
 
     /// Rotate an allowlisted attester key without losing metadata or enrollment history.

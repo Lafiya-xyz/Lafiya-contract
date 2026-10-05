@@ -103,7 +103,7 @@ Four Soroban contracts, each in its own crate under `contracts/`.
 
 | Function | Description |
 | --- | --- |
-| `initialize(admin: Address)` | Sets the admin. Callable once. |
+| `__constructor(admin: Address)` | Sets the admin atomically at deployment; the supplied admin must authorize the deployment. |
 | `get_admin() -> Address` | Returns the current admin address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
@@ -135,7 +135,7 @@ In the repository: [glossary](docs/glossary.md) · [ADRs](docs/adr/README.md) ·
 
 | Function | Description |
 | --- | --- |
-| `initialize(admin: Address, attester_registry: Address)` | Sets the admin and the `attester-registry` contract to consult. Callable once. |
+| `__constructor(admin: Address, attester_registry: Address)` | Sets the admin and validates/configures the `attester-registry` atomically at deployment; the supplied admin must authorize the deployment. |
 | `get_admin() -> Address` | Returns the current admin address. |
 | `get_attester_registry() -> Address` | Returns the configured `attester-registry` contract address. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
@@ -228,7 +228,7 @@ contracts/
 ├── attester-registry/       # allowlist contract
 │   ├── Cargo.toml
 │   └── src/
-│       ├── lib.rs           # initialize, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
+│       ├── lib.rs           # constructor, add_attester, remove_attester, is_attester, upgrade, migrate, get_schema_version
 │       └── test.rs
 ├── attestation-registry/    # attestation contract
 │   ├── Cargo.toml
@@ -352,11 +352,11 @@ cargo xtask docs && mdbook serve docs
 
 Covers, per contract (see `contracts/*/src/test.rs` and `tests/integration/run.sh`):
 
-- ✅ Initialize / double-initialize rejection
+- ✅ Atomic registry constructor configuration and invalid-wiring rejection
 - ✅ Admin-gated writes (`add_attester`, `remove_attester`), including rejection when the caller's auth entry doesn't match
 - ✅ Allowlist lookups (`is_attester`)
-- ✅ `attest` by an allowlisted vs. non-allowlisted attester, and before the contract is initialized
-- ✅ `get_attestation` lookups, including unknown hashes and re-attestation overwrite
+- ✅ `attest` by allowlisted vs. non-allowlisted attesters
+- ✅ Bounded `get_attestation` history, including same-attester refresh without evicting other attesters
 - ✅ Emitted events (`AttesterAdded`, `AttesterRemoved`, `AttestationRecorded`)
 - ✅ Multisig threshold, signer validation, signature ordering, and invalid-signature rejection
 - ✅ Multisig-backed initialization and admin operations through the contract-account authorization path

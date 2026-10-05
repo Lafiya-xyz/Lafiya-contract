@@ -28,9 +28,10 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `RateLimitHit` (`attestation-registry`) — published at most once per attester per rate-limit window, on the attestation that fills the window
 - `RateLimitSet` (`attestation-registry`)
 
-`Initialized` is currently a declared schema only: neither registry publishes it
-during initialization. Indexers must not rely on receiving it unless contract
-behavior is changed in a future release.
+`Initialized` is emitted by `attester-registry` from its deployment constructor.
+`MultisigConfigured` is emitted during multisig deployment, and
+`AuthorizationApproved` records the timestamp and signer keys for each successful
+authorization. Indexers should consume these events alongside registry activity.
 
 Every registry event payload includes `contract_kind` and `schema_version`.
 Registry event schema version `2` adds these fields; consumers should branch on

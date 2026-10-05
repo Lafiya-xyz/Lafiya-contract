@@ -2,7 +2,7 @@
 set -euo pipefail
 
 # Soroban Smart Contract Integration Test Suite
-# Exercises deployment, contract initialization, allowlist management, and attestation flow on a local network node.
+# Exercises atomic deployment, allowlist management, and attestation flow on a local network node.
 
 echo "========================================================"
 echo "  Starting Lafiya Soroban Integration Test Suite"
@@ -83,32 +83,19 @@ echo "Deploying attester-registry..."
 ATTESTER_REG_ID=$($CLI contract deploy \
     --wasm "$ATTESTER_WASM" \
     --source admin \
-    --network local)
+    --network local \
+    -- --admin "$ADMIN_ADDR")
 echo "Attester Registry deployed at: $ATTESTER_REG_ID"
 
 echo "Deploying attestation-registry..."
 ATTESTATION_REG_ID=$($CLI contract deploy \
     --wasm "$ATTESTATION_WASM" \
     --source admin \
-    --network local)
+    --network local \
+    -- --admin "$ADMIN_ADDR" --attester_registry "$ATTESTER_REG_ID")
 echo "Attestation Registry deployed at: $ATTESTATION_REG_ID"
 
-# 7. Initialize contracts
-echo "Initializing attester-registry (admin: $ADMIN_ADDR)..."
-$CLI contract invoke \
-    --id "$ATTESTER_REG_ID" \
-    --source admin \
-    --network local \
-    -- initialize --admin "$ADMIN_ADDR"
-
-echo "Initializing attestation-registry (admin: $ADMIN_ADDR, registry: $ATTESTER_REG_ID)..."
-$CLI contract invoke \
-    --id "$ATTESTATION_REG_ID" \
-    --source admin \
-    --network local \
-    -- initialize --admin "$ADMIN_ADDR" --attester_registry "$ATTESTER_REG_ID"
-
-# 8. Test authorization gate (non-allowlisted attester attempt must fail)
+# 7. Test authorization gate (non-allowlisted attester attempt must fail)
 RECORD_HASH="0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20"
 echo "Testing attest from non-allowlisted attester (expected to be rejected)..."
 if $CLI contract invoke \
@@ -122,7 +109,7 @@ else
     echo "PASSED: Non-allowlisted attester call rejected as expected."
 fi
 
-# 9. Allowlist attester in attester-registry
+# 8. Allowlist attester in attester-registry
 echo "Allowlisting attester..."
 $CLI contract invoke \
     --id "$ATTESTER_REG_ID" \
@@ -144,7 +131,7 @@ if ! echo "$IS_ATTESTER_RES" | grep -i "true" >/dev/null; then
 fi
 echo "PASSED: Attester successfully allowlisted."
 
-# 10. Execute attest flow with allowlisted attester
+# 9. Execute attest flow with allowlisted attester
 echo "Submitting attestation for record hash ($RECORD_HASH)..."
 ATTEST_RES=$($CLI contract invoke \
     --id "$ATTESTATION_REG_ID" \
@@ -154,7 +141,7 @@ ATTEST_RES=$($CLI contract invoke \
 
 echo "Attest output: $ATTEST_RES"
 
-# 11. Retrieve and verify recorded attestation
+# 10. Retrieve and verify recorded attestation
 echo "Querying get_attestation..."
 GET_RES=$($CLI contract invoke \
     --id "$ATTESTATION_REG_ID" \

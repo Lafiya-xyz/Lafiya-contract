@@ -39,13 +39,13 @@ const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
 
 #[test]
 fn large_attester_allowlist_load() {
-    let (env, client, admin) = {
+    let (env, client) = {
         let env = Env::default();
         env.mock_all_auths();
-        let contract_id = env.register(AttesterRegistry, ());
-        let client = AttesterRegistryClient::new(&env, &contract_id);
         let admin = Address::generate(&env);
-        (env, client, admin)
+        let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+        let client = AttesterRegistryClient::new(&env, &contract_id);
+        (env, client)
     };
     client.initialize(&admin);
     client.grant_role(&Role::Registrar, &admin);
