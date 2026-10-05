@@ -3,27 +3,65 @@ name: Docs Build
 on:
   push:
     branches: [ main ]
+    tags: [ "v*" ]
   pull_request:
     branches: [ main ]
+
+permissions:
+  contents: read
 
 jobs:
   docs:
     runs-on: ubuntu-latest
+    permissions:
+      # Needed only by the gh-pages deploy step (pushes to the gh-pages branch).
+      contents: write
     steps:
-      - uses: actions/checkout@v7
-      - name: Install Rust toolchain
-        uses: actions-rs/toolchain@v1
+      - name: Harden runner
+        uses: step-security/harden-runner@e14015d583714f6e62063499dc959a02595150a1 # v2.21.1
         with:
-          toolchain: stable
-          override: true
+          # Start in audit mode; switch to `block` with an allowed-endpoints
+          # list once the egress baseline from audit runs is reviewed.
+          egress-policy: audit
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: Build docs
         run: cargo doc --workspace --no-deps
         env:
           RUSTDOCFLAGS: -D warnings
+
+      - name: Build site
+        run: |
+          mdbook build docs
+          cp -r target/doc target/book/api
+
+      - name: Check links
+        run: lychee --offline --no-progress --root-dir "$PWD/target/book" --exclude-path target/book/api 'target/book/**/*.html'
+
+      # Each version lives in its own directory: `main/` for pushes to main,
+      # `vX.Y.Z/` for tags. versions.json feeds the version picker and the
+      # site root redirects to the newest release (or main before the first).
+      - name: Assemble versioned site
+        if: github.event_name == 'push'
+        run: |
+          VERSION="${GITHUB_REF_NAME}"
+          git fetch origin gh-pages --depth=1 && git worktree add pages origin/gh-pages || mkdir -p pages
+          rm -rf "pages/${VERSION}"
+          cp -r target/book "pages/${VERSION}"
+          cd pages
+          versions=$(find . -maxdepth 1 -mindepth 1 -type d \( -name main -o -name 'v*' \) -printf '%f\n' \
+            | sort -rV | awk '$0 != "main"'; if [ -d main ]; then echo main; fi)
+          printf '%s\n' "$versions" | jq -R . | jq -s . > versions.json
+          latest=$(head -n1 <<< "$versions")
+          printf '<!doctype html><meta http-equiv="refresh" content="0; url=%s/"><a href="%s/">Lafiya docs</a>\n' \
+            "$latest" "$latest" > index.html
+          touch .nojekyll
+          rm -rf .git
+
       - name: Deploy to GitHub Pages
         if: github.event_name == 'push'
-        uses: peaceiris/actions-gh-pages@v4
+        uses: peaceiris/actions-gh-pages@84c30a85c19949d7eee79c4ff27748b70285e453 # v4.1.0
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          publish_dir: target/doc
-          destination_dir: .
+          publish_dir: pages

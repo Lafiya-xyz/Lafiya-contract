@@ -9,9 +9,9 @@
 
 set -euo pipefail
 
-if [[ -z "${ATT_REGISTRY}" || -z "${ATTESTER_REGISTRY}" || -z "${NETWORK_URL}" || -z "${ADMIN_SECRET}" ]]; then
-  echo "Error: One or more required environment variables are missing."
-  echo "Required: ATT_REGISTRY ATTESTER_REGISTRY NETWORK_URL ADMIN_SECRET"
+if [[ -z "${ATT_REGISTRY:-}" || -z "${ATTESTER_REGISTRY:-}" || -z "${NETWORK_URL:-}" || -z "${ADMIN_SECRET:-}" ]]; then
+  echo "Error: One or more required environment variables are missing." >&2
+  echo "Required: ATT_REGISTRY ATTESTER_REGISTRY NETWORK_URL ADMIN_SECRET" >&2
   exit 1
 fi
 
@@ -48,6 +48,11 @@ ATT_KEYPAIR=$(stellar-cli keypair generate)
 ATT_ADDRESS=$(echo "$ATT_KEYPAIR" | grep "Address:" | awk '{print $2}')
 ATT_SECRET=$(echo "$ATT_KEYPAIR" | grep "Secret:" | awk '{print $2}')
 
+if [[ -z "${ATT_ADDRESS:-}" || -z "${ATT_SECRET:-}" ]]; then
+  echo "Error: Failed to generate temporary attester keypair." >&2
+  exit 1
+fi
+
 # Add temporary attester
 run_cli address add --address "$ATT_ADDRESS" --secret "$ADMIN_SECRET" --network "$NETWORK_URL"
 run_cli contract invoke "$ATTESTER_REGISTRY" add_attester "$ATT_ADDRESS" --secret "$ADMIN_SECRET" --network "$NETWORK_URL"
@@ -62,7 +67,7 @@ RESULT=$(run_cli contract invoke "$ATT_REGISTRY" get_attestation "$DUMMY_HASH" -
 if echo "$RESULT" | grep -q "$ATT_ADDRESS"; then
   echo "Attestation verified successfully."
 else
-  echo "Verification failed: attester address not found in result."
+  echo "Verification failed: attester address not found in result." >&2
   exit 1
 fi
 

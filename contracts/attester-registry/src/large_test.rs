@@ -2,7 +2,7 @@
 
 extern crate std;
 
-use crate::{AttesterRegistry, AttesterRegistryClient};
+use crate::{AttesterRegistry, AttesterRegistryClient, Role};
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env};
 
@@ -17,7 +17,8 @@ const TOTAL_ATTESTERS: usize = 1_000;
 // Native contract tests omit Wasm execution and transaction-envelope costs. These
 // ceilings therefore guard relative regressions in add_attester, not network fees.
 // Each is deliberately far below the network invocation limit while retaining
-// headroom for cost-model adjustments in compatible SDK releases.
+// headroom for cost-model adjustments in compatible SDK releases. The 1,000
+// attester ceilings include the per-enrollment stale-suspension check.
 const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
     BudgetCheckpoint {
         attesters: 10,
@@ -31,8 +32,8 @@ const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
     },
     BudgetCheckpoint {
         attesters: 1_000,
-        max_cpu_instructions: 2_000_000,
-        max_memory_bytes: 1_000_000,
+        max_cpu_instructions: 4_000_000,
+        max_memory_bytes: 1_600_000,
     },
 ];
 
@@ -46,13 +47,16 @@ fn large_attester_allowlist_load() {
         let client = AttesterRegistryClient::new(&env, &contract_id);
         (env, client)
     };
+    client.initialize(&admin);
+    client.grant_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Guardian, &admin);
 
     let mut sampled_attesters = std::vec::Vec::<Address>::new();
     let mut observed_checkpoints = 0;
 
     for i in 0..TOTAL_ATTESTERS {
         let attester = Address::generate(&env);
-        client.add_attester(&attester);
+        client.add_attester(&admin, &attester);
 
         let attester_count = i + 1;
         if let Some(checkpoint) = BUDGET_CHECKPOINTS

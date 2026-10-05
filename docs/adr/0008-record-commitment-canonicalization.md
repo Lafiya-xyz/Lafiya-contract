@@ -20,9 +20,10 @@ approaches, cross-language test vectors, a prototype, a threat analysis, and a m
 plan. This ADR is that decision; the prototype lives in
 [`crates/lafiya-commitment`](../../crates/lafiya-commitment).
 
-This ADR governs the *shape* of the off-chain commitment construction. It does not change
-`attestation-registry` or `attester-registry`, which continue to treat `record_hash` as
-opaque per ADR-0001.
+This ADR governs the *shape* of the off-chain commitment construction. The registry
+continues to treat `record_hash` as opaque and does not compute or inspect it. The
+attestation interface records the commitment version alongside each attestation so a
+verifier can select the correct construction without guessing.
 
 ## Decision
 
@@ -168,8 +169,14 @@ were produced by LRC-1. They are treated as **version `0x00`, "legacy/unversione
 reserved value that this scheme never produces — meaning: opaque, with no defined
 preimage relationship, to be verified only via whatever process (if any) was used to
 create them originally. No migration of past commitments is proposed or required; the
-contracts' storage and behavior are unaffected either way, since they never inspected the
-hash.
+`attest` entry point records version `0x00`; new integrations should use
+`attest_versioned` and pass the version used to construct the commitment.
+
+The public `Attestation` value and `AttestationRecorded` event include the commitment
+version. This is an interface and storage-layout change. The contracts have no live
+testnet deployments, so this change must be deployed before production attestations are
+written; deployments with existing attestation storage require an explicit migration
+before upgrading to this layout.
 
 ## Consequences
 
@@ -201,13 +208,15 @@ hash.
 1. `lafiya-web` defines the concrete field list and order for each record type it needs
    to commit to, and encodes it with `encode_payload` / `commit_v1` (or the TypeScript
    equivalent) exactly as specified here.
-2. New attestations use LRC-1 (`VERSION_V1`) going forward. No on-chain change is
-   required — `attest` already accepts any `BytesN<32>`.
+2. New attestations use LRC-1 (`VERSION_V1`) going forward and call
+   `attest_versioned(..., 0x01)`. The attestation registry stores that version with the
+   attestation and includes it in `get_attestation` results and `AttestationRecorded`
+   events. The old `attest` endpoint remains a legacy/unversioned (`0x00`) path.
 3. Any API or documentation that surfaces a commitment to a verifier should also surface
    which version produced it (e.g. `0x00` = legacy/unversioned, `0x01` = LRC-1), so a
    verifier knows whether — and how — it can attempt to reproduce the hash from a
-   claimed preimage. This repository's contracts do not need this metadata; it is a
-   concern for `lafiya-web` / `lafiya-verifier` response payloads.
+   claimed preimage. The contract-returned attestation is the authoritative on-chain
+   version metadata.
 4. If a future record type needs open-ended or nested fields that a fixed schema cannot
    express cleanly, define `VERSION_V2` using deterministic CBOR rather than extending
    LRC-1's tag set indefinitely.

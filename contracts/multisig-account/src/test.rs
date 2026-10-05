@@ -2,14 +2,28 @@ extern crate std;
 
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
-use soroban_sdk::testutils::Events as _;
-use soroban_sdk::{auth::Context, BytesN, Env, Event, IntoVal, Vec};
+use p256::ecdsa::{
+    signature::hazmat::PrehashSigner, Signature as P256Signature, SigningKey as P256SigningKey,
+};
+use soroban_sdk::{auth::Context, BytesN, Env, IntoVal, Vec};
 
 pub(crate) fn signing_keys() -> std::vec::Vec<SigningKey> {
     let mut keys = std::vec![
         SigningKey::from_bytes(&[1; 32]),
         SigningKey::from_bytes(&[2; 32]),
         SigningKey::from_bytes(&[3; 32]),
+    ];
+    keys.sort_by_key(|key| key.verifying_key().to_bytes());
+    keys
+}
+
+fn five_signing_keys() -> std::vec::Vec<SigningKey> {
+    let mut keys = std::vec![
+        SigningKey::from_bytes(&[1; 32]),
+        SigningKey::from_bytes(&[2; 32]),
+        SigningKey::from_bytes(&[3; 32]),
+        SigningKey::from_bytes(&[4; 32]),
+        SigningKey::from_bytes(&[5; 32]),
     ];
     keys.sort_by_key(|key| key.verifying_key().to_bytes());
     keys
@@ -34,7 +48,10 @@ pub(crate) fn signatures_for(env: &Env, keys: &[SigningKey], payload: &[u8; 32])
     let mut signatures = Vec::new(env);
     for key in ordered {
         signatures.push_back(Signature {
-            public_key: BytesN::from_array(env, &key.verifying_key().to_bytes()),
+            public_key: SignerKey::Ed25519(BytesN::from_array(
+                env,
+                &key.verifying_key().to_bytes(),
+            )),
             signature: BytesN::from_array(env, &key.sign(payload).to_bytes()),
         });
     }
@@ -77,6 +94,18 @@ fn check_auth(
         signatures.into_val(env),
         &Vec::<Context>::new(env),
     )
+}
+
+fn p256_signature(env: &Env, key: &P256SigningKey, payload: &[u8; 32]) -> Signature {
+    let public_key = key.verifying_key().to_encoded_point(false);
+    let public_key_bytes: [u8; 65] = public_key.as_bytes().try_into().unwrap();
+    let signature: P256Signature = key.sign_prehash(payload).unwrap();
+    let signature = signature.normalize_s().unwrap_or(signature);
+    let signature_bytes: [u8; 64] = signature.to_bytes().into();
+    Signature {
+        public_key: SignerKey::Secp256r1(BytesN::from_array(env, &public_key_bytes)),
+        signature: BytesN::from_array(env, &signature_bytes),
+    }
 }
 
 #[test]
@@ -179,11 +208,17 @@ fn same_signer_appearing_twice_in_signatures_is_rejected() {
     let signer = &keys[0];
 
     let first_signature = Signature {
-        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        public_key: SignerKey::Ed25519(BytesN::from_array(
+            &env,
+            &signer.verifying_key().to_bytes(),
+        )),
         signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
     };
     let second_signature = Signature {
-        public_key: BytesN::from_array(&env, &signer.verifying_key().to_bytes()),
+        public_key: SignerKey::Ed25519(BytesN::from_array(
+            &env,
+            &signer.verifying_key().to_bytes(),
+        )),
         signature: BytesN::from_array(&env, &signer.sign(&payload.to_array()).to_bytes()),
     };
     assert_eq!(first_signature.signature, second_signature.signature);
@@ -329,4 +364,24 @@ fn three_of_five_signers_authorize() {
     let signatures = signatures_for(&env, &keys[..3], &payload.to_array());
 
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+#[test]
+fn get_interface_reports_kind_versions_and_features() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys[..2], 1);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let info = client.get_interface();
+    assert_eq!(
+        info.contract_kind,
+        soroban_sdk::Symbol::new(&env, "lafiya_multisig_account")
+    );
+    assert_eq!(info.interface_version, INTERFACE_VERSION);
+    assert_eq!(info.schema_version, SCHEMA_VERSION);
+    assert_eq!(info.event_version, EVENT_VERSION);
+    assert!(info
+        .features
+        .contains(soroban_sdk::Symbol::new(&env, "unscoped_auth")));
 }

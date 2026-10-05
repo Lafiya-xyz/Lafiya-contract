@@ -59,13 +59,20 @@ const contract = new Contract({
 });
 
 const attester = "G..."; // an allowlisted attester's address
+const region = "region-id"; // must match the attester's allowlisted region
 const recordHash = Buffer.from("abc123...", "hex"); // hash of the off-chain record
 
 // attest() records that `attester` verified the record. It changes contract
 // state, so after simulation you must sign and send the transaction.
-await contract.attest({ attester, record_hash: recordHash }).then((tx) => tx.signAndSend());
+await contract.attest({ attester, region, record_hash: recordHash }).then((tx) => tx.signAndSend());
 
 // get_attestation() returns all retained attestations in first-submission order.
 const { result } = await contract.get_attestation({ record_hash: recordHash });
-console.log(result); // a bounded array of Attestation entries
+console.log(result); // the latest Attestation, or null if none
+
+// get_attestations() looks up multiple hashes in one read and preserves order.
+const { result: attestations } = await contract.get_attestations({
+  record_hashes: [recordHash, anotherRecordHash],
+});
+console.log(attestations); // one Attestation-or-null result per input hash
 ```

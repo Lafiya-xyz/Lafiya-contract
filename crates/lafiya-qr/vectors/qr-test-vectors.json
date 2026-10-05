@@ -1,0 +1,32 @@
+[
+  {
+    "name": "minimal-testnet",
+    "description": "Minimal LRC-1 testnet payload: version, network_id, attestation_registry, card_ref only.",
+    "network_id_hex": "cee0302d",
+    "attestation_registry_hex": "5555555555555555555555555555555555555555555555555555555555555555",
+    "card_ref_hex": "7777777777777777777777777777777777777777777777777777777777777777",
+    "lrc_version": null,
+    "fallback_url": null,
+    "expected_qr_prefix": "LFQR:"
+  },
+  {
+    "name": "minimal-mainnet",
+    "description": "Minimal LRC-1 mainnet payload.",
+    "network_id_hex": "7ac33997",
+    "attestation_registry_hex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "card_ref_hex": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "lrc_version": null,
+    "fallback_url": null,
+    "expected_qr_prefix": "LFQR:"
+  },
+  {
+    "name": "testnet-with-fallback-url",
+    "description": "Testnet payload with a display-only fallback URL.",
+    "network_id_hex": "cee0302d",
+    "attestation_registry_hex": "1234567890abcdef1234567890abcdef1234567890abcdef1234567890abcdef",
+    "card_ref_hex": "fedcba0987654321fedcba0987654321fedcba0987654321fedcba0987654321",
+    "lrc_version": null,
+    "fallback_url": "https://lafiya.example/card/abc123",
+    "expected_qr_prefix": "LFQR:"
+  }
+]

@@ -1,0 +1,26 @@
+[
+  {
+    "admin": "GADMIN",
+    "contract": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+    "last_admin_action": {
+      "event": "paused",
+      "ledger": 59500,
+      "tx_hash": "015b90105db65a51b21a7d43e7b0a3d99d752567ae5b30c85b4561aab187d806"
+    },
+    "paused": true,
+    "wasm_hash": null,
+    "wasm_in_manifest": null
+  },
+  {
+    "admin": "GADMIN",
+    "contract": "CRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
+    "last_admin_action": {
+      "event": "upgraded",
+      "ledger": 35000,
+      "tx_hash": "57fea5a0e25383dac5a880eadc903ca34bc76ba6fd0e05ba09a53de0435696d9"
+    },
+    "paused": false,
+    "wasm_hash": "abababababababababababababababababababababababababababababababab",
+    "wasm_in_manifest": false
+  }
+]

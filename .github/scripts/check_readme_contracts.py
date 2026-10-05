@@ -1,13 +1,18 @@
-import re, sys, pathlib, json
+import pathlib
+import re
+import sys
+
+Signature = tuple[str, str]
 
 ROOT = pathlib.Path(__file__).resolve().parents[2]  # repo root
 
-def get_contract_impl_functions(crate_path: pathlib.Path):
+
+def get_contract_impl_functions(crate_path: pathlib.Path) -> list[Signature]:
     src_path = crate_path / "src" / "lib.rs"
     content = src_path.read_text(encoding="utf-8")
     # Find the impl block with #[contractimpl]
     impl_blocks = re.split(r"@?\[contractimpl\]", content)
-    functions = []
+    functions: list[Signature] = []
     for block in impl_blocks[1:]:  # after each marker
         # find all public functions within the block until next impl or end
         matches = re.finditer(r"pub fn\s+(\w+)\s*\(([^)]*)\)\s*->?\s*[^ {]*", block)
@@ -18,30 +23,36 @@ def get_contract_impl_functions(crate_path: pathlib.Path):
             functions.append((name, args))
     return functions
 
-def parse_readme_functions(section_name: str, readme_path: pathlib.Path):
+
+def parse_readme_functions(section_name: str, readme_path: pathlib.Path) -> list[Signature]:
     content = readme_path.read_text(encoding="utf-8")
     pattern = rf"### `{section_name}`\s+\| Function \| Description \|.*?(?=\n\n|$)"
     match = re.search(pattern, content, re.DOTALL)
     if not match:
         return []
     table = match.group(0)
-    signatures = []
+    signatures: list[Signature] = []
     # Only the first backticked span of each `| ... |` row is the function
     # signature; later backticked spans belong to the description column.
     for row in re.finditer(r"^\|\s*`([^`]+)`\s*\|", table, re.MULTILINE):
         f = row.group(1)
-        if '(' in f:
-            name, args = f.split('(', 1)
-            args = args.rsplit(')', 1)[0]
+        if "(" in f:
+            name, args = f.split("(", 1)
+            args = args.rsplit(")", 1)[0]
             signatures.append((name.strip(), args.strip()))
         else:
             signatures.append((f.strip(), ""))
     return signatures
 
-def main():
+
+def main() -> None:
     repo_root = ROOT
     readme = repo_root / "README.md"
-    crates = [repo_root / "contracts" / "attester-registry", repo_root / "contracts" / "attestation-registry"]
+    crates = [
+        repo_root / "contracts" / "attester-registry",
+        repo_root / "contracts" / "attestation-registry",
+        repo_root / "contracts" / "incentive-pool",
+    ]
     all_ok = True
     for crate in crates:
         name = crate.name
@@ -64,6 +75,7 @@ def main():
     if not all_ok:
         sys.exit(1)
     print("README contract function tables are in sync.")
+
 
 if __name__ == "__main__":
     main()

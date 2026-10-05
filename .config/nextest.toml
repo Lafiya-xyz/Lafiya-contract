@@ -1,0 +1,39 @@
+# cargo-nextest configuration. See docs/ci.md.
+
+[profile.default]
+# Flag (but don't kill) slow tests locally.
+slow-timeout = { period = "60s" }
+
+[profile.ci]
+# Report every failure in the run instead of stopping at the first one.
+fail-fast = false
+# Kill a test that hangs for 5 minutes (5 x 60s).
+slow-timeout = { period = "60s", terminate-after = 5 }
+failure-output = "immediate-final"
+# No blanket retries: a retry hides real flakiness. Only tests explicitly
+# listed as flaky-tolerant below are retried.
+retries = 0
+
+[profile.ci.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
+
+# Proptest fuzz tests are randomized and may exceed the default budget.
+[[profile.ci.overrides]]
+filter = "test(fuzz_test)"
+slow-timeout = { period = "120s", terminate-after = 5 }
+
+# Flaky-tolerant tests: add a filter here (with a tracking issue) to allow
+# retries for a known-flaky test. Keep this list empty whenever possible.
+# [[profile.ci.overrides]]
+# filter = "test(=some::flaky_test)"
+# retries = 2
+
+# Nightly flaky-detection profile: no retries, keep going, full JUnit.
+[profile.flaky]
+fail-fast = false
+retries = 0
+
+[profile.flaky.junit]
+path = "junit.xml"

@@ -11,7 +11,7 @@ use super::*;
 use attester_registry::{AttesterRegistry, AttesterRegistryClient};
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN, Env};
+use soroban_sdk::{Address, BytesN, Env, Symbol};
 
 proptest! {
     #![proptest_config(ProptestConfig::with_cases(256))]
@@ -34,12 +34,36 @@ proptest! {
         let client = AttestationRegistryClient::new(&env, &contract_id);
 
         let attester = Address::generate(&env);
-        attester_registry_client.add_attester(&attester);
+        attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
+        client.initialize(&admin, &attester_registry_id);
+        client.grant_role(&Role::Guardian, &admin);
+        client.grant_role(&Role::Revoker, &admin);
+        attester_registry_client.add_attester(&admin, &attester);
 
         let record_hash = BytesN::from_array(&env, &bytes);
-        let result = client.try_attest(&attester, &record_hash);
+        let patient = Address::generate(&env);
+        let expires_at = env.ledger().timestamp() + 10_000;
+        client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+        let result = client.try_attest(&attester, &patient, &record_hash);
         prop_assert!(result.is_ok());
-        prop_assert!(!client.get_attestation(&record_hash).is_empty());
+        prop_assert!(client.get_attestation(&record_hash).is_some());
+    }
+
+    /// Calling `attest` before `initialize` must fail cleanly with
+    /// `Error::NotInitialized` for any `record_hash`, never panic.
+    #[test]
+    fn attest_before_initialize_never_panics(bytes in proptest::array::uniform32(any::<u8>())) {
+        let env = Env::default();
+        env.mock_all_auths();
+        let contract_id = env.register(AttestationRegistry, ());
+        let client = AttestationRegistryClient::new(&env, &contract_id);
+        let attester = Address::generate(&env);
+        let patient = Address::generate(&env);
+        let record_hash = BytesN::from_array(&env, &bytes);
+
+        let result = client.try_attest(&attester, &patient, &record_hash);
+        prop_assert_eq!(result, Err(Ok(Error::NotInitialized)));
     }
 
     /// Re-attesting the same `record_hash` with arbitrary byte content,
@@ -59,12 +83,22 @@ proptest! {
         );
         let client = AttestationRegistryClient::new(&env, &contract_id);
 
+        let admin = Address::generate(&env);
+        attester_registry_client.initialize(&admin);
+        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
+        client.initialize(&admin, &attester_registry_id);
+        client.grant_role(&Role::Guardian, &admin);
+        client.grant_role(&Role::Revoker, &admin);
+
         let record_hash = BytesN::from_array(&env, &bytes);
         let mut last_attester = None;
         for _ in 0..attempts {
             let attester = Address::generate(&env);
             attester_registry_client.add_attester(&attester);
-            let result = client.try_attest(&attester, &record_hash);
+            let patient = Address::generate(&env);
+            let expires_at = env.ledger().timestamp() + 10_000;
+            client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+            let result = client.try_attest(&attester, &patient, &record_hash);
             prop_assert!(result.is_ok());
             last_attester = Some(attester);
         }

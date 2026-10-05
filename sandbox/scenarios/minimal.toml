@@ -1,0 +1,15 @@
+# Smallest useful state: one admin, two active attesters, one attested record.
+[admin]
+initial = "admin"
+
+[[attesters]]
+name = "chw-lagos-1"
+region = "NG_LA"
+
+[[attesters]]
+name = "clinician-1"
+region = "NG_LA"
+
+[[attestations]]
+record = "patient-001"
+by = ["chw-lagos-1"]
