@@ -17,7 +17,7 @@ use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
     contract, contracterror, contractevent, contractimpl, contracttype,
     crypto::Hash,
-    panic_with_error, BytesN, Env, Symbol, Vec,
+    panic_with_error, Bytes, BytesN, Env, Symbol, Vec,
 };
 
 #[contracttype]
@@ -178,6 +178,28 @@ pub struct InterfaceInfo {
 /// Storage schema version; this contract's storage is not versioned.
 const SCHEMA_VERSION: u32 = 1;
 
+/// Emitted when the signer set is configured or replaced.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MultisigConfigured {
+    #[topic]
+    pub threshold: u32,
+    /// The configured signer keys in canonical order.
+    pub signers: Vec<SignerKey>,
+}
+
+/// Emitted when `__check_auth` accepts an authorization.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AuthorizationApproved {
+    #[topic]
+    pub timestamp: u64,
+    /// The signature payload that was authorized.
+    pub payload: Bytes,
+    /// The signer keys whose signatures were verified, in signature order.
+    pub signers: Vec<SignerKey>,
+}
+
 #[contract]
 pub struct MultisigAccount;
 
@@ -238,12 +260,22 @@ impl MultisigAccount {
         env.storage()
             .instance()
             .set(&DataKey::TypedSignerSet, &typed_signers);
+        MultisigConfigured {
+            threshold,
+            signers: Self::sorted_signers(&env, &typed_signers),
+        }
+        .publish(&env);
     }
 
-    /// Return the current ordered signer set.
+    /// Return the current signer set in the canonical order required by
+    /// `__check_auth` (key type, then ascending key bytes).
     pub fn get_signers(env: Env) -> Result<Vec<SignerKey>, Error> {
-        if let Some(signers) = env.storage().instance().get(&DataKey::TypedSignerSet) {
-            return Ok(signers);
+        if let Some(signers) = env
+            .storage()
+            .instance()
+            .get::<_, Vec<SignerKey>>(&DataKey::TypedSignerSet)
+        {
+            return Ok(Self::sorted_signers(&env, &signers));
         }
 
         let legacy_signers: Vec<BytesN<32>> = env
@@ -255,7 +287,27 @@ impl MultisigAccount {
         for signer in legacy_signers.iter() {
             signers.push_back(SignerKey::Ed25519(signer));
         }
-        Ok(signers)
+        Ok(Self::sorted_signers(&env, &signers))
+    }
+
+    fn sorted_signers(env: &Env, signers: &Vec<SignerKey>) -> Vec<SignerKey> {
+        let mut sorted: Vec<SignerKey> = Vec::new(env);
+        for signer in signers.iter() {
+            let mut next = Vec::new(env);
+            let mut inserted = false;
+            for current in sorted.iter() {
+                if !inserted && signer.is_before(&current) {
+                    next.push_back(signer.clone());
+                    inserted = true;
+                }
+                next.push_back(current);
+            }
+            if !inserted {
+                next.push_back(signer);
+            }
+            sorted = next;
+        }
+        sorted
     }
 
     /// Return the minimum number of signer approvals required.
@@ -386,6 +438,11 @@ impl MultisigAccount {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        MultisigConfigured {
+            threshold: minimum_signers,
+            signers: Self::sorted_signers(&env, &typed_signers),
+        }
+        .publish(&env);
 
         Ok(())
     }
@@ -534,6 +591,7 @@ impl CustomAccountInterface for MultisigAccount {
         }
 
         let mut signer_configs = Vec::new(&env);
+        let mut authorized_signers = Vec::new(&env);
         let mut signed_weight = 0u32;
         for index in 0..signatures.len() {
             let signature = signatures.get_unchecked(index);
@@ -591,6 +649,10 @@ impl CustomAccountInterface for MultisigAccount {
                     &signature.signature,
                 ),
             }
+        }
+
+        for config in signer_configs.iter() {
+            authorized_signers.push_back(config.public_key);
         }
 
         if signed_weight < policy.weight_threshold {

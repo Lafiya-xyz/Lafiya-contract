@@ -1,6 +1,6 @@
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
-#![warn(missing_docs)]
+#![allow(missing_docs)] // soroban macros generate undocumented public items
 
 //! # Incentive Pool
 //!
@@ -243,13 +243,8 @@ impl IncentivePool {
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::Approver, &approver);
-        env
-            .storage()
-            .instance()
-            .set(&DataKey::Token, &token);
+        env.storage().instance().set(&DataKey::Approver, &approver);
+        env.storage().instance().set(&DataKey::Token, &token);
         env.storage()
             .instance()
             .set(&DataKey::AttesterRegistry, &attester_registry);
@@ -262,9 +257,7 @@ impl IncentivePool {
         env.storage()
             .instance()
             .set(&DataKey::TotalDeposited, &0_i128);
-        env.storage()
-            .instance()
-            .set(&DataKey::TotalPaid, &0_i128);
+        env.storage().instance().set(&DataKey::TotalPaid, &0_i128);
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
@@ -453,9 +446,7 @@ impl IncentivePool {
     /// Set the per-attester cumulative claim cap. Requires admin auth.
     pub fn set_max_per_attester(env: Env, max: i128) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxPerAttester, &max);
+        env.storage().instance().set(&DataKey::MaxPerAttester, &max);
         Ok(())
     }
 
@@ -533,6 +524,13 @@ impl IncentivePool {
 
         token_client.transfer(&pool_addr, &to, &amount);
 
+        // Withdrawn funds leave the pool, so count them against the
+        // deposited balance; otherwise `claim` would believe they are still
+        // available and fail at the token transfer.
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalPaid, &(total_paid + amount));
+
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -592,10 +590,9 @@ impl IncentivePool {
             approved_at: env.ledger().timestamp(),
         };
 
-        env.storage().persistent().set(
-            &DataKey::WorkItem(work_item_id.clone()),
-            &work_item,
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::WorkItem(work_item_id.clone()), &work_item);
 
         env.storage()
             .instance()
@@ -684,14 +681,12 @@ impl IncentivePool {
         token_client.transfer(&pool_addr, &attester, &work_item.payout_amount);
 
         // Persist state updates after successful transfer.
-        env.storage().persistent().set(
-            &DataKey::WorkItemClaimed(work_item_id.clone()),
-            &true,
-        );
-        env.storage().instance().set(
-            &DataKey::TotalPaid,
-            &(total_paid + work_item.payout_amount),
-        );
+        env.storage()
+            .persistent()
+            .set(&DataKey::WorkItemClaimed(work_item_id.clone()), &true);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalPaid, &(total_paid + work_item.payout_amount));
         env.storage().persistent().set(
             &DataKey::AttesterTotalClaimed(attester.clone()),
             &(attester_claimed + work_item.payout_amount),

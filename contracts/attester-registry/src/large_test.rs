@@ -18,7 +18,8 @@ const TOTAL_ATTESTERS: usize = 1_000;
 // ceilings therefore guard relative regressions in add_attester, not network fees.
 // Each is deliberately far below the network invocation limit while retaining
 // headroom for cost-model adjustments in compatible SDK releases. The 1,000
-// attester ceilings include the per-enrollment stale-suspension check.
+// attester ceilings include the per-enrollment stale-suspension check, role
+// lookup, status-history record and validity bookkeeping.
 const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
     BudgetCheckpoint {
         attesters: 10,
@@ -32,22 +33,21 @@ const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
     },
     BudgetCheckpoint {
         attesters: 1_000,
-        max_cpu_instructions: 4_000_000,
-        max_memory_bytes: 1_600_000,
+        max_cpu_instructions: 10_000_000,
+        max_memory_bytes: 4_000_000,
     },
 ];
 
 #[test]
 fn large_attester_allowlist_load() {
-    let (env, client) = {
+    let (env, client, admin) = {
         let env = Env::default();
         env.mock_all_auths();
         let admin = Address::generate(&env);
         let contract_id = env.register(AttesterRegistry, (admin.clone(),));
         let client = AttesterRegistryClient::new(&env, &contract_id);
-        (env, client)
+        (env, client, admin)
     };
-    client.initialize(&admin);
     client.grant_role(&Role::Registrar, &admin);
     client.grant_role(&Role::Guardian, &admin);
 

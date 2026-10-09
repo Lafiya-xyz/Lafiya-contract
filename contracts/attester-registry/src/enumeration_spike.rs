@@ -52,7 +52,7 @@ impl PaginatedDirectory {
             .persistent()
             .get(&PageKey::ChunkCount)
             .unwrap_or(0);
-        let tail_has_room = chunk_count > 0 && total % PAGE_SIZE != 0;
+        let tail_has_room = chunk_count > 0 && !total.is_multiple_of(PAGE_SIZE);
 
         let chunk_index = if tail_has_room {
             chunk_count - 1

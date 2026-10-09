@@ -17,6 +17,10 @@
         "attester_registry": {
           "description": "`C...` contract id of the attester registry, or \"\" when not deployed.",
           "type": "string"
+        },
+        "incentive_pool": {
+          "type": "string",
+          "default": ""
         }
       },
       "additionalProperties": false,

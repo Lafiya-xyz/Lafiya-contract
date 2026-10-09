@@ -8,7 +8,8 @@ use soroban_sdk::{
     String, Symbol, Vec,
 };
 
-const SCHEMA_VERSION: u32 = 1;
+const SCHEMA_VERSION: u32 = 5;
+const EVENT_SCHEMA_VERSION: u32 = 2;
 const ADMIN_PROPOSAL_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 /// Interface kind reported by `get_interface`, used by clients as a weak
@@ -88,6 +89,25 @@ enum DataKey {
     AttesterStatusChange(Address, u32),
     /// Number of recorded status transitions for an attester.
     AttesterStatusChangeCount(Address),
+    /// Explicit capabilities granted by the owner.
+    Role(Role, Address),
+    /// Optional validity bounds for an attester; kept separate so existing
+    /// two-field attester records remain readable across upgrades.
+    AttesterValidity(Address),
+    /// Region and quota assigned to a delegated registrar.
+    RegionalRegistrar(Address),
+    /// Persistent count of enrolled attesters attributed to a registrar.
+    RegionalRegistrarCount(Address),
+    /// Registrar responsible for an attester's regional enrollment.
+    RegionalAttester(Address),
+}
+
+/// Operational capabilities managed by the owner.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Role {
+    Registrar,
+    Guardian,
 }
 
 /// Emitted when an attester rotates its key while retaining its enrollment.
@@ -109,6 +129,10 @@ pub struct AttesterInfo {
     /// The geographic region the attester is authorized to attest for, if any.
     /// ISO 3166-2 code, for example `NG-LA`.
     pub region: Option<String>,
+    /// Ledger timestamp when the authorization becomes valid, inclusive.
+    pub valid_from: Option<u64>,
+    /// Ledger timestamp when the authorization expires, exclusive.
+    pub valid_until: Option<u64>,
     /// Whether this attester is currently suspended.
     pub suspended: bool,
     /// Whether this address has been removed from the allowlist.
@@ -129,11 +153,24 @@ pub struct AttesterStatusChange {
     pub active: bool,
 }
 
+/// Region and concurrent enrollment quota granted to a delegated registrar.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionalRegistrarInfo {
+    pub region: String,
+    pub quota: u32,
+}
+
 #[contracttype]
 #[derive(Clone, Debug, Eq, PartialEq)]
 struct StoredAttesterInfo {
     license_hash: Option<BytesN<32>>,
-    region: Option<Symbol>,
+    region: Option<String>,
+    suspended: bool,
+    removed: bool,
+    suspension_reason: Option<Symbol>,
+    suspended_since: Option<u64>,
+    trust_revoked_after: Option<u64>,
 }
 
 /// Computed authorization state for an allowlisted attester.
@@ -161,6 +198,8 @@ pub struct AttesterStatus {
     pub suspended_since: Option<u64>,
     /// Earliest timestamp whose attestations are no longer trusted.
     pub trust_revoked_after: Option<u64>,
+    /// Computed status using the current ledger timestamp.
+    pub status: AttesterStatusKind,
 }
 
 /// Instance storage TTL policy:
@@ -168,19 +207,6 @@ pub struct AttesterStatus {
 /// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
-
-/// Persistent storage TTL policy for per-attester entries:
-/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
-/// - Extend to: 365 days (17280 * 365 = 6307200 ledgers)
-///
-/// Persistent entries (Attester, Suspended) are bumped on every write and
-/// on `add_attester`/`suspend_attester`/`reinstate_attester` so that an
-/// attester added once and never touched again does not silently expire.
-/// The longer "extend to" window (1 year vs. 90 days for instance storage)
-/// reflects that attester records are long-lived by design: a CHW should
-/// remain allowlisted for at least a full year without any admin action.
-const PERSISTENT_BUMP_AMOUNT: u32 = 6_307_200;
-const PERSISTENT_LIFETIME_THRESHOLD: u32 = 518_400;
 
 /// Default soft cap on the number of allowlisted attesters, used until an
 /// admin raises it via `set_max_attesters`. Sized generously above any
@@ -239,6 +265,18 @@ pub enum Error {
     InvalidAdminProposal = 9,
     /// The pending admin proposal has expired.
     ProposalExpired = 10,
+    /// The supplied address has not been granted the required role.
+    RoleNotGranted = 11,
+    /// The attester validity window is empty or reversed.
+    InvalidValidityWindow = 12,
+    /// The requested attester region is outside the registrar's assigned region.
+    RegionMismatch = 13,
+    /// The registrar's concurrent enrollment quota has been reached.
+    RegionalQuotaExceeded = 14,
+    /// The registrar's region cannot change while its attesters remain enrolled.
+    RegionalAttestersRemain = 15,
+    /// The region is not a valid ISO 3166-2 style code such as `NG-LA`.
+    InvalidRegion = 16,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -332,6 +370,8 @@ pub struct AttesterSuspended {
     pub attester: Address,
     pub reason: Symbol,
     pub since: u64,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
 }
 
 /// Emitted when a suspended attester is reinstated.
@@ -403,7 +443,12 @@ impl AttesterRegistry {
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
-        Initialized { admin }.publish(&env);
+        Initialized {
+            admin,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
     }
 
     /// Rotate an allowlisted attester key without losing metadata or enrollment history.
@@ -429,28 +474,29 @@ impl AttesterRegistry {
             return Err(Error::AttesterNotFound);
         }
 
-        let info: AttesterInfo = env
+        let info: StoredAttesterInfo = env
             .storage()
             .persistent()
             .get(&DataKey::Attester(previous_attester.clone()))
+            .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
-        let suspended = env
+        let suspended = info.suspended;
+        let (valid_from, valid_until) = Self::validity(&env, &previous_attester);
+        let registrar: Option<Address> = env
             .storage()
             .persistent()
-            .has(&DataKey::Suspended(previous_attester.clone()));
+            .get(&DataKey::RegionalAttester(previous_attester.clone()));
+        Self::clear_regional_attester(&env, &previous_attester);
         env.storage()
             .persistent()
             .remove(&DataKey::Attester(previous_attester.clone()));
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Suspended(previous_attester.clone()));
+        Self::set_validity(&env, &previous_attester, None, None);
         env.storage()
             .persistent()
             .set(&DataKey::Attester(new_attester.clone()), &info);
-        if suspended {
-            env.storage()
-                .persistent()
-                .set(&DataKey::Suspended(new_attester.clone()), &true);
+        Self::set_validity(&env, &new_attester, valid_from, valid_until);
+        if let Some(registrar) = registrar {
+            Self::record_regional_attester(&env, &registrar, &new_attester);
         }
         env.storage().persistent().set(
             &DataKey::AttesterRotation(previous_attester.clone()),
@@ -473,17 +519,21 @@ impl AttesterRegistry {
     /// while paused so a compromised key can be stopped without admin action.
     pub fn revoke_attester(env: Env, attester: Address) -> Result<(), Error> {
         attester.require_auth();
-        let was_present = env
+        let existing = env
             .storage()
             .persistent()
-            .has(&DataKey::Attester(attester.clone()));
-        if was_present {
+            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()))
+            .filter(|info| !info.removed);
+        if let Some(mut info) = existing {
+            info.removed = true;
+            info.suspended = false;
+            info.suspension_reason = None;
+            info.suspended_since = None;
+            info.trust_revoked_after = Some(env.ledger().timestamp());
             env.storage()
                 .persistent()
-                .remove(&DataKey::Attester(attester.clone()));
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Suspended(attester.clone()));
+                .set(&DataKey::Attester(attester.clone()), &info);
+            Self::clear_regional_attester(&env, &attester);
             let count = Self::attester_count(&env);
             if count > 0 {
                 env.storage()
@@ -545,10 +595,11 @@ impl AttesterRegistry {
     pub fn set_regional_registrar(
         env: Env,
         registrar: Address,
-        region: Symbol,
+        region: String,
         quota: u32,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        Self::validate_region(&Some(region.clone()))?;
         let key = DataKey::RegionalRegistrar(registrar.clone());
         if let Some(current) = env
             .storage()
@@ -694,12 +745,16 @@ impl AttesterRegistry {
     /// Pause the contract, blocking `add_attester`, `add_attester_with_info`,
     /// `update_attester_info`, `remove_attester`, `suspend_attester`,
     /// `reinstate_attester`, and `set_max_attesters` until `unpause` is called.
-    /// Requires the admin's authorization.
-    pub fn pause(env: Env) -> Result<(), Error> {
-        let admin = Self::admin(&env)?;
-        admin.require_auth();
+    /// Requires a Guardian.
+    pub fn pause(env: Env, guardian: Address) -> Result<(), Error> {
+        Self::require_role(&env, Role::Guardian, &guardian)?;
         env.storage().instance().set(&DataKey::Paused, &true);
-        Paused { by: guardian }.publish(&env);
+        Paused {
+            by: guardian,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -733,11 +788,10 @@ impl AttesterRegistry {
 
     /// Add `attester` to the allowlist. Requires a global or regional registrar.
     /// Fails with `Error::AllowlistFull` if the allowlist is at capacity and
-    /// `attester` is not already present (see `set_max_attesters`). If already
-    /// allowlisted, this is a no-op and emits no event. A stale suspension on
-    /// an address being enrolled is cleared.
-    pub fn add_attester(env: Env, attester: Address) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+    /// `attester` is not already present (see `set_max_attesters`). A stale
+    /// suspension on an address being enrolled is cleared.
+    pub fn add_attester(env: Env, registrar: Address, attester: Address) -> Result<(), Error> {
+        let regional_scope = Self::registrar_scope(&env, &registrar)?;
         Self::require_not_paused(&env)?;
         let region = regional_scope
             .as_ref()
@@ -776,13 +830,12 @@ impl AttesterRegistry {
                     &attester,
                     &existing,
                 )?;
-            } else if existing.region != region {
-                Self::clear_regional_attester(&env, &attester);
             }
+            return Ok(());
         }
         let info = StoredAttesterInfo {
             license_hash: None,
-            region: None,
+            region,
             suspended: false,
             removed: false,
             suspension_reason: None,
@@ -793,6 +846,9 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
+        if !already_present && regional_scope.is_some() {
+            Self::record_regional_attester(&env, &registrar, &attester);
+        }
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -817,10 +873,14 @@ impl AttesterRegistry {
         attester: Address,
         license_hash: Option<BytesN<32>>,
         region: Option<String>,
+        valid_from: Option<u64>,
+        valid_until: Option<u64>,
     ) -> Result<(), Error> {
         let regional_scope = Self::registrar_scope(&env, &registrar)?;
         Self::require_not_paused(&env)?;
         Self::validate_region(&region)?;
+        Self::validate_validity_window(valid_from, valid_until)?;
+        let region = Self::scoped_region(regional_scope.as_ref(), region)?;
         let already_present = env
             .storage()
             .persistent()
@@ -854,9 +914,8 @@ impl AttesterRegistry {
                     &attester,
                     &existing,
                 )?;
-            } else if existing.region != region {
-                Self::clear_regional_attester(&env, &attester);
             }
+            return Ok(());
         }
         let info = StoredAttesterInfo {
             license_hash,
@@ -871,6 +930,10 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
+        Self::set_validity(&env, &attester, valid_from, valid_until);
+        if !already_present && regional_scope.is_some() {
+            Self::record_regional_attester(&env, &registrar, &attester);
+        }
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -896,21 +959,18 @@ impl AttesterRegistry {
         attester: Address,
         license_hash: Option<BytesN<32>>,
         region: Option<String>,
+        valid_from: Option<u64>,
+        valid_until: Option<u64>,
     ) -> Result<(), Error> {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         Self::validate_region(&region)?;
-        if !env
-            .storage()
-            .persistent()
-            .has(&DataKey::Attester(attester.clone()))
-        {
-            return Err(Error::AttesterNotFound);
-        }
+        Self::validate_validity_window(valid_from, valid_until)?;
         let existing: StoredAttesterInfo = env
             .storage()
             .persistent()
             .get(&DataKey::Attester(attester.clone()))
+            .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
         if existing.region != region {
             Self::clear_regional_attester(&env, &attester);
@@ -918,11 +978,7 @@ impl AttesterRegistry {
         let info = StoredAttesterInfo {
             license_hash,
             region,
-            suspended: false,
-            removed: false,
-            suspension_reason: None,
-            suspended_since: None,
-            trust_revoked_after: None,
+            ..existing
         };
         env.storage()
             .persistent()
@@ -975,16 +1031,19 @@ impl AttesterRegistry {
             let already_present = env
                 .storage()
                 .persistent()
-                .get::<_, AttesterInfo>(&key)
+                .get::<_, StoredAttesterInfo>(&key)
                 .map(|info| !info.removed)
                 .unwrap_or(false);
             if !already_present {
+                Self::ensure_regional_quota(&env, &registrar, regional_scope.as_ref())?;
                 if count >= max {
                     return Err(Error::AllowlistFull);
                 }
                 let info = StoredAttesterInfo {
                     license_hash: None,
-                    region: None,
+                    region: regional_scope
+                        .as_ref()
+                        .map(|assignment| assignment.region.clone()),
                     suspended: false,
                     removed: false,
                     suspension_reason: None,
@@ -993,6 +1052,10 @@ impl AttesterRegistry {
                 };
                 env.storage().persistent().set(&key, &info);
                 Self::record_status_change(&env, &attester, true);
+                Self::set_validity(&env, &attester, None, None);
+                if regional_scope.is_some() {
+                    Self::record_regional_attester(&env, &registrar, &attester);
+                }
                 count += 1;
                 AttesterAdded {
                     attester: attester.clone(),
@@ -1047,7 +1110,11 @@ impl AttesterRegistry {
 
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
-            if let Some(mut info) = env.storage().persistent().get::<_, AttesterInfo>(&key) {
+            if let Some(mut info) = env
+                .storage()
+                .persistent()
+                .get::<_, StoredAttesterInfo>(&key)
+            {
                 if info.removed {
                     continue;
                 }
@@ -1057,9 +1124,8 @@ impl AttesterRegistry {
                 info.suspended_since = None;
                 info.trust_revoked_after = Some(env.ledger().timestamp());
                 env.storage().persistent().set(&key, &info);
-                if count > 0 {
-                    count -= 1;
-                }
+                Self::clear_regional_attester(&env, &attester);
+                count = count.saturating_sub(1);
                 Self::record_status_change(&env, &attester, false);
                 AttesterRemoved {
                     attester: attester.clone(),
@@ -1088,7 +1154,7 @@ impl AttesterRegistry {
         let mut info = env
             .storage()
             .persistent()
-            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()));
+            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()));
         let was_present = info.as_ref().map(|info| !info.removed).unwrap_or(false);
         if let Some(ref mut info) = info {
             info.removed = true;
@@ -1099,6 +1165,7 @@ impl AttesterRegistry {
             env.storage()
                 .persistent()
                 .set(&DataKey::Attester(attester.clone()), info);
+            Self::clear_regional_attester(&env, &attester);
         }
         if was_present {
             let count = Self::attester_count(&env);
@@ -1108,6 +1175,12 @@ impl AttesterRegistry {
                     .set(&DataKey::AttesterCount, &(count - 1));
             }
             Self::record_status_change(&env, &attester, false);
+            AttesterRemoved {
+                attester: attester.clone(),
+                contract_kind: Symbol::new(&env, "attester_registry"),
+                schema_version: EVENT_SCHEMA_VERSION,
+            }
+            .publish(&env);
         }
         env.storage()
             .instance()
@@ -1145,24 +1218,31 @@ impl AttesterRegistry {
     /// attester; a regional registrar may suspend only attesters in its region.
     ///
     /// Returns `Error::AttesterNotFound` when the address is not allowlisted.
-    pub fn suspend_attester(env: Env, attester: Address) -> Result<(), Error> {
+    pub fn suspend_attester(env: Env, registrar: Address, attester: Address) -> Result<(), Error> {
         let reason = Symbol::new(&env, "administrative");
-        Self::suspend_attester_with_reason(env, attester, reason)
+        Self::suspend_attester_with_reason(env, registrar, attester, reason)
     }
 
     /// Suspend an attester and record the operational reason and cutoff time.
     pub fn suspend_attester_with_reason(
         env: Env,
+        registrar: Address,
         attester: Address,
         reason: Symbol,
     ) -> Result<(), Error> {
-        Self::admin(&env)?.require_auth();
+        let regional_scope = Self::registrar_scope(&env, &registrar)?;
         Self::require_not_paused(&env)?;
-        let mut info: AttesterInfo = env
+        let mut info: StoredAttesterInfo = env
             .storage()
             .persistent()
             .get(&DataKey::Attester(attester.clone()))
+            .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
+        if let Some(assignment) = regional_scope {
+            if info.region.as_ref() != Some(&assignment.region) {
+                return Err(Error::RegionMismatch);
+            }
+        }
         let since = env.ledger().timestamp();
         info.suspended = true;
         info.suspension_reason = Some(reason.clone());
@@ -1170,9 +1250,16 @@ impl AttesterRegistry {
         info.trust_revoked_after = Some(since);
         env.storage()
             .persistent()
-            .set(&DataKey::Suspended(attester.clone()), &true);
+            .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, false);
-        AttesterSuspended { attester }.publish(&env);
+        AttesterSuspended {
+            attester,
+            reason,
+            since,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -1187,10 +1274,11 @@ impl AttesterRegistry {
     ) -> Result<(), Error> {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
-        let mut info: AttesterInfo = env
+        let mut info: StoredAttesterInfo = env
             .storage()
             .persistent()
             .get(&DataKey::Attester(attester.clone()))
+            .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
         info.suspended = false;
         info.suspension_reason = None;
@@ -1198,7 +1286,13 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
-        AttesterReinstated { attester }.publish(&env);
+        Self::record_status_change(&env, &attester, true);
+        AttesterReinstated {
+            attester,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -1208,11 +1302,13 @@ impl AttesterRegistry {
     /// Whether `attester` is allowlisted, not suspended, and within its validity
     /// window. Callable by anyone, including other contracts.
     pub fn is_attester(env: Env, attester: Address) -> bool {
-        env.storage()
+        let active = env
+            .storage()
             .persistent()
-            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()))
             .map(|info| !info.removed && !info.suspended)
-            .unwrap_or(false)
+            .unwrap_or(false);
+        active && Self::valid_at(Self::validity(&env, &attester), env.ledger().timestamp())
     }
 
     /// Whether `attester` was active at the supplied ledger timestamp.
@@ -1235,15 +1331,21 @@ impl AttesterRegistry {
                 active = change.active;
             }
         }
-        active
+        active && Self::valid_at(Self::validity(&env, &attester), timestamp)
+    }
+
+    /// Whether `attester` is active and authorized for `region`. Attesters
+    /// without a configured region remain globally scoped for compatibility.
+    pub fn is_attester_for_region(env: Env, attester: Address, region: String) -> bool {
+        let Some(info) = Self::attester_info(&env, &attester) else {
+            return false;
+        };
+        Self::is_attester(env, attester) && info.region.is_none_or(|assigned| assigned == region)
     }
 
     /// Get the optional metadata associated with `attester` if they are allowlisted.
     pub fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
-        env.storage()
-            .persistent()
-            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
-            .filter(|info| !info.removed)
+        Self::attester_info(&env, &attester)
     }
 
     /// Return the first timestamp at which attestations by this attester
@@ -1251,7 +1353,7 @@ impl AttesterRegistry {
     pub fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64> {
         env.storage()
             .persistent()
-            .get::<_, AttesterInfo>(&DataKey::Attester(attester))
+            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester))
             .and_then(|info| info.trust_revoked_after)
     }
 
@@ -1281,20 +1383,15 @@ impl AttesterRegistry {
     /// prioritizes suspension, then not-yet-valid and expired windows.
     /// Returns `None` if the attester is not allowlisted.
     pub fn get_attester_status(env: Env, attester: Address) -> Option<AttesterStatus> {
-        let info: AttesterInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Attester(attester.clone()))?;
-        if info.removed {
-            return None;
-        }
-        let suspended = info.suspended;
+        let info = Self::attester_info(&env, &attester)?;
+        let status = Self::status(&info, env.ledger().timestamp());
         Some(AttesterStatus {
+            suspended: info.suspended,
             suspension_reason: info.suspension_reason.clone(),
             suspended_since: info.suspended_since,
             trust_revoked_after: info.trust_revoked_after,
             info,
-            suspended,
+            status,
         })
     }
 
@@ -1335,6 +1432,7 @@ impl AttesterRegistry {
     /// (e.g. implementing migration scripts or handling lazy migrations on reading old schema versions).
     pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        #[allow(deprecated)]
         env.deployer()
             .update_current_contract_wasm(new_wasm_hash.clone());
         Upgraded {
@@ -1416,8 +1514,8 @@ impl AttesterRegistry {
 
     fn scoped_region(
         scope: Option<&RegionalRegistrarInfo>,
-        region: Option<Symbol>,
-    ) -> Result<Option<Symbol>, Error> {
+        region: Option<String>,
+    ) -> Result<Option<String>, Error> {
         match scope {
             Some(assignment) => {
                 if region
@@ -1535,12 +1633,20 @@ impl AttesterRegistry {
             .storage()
             .persistent()
             .get(&DataKey::Attester(attester.clone()))?;
+        if stored.removed {
+            return None;
+        }
         let (valid_from, valid_until) = Self::validity(env, attester);
         Some(AttesterInfo {
             license_hash: stored.license_hash,
             region: stored.region,
             valid_from,
             valid_until,
+            suspended: stored.suspended,
+            removed: stored.removed,
+            suspension_reason: stored.suspension_reason,
+            suspended_since: stored.suspended_since,
+            trust_revoked_after: stored.trust_revoked_after,
         })
     }
 
@@ -1550,8 +1656,8 @@ impl AttesterRegistry {
             && valid_until.is_none_or(|end| timestamp < end)
     }
 
-    fn status(info: &AttesterInfo, suspended: bool, timestamp: u64) -> AttesterStatusKind {
-        if suspended {
+    fn status(info: &AttesterInfo, timestamp: u64) -> AttesterStatusKind {
+        if info.suspended {
             AttesterStatusKind::Suspended
         } else if info.valid_from.is_some_and(|start| timestamp < start) {
             AttesterStatusKind::NotYetValid

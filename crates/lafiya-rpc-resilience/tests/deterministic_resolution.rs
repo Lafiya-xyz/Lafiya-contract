@@ -9,7 +9,7 @@
 use lafiya_rpc_resilience::mock::{ScriptedProvider, Shared};
 use lafiya_rpc_resilience::{
     classify, FailoverClient, RecoveryLog, RecoveryResult, RetryClass, RetryPolicy, RpcError,
-    RpcProvider, SubmitOutcome, TxBounds, TxState,
+    RpcProvider, SignedTx, SubmitOutcome, TxBounds, TxState,
 };
 
 fn policy() -> RetryPolicy {
@@ -48,7 +48,7 @@ fn dropped_submission_resolves_to_expired_after_max_ledger() {
     let mut client = FailoverClient::new(providers, policy());
     let mut log = RecoveryLog::new();
 
-    let result = client.submit_with_bounds("tx-dropped", &bounds(), &mut log);
+    let result = client.submit_with_bounds(&SignedTx::new("tx-dropped", ""), &bounds(), &mut log);
 
     assert_eq!(
         result,
@@ -85,14 +85,22 @@ fn expired_transaction_is_safely_rebuilt_and_lands() {
     let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
     let mut client = FailoverClient::new(providers, policy());
 
-    let first = client.submit_with_bounds("tx-first", &bounds(), &mut RecoveryLog::new());
+    let first = client.submit_with_bounds(
+        &SignedTx::new("tx-first", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
     assert!(matches!(first, RecoveryResult::Expired { .. }));
 
     let rebuilt = TxBounds {
         max_ledger: 1_121,
         ..bounds()
     };
-    let second = client.submit_with_bounds("tx-rebuilt", &rebuilt, &mut RecoveryLog::new());
+    let second = client.submit_with_bounds(
+        &SignedTx::new("tx-rebuilt", ""),
+        &rebuilt,
+        &mut RecoveryLog::new(),
+    );
     assert!(matches!(
         second,
         RecoveryResult::Accepted { ledger: 1_062, .. }
@@ -111,7 +119,11 @@ fn inclusion_before_max_ledger_wins_over_expiry() {
     let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
     let mut client = FailoverClient::new(providers, policy());
 
-    let result = client.submit_with_bounds("tx-late", &bounds(), &mut RecoveryLog::new());
+    let result = client.submit_with_bounds(
+        &SignedTx::new("tx-late", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
     assert!(matches!(
         result,
         RecoveryResult::Accepted { ledger: 1_050, .. }
@@ -128,7 +140,11 @@ fn advanced_account_sequence_resolves_as_consumed() {
     let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
     let mut client = FailoverClient::new(providers, policy());
 
-    let result = client.submit_with_bounds("tx-mine", &bounds(), &mut RecoveryLog::new());
+    let result = client.submit_with_bounds(
+        &SignedTx::new("tx-mine", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
     assert_eq!(
         result,
         RecoveryResult::SequenceConsumed {
@@ -146,7 +162,11 @@ fn no_ledger_information_escalates_instead_of_polling_forever() {
     let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
     let mut client = FailoverClient::new(providers, policy());
 
-    let result = client.submit_with_bounds("tx-blind", &bounds(), &mut RecoveryLog::new());
+    let result = client.submit_with_bounds(
+        &SignedTx::new("tx-blind", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
     assert_eq!(
         result,
         RecoveryResult::ExhaustedNeedsOperator {

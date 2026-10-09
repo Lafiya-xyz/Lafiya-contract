@@ -68,7 +68,7 @@ fn multisig_address_administers_both_registries() {
         attestation_registry::AttestationRegistry,
         (account.clone(), attester_registry_id.clone()),
     );
-    let attestation_registry =
+    let _attestation_registry =
         attestation_registry::AttestationRegistryClient::new(&env, &attestation_registry_id);
 
     let grant_registrar = authorization_entry(

@@ -18,6 +18,7 @@ pub struct InterfaceInfo {
 }
 
 impl InterfaceInfo {
+    #[allow(dead_code)]
     pub fn supports(&self, feature: &str) -> bool {
         self.features.iter().any(|f| f == feature)
     }

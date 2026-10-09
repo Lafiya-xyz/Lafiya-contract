@@ -1,6 +1,6 @@
 //! Pause control: pause/unpause/is_paused operations.
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Env, IntoVal, Val};
 
 /// Error types for pause operations.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -10,7 +10,7 @@ pub enum PauseError {
 
 /// Trait for providing contract-specific pause storage key.
 pub trait PausableKeys {
-    type PauseKey;
+    type PauseKey: IntoVal<Env, Val>;
     fn pause_key() -> Self::PauseKey;
 }
 
@@ -28,17 +28,13 @@ impl Pausable {
 
     /// Pause the contract. Requires admin authorization (caller's responsibility).
     pub fn pause<K: PausableKeys>(env: &Env) -> Result<(), PauseError> {
-        env.storage()
-            .instance()
-            .set(&K::pause_key(), &true);
+        env.storage().instance().set(&K::pause_key(), &true);
         Ok(())
     }
 
     /// Unpause the contract. Requires admin authorization (caller's responsibility).
     pub fn unpause<K: PausableKeys>(env: &Env) -> Result<(), PauseError> {
-        env.storage()
-            .instance()
-            .set(&K::pause_key(), &false);
+        env.storage().instance().set(&K::pause_key(), &false);
         Ok(())
     }
 

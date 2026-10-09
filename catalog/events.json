@@ -66,6 +66,55 @@
             }
           },
           "location": "topic_list"
+        },
+        {
+          "name": "by",
+          "type": "address",
+          "location": "data"
+        },
+        {
+          "name": "removed_count",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "reason",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "contract_kind",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "schema_version",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttestationWithdrawn",
+      "prefix_topics": [
+        "attestation_withdrawn"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
         }
       ]
     },
@@ -101,6 +150,46 @@
           "name": "by",
           "type": "address",
           "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "RateLimitHit",
+      "prefix_topics": [
+        "rate_limit_hit"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "retry_after_ledger",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "RateLimitSet",
+      "prefix_topics": [
+        "rate_limit_set"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "max_per_window",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32",
+          "location": "data"
         }
       ]
     },
@@ -275,6 +364,16 @@
             }
           },
           "location": "topic_list"
+        },
+        {
+          "name": "contract_kind",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "schema_version",
+          "type": "u32",
+          "location": "data"
         }
       ]
     }

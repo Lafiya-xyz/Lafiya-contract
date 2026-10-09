@@ -261,7 +261,10 @@ pub fn validate_passphrase(value: &str) -> Result<(), ValidationError> {
     if value.is_empty() {
         return Err(ValidationError::Empty { field: FIELD });
     }
-    if let Some(c) = value.chars().find(|c| !c.is_ascii() || (*c as u8) < 0x20 || *c == 0x7f as char) {
+    if let Some(c) = value
+        .chars()
+        .find(|c| !c.is_ascii() || (*c as u8) < 0x20 || *c == 0x7f as char)
+    {
         return Err(ValidationError::Charset {
             field: FIELD,
             character: c,

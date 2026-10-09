@@ -84,7 +84,7 @@ def spec_literal(spec):
         {
             "name": p["name"],
             "key": camel(p["name"]),
-            "type": p["type_"],
+            "type": p.get("type_", p.get("type")),
             "location": "topic" if p["location"] == "topic_list" else "data",
         }
         for p in spec["params"]
@@ -117,7 +117,7 @@ def render():
         _, spec = specs[0]
         out.append(f"export interface {kind}Payload {{")
         for p in spec["params"]:
-            out.append(f"  {camel(p['name'])}: {ts_type(p['type_'])};")
+            out.append(f"  {camel(p['name'])}: {ts_type(p.get('type_', p.get('type')))};")
         out.append("}\n")
 
     out.append("/** Decoded payload type for each event kind. */")

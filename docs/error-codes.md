@@ -11,47 +11,66 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 
 | Error Code (u32) | Variant Name | Description |
 |---|---|---|
-| `1` | `NotInitialized` | Required registry configuration is missing from storage (for example, on a legacy instance). |
-| `2` | `AlreadyInitialized` | Reserved for compatibility with the removed public initializer. |
-| `3` | `NoPendingTransfer` | No admin transfer is pending; `accept_admin` was called before `propose_admin` nominated a successor (admin transfer is a two-step flow: `propose_admin` then `accept_admin`). |
-| `4` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
-| `5` | `AllowlistFull` | The allowlist has reached its configured soft cap. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`. |
-| `6` | `MigrationNotRequired` | No pending storage migration; `SchemaVersion` is already current. |
-| `7` | `AttesterNotFound` | `update_attester_info` was called for an address that is not currently allowlisted (never added, or since removed). |
-| `8` | `BatchTooLarge` | The batch supplied to `add_attesters` or `remove_attesters` exceeds `BATCH_LIMIT` (40) addresses. |
-| `9` | `RoleNotGranted` | The supplied address does not hold the required owner-managed role. |
-| `10` | `InvalidValidityWindow` | The supplied inclusive start is not earlier than the exclusive end. |
-| `11` | `RegionMismatch` | A regional registrar attempted an operation outside its assigned region. |
-| `12` | `RegionalQuotaExceeded` | The regional registrar's concurrent enrollment quota has been reached. |
-| `13` | `RegionalAttestersRemain` | A regional registrar's region cannot change until all attributed attesters are removed. |
+| `1` | `NotInitialized` | `initialize` has not been called yet; call `initialize(admin: Address)` before using the contract. |
+| `2` | `AlreadyInitialized` | `initialize` was called more than once. |
+| `3` | `NoPendingTransfer` | `accept_admin` was called with no pending admin transfer. Admin transfer is a two-step flow: the current admin must first call `propose_admin` to nominate a successor, then the nominated address must call `accept_admin` to complete the transfer. This error is returned when `accept_admin` is called before a corresponding `propose_admin` call has set a pending admin. |
+| `4` | `ContractPaused` | The requested operation is blocked while the contract is paused. |
+| `5` | `AllowlistFull` | The allowlist is at its configured maximum size. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`. |
+| `6` | `MigrationNotRequired` | `migrate()` was called while the stored schema version is already `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal that there is nothing pending, not a failure to react to. |
+| `7` | `AttesterNotFound` | The referenced attester is not currently allowlisted (never added, or since removed). |
+| `8` | `BatchTooLarge` | The supplied batch exceeds `BATCH_LIMIT` addresses. |
+| `9` | `InvalidAdminProposal` | The proposed admin address is not a valid successor. |
+| `10` | `ProposalExpired` | The pending admin proposal has expired. |
+| `11` | `RoleNotGranted` | The supplied address has not been granted the required role. |
+| `12` | `InvalidValidityWindow` | The attester validity window is empty or reversed. |
+| `13` | `RegionMismatch` | The requested attester region is outside the registrar's assigned region. |
+| `14` | `RegionalQuotaExceeded` | The registrar's concurrent enrollment quota has been reached. |
+| `15` | `RegionalAttestersRemain` | The registrar's region cannot change while its attesters remain enrolled. |
+| `16` | `InvalidRegion` | The region is not a valid ISO 3166-2 style code such as `NG-LA`. |
 
 ## `attestation-registry`
 
 | Error Code (u32) | Variant Name | Description |
 |---|---|---|
-| `1` | `NotInitialized` | Required registry configuration is missing from storage (for example, on a legacy instance). |
+| `1` | `NotInitialized` | Required registry configuration is missing from storage. |
 | `2` | `AlreadyInitialized` | Reserved for compatibility with the removed public initializer. |
-| `3` | `AttesterNotAllowlisted` | The attester address is not allowlisted in the configured `attester-registry` contract. |
-| `4` | `NoPendingTransfer` | No admin transfer is pending. |
-| `5` | `InvalidRegistryWiring` | The configured attester-registry address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration. |
-| `6` | `AttestationNotFound` | No attestation exists for the given record hash. |
-| `7` | `ContractPaused` | The contract is paused; state-changing calls are rejected until an admin calls `unpause`. |
+| `3` | `AttesterNotAllowlisted` | The caller is not allowlisted by the `attester-registry` contract. |
+| `4` | `NoPendingTransfer` | `accept_admin` was called with no pending admin transfer. Admin transfer is a two-step flow: the current admin must first call `propose_admin` to nominate a successor, then the nominated address must call `accept_admin` to complete the transfer. This error is returned when `accept_admin` is called before a corresponding `propose_admin` call has set a pending admin. |
+| `5` | `InvalidRegistryWiring` | The configured `attester-registry` address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration. |
+| `6` | `AttestationNotFound` | No attestation exists for the given record hash / sequence. |
+| `7` | `ContractPaused` | The requested operation is blocked while the contract is paused. |
 | `8` | `InvalidAdminProposal` | The proposed admin address is not a valid successor. |
 | `9` | `ProposalExpired` | The pending admin proposal has expired. |
 | `10` | `RateLimited` | The attester has used up its rate-limit window. Call `get_rate_limit_retry_after` for the first ledger it may attest again. |
-| `11` | `InvalidRateLimit` | `set_attestation_rate_limit` was called with `window_ledgers` of `0` or longer than 30 days of ledgers. |
+| `11` | `InvalidRateLimit` | `window_ledgers` was `0` or longer than 30 days of ledgers. |
+| `12` | `RoleNotGranted` | The supplied address has not been granted the required role. |
+| `13` | `MigrationNotRequired` | `migrate()` was called when no storage migration is pending. |
+| `14` | `PatientConsentRequired` | No unexpired patient consent grant matches this attester, patient and record hash. |
+| `15` | `PatientConsentExpired` | The patient's consent grant has expired. |
+| `16` | `TimestampOverflow` | The current ledger timestamp cannot be safely advanced to calculate a time bound. |
+| `17` | `InvalidAttestationExpiry` | The patient-selected attestation expiry is not in the future. |
+| `18` | `AttesterRegistryUnavailable` | The configured attester-registry could not be called. |
+| `19` | `EmptyBatch` | A Merkle batch must contain at least one record. |
+| `20` | `BatchAlreadyAnchored` | The Merkle root has already been anchored. |
+| `21` | `AttestationNotOwned` | The attester has no active attestation for the given record hash. |
+| `22` | `InvalidRecordVersion` | The supplied previous hash or version relationship is invalid. |
+| `23` | `BatchTooLarge` | The batch contains more requests than the supported maximum. |
+| `24` | `InvalidCommitmentVersion` | The commitment scheme version does not fit in one byte. |
 
 ## `multisig-account`
 
 | Error Code (u32) | Variant Name | Description |
 |---|---|---|
-| `1` | `InvalidThreshold` | The threshold is zero or exceeds the configured signer count. |
-| `2` | `DuplicateSigner` | The signer configuration contains the same public key more than once. |
-| `3` | `NotEnoughSigners` | The supplied signature count is below the configured minimum signer count. |
-| `4` | `BadSignatureOrder` | Signatures are duplicated or are not ordered Ed25519 first, then P-256, with keys ascending within each type. |
-| `5` | `UnknownSigner` | A signature belongs to a public key that is not a configured signer. |
-| `6` | `NotInitialized` | The account's signer threshold is unavailable. |
+| `1` | `InvalidThreshold` | The configured threshold is zero or exceeds the signer count. |
+| `2` | `DuplicateSigner` | The signer configuration contains duplicate public keys. |
+| `3` | `NotEnoughSigners` | The supplied signature count is below the configured threshold. |
+| `4` | `BadSignatureOrder` | Signatures are not strictly ordered by key type and public-key bytes. |
+| `5` | `UnknownSigner` | A signature corresponds to a public key that is not a configured signer. |
+| `6` | `NotInitialized` | The contract has not been initialized; threshold or signer count is unavailable. |
 | `7` | `TooManySigners` | The supplied signature count exceeds the configured signer count. |
+| `8` | `NotEnoughWeight` | The supplied signatures do not meet the configured weight threshold. |
+| `9` | `RoleQuorumNotMet` | The supplied signatures do not meet one or more role requirements. |
+| `10` | `InvalidPolicy` | A signer weight, role requirement, or policy threshold is invalid. |
 
 ## `incentive-pool`
 
