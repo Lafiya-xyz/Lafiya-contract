@@ -15,7 +15,7 @@ def get_contract_impl_functions(crate_path: pathlib.Path) -> list[Signature]:
     functions: list[Signature] = []
     for block in impl_blocks[1:]:  # after each marker
         # find all public functions within the block until next impl or end
-        matches = re.finditer(r"pub fn\s+(\w+)\s*\(([^)]*)\)\s*->?\s*[^ {]*", block)
+        matches = re.finditer(r"pub fn\s+(\w+)\s*\(([^)]*)\)", block)
         for m in matches:
             name = m.group(1)
             args = re.sub(r"\s+", " ", m.group(2)).strip()

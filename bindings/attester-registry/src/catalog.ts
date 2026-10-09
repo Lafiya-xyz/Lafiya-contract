@@ -20,7 +20,7 @@ export const CONTRACT_ERRORS: readonly ContractErrorInfo[] = [
     "contract": "attestation-registry",
     "code": 1,
     "name": "NotInitialized",
-    "doc": "`initialize` has not been called yet.",
+    "doc": "Required registry configuration is missing from storage.",
     "severity": "operator",
     "retryable": false,
     "i18n_key": "err.attestation.not_initialized",
@@ -31,7 +31,7 @@ export const CONTRACT_ERRORS: readonly ContractErrorInfo[] = [
     "contract": "attestation-registry",
     "code": 2,
     "name": "AlreadyInitialized",
-    "doc": "`initialize` was called more than once.",
+    "doc": "Reserved for compatibility with the removed public initializer.",
     "severity": "operator",
     "retryable": false,
     "i18n_key": "err.attestation.already_initialized",
@@ -90,6 +90,50 @@ export const CONTRACT_ERRORS: readonly ContractErrorInfo[] = [
     "severity": "user",
     "retryable": false,
     "i18n_key": "err.attestation.contract_paused",
+    "since": "0.1.0",
+    "deprecated": null
+  },
+  {
+    "contract": "attestation-registry",
+    "code": 8,
+    "name": "InvalidAdminProposal",
+    "doc": "The proposed admin address is not a valid successor.",
+    "severity": "user",
+    "retryable": false,
+    "i18n_key": "err.attestation.invalid_admin_proposal",
+    "since": "0.1.0",
+    "deprecated": null
+  },
+  {
+    "contract": "attestation-registry",
+    "code": 9,
+    "name": "ProposalExpired",
+    "doc": "The pending admin proposal has expired.",
+    "severity": "user",
+    "retryable": false,
+    "i18n_key": "err.attestation.proposal_expired",
+    "since": "0.1.0",
+    "deprecated": null
+  },
+  {
+    "contract": "attestation-registry",
+    "code": 10,
+    "name": "RateLimited",
+    "doc": "The attester has used up its rate-limit window. Call `get_rate_limit_retry_after` for the first ledger it may attest again.",
+    "severity": "user",
+    "retryable": false,
+    "i18n_key": "err.attestation.rate_limited",
+    "since": "0.1.0",
+    "deprecated": null
+  },
+  {
+    "contract": "attestation-registry",
+    "code": 11,
+    "name": "InvalidRateLimit",
+    "doc": "`window_ledgers` was `0` or longer than 30 days of ledgers.",
+    "severity": "user",
+    "retryable": false,
+    "i18n_key": "err.attestation.invalid_rate_limit",
     "since": "0.1.0",
     "deprecated": null
   },
@@ -167,6 +211,17 @@ export const CONTRACT_ERRORS: readonly ContractErrorInfo[] = [
     "severity": "user",
     "retryable": false,
     "i18n_key": "err.attester.attester_not_found",
+    "since": "0.1.0",
+    "deprecated": null
+  },
+  {
+    "contract": "attester-registry",
+    "code": 8,
+    "name": "BatchTooLarge",
+    "doc": "The supplied batch exceeds `BATCH_LIMIT` addresses.",
+    "severity": "user",
+    "retryable": false,
+    "i18n_key": "err.attester.batch_too_large",
     "since": "0.1.0",
     "deprecated": null
   }

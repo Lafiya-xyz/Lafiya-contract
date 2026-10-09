@@ -104,30 +104,43 @@ Four Soroban contracts, each in its own crate under `contracts/`.
 | Function | Description |
 | --- | --- |
 | `__constructor(admin: Address)` | Sets the admin atomically at deployment; the supplied admin must authorize the deployment. |
-| `get_admin() -> Address` | Returns the current admin address. |
+| `rotate_attester(previous_attester: Address, new_attester: Address)` | See the contract rustdoc for details. |
+| `revoke_attester(attester: Address)` | Allows an attester to revoke its own key by authorizing as `attester`. Removes it from the allowlist, clears suspension state, and decrements the count. Available while paused. Emits `AttesterRevoked`. |
+| `get_attester_rotation(attester: Address) -> Option<Address>` | See the contract rustdoc for details. |
+| `get_admin() -> Result<Address, Error>` | Returns the current admin address. |
+| `grant_role(role: Role, account: Address)` | See the contract rustdoc for details. |
+| `revoke_role(role: Role, account: Address)` | See the contract rustdoc for details. |
+| `has_role(role: Role, account: Address) -> bool` | See the contract rustdoc for details. |
+| `set_regional_registrar(registrar: Address, region: String, quota: u32)` | See the contract rustdoc for details. |
+| `revoke_regional_registrar(registrar: Address)` | See the contract rustdoc for details. |
+| `get_regional_registrar(registrar: Address) -> Option<RegionalRegistrarInfo>` | See the contract rustdoc for details. |
+| `get_regional_registrar_count(registrar: Address) -> u32` | See the contract rustdoc for details. |
 | `propose_admin(new_admin: Address)` | Proposes a new admin. Requires admin auth. |
 | `accept_admin()` | Finalizes the admin transfer. Requires proposed/pending admin auth. Emits `AdminTransferred`. |
-| `add_attester(attester: Address)` | Allowlists `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
-| `add_attester_with_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<String>)` | Allowlists `attester` with optional metadata. `region`, when present, must be an uppercase ISO 3166-2 code such as `NG-LA`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
-| `update_attester_info(attester: Address, license_hash: Option<BytesN<32>>, region: Option<String>)` | Updates metadata for an already-allowlisted `attester`. Regions use uppercase ISO 3166-2 codes such as `NG-LA`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Fails with `Error::AttesterNotFound` if `attester` isn't currently allowlisted. Emits `AttesterInfoUpdated`, distinguishable from enrollment's `AttesterAdded`. |
-| `remove_attester(attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
-| `revoke_attester(attester: Address)` | Allows an attester to revoke its own key by authorizing as `attester`. Removes it from the allowlist, clears suspension state, and decrements the count. Available while paused. Emits `AttesterRevoked`. |
-| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted (and not suspended). Open to any caller, including other contracts. Callable while paused. |
-| `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
-| `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns `attester`'s metadata together with its current suspension state in one call. `None` if `attester` isn't currently allowlisted (never added, or since removed). Callable while paused. |
-| `suspend_attester(attester: Address)` | Suspends an allowlisted attester without removing it, using the `administrative` reason. The suspension timestamp becomes the trust cutoff for that attester's later attestations. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterSuspended` with reason and timestamp. |
-| `suspend_attester_with_reason(attester: Address, reason: Symbol)` | Suspends an allowlisted attester with an explicit status reason (for example `misconduct` or `license_pending`). |
-| `reinstate_attester(attester: Address)` | Reinstates a suspended attester. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterReinstated`. |
-| `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Does not evict existing attesters if lowered below the current count. |
-| `grant_role(role: Role, account: Address)` / `revoke_role(role: Role, account: Address)` | Grants or revokes a global Registrar or Guardian role. Owner-only. |
-| `pause(guardian: Address)` / `unpause()` | A Guardian can pause; only the owner can resume operation. |
-| `get_max_attesters() -> u32` | The current soft cap on the number of allowlisted attesters. |
-| `get_attester_count() -> u32` | The current number of allowlisted attesters. |
-| `pause()` | Blocks `add_attester`, `add_attester_with_info`, `remove_attester`, `suspend_attester`, and `reinstate_attester` until unpaused. Self-revocation remains available while paused. Requires admin auth. Emits `Paused`. |
+| `cancel_admin_proposal()` | See the contract rustdoc for details. |
+| `pause(guardian: Address)` | Blocks `add_attester`, `add_attester_with_info`, `remove_attester`, `suspend_attester`, and `reinstate_attester` until unpaused. Self-revocation remains available while paused. Requires admin auth. Emits `Paused`. |
 | `unpause()` | Restores normal operation after `pause`. Requires admin auth. Emits `Unpaused`. |
 | `is_paused() -> bool` | Whether the contract is currently paused. Callable while paused. |
-| `get_schema_version() -> u32` | Storage schema version recorded for the instance. Open to any caller. |
+| `add_attester(registrar: Address, attester: Address)` | Allowlists `attester`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
+| `add_attester_with_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<String>, valid_from: Option<u64>, valid_until: Option<u64>)` | Allowlists `attester` with optional metadata. `region`, when present, must be an uppercase ISO 3166-2 code such as `NG-LA`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterAdded`. |
+| `update_attester_info(registrar: Address, attester: Address, license_hash: Option<BytesN<32>>, region: Option<String>, valid_from: Option<u64>, valid_until: Option<u64>)` | Updates metadata for an already-allowlisted `attester`. Regions use uppercase ISO 3166-2 codes such as `NG-LA`. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Fails with `Error::AttesterNotFound` if `attester` isn't currently allowlisted. Emits `AttesterInfoUpdated`, distinguishable from enrollment's `AttesterAdded`. |
+| `add_attesters(registrar: Address, attesters: Vec<Address>)` | See the contract rustdoc for details. |
+| `remove_attesters(registrar: Address, attesters: Vec<Address>)` | See the contract rustdoc for details. |
+| `remove_attester(registrar: Address, attester: Address)` | Removes `attester` from the allowlist. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterRemoved`. |
+| `set_max_attesters(max_attesters: u32)` | Sets the soft cap on the number of allowlisted attesters. Requires admin auth. Does not evict existing attesters if lowered below the current count. |
+| `get_max_attesters() -> u32` | The current soft cap on the number of allowlisted attesters. |
+| `get_attester_count() -> u32` | The current number of allowlisted attesters. |
+| `suspend_attester(registrar: Address, attester: Address)` | Suspends an allowlisted attester without removing it, using the `administrative` reason. The suspension timestamp becomes the trust cutoff for that attester's later attestations. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterSuspended` with reason and timestamp. |
+| `suspend_attester_with_reason(registrar: Address, attester: Address, reason: Symbol)` | Suspends an allowlisted attester with an explicit status reason (for example `misconduct` or `license_pending`). |
+| `reinstate_attester(registrar: Address, attester: Address)` | Reinstates a suspended attester. Requires admin auth. Blocked while paused (`Error::ContractPaused`). Emits `AttesterReinstated`. |
+| `is_attester(attester: Address) -> bool` | Whether `attester` is currently allowlisted (and not suspended). Open to any caller, including other contracts. Callable while paused. |
+| `is_attester_at(attester: Address, timestamp: u64) -> bool` | See the contract rustdoc for details. |
+| `is_attester_for_region(attester: Address, region: String) -> bool` | See the contract rustdoc for details. |
+| `get_attester_info(attester: Address) -> Option<AttesterInfo>` | Returns stored metadata for an allowlisted attester. Callable while paused. |
+| `get_attester_trust_revoked_after(attester: Address) -> Option<u64>` | See the contract rustdoc for details. |
+| `get_attester_status(attester: Address) -> Option<AttesterStatus>` | Returns `attester`'s metadata together with its current suspension state in one call. `None` if `attester` isn't currently allowlisted (never added, or since removed). Callable while paused. |
 | `get_interface() -> InterfaceInfo` | Contract kind, interface version, enabled features, and storage/event schema versions for runtime compatibility negotiation (see [docs/releasing.md](docs/releasing.md#interface-version-and-runtime-negotiation)). Open to any caller. |
+| `get_schema_version() -> u32` | Storage schema version recorded for the instance. Open to any caller. |
 | `upgrade(new_wasm_hash: BytesN<32>)` | Replaces the contract's code with the already-uploaded wasm blob at `new_wasm_hash`. Requires admin auth; storage is untouched. See [Contract upgrades](#contract-upgrades). |
 | `migrate()` | Runs any pending storage-schema migration, then records the new schema version. Requires admin auth; errors with `MigrationNotRequired` when nothing is pending. |
 
@@ -173,6 +186,86 @@ and verifiable. `attestation-registry` now exposes `get_schema_version` and
 pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
 reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
 mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
+
+### `attestation-registry`
+
+| Function | Description |
+| --- | --- |
+| `__constructor(admin: Address, attester_registry: Address)` | See the contract rustdoc for details. |
+| `cancel_admin_proposal()` | See the contract rustdoc for details. |
+| `get_admin() -> Result<Address, Error>` | See the contract rustdoc for details. |
+| `grant_role(role: Role, account: Address)` | See the contract rustdoc for details. |
+| `revoke_role(role: Role, account: Address)` | See the contract rustdoc for details. |
+| `has_role(role: Role, account: Address) -> bool` | See the contract rustdoc for details. |
+| `get_attester_registry() -> Result<Address, Error>` | See the contract rustdoc for details. |
+| `get_schema_version() -> u32` | See the contract rustdoc for details. |
+| `migrate()` | See the contract rustdoc for details. |
+| `upgrade(new_wasm_hash: BytesN<32>)` | See the contract rustdoc for details. |
+| `propose_admin(new_admin: Address)` | See the contract rustdoc for details. |
+| `accept_admin()` | See the contract rustdoc for details. |
+| `set_attester_registry(new_registry: Address)` | See the contract rustdoc for details. |
+| `pause(guardian: Address)` | See the contract rustdoc for details. |
+| `unpause()` | See the contract rustdoc for details. |
+| `is_paused() -> bool` | See the contract rustdoc for details. |
+| `set_max_attestation_age(max_age: u64)` | See the contract rustdoc for details. |
+| `get_max_attestation_age() -> u64` | See the contract rustdoc for details. |
+| `consent_attestation(patient: Address, attester: Address, record_hash: BytesN<32>, attestation_expires_at: u64)` | See the contract rustdoc for details. |
+| `attest(attester: Address, patient: Address, record_hash: BytesN<32>) -> Result<Attestation, Error>` | See the contract rustdoc for details. |
+| `attest_versioned(attester: Address, patient: Address, record_hash: BytesN<32>, commitment_version: u32) -> Result<Attestation, Error>` | See the contract rustdoc for details. |
+| `attest_version(attester: Address, patient: Address, record_hash: BytesN<32>, previous_record_hash: BytesN<32>) -> Result<Attestation, Error>` | See the contract rustdoc for details. |
+| `batch_attest(requests: Vec<AttestationRequest>) -> Result<Vec<Attestation>, Error>` | See the contract rustdoc for details. |
+| `anchor_batch(attester: Address, root: BytesN<32>, leaf_count: u32) -> Result<AttestationBatch, Error>` | See the contract rustdoc for details. |
+| `get_attestation_batch(root: BytesN<32>) -> Option<AttestationBatch>` | See the contract rustdoc for details. |
+| `revoke_attestation(revoker: Address, record_hash: BytesN<32>, reason: Symbol)` | See the contract rustdoc for details. |
+| `withdraw_attestation(attester: Address, record_hash: BytesN<32>)` | See the contract rustdoc for details. |
+| `is_verified(record_hash: BytesN<32>) -> Result<bool, Error>` | See the contract rustdoc for details. |
+| `is_attestation_trusted(record_hash: BytesN<32>) -> bool` | See the contract rustdoc for details. |
+| `get_attestation(record_hash: BytesN<32>) -> Option<Attestation>` | See the contract rustdoc for details. |
+| `get_attestations(record_hashes: Vec<BytesN<32>>) -> Vec<Option<Attestation>>` | See the contract rustdoc for details. |
+| `get_attestation_status(record_hash: BytesN<32>) -> Option<AttestationStatus>` | See the contract rustdoc for details. |
+| `get_record_status(record_hash: BytesN<32>) -> RecordStatus` | See the contract rustdoc for details. |
+| `get_attester_attestation_status(record_hash: BytesN<32>, attester: Address) -> AttesterAttestationStatus` | See the contract rustdoc for details. |
+| `get_previous_record_hash(record_hash: BytesN<32>) -> Option<BytesN<32>>` | See the contract rustdoc for details. |
+| `get_next_record_hash(record_hash: BytesN<32>) -> Option<BytesN<32>>` | See the contract rustdoc for details. |
+| `get_interface() -> InterfaceInfo` | See the contract rustdoc for details. |
+| `get_attestation_history(record_hash: BytesN<32>) -> Vec<Attestation>` | See the contract rustdoc for details. |
+| `get_attestation_history_status(record_hash: BytesN<32>) -> Vec<AttestationStatus>` | See the contract rustdoc for details. |
+| `set_attestation_rate_limit(max_per_window: u32, window_ledgers: u32)` | See the contract rustdoc for details. |
+| `get_attestation_rate_limit() -> Option<RateLimit>` | See the contract rustdoc for details. |
+| `set_attester_rate_limit(attester: Address, max_per_window: u32)` | See the contract rustdoc for details. |
+| `remove_attester_rate_limit(attester: Address)` | See the contract rustdoc for details. |
+| `get_rate_limit_retry_after(attester: Address) -> Option<u32>` | See the contract rustdoc for details. |
+
+### `incentive-pool`
+
+| Function | Description |
+| --- | --- |
+| `initialize(admin: Address, approver: Address, token: Address, attester_registry: Address, max_per_claim: i128, max_per_attester: i128)` | See the contract rustdoc for details. |
+| `get_admin() -> Result<Address, Error>` | See the contract rustdoc for details. |
+| `get_approver() -> Result<Address, Error>` | See the contract rustdoc for details. |
+| `get_token() -> Result<Address, Error>` | See the contract rustdoc for details. |
+| `get_attester_registry() -> Result<Address, Error>` | See the contract rustdoc for details. |
+| `get_max_per_claim() -> Result<i128, Error>` | See the contract rustdoc for details. |
+| `get_max_per_attester() -> Result<i128, Error>` | See the contract rustdoc for details. |
+| `get_total_deposited() -> Result<i128, Error>` | See the contract rustdoc for details. |
+| `get_total_paid() -> Result<i128, Error>` | See the contract rustdoc for details. |
+| `is_work_item_approved(work_item_id: BytesN<32>) -> bool` | See the contract rustdoc for details. |
+| `is_work_item_claimed(work_item_id: BytesN<32>) -> bool` | See the contract rustdoc for details. |
+| `get_work_item(work_item_id: BytesN<32>) -> Option<WorkItem>` | See the contract rustdoc for details. |
+| `get_attester_total_claimed(attester: Address) -> i128` | See the contract rustdoc for details. |
+| `propose_admin(new_admin: Address)` | See the contract rustdoc for details. |
+| `accept_admin()` | See the contract rustdoc for details. |
+| `set_approver(new_approver: Address)` | See the contract rustdoc for details. |
+| `set_attester_registry(new_registry: Address)` | See the contract rustdoc for details. |
+| `set_max_per_claim(max: i128)` | See the contract rustdoc for details. |
+| `set_max_per_attester(max: i128)` | See the contract rustdoc for details. |
+| `fund(amount: i128)` | See the contract rustdoc for details. |
+| `withdraw(to: Address, amount: i128)` | See the contract rustdoc for details. |
+| `approve_work_item(work_item_id: BytesN<32>, attester: Address, payout_amount: i128)` | See the contract rustdoc for details. |
+| `claim(work_item_id: BytesN<32>)` | See the contract rustdoc for details. |
+| `pause()` | See the contract rustdoc for details. |
+| `unpause()` | See the contract rustdoc for details. |
+| `is_paused() -> bool` | See the contract rustdoc for details. |
 
 ### `multisig-account`
 

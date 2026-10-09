@@ -127,7 +127,7 @@ def build_events():
                 "prefix_topics": spec["prefix_topics"],
                 "data_format": spec["data_format"],
                 "params": [
-                    {"name": p["name"], "type": p["type_"], "location": p["location"]}
+                    {"name": p["name"], "type": p.get("type_", p.get("type")), "location": p["location"]}
                     for p in spec["params"]
                 ],
             })
