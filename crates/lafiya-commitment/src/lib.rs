@@ -351,7 +351,7 @@ pub mod soroban {
             preimage.push_back(*byte);
         }
 
-        Ok(env.crypto().sha256(&preimage))
+        Ok(env.crypto().sha256(&preimage).to_bytes())
     }
 
     /// Compute unsalted commitment using Soroban host crypto (for legacy/verification).
@@ -368,7 +368,7 @@ pub mod soroban {
             preimage.push_back(*byte);
         }
 
-        Ok(env.crypto().sha256(&preimage))
+        Ok(env.crypto().sha256(&preimage).to_bytes())
     }
 }
 
