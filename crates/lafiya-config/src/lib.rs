@@ -423,6 +423,7 @@ incentive_pool = ""
             contracts: ContractIds {
                 attester_registry: attester.to_string(),
                 attestation_registry: attestation.to_string(),
+                incentive_pool: String::new(),
             },
         }
     }

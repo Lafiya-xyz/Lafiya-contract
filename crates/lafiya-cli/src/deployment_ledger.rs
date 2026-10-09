@@ -91,7 +91,11 @@ fn read_lines(path: &Path) -> Result<Vec<String>, String> {
         return Ok(Vec::new());
     }
     let text = fs::read_to_string(path).map_err(|e| format!("failed to read {path:?}: {e}"))?;
-    Ok(text.lines().filter(|l| !l.trim().is_empty()).map(String::from).collect())
+    Ok(text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(String::from)
+        .collect())
 }
 
 /// Append `record` to `deployments/<network>.jsonl`, filling in
@@ -107,8 +111,8 @@ pub fn append(
 
     record.prev_record_sha256 = match lines.last() {
         Some(last_line) => {
-            let last: DeploymentRecord =
-                serde_json::from_str(last_line).map_err(|e| format!("corrupt last record in {path:?}: {e}"))?;
+            let last: DeploymentRecord = serde_json::from_str(last_line)
+                .map_err(|e| format!("corrupt last record in {path:?}: {e}"))?;
             Some(record_hash(&last)?)
         }
         None => None,
@@ -159,7 +163,9 @@ pub fn verify(deployments_dir: &Path, network: &str) -> Result<VerifyReport, Str
         let record: DeploymentRecord = match serde_json::from_str(line) {
             Ok(r) => r,
             Err(e) => {
-                report.errors.push(format!("line {}: invalid JSON record: {e}", i + 1));
+                report
+                    .errors
+                    .push(format!("line {}: invalid JSON record: {e}", i + 1));
                 continue;
             }
         };
@@ -201,7 +207,9 @@ pub fn verify(deployments_dir: &Path, network: &str) -> Result<VerifyReport, Str
         prev_hash = match record_hash(&record) {
             Ok(h) => Some(h),
             Err(e) => {
-                report.errors.push(format!("line {}: could not hash record: {e}", i + 1));
+                report
+                    .errors
+                    .push(format!("line {}: could not hash record: {e}", i + 1));
                 None
             }
         };

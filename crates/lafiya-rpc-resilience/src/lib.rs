@@ -39,6 +39,9 @@ pub mod mock;
 /// decisions (issue #408). See the module doc in `fees.rs`.
 pub mod fees;
 
+/// Applying ledger bounds to real transaction envelopes.
+pub mod xdr;
+
 /// Where a transaction currently stands, as observed via a status query
 /// (Soroban RPC `getTransaction`) rather than assumed from a submit call.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -391,6 +394,14 @@ pub enum RecoveryResult {
     /// the escalate-to-operator case; `last_known` is what to hand the
     /// runbook.
     ExhaustedNeedsOperator { last_known: TxState },
+    /// The hash was never found and `max_ledger` has closed: the
+    /// transaction can never be included. Rebuilding is safe
+    /// ([`RetryClass::SafeToRebuild`]).
+    Expired { max_ledger: u32, latest_ledger: u32 },
+    /// The source account's sequence number was consumed by a different
+    /// transaction; this one can never be included. Inspect `consumed_by`
+    /// before rebuilding, since it may already have done the same work.
+    SequenceConsumed { consumed_by: Option<String> },
 }
 
 /// Round-robins submission across an ordered list of providers and, on any
@@ -436,8 +447,8 @@ impl FailoverClient {
     /// Submit `tx_hash` and drive it to a final verdict, failing over
     /// between providers on definite failures and polling (never blind
     /// resubmitting) on ambiguous ones.
-    pub fn submit_with_recovery(&mut self, tx_hash: &str, log: &mut RecoveryLog) -> RecoveryResult {
-        self.submit_inner(tx_hash, None, log)
+    pub fn submit_with_recovery(&mut self, tx: &SignedTx, log: &mut RecoveryLog) -> RecoveryResult {
+        self.submit_inner(tx, None, log)
     }
 
     /// Like [`submit_with_recovery`](Self::submit_with_recovery), for a
@@ -447,19 +458,20 @@ impl FailoverClient {
     /// the moment the result is certain.
     pub fn submit_with_bounds(
         &mut self,
-        tx_hash: &str,
+        tx: &SignedTx,
         bounds: &TxBounds,
         log: &mut RecoveryLog,
     ) -> RecoveryResult {
-        self.submit_inner(tx_hash, Some(bounds), log)
+        self.submit_inner(tx, Some(bounds), log)
     }
 
     fn submit_inner(
         &mut self,
-        tx_hash: &str,
+        tx: &SignedTx,
         bounds: Option<&TxBounds>,
         log: &mut RecoveryLog,
     ) -> RecoveryResult {
+        let tx_hash = tx.hash.as_str();
         let provider_count = self.providers.len();
         let mut submit_round: u32 = 0;
 
@@ -474,7 +486,7 @@ impl FailoverClient {
                     provider.name()
                 ));
                 let started = std::time::Instant::now();
-                let outcome = provider.submit(tx_hash);
+                let outcome = provider.submit(tx);
                 tracing::info!(
                     provider = provider.name(),
                     latency_ms = started.elapsed().as_millis() as u64,

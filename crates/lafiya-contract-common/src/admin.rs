@@ -1,6 +1,6 @@
 //! Admin management: two-step admin transfer with auth.
 
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, IntoVal, Val};
 
 /// Error types for admin operations.
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
@@ -12,8 +12,8 @@ pub enum AdminError {
 /// Trait for providing contract-specific storage keys.
 /// Implemented by each contract to supply Admin and PendingAdmin keys.
 pub trait AdminKeys {
-    type AdminKey;
-    type PendingAdminKey;
+    type AdminKey: IntoVal<Env, Val>;
+    type PendingAdminKey: IntoVal<Env, Val>;
 
     fn admin_key() -> Self::AdminKey;
     fn pending_admin_key() -> Self::PendingAdminKey;

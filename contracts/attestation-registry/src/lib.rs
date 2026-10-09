@@ -4,8 +4,8 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
-    BytesN, Env, Symbol, Vec,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
+    panic_with_error, Address, BytesN, Env, String, Symbol, Vec,
 };
 
 /// The subset of the `attester-registry` contract this crate calls. Kept
@@ -15,40 +15,31 @@ use soroban_sdk::{
 #[contractclient(name = "AttesterRegistryClient")]
 pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
+    fn is_attester_for_region(env: Env, attester: Address, region: String) -> bool;
     fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64>;
 }
 
-/// Emitted when the current admin nominates a successor.
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct AdminTransferProposed {
-    #[topic]
-    pub current_admin: Address,
-    #[topic]
-    pub proposed_admin: Address,
-    pub expires_at: u64,
-}
-
-/// Emitted when a pending admin transfer is cancelled.
-#[contractevent]
-#[derive(Clone, Debug)]
-pub struct AdminTransferCancelled {
-    #[topic]
-    pub admin: Address,
-    #[topic]
-    pub proposed_admin: Address,
-}
-
-/// Maximum number of attestations to keep per record hash. At capacity,
-/// further attestations require admin revocation rather than evicting history.
+/// Maximum number of distinct attester slots retained per record hash.
+/// Repeat submissions refresh an attester's existing slot; a new attester
+/// beyond the limit evicts the oldest slot (FIFO).
 const MAX_HISTORY: u64 = 10;
+
+/// Maximum number of requests accepted by one `batch_attest` call.
+pub const BATCH_LIMIT: u32 = 50;
+
+/// Default maximum age (seconds) of an attestation reported as verified.
+pub const DEFAULT_MAX_ATTESTATION_AGE: u64 = 31_536_000;
+
 const ADMIN_PROPOSAL_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
 
 const CONSENT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
 const CONSENT_TTL_THRESHOLD: u32 = 60_480;
 const CONSENT_TTL_BUMP: u32 = 120_960;
 
-const SCHEMA_VERSION: u32 = 2;
+/// Storage schema version of this build.
+pub const SCHEMA_VERSION: u32 = 3;
+/// Schema version stamped on emitted audit events.
+pub const EVENT_SCHEMA_VERSION: u32 = 2;
 
 /// Interface kind reported by `get_interface`, used by clients as a weak
 /// identity check when wiring contracts (not proof of authenticity).
@@ -57,13 +48,24 @@ pub const CONTRACT_KIND: &str = "lafiya_attestation_registry";
 /// Version of the public contract interface (functions, errors, types).
 /// Bump on any breaking ABI change; `scripts/conformance/check_snapshot.py`
 /// refuses a breaking snapshot update without a bump.
-pub const INTERFACE_VERSION: u32 = 1;
+pub const INTERFACE_VERSION: u32 = 2;
 
 /// Version of the emitted event schemas (see `docs/events.md`).
-pub const EVENT_VERSION: u32 = 1;
+pub const EVENT_VERSION: u32 = 2;
 
 /// Optional features this build supports, reported by `get_interface`.
-pub const FEATURES: [&str; 4] = ["pause", "history", "revocation", "repoint_registry"];
+pub const FEATURES: [&str; 10] = [
+    "pause",
+    "history",
+    "revocation",
+    "repoint_registry",
+    "roles",
+    "consent",
+    "withdrawal",
+    "batch",
+    "merkle_anchor",
+    "rate_limit",
+];
 
 /// Interface and capability metadata returned by `get_interface`, so
 /// clients can negotiate features with one call instead of probing.
@@ -93,6 +95,16 @@ const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 /// entry TTL.
 const MAX_RATE_WINDOW_LEDGERS: u32 = 518_400;
 
+/// Operational capabilities managed by the owner.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum Role {
+    /// May pause the contract.
+    Guardian,
+    /// May revoke all attestations for a record hash.
+    Revoker,
+}
+
 /// Storage keys for the attestation registry.
 ///
 /// UPGRADE SAFETY: `#[contracttype]` enums serialize variants by their
@@ -109,9 +121,9 @@ enum DataKey {
     PendingAdmin,
     /// The deployed `attester-registry` contract consulted on every `attest` call.
     AttesterRegistry,
-    /// Attestation for a given record hash at a specific sequence number.
+    /// Attestation slot for a record hash at a specific sequence number.
     Attestation(BytesN<32>, u64),
-    /// Latest sequence number for a given record hash.
+    /// Highest slot sequence number allocated for a record hash.
     AttestationSequence(BytesN<32>),
     /// Reserved legacy key. Retained at its enum position for storage
     /// compatibility; history windows are now derived from the sequence.
@@ -130,9 +142,31 @@ enum DataKey {
     /// The attester's current `RateWindow` (temporary storage; expires with
     /// the window).
     RateWindow(Address),
+    /// Explicit capabilities granted by the owner.
+    Role(Role, Address),
+    /// Maximum age of an attestation that may be reported as verified.
+    MaxAttestationAge,
+    /// A patient's one-time authorization for an attester and record hash.
+    PatientConsent(BytesN<32>, Address, Address),
+    /// The patient-selected expiry for an attestation consent grant.
+    PatientConsentValidity(BytesN<32>, Address, Address),
+    /// Expiry timestamp for an attestation at a specific sequence number.
+    AttestationExpiry(BytesN<32>, u64),
+    /// Metadata for an anchored Merkle batch, keyed by its root.
+    AttestationBatch(BytesN<32>),
+    /// Whether an attester withdrew a specific retained attestation.
+    AttestationWithdrawn(BytesN<32>, u64),
+    /// Whether all attestations for a record hash were revoked by a revoker.
+    RecordRevoked(BytesN<32>),
+    /// Highest attestation sequence covered by a revocation.
+    RevokedThroughSequence(BytesN<32>),
+    /// Previous version hash for a record hash.
+    PreviousRecordHash(BytesN<32>),
+    /// Next version hash for a record hash.
+    NextRecordHash(BytesN<32>),
 }
 
-/// Admin-configured per-attester attestation rate limit: at most
+/// Revoker-configured per-attester attestation rate limit: at most
 /// `max_per_window` attestations per attester in any window of
 /// `window_ledgers` ledgers.
 #[contracttype]
@@ -190,6 +224,59 @@ pub struct AttestationStatus {
     pub is_expired: bool,
 }
 
+/// One attestation to submit in a batch, optionally linked to a previous
+/// record version. Each request needs the patient's matching consent.
+#[contracttype]
+#[derive(Clone, Debug)]
+pub struct AttestationRequest {
+    pub attester: Address,
+    pub patient: Address,
+    pub record_hash: BytesN<32>,
+    pub previous_record_hash: Option<BytesN<32>>,
+}
+
+/// Summary state for a record hash, distinguishing absent verification from
+/// an explicit withdrawal or revocation.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum RecordStatus {
+    NeverAttested,
+    Verified,
+    Withdrawn,
+    Revoked,
+}
+
+/// Status of one attester's verification for a record hash.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum AttesterAttestationStatus {
+    NeverAttested,
+    Active,
+    Withdrawn,
+    Revoked,
+}
+
+/// Emitted when the current admin nominates a successor.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferProposed {
+    #[topic]
+    pub current_admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
+    pub expires_at: u64,
+}
+
+/// Emitted when a pending admin transfer is cancelled.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AdminTransferCancelled {
+    #[topic]
+    pub admin: Address,
+    #[topic]
+    pub proposed_admin: Address,
+}
+
 /// Emitted when admin ownership finishes transferring to a new address.
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -215,6 +302,34 @@ pub struct AttestationRecorded {
     /// Patient-selected timestamp after which responders should treat this
     /// verification as stale.
     pub expires_at: u64,
+    /// Commitment scheme version of the attested record.
+    pub commitment_version: u32,
+    /// Sequence number of the retained slot written by this event.
+    pub sequence: u64,
+    /// Sequence number evicted from the bounded FIFO history, if any.
+    pub evicted_sequence: Option<u64>,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
+}
+
+/// Emitted when an attester withdraws their own attestation.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationWithdrawn {
+    #[topic]
+    pub record_hash: BytesN<32>,
+    #[topic]
+    pub attester: Address,
+}
+
+/// Emitted when a new record hash is linked to its previous version.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RecordVersionLinked {
+    #[topic]
+    pub previous_record_hash: BytesN<32>,
+    #[topic]
+    pub record_hash: BytesN<32>,
 }
 
 /// Emitted when an attestation is revoked.
@@ -223,14 +338,28 @@ pub struct AttestationRecorded {
 pub struct AttestationRevoked {
     #[topic]
     pub record_hash: BytesN<32>,
-    /// Admin who authorized the revocation.
+    /// Revoker who authorized the revocation.
     pub by: Address,
-    /// Number of stored history entries removed.
+    /// Number of active attestations that were revoked.
     pub removed_count: u64,
-    /// Non-sensitive, concise reason code supplied by the admin.
+    /// Non-sensitive, concise reason code supplied by the revoker.
     pub reason: Symbol,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+}
+
+/// Emitted when an attester anchors a Merkle root for multiple records.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationBatchAnchored {
+    #[topic]
+    pub root: BytesN<32>,
+    /// The allowlisted attester authorizing every leaf in the batch.
+    pub attester: Address,
+    /// Ledger timestamp at which the root was anchored.
+    pub timestamp: u64,
+    /// Number of record commitments represented by the Merkle root.
+    pub leaf_count: u32,
 }
 
 /// Emitted when an attester records the last attestation its rate-limit
@@ -253,6 +382,14 @@ pub struct RateLimitSet {
     /// Maximum attestations per attester per window; `0` disables limiting.
     pub max_per_window: u32,
     pub window_ledgers: u32,
+}
+
+/// Emitted when the contract is upgraded to new wasm.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct Upgraded {
+    #[topic]
+    pub new_wasm_hash: BytesN<32>,
 }
 
 /// Emitted when state-changing operations are paused.
@@ -292,10 +429,10 @@ pub struct AttesterRegistryRepointed {
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
 pub enum Error {
-    /// `initialize` has not been called yet.
+    /// Required registry configuration is missing from storage.
     /// @severity operator
     NotInitialized = 1,
-    /// `initialize` was called more than once.
+    /// Reserved for compatibility with the removed public initializer.
     /// @severity operator
     AlreadyInitialized = 2,
     /// The caller is not allowlisted by the `attester-registry` contract.
@@ -322,6 +459,32 @@ pub enum Error {
     RateLimited = 10,
     /// `window_ledgers` was `0` or longer than 30 days of ledgers.
     InvalidRateLimit = 11,
+    /// The supplied address has not been granted the required role.
+    RoleNotGranted = 12,
+    /// `migrate()` was called when no storage migration is pending.
+    MigrationNotRequired = 13,
+    /// No unexpired patient consent grant matches this attester, patient and record hash.
+    PatientConsentRequired = 14,
+    /// The patient's consent grant has expired.
+    PatientConsentExpired = 15,
+    /// The current ledger timestamp cannot be safely advanced to calculate a time bound.
+    TimestampOverflow = 16,
+    /// The patient-selected attestation expiry is not in the future.
+    InvalidAttestationExpiry = 17,
+    /// The configured attester-registry could not be called.
+    AttesterRegistryUnavailable = 18,
+    /// A Merkle batch must contain at least one record.
+    EmptyBatch = 19,
+    /// The Merkle root has already been anchored.
+    BatchAlreadyAnchored = 20,
+    /// The attester has no active attestation for the given record hash.
+    AttestationNotOwned = 21,
+    /// The supplied previous hash or version relationship is invalid.
+    InvalidRecordVersion = 22,
+    /// The batch contains more requests than the supported maximum.
+    BatchTooLarge = 23,
+    /// The commitment scheme version does not fit in one byte.
+    InvalidCommitmentVersion = 24,
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -352,23 +515,11 @@ impl AttestationRegistry {
     /// throwaway address and region, and confirms the call does not trap.
     /// This confirms the address implements the expected interface — it does
     /// **not** prove the address is the canonical, trusted deployment.
-    pub fn initialize(env: Env, admin: Address, attester_registry: Address) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
+    pub fn __constructor(env: Env, admin: Address, attester_registry: Address) {
         admin.require_auth();
 
-        // Best-effort sanity check: verify attester_registry implements the
-        // regional allowlist interface with a throwaway address.
-        let registry = AttesterRegistryClient::new(&env, &attester_registry);
-        // The current contract address is valid but will not be allowlisted.
-        let throwaway = env.current_contract_address();
-        let throwaway_region = Symbol::new(&env, "interface");
-        if registry
-            .try_is_attester_for_region(&throwaway, &throwaway_region)
-            .is_err()
-        {
-            return Err(Error::InvalidRegistryWiring);
+        if !Self::registry_is_compatible(&env, &attester_registry) {
+            panic_with_error!(&env, Error::InvalidRegistryWiring);
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -378,6 +529,9 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     /// Cancel the pending admin transfer. Requires the current admin's authorization.
@@ -411,7 +565,7 @@ impl AttestationRegistry {
         Self::admin(&env)?.require_auth();
         env.storage()
             .instance()
-            .set(&DataKey::Role(role, account.clone()), &true);
+            .set(&DataKey::Role(role, account), &true);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -423,7 +577,7 @@ impl AttestationRegistry {
         Self::admin(&env)?.require_auth();
         env.storage()
             .instance()
-            .remove(&DataKey::Role(role, account.clone()));
+            .remove(&DataKey::Role(role, account));
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -448,9 +602,10 @@ impl AttestationRegistry {
             .unwrap_or(1)
     }
 
-    /// Mark the additive version-2 storage schema as available after upgrade.
-    /// No data reshaping is required; all newly introduced keys are optional
-    /// until the corresponding operation first writes them.
+    /// Complete a pending storage migration after an upgrade. The schema
+    /// changes since version 1 are additive (new optional keys), so no data
+    /// needs to be reshaped; this only records the new version. Requires the
+    /// admin's authorization.
     pub fn migrate(env: Env) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
 
@@ -461,6 +616,19 @@ impl AttestationRegistry {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Upgrade the contract's Wasm code. Only the owner may authorize upgrades.
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        #[allow(deprecated)]
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        Upgraded { new_wasm_hash }.publish(&env);
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
@@ -541,19 +709,13 @@ impl AttestationRegistry {
 
     /// Change the attester-registry contract this registry consults for
     /// allowlist checks. Requires the admin's authorization and a compatible
-    /// regional allowlist interface. Emits
-    /// `AttesterRegistryRepointed` for indexer/audit visibility.
+    /// regional allowlist interface. Emits `AttesterRegistryRepointed` for
+    /// indexer/audit visibility.
     pub fn set_attester_registry(env: Env, new_registry: Address) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
 
-        let registry = AttesterRegistryClient::new(&env, &new_registry);
-        let throwaway = env.current_contract_address();
-        let throwaway_region = Symbol::new(&env, "interface");
-        if registry
-            .try_is_attester_for_region(&throwaway, &throwaway_region)
-            .is_err()
-        {
+        if !Self::registry_is_compatible(&env, &new_registry) {
             return Err(Error::InvalidRegistryWiring);
         }
 
@@ -579,7 +741,12 @@ impl AttestationRegistry {
     pub fn pause(env: Env, guardian: Address) -> Result<(), Error> {
         Self::require_role(&env, Role::Guardian, &guardian)?;
         env.storage().instance().set(&DataKey::Paused, &true);
-        Paused { by: guardian }.publish(&env);
+        Paused {
+            by: guardian,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -597,6 +764,14 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Whether the contract is currently paused.
+    pub fn is_paused(env: Env) -> bool {
+        env.storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false)
+    }
+
     /// Set the maximum age in seconds for which an attestation is considered
     /// current. Requires the admin's authorization.
     pub fn set_max_attestation_age(env: Env, max_age: u64) -> Result<(), Error> {
@@ -611,18 +786,7 @@ impl AttestationRegistry {
     /// Return the maximum age in seconds for which an attestation is
     /// considered current. Defaults to 365 days.
     pub fn get_max_attestation_age(env: Env) -> u64 {
-        env.storage()
-            .instance()
-            .get(&DataKey::MaxAttestationAge)
-            .unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
-    }
-
-    /// Whether the contract is currently paused.
-    pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
+        Self::max_attestation_age(&env)
     }
 
     /// Grant a one-time authorization for `attester` to attest `record_hash`.
@@ -644,11 +808,7 @@ impl AttestationRegistry {
             return Err(Error::InvalidAttestationExpiry);
         }
 
-        let registry_id = Self::attester_registry(&env)?;
-        let registry = AttesterRegistryClient::new(&env, &registry_id);
-        if !registry.is_attester(&attester) {
-            return Err(Error::AttesterNotAllowlisted);
-        }
+        Self::require_allowlisted_attester(&env, &attester)?;
 
         let expires_at = env
             .ledger()
@@ -680,8 +840,11 @@ impl AttestationRegistry {
     /// Requires `attester`'s authorization, an unexpired one-time patient
     /// consent grant for this exact patient/attester/hash tuple, and that
     /// `attester` is currently allowlisted in the configured registry.
-    /// Stores the attestation with an incrementing sequence number,
-    /// maintaining a bounded history (MAX_HISTORY entries per hash).
+    /// Stores one retained slot per attester and record hash; re-attesting
+    /// refreshes the attester's slot without evicting other attesters.
+    ///
+    /// A relayer may submit the transaction and pay its fees using an
+    /// authorization entry signed by `attester`.
     pub fn attest(
         env: Env,
         attester: Address,
@@ -691,7 +854,34 @@ impl AttestationRegistry {
         attester.require_auth();
         Self::require_not_paused(&env)?;
         Self::require_allowlisted_attester(&env, &attester)?;
-        Self::record_attestation(&env, attester, record_hash, None)
+        Self::record_attestation(&env, attester, patient, record_hash, 0, None)
+    }
+
+    /// Record an attestation with an explicit one-byte commitment scheme
+    /// version. `0` is reserved for legacy/unversioned commitments, `1` is
+    /// LRC-1, and future values may identify later schemes. As with `attest`,
+    /// a relayer may submit the transaction.
+    pub fn attest_versioned(
+        env: Env,
+        attester: Address,
+        patient: Address,
+        record_hash: BytesN<32>,
+        commitment_version: u32,
+    ) -> Result<Attestation, Error> {
+        if commitment_version > u8::MAX as u32 {
+            return Err(Error::InvalidCommitmentVersion);
+        }
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_allowlisted_attester(&env, &attester)?;
+        Self::record_attestation(
+            &env,
+            attester,
+            patient,
+            record_hash,
+            commitment_version,
+            None,
+        )
     }
 
     /// Record a verification and explicitly link this record hash to its
@@ -699,39 +889,21 @@ impl AttestationRegistry {
     pub fn attest_version(
         env: Env,
         attester: Address,
+        patient: Address,
         record_hash: BytesN<32>,
         previous_record_hash: BytesN<32>,
-    ) -> Result<Attestation, Error> {
-        Self::record_attestation(&env, attester, record_hash, 0)
-    }
-
-    /// Record an attestation with an explicit one-byte commitment scheme
-    /// version. `0` is reserved for legacy/unversioned commitments, `1` is
-    /// LRC-1, and future values may identify later schemes. As with `attest`,
-    /// a relayer may submit the transaction and pay its fees using an
-    /// authorization entry signed by `attester`.
-    pub fn attest_versioned(
-        env: Env,
-        attester: Address,
-        record_hash: BytesN<32>,
-        commitment_version: u32,
-    ) -> Result<Attestation, Error> {
-        if commitment_version > u8::MAX as u32 {
-            return Err(Error::InvalidCommitmentVersion);
-        }
-        Self::record_attestation(&env, attester, record_hash, commitment_version)
-    }
-
-    fn record_attestation(
-        env: &Env,
-        attester: Address,
-        record_hash: BytesN<32>,
-        commitment_version: u32,
     ) -> Result<Attestation, Error> {
         attester.require_auth();
         Self::require_not_paused(&env)?;
         Self::require_allowlisted_attester(&env, &attester)?;
-        Self::record_attestation(&env, attester, record_hash, Some(previous_record_hash))
+        Self::record_attestation(
+            &env,
+            attester,
+            patient,
+            record_hash,
+            0,
+            Some(previous_record_hash),
+        )
     }
 
     /// Record up to `BATCH_LIMIT` attestations in one transaction. Each
@@ -746,62 +918,112 @@ impl AttestationRegistry {
         }
         Self::require_not_paused(&env)?;
 
-        let registry_id = Self::attester_registry(&env)?;
-        let registry = AttesterRegistryClient::new(&env, &registry_id);
-        // A failing call into the admin-configured registry should abort the
-        // attestation, so the panicking (non-`try_`) client is intended here.
-        // nosemgrep: soroban-panicking-cross-contract-call
-        if !registry.is_attester(&attester) {
-            return Err(Error::AttesterNotAllowlisted);
+        let mut checked_attesters: Vec<Address> = Vec::new(&env);
+        let mut results = Vec::new(&env);
+
+        for request in requests.iter() {
+            if !checked_attesters.contains(&request.attester) {
+                request.attester.require_auth();
+                Self::require_allowlisted_attester(&env, &request.attester)?;
+                checked_attesters.push_back(request.attester.clone());
+            }
+
+            let attestation = Self::record_attestation(
+                &env,
+                request.attester,
+                request.patient,
+                request.record_hash,
+                0,
+                request.previous_record_hash,
+            )?;
+            results.push_back(attestation);
         }
 
-        Self::consume_rate_limit(&env, &attester)?;
+        Ok(results)
+    }
 
-        let attestation = Attestation {
+    /// Anchor a Merkle root containing multiple record commitments.
+    ///
+    /// The attester authorizes the root and leaf count, while the contract
+    /// stores only one persistent entry for the entire batch. Verifiers
+    /// reconstruct inclusion proofs using the tree format documented in
+    /// `docs/merkle-batch-attestations.md`.
+    pub fn anchor_batch(
+        env: Env,
+        attester: Address,
+        root: BytesN<32>,
+        leaf_count: u32,
+    ) -> Result<AttestationBatch, Error> {
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if leaf_count == 0 {
+            return Err(Error::EmptyBatch);
+        }
+
+        Self::require_allowlisted_attester(&env, &attester)?;
+
+        let key = DataKey::AttestationBatch(root.clone());
+        if env.storage().persistent().has(&key) {
+            return Err(Error::BatchAlreadyAnchored);
+        }
+
+        let batch = AttestationBatch {
             attester: attester.clone(),
             timestamp: env.ledger().timestamp(),
-            commitment_version,
+            leaf_count,
         };
+        env.storage().persistent().set(&key, &batch);
+        env.storage().persistent().extend_ttl(
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        AttestationBatchAnchored {
+            root,
+            attester,
+            timestamp: batch.timestamp,
+            leaf_count,
+        }
+        .publish(&env);
+
+        Ok(batch)
+    }
+
+    /// Look up metadata for a Merkle batch root, if it has been anchored.
+    pub fn get_attestation_batch(env: Env, root: BytesN<32>) -> Option<AttestationBatch> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttestationBatch(root))
+    }
+
+    /// Revoke all attestations for `record_hash` without erasing the
+    /// historical entries. Requires the Revoker role. `reason` is a concise,
+    /// non-sensitive code recorded in the `AttestationRevoked` event.
+    pub fn revoke_attestation(
+        env: Env,
+        revoker: Address,
+        record_hash: BytesN<32>,
+        reason: Symbol,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Revoker, &revoker)?;
 
         let sequence: u64 = env
             .storage()
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
-            .unwrap_or(0);
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-        let consent_key =
-            DataKey::PatientConsent(record_hash.clone(), patient.clone(), attester.clone());
-        let consent_expires_at: u64 = env
-            .storage()
-            .persistent()
-            .get(&consent_key)
-            .ok_or(Error::PatientConsentRequired)?;
-        if env.ledger().timestamp() >= consent_expires_at {
-            return Err(Error::PatientConsentExpired);
-        }
-        let consent_validity_key =
-            DataKey::PatientConsentValidity(record_hash.clone(), patient, attester.clone());
-        let attestation_expires_at: u64 = env
-            .storage()
-            .persistent()
-            .get(&consent_validity_key)
-            .ok_or(Error::PatientConsentRequired)?;
-        if env.ledger().timestamp() >= attestation_expires_at {
-            return Err(Error::InvalidAttestationExpiry);
-        }
-        env.storage().persistent().remove(&consent_key);
-        env.storage().persistent().remove(&consent_validity_key);
+            .ok_or(Error::AttestationNotFound)?;
 
-        let attestation = Attestation {
-            attester: attester.clone(),
-            timestamp: env.ledger().timestamp(),
-        };
-
-        let new_sequence = sequence + 1;
+        let mut removed_count = 0u64;
+        for seq in Self::history_start(sequence)..=sequence {
+            if Self::slot_is_active(&env, &record_hash, seq) {
+                removed_count += 1;
+            }
+        }
 
         env.storage()
             .persistent()
@@ -810,108 +1032,186 @@ impl AttestationRegistry {
             &DataKey::RevokedThroughSequence(record_hash.clone()),
             &sequence,
         );
-        env.storage().persistent().set(
-            &DataKey::AttestationExpiry(record_hash.clone(), new_sequence),
-            &attestation_expires_at,
-        );
-
-        env.storage().persistent().set(
-            &DataKey::AttestationSequence(record_hash.clone()),
-            &new_sequence,
-        );
-
-        let new_count = count + 1;
-
-        let evicted_sequence = if new_count > MAX_HISTORY {
-            let oldest_sequence = new_sequence.saturating_sub(MAX_HISTORY);
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
-            Some(oldest_sequence)
-        } else {
-            None
-        };
-
-        // Extend TTL on the specific attestation entry just written, so it is
-        // not subject to state-archival independently of the instance storage.
         env.storage().persistent().extend_ttl(
-            &DataKey::Attestation(record_hash.clone(), stored_sequence),
+            &DataKey::RecordRevoked(record_hash.clone()),
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
         env.storage().persistent().extend_ttl(
-            &DataKey::AttestationExpiry(record_hash.clone(), new_sequence),
+            &DataKey::RevokedThroughSequence(record_hash.clone()),
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
 
-        for seq in (start_sequence..=sequence).rev() {
-            if seq <= revoked_through {
+        AttestationRevoked {
+            record_hash,
+            by: revoker,
+            removed_count,
+            reason,
+            contract_kind: Symbol::new(&env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+        }
+        .publish(&env);
+
+        Ok(())
+    }
+
+    /// Withdraw all of the caller's active attestations for `record_hash`.
+    /// Other attesters' attestations are unaffected.
+    pub fn withdraw_attestation(
+        env: Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        attester.require_auth();
+
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))
+            .ok_or(Error::AttestationNotOwned)?;
+
+        let mut found = false;
+        for seq in Self::history_start(sequence)..=sequence {
+            if !Self::slot_is_active(&env, &record_hash, seq) {
                 continue;
             }
-            let key = DataKey::Attestation(record_hash.clone(), seq);
-            let Some(attestation) = env.storage().persistent().get::<_, Attestation>(&key) else {
-                continue;
-            };
-            if attestation.attester == attester
-                && !env
-                    .storage()
-                    .persistent()
-                    .has(&DataKey::AttestationWithdrawn(record_hash.clone(), seq))
-            {
-                env.storage().persistent().set(
-                    &DataKey::AttestationWithdrawn(record_hash.clone(), seq),
-                    &true,
+            let owned = env
+                .storage()
+                .persistent()
+                .get::<_, Attestation>(&DataKey::Attestation(record_hash.clone(), seq))
+                .is_some_and(|attestation| attestation.attester == attester);
+            if owned {
+                let key = DataKey::AttestationWithdrawn(record_hash.clone(), seq);
+                env.storage().persistent().set(&key, &true);
+                env.storage().persistent().extend_ttl(
+                    &key,
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
                 );
                 found = true;
             }
         }
 
-        AttestationRecorded {
+        if !found {
+            return Err(Error::AttestationNotOwned);
+        }
+
+        AttestationWithdrawn {
             record_hash,
             attester,
-            timestamp: attestation.timestamp,
-            expires_at: attestation_expires_at,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Return whether the latest active attestation is current and backed by
+    /// an attester who remains allowlisted and unsuspended.
+    ///
+    /// An attestation is verified only when it exists, has not been revoked or
+    /// withdrawn, is no older than `get_max_attestation_age`, has not passed
+    /// its patient-selected expiry, and its attester is currently active in
+    /// the configured attester-registry. A registry call failure returns
+    /// `AttesterRegistryUnavailable`.
+    pub fn is_verified(env: Env, record_hash: BytesN<32>) -> Result<bool, Error> {
+        let Some((sequence, attestation)) = Self::latest_active(&env, &record_hash) else {
+            return Ok(false);
+        };
+        let now = env.ledger().timestamp();
+        if attestation.timestamp > now
+            || now - attestation.timestamp > Self::max_attestation_age(&env)
+        {
+            return Ok(false);
+        }
+        let expiry: Option<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationExpiry(record_hash, sequence));
+        if expiry.is_some_and(|expires_at| now >= expires_at) {
+            return Ok(false);
+        }
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        match registry.try_is_attester(&attestation.attester) {
+            Ok(Ok(is_attester)) => Ok(is_attester),
+            _ => Err(Error::AttesterRegistryUnavailable),
         }
     }
 
-    /// Look up the latest active attestation for `record_hash`, if any. Callable
-    /// by anyone — this is what lets a responder's QR scan independently
-    /// check a card without an external oracle.
-    pub fn get_attestation(env: Env, record_hash: BytesN<32>) -> Option<Attestation> {
-        if env
-            .storage()
-            .persistent()
-            .get::<_, bool>(&DataKey::RecordRevoked(record_hash.clone()))
-            .unwrap_or(false)
-        {
-            return None;
+    /// Whether the latest active attestation was made before its attester's
+    /// trust cutoff. Raw attestations remain available through
+    /// `get_attestation` for auditability.
+    pub fn is_attestation_trusted(env: Env, record_hash: BytesN<32>) -> bool {
+        let Some((_, attestation)) = Self::latest_active(&env, &record_hash) else {
+            return false;
+        };
+        let Ok(registry_id) = Self::attester_registry(&env) else {
+            return false;
+        };
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+        match registry.try_get_attester_trust_revoked_after(&attestation.attester) {
+            Ok(Ok(Some(cutoff))) => attestation.timestamp < cutoff,
+            Ok(Ok(None)) => true,
+            _ => false,
         }
-        Self::latest_active_attestation(&env, record_hash)
+    }
+
+    /// Look up the latest active attestation for `record_hash`, if any.
+    /// Callable by anyone — this is what lets a responder's QR scan
+    /// independently check a card without an external oracle.
+    pub fn get_attestation(env: Env, record_hash: BytesN<32>) -> Option<Attestation> {
+        Self::latest_active(&env, &record_hash).map(|(_, attestation)| attestation)
+    }
+
+    /// Look up the latest active attestation for each record hash in input
+    /// order. Each output entry corresponds to the hash at the same input
+    /// position; missing attestations are `None`. Callable by anyone.
+    pub fn get_attestations(env: Env, record_hashes: Vec<BytesN<32>>) -> Vec<Option<Attestation>> {
+        let mut attestations = Vec::new(&env);
+        for record_hash in record_hashes {
+            attestations.push_back(
+                Self::latest_active(&env, &record_hash).map(|(_, attestation)| attestation),
+            );
+        }
+        attestations
+    }
+
+    /// Look up the latest active attestation with its patient-selected
+    /// expiry status. An attestation without a recorded expiry is treated as
+    /// stale.
+    pub fn get_attestation_status(env: Env, record_hash: BytesN<32>) -> Option<AttestationStatus> {
+        let (sequence, attestation) = Self::latest_active(&env, &record_hash)?;
+        Some(Self::attestation_status(
+            &env,
+            &record_hash,
+            sequence,
+            attestation,
+        ))
     }
 
     /// Return whether a record hash is unverified, verified, withdrawn, or
-    /// explicitly revoked. This remains informative after admin revocation.
-    pub fn get_attestation_status(env: Env, record_hash: BytesN<32>) -> AttestationStatus {
+    /// explicitly revoked. This remains informative after revocation.
+    pub fn get_record_status(env: Env, record_hash: BytesN<32>) -> RecordStatus {
         if env
             .storage()
             .persistent()
             .get::<_, bool>(&DataKey::RecordRevoked(record_hash.clone()))
             .unwrap_or(false)
         {
-            return AttestationStatus::Revoked;
+            return RecordStatus::Revoked;
         }
-        if Self::latest_active_attestation(&env, record_hash.clone()).is_some() {
-            return AttestationStatus::Verified;
+        if Self::latest_active(&env, &record_hash).is_some() {
+            return RecordStatus::Verified;
         }
         if env
             .storage()
             .persistent()
             .has(&DataKey::AttestationSequence(record_hash))
         {
-            return AttestationStatus::Withdrawn;
+            return RecordStatus::Withdrawn;
         }
-        AttestationStatus::NeverAttested
+        RecordStatus::NeverAttested
     }
 
     /// Return whether `attester` has an active, withdrawn, or revoked
@@ -921,12 +1221,6 @@ impl AttestationRegistry {
         record_hash: BytesN<32>,
         attester: Address,
     ) -> AttesterAttestationStatus {
-        if env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationSequence(record_hash.clone()))
-            .ok_or(Error::AttestationNotFound)?;
-
         let Some(sequence) = env
             .storage()
             .persistent()
@@ -934,38 +1228,37 @@ impl AttestationRegistry {
         else {
             return AttesterAttestationStatus::NeverAttested;
         };
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-        let start_sequence = if count > MAX_HISTORY {
-            sequence.saturating_sub(MAX_HISTORY - 1)
-        } else {
-            1
-        };
-        let revoked_through: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RevokedThroughSequence(record_hash.clone()))
-            .unwrap_or(0);
-        let mut found = false;
+        let revoked_through = Self::revoked_through(&env, &record_hash);
+        let mut revoked = false;
         let mut withdrawn = false;
 
-        let mut removed_count = 0;
-        for seq in start_sequence..=sequence {
+        for seq in (Self::history_start(sequence)..=sequence).rev() {
             let Some(attestation) = env
                 .storage()
                 .persistent()
-                .remove(&DataKey::Attestation(record_hash.clone(), seq));
-            env.storage()
+                .get::<_, Attestation>(&DataKey::Attestation(record_hash.clone(), seq))
+            else {
+                continue;
+            };
+            if attestation.attester != attester {
+                continue;
+            }
+            if seq <= revoked_through {
+                revoked = true;
+            } else if env
+                .storage()
                 .persistent()
-                .remove(&DataKey::AttestationExpiry(record_hash.clone(), seq));
+                .has(&DataKey::AttestationWithdrawn(record_hash.clone(), seq))
+            {
+                withdrawn = true;
+            } else {
+                return AttesterAttestationStatus::Active;
+            }
         }
 
         if withdrawn {
             AttesterAttestationStatus::Withdrawn
-        } else if found {
+        } else if revoked {
             AttesterAttestationStatus::Revoked
         } else {
             AttesterAttestationStatus::NeverAttested
@@ -998,37 +1291,25 @@ impl AttestationRegistry {
             contract_kind: Symbol::new(&env, CONTRACT_KIND),
             interface_version: INTERFACE_VERSION,
             features,
-            schema_version: env
-                .storage()
-                .instance()
-                .get(&DataKey::SchemaVersion)
-                .unwrap_or(1),
+            schema_version: Self::get_schema_version(env.clone()),
             event_version: EVENT_VERSION,
         }
     }
 
-    /// Look up the full attestation history for `record_hash`, if any.
-    /// Returns attestations ordered by the first submission of each retained
-    /// attester slot.
-    /// Callable by anyone.
+    /// Look up the retained attestation history for `record_hash`, including
+    /// withdrawn and revoked entries, ordered by the first submission of each
+    /// retained attester slot. Callable by anyone.
     pub fn get_attestation_history(env: Env, record_hash: BytesN<32>) -> Vec<Attestation> {
-        Self::attestation_history(&env, record_hash)
-    }
-
-    fn attestation_history(env: &Env, record_hash: BytesN<32>) -> Vec<Attestation> {
-        let sequence: u64 = match env
+        let mut history = Vec::new(&env);
+        let Some(sequence) = env
             .storage()
             .persistent()
-            .get(&DataKey::AttestationSequence(record_hash.clone()))
-        {
-            Some(seq) => seq,
-            None => return Vec::new(&env),
+            .get::<_, u64>(&DataKey::AttestationSequence(record_hash.clone()))
+        else {
+            return history;
         };
 
-        let mut history = Vec::new(&env);
-        let start_sequence = Self::history_start(sequence);
-
-        for seq in start_sequence..=sequence {
+        for seq in Self::history_start(sequence)..=sequence {
             if let Some(attestation) = env
                 .storage()
                 .persistent()
@@ -1037,7 +1318,38 @@ impl AttestationRegistry {
                 history.push_back(attestation);
             }
         }
+        history
+    }
 
+    /// Look up the retained attestation history with expiry status for each
+    /// entry. Attestations without an expiry are treated stale.
+    pub fn get_attestation_history_status(
+        env: Env,
+        record_hash: BytesN<32>,
+    ) -> Vec<AttestationStatus> {
+        let mut history = Vec::new(&env);
+        let Some(sequence) = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::AttestationSequence(record_hash.clone()))
+        else {
+            return history;
+        };
+
+        for seq in Self::history_start(sequence)..=sequence {
+            if let Some(attestation) = env
+                .storage()
+                .persistent()
+                .get(&DataKey::Attestation(record_hash.clone(), seq))
+            {
+                history.push_back(Self::attestation_status(
+                    &env,
+                    &record_hash,
+                    seq,
+                    attestation,
+                ));
+            }
+        }
         history
     }
 
@@ -1201,6 +1513,7 @@ impl AttestationRegistry {
     }
 
     fn require_role(env: &Env, role: Role, account: &Address) -> Result<(), Error> {
+        Self::admin(env)?;
         if !env
             .storage()
             .instance()
@@ -1219,25 +1532,22 @@ impl AttestationRegistry {
             .ok_or(Error::NotInitialized)
     }
 
+    /// Best-effort interface check: the candidate registry must answer the
+    /// regional allowlist query for a throwaway address without trapping.
+    fn registry_is_compatible(env: &Env, registry_id: &Address) -> bool {
+        let registry = AttesterRegistryClient::new(env, registry_id);
+        let throwaway = env.current_contract_address();
+        let region = String::from_str(env, "NG-LA");
+        registry
+            .try_is_attester_for_region(&throwaway, &region)
+            .is_ok()
+    }
+
     fn max_attestation_age(env: &Env) -> u64 {
         env.storage()
             .instance()
             .get(&DataKey::MaxAttestationAge)
             .unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
-    }
-
-    fn history_start(sequence: u64) -> u64 {
-        sequence.saturating_sub(MAX_HISTORY - 1).max(1)
-    }
-
-    fn latest_attestation(env: &Env, record_hash: BytesN<32>) -> Option<Attestation> {
-        let sequence: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
-        env.storage()
-            .persistent()
-            .get(&DataKey::Attestation(record_hash, sequence))
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {
@@ -1255,59 +1565,189 @@ impl AttestationRegistry {
     fn require_allowlisted_attester(env: &Env, attester: &Address) -> Result<(), Error> {
         let registry_id = Self::attester_registry(env)?;
         let registry = AttesterRegistryClient::new(env, &registry_id);
-        if registry.is_attester(attester) {
-            Ok(())
-        } else {
-            Err(Error::AttesterNotAllowlisted)
+        match registry.try_is_attester(attester) {
+            Ok(Ok(true)) => Ok(()),
+            Ok(Ok(false)) => Err(Error::AttesterNotAllowlisted),
+            _ => Err(Error::AttesterRegistryUnavailable),
         }
     }
 
+    /// First retained slot sequence for a record whose newest slot is `sequence`.
+    fn history_start(sequence: u64) -> u64 {
+        sequence.saturating_sub(MAX_HISTORY - 1).max(1)
+    }
+
+    fn revoked_through(env: &Env, record_hash: &BytesN<32>) -> u64 {
+        env.storage()
+            .persistent()
+            .get(&DataKey::RevokedThroughSequence(record_hash.clone()))
+            .unwrap_or(0)
+    }
+
+    /// Whether the slot exists and is neither revoked nor withdrawn.
+    fn slot_is_active(env: &Env, record_hash: &BytesN<32>, seq: u64) -> bool {
+        seq > Self::revoked_through(env, record_hash)
+            && env
+                .storage()
+                .persistent()
+                .has(&DataKey::Attestation(record_hash.clone(), seq))
+            && !env
+                .storage()
+                .persistent()
+                .has(&DataKey::AttestationWithdrawn(record_hash.clone(), seq))
+    }
+
+    /// The active slot with the newest timestamp (highest sequence wins ties).
+    fn latest_active(env: &Env, record_hash: &BytesN<32>) -> Option<(u64, Attestation)> {
+        let sequence: u64 = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
+        let revoked_through = Self::revoked_through(env, record_hash);
+
+        let mut best: Option<(u64, Attestation)> = None;
+        for seq in (Self::history_start(sequence)..=sequence).rev() {
+            if seq <= revoked_through
+                || env
+                    .storage()
+                    .persistent()
+                    .has(&DataKey::AttestationWithdrawn(record_hash.clone(), seq))
+            {
+                continue;
+            }
+            let Some(attestation) = env
+                .storage()
+                .persistent()
+                .get::<_, Attestation>(&DataKey::Attestation(record_hash.clone(), seq))
+            else {
+                continue;
+            };
+            let newer = best
+                .as_ref()
+                .is_none_or(|(_, current)| attestation.timestamp > current.timestamp);
+            if newer {
+                best = Some((seq, attestation));
+            }
+        }
+        best
+    }
+
+    fn attestation_status(
+        env: &Env,
+        record_hash: &BytesN<32>,
+        sequence: u64,
+        attestation: Attestation,
+    ) -> AttestationStatus {
+        let expires_at: Option<u64> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::AttestationExpiry(record_hash.clone(), sequence));
+        let is_expired = expires_at
+            .map(|expiry| env.ledger().timestamp() >= expiry)
+            .unwrap_or(true);
+        AttestationStatus {
+            attestation,
+            expires_at,
+            is_expired,
+        }
+    }
+
+    /// Validate and store the optional previous-version link. Returns the
+    /// previous hash when a new link must be written.
+    fn check_version_link(
+        env: &Env,
+        record_hash: &BytesN<32>,
+        previous_record_hash: Option<BytesN<32>>,
+    ) -> Result<Option<BytesN<32>>, Error> {
+        let Some(previous_hash) = previous_record_hash else {
+            return Ok(None);
+        };
+        if &previous_hash == record_hash
+            || !env
+                .storage()
+                .persistent()
+                .has(&DataKey::AttestationSequence(previous_hash.clone()))
+        {
+            return Err(Error::InvalidRecordVersion);
+        }
+
+        let existing_previous: Option<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::PreviousRecordHash(record_hash.clone()));
+        let existing_next: Option<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextRecordHash(previous_hash.clone()));
+        let current_next: Option<BytesN<32>> = env
+            .storage()
+            .persistent()
+            .get(&DataKey::NextRecordHash(record_hash.clone()));
+        if existing_previous
+            .as_ref()
+            .is_some_and(|existing| existing != &previous_hash)
+            || existing_next
+                .as_ref()
+                .is_some_and(|existing| existing != record_hash)
+            || (existing_previous.is_none() && current_next.is_some())
+        {
+            return Err(Error::InvalidRecordVersion);
+        }
+        Ok(existing_previous.is_none().then_some(previous_hash))
+    }
+
+    /// Consume the patient's consent grant for this attester and record,
+    /// returning the patient-selected attestation expiry.
+    fn consume_consent(
+        env: &Env,
+        attester: &Address,
+        patient: Address,
+        record_hash: &BytesN<32>,
+    ) -> Result<u64, Error> {
+        let consent_key =
+            DataKey::PatientConsent(record_hash.clone(), patient.clone(), attester.clone());
+        let consent_expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&consent_key)
+            .ok_or(Error::PatientConsentRequired)?;
+        if env.ledger().timestamp() >= consent_expires_at {
+            return Err(Error::PatientConsentExpired);
+        }
+        let validity_key =
+            DataKey::PatientConsentValidity(record_hash.clone(), patient, attester.clone());
+        let attestation_expires_at: u64 = env
+            .storage()
+            .persistent()
+            .get(&validity_key)
+            .ok_or(Error::PatientConsentRequired)?;
+        if env.ledger().timestamp() >= attestation_expires_at {
+            return Err(Error::InvalidAttestationExpiry);
+        }
+        env.storage().persistent().remove(&consent_key);
+        env.storage().persistent().remove(&validity_key);
+        Ok(attestation_expires_at)
+    }
+
+    /// Shared write path for `attest`, `attest_versioned`, `attest_version`
+    /// and `batch_attest`. Callers have already checked the attester's
+    /// authorization, the pause flag and allowlist membership.
     fn record_attestation(
         env: &Env,
         attester: Address,
+        patient: Address,
         record_hash: BytesN<32>,
+        commitment_version: u32,
         previous_record_hash: Option<BytesN<32>>,
     ) -> Result<Attestation, Error> {
-        let new_previous_link = if let Some(previous_hash) = previous_record_hash {
-            if previous_hash == record_hash
-                || !env
-                    .storage()
-                    .persistent()
-                    .has(&DataKey::AttestationSequence(previous_hash.clone()))
-            {
-                return Err(Error::InvalidRecordVersion);
-            }
-
-            let existing_previous: Option<BytesN<32>> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::PreviousRecordHash(record_hash.clone()));
-            let existing_next: Option<BytesN<32>> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::NextRecordHash(previous_hash.clone()));
-            let current_next: Option<BytesN<32>> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::NextRecordHash(record_hash.clone()));
-            if existing_previous
-                .as_ref()
-                .is_some_and(|existing| existing != &previous_hash)
-                || existing_next
-                    .as_ref()
-                    .is_some_and(|existing| existing != &record_hash)
-                || (existing_previous.is_none() && current_next.is_some())
-            {
-                return Err(Error::InvalidRecordVersion);
-            }
-            existing_previous.is_none().then_some(previous_hash)
-        } else {
-            None
-        };
+        let new_previous_link = Self::check_version_link(env, &record_hash, previous_record_hash)?;
+        Self::consume_rate_limit(env, &attester)?;
+        let attestation_expires_at = Self::consume_consent(env, &attester, patient, &record_hash)?;
 
         let attestation = Attestation {
             attester: attester.clone(),
             timestamp: env.ledger().timestamp(),
+            commitment_version,
         };
 
         let sequence: u64 = env
@@ -1315,38 +1755,87 @@ impl AttestationRegistry {
             .persistent()
             .get(&DataKey::AttestationSequence(record_hash.clone()))
             .unwrap_or(0);
-        let new_sequence = sequence + 1;
+        let revoked_through = Self::revoked_through(env, &record_hash);
+
+        // Refresh this attester's existing live slot, if it has one.
+        let existing_sequence = if sequence == 0 {
+            None
+        } else {
+            (Self::history_start(sequence)..=sequence).find(|seq| {
+                *seq > revoked_through
+                    && env
+                        .storage()
+                        .persistent()
+                        .get::<_, Attestation>(&DataKey::Attestation(record_hash.clone(), *seq))
+                        .is_some_and(|existing| existing.attester == attester)
+            })
+        };
+
+        let mut evicted_sequence = None;
+        let stored_sequence = match existing_sequence {
+            Some(existing_sequence) => {
+                env.storage()
+                    .persistent()
+                    .remove(&DataKey::AttestationWithdrawn(
+                        record_hash.clone(),
+                        existing_sequence,
+                    ));
+                existing_sequence
+            }
+            None => {
+                let new_sequence = sequence + 1;
+                env.storage().persistent().set(
+                    &DataKey::AttestationSequence(record_hash.clone()),
+                    &new_sequence,
+                );
+                if new_sequence > MAX_HISTORY {
+                    let oldest_sequence = new_sequence - MAX_HISTORY;
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::AttestationExpiry(
+                            record_hash.clone(),
+                            oldest_sequence,
+                        ));
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::AttestationWithdrawn(
+                            record_hash.clone(),
+                            oldest_sequence,
+                        ));
+                    evicted_sequence = Some(oldest_sequence);
+                }
+                new_sequence
+            }
+        };
 
         env.storage().persistent().set(
-            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            &DataKey::Attestation(record_hash.clone(), stored_sequence),
             &attestation,
         );
         env.storage().persistent().set(
-            &DataKey::AttestationSequence(record_hash.clone()),
-            &new_sequence,
+            &DataKey::AttestationExpiry(record_hash.clone(), stored_sequence),
+            &attestation_expires_at,
         );
-
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-        let new_count = count + 1;
-        if new_count > MAX_HISTORY {
-            let oldest_sequence = new_count.saturating_sub(MAX_HISTORY);
-            env.storage()
-                .persistent()
-                .remove(&DataKey::Attestation(record_hash.clone(), oldest_sequence));
-        }
-        env.storage()
-            .persistent()
-            .set(&DataKey::AttestationCount(record_hash.clone()), &new_count);
         env.storage()
             .persistent()
             .remove(&DataKey::RecordRevoked(record_hash.clone()));
 
+        // Keep the written entries alive independently of instance storage.
         env.storage().persistent().extend_ttl(
-            &DataKey::Attestation(record_hash.clone(), new_sequence),
+            &DataKey::Attestation(record_hash.clone(), stored_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::AttestationExpiry(record_hash.clone(), stored_sequence),
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        env.storage().persistent().extend_ttl(
+            &DataKey::AttestationSequence(record_hash.clone()),
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
@@ -1384,51 +1873,16 @@ impl AttestationRegistry {
             record_hash,
             attester,
             timestamp: attestation.timestamp,
+            expires_at: attestation_expires_at,
+            commitment_version,
+            sequence: stored_sequence,
+            evicted_sequence,
+            contract_kind: Symbol::new(env, "attestation_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
         }
         .publish(env);
 
         Ok(attestation)
-    }
-
-    fn latest_active_attestation(env: &Env, record_hash: BytesN<32>) -> Option<Attestation> {
-        let sequence: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationSequence(record_hash.clone()))?;
-        let count: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttestationCount(record_hash.clone()))
-            .unwrap_or(0);
-        let start_sequence = if count > MAX_HISTORY {
-            sequence.saturating_sub(MAX_HISTORY - 1)
-        } else {
-            1
-        };
-        let revoked_through: u64 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RevokedThroughSequence(record_hash.clone()))
-            .unwrap_or(0);
-
-        for seq in (start_sequence..=sequence).rev() {
-            if seq <= revoked_through
-                || env
-                    .storage()
-                    .persistent()
-                    .has(&DataKey::AttestationWithdrawn(record_hash.clone(), seq))
-            {
-                continue;
-            }
-            if let Some(attestation) = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Attestation(record_hash.clone(), seq))
-            {
-                return Some(attestation);
-            }
-        }
-        None
     }
 }
 

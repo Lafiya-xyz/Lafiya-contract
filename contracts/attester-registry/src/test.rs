@@ -14,7 +14,6 @@ fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
 }
 
 fn initialize_for_tests(client: &AttesterRegistryClient, admin: &Address) {
-    client.initialize(admin);
     client.grant_role(&Role::Registrar, admin);
     client.grant_role(&Role::Guardian, admin);
 }
@@ -27,9 +26,7 @@ fn get_schema_version_succeeds() {
     // `needs_migration`/`migrate` in lib.rs), and not an accidental side
     // effect of an unrelated change.
     let (_, client, _admin) = setup();
-    assert_eq!(client.get_schema_version(), 1);
-    initialize_for_tests(&client, &admin);
-    assert_eq!(client.get_schema_version(), 4);
+    assert_eq!(client.get_schema_version(), 5);
 }
 
 #[test]
@@ -40,30 +37,13 @@ fn constructor_sets_admin() {
 }
 
 #[test]
-fn get_admin_before_initialize_fails() {
-    let (_, client, _admin) = setup();
-
-    let result = client.try_get_admin();
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
-}
-
-#[test]
-fn initialize_twice_fails() {
-    let (_, client, admin) = setup();
-    initialize_for_tests(&client, &admin);
-
-    let result = client.try_initialize(&admin);
-    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
-}
-
-#[test]
 fn is_attester_false_before_allowlisting() {
     let (env, client, admin) = setup();
     initialize_for_tests(&client, &admin);
 
     let someone = Address::generate(&env);
     assert!(!client.is_attester(&someone));
-    assert!(!client.is_attester_for_region(&someone, &Symbol::new(&env, "lagos")));
+    assert!(!client.is_attester_for_region(&someone, &String::from_str(&env, "NG-LA")));
 }
 
 #[test]
@@ -73,8 +53,8 @@ fn unscoped_attester_remains_valid_for_any_region() {
 
     let attester = Address::generate(&env);
     client.add_attester(&admin, &attester);
-    assert!(client.is_attester_for_region(&attester, &Symbol::new(&env, "lagos")));
-    assert!(client.is_attester_for_region(&attester, &Symbol::new(&env, "abuja")));
+    assert!(client.is_attester_for_region(&attester, &String::from_str(&env, "NG-LA")));
+    assert!(client.is_attester_for_region(&attester, &String::from_str(&env, "NG-FC")));
 }
 
 #[test]
@@ -107,15 +87,7 @@ fn add_attester_allowlists_and_emits_event() {
     };
     assert_eq!(
         env.events().all(),
-        std::vec![
-            AdminTransferProposed {
-                current_admin: admin.clone(),
-                proposed_admin: new_admin.clone(),
-                expires_at: 30 * 24 * 60 * 60,
-            }
-            .to_xdr(&env, &client.address),
-            expected_event.to_xdr(&env, &client.address)
-        ],
+        std::vec![expected_event.to_xdr(&env, &client.address)],
     );
 
     assert!(client.is_attester(&attester));
@@ -132,15 +104,17 @@ fn remove_attester_revokes_allowlisting() {
 
     let expected_event = AttesterRemoved {
         attester: attester.clone(),
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
     };
-    client.remove_attester(&attester);
+    client.remove_attester(&admin, &attester);
     assert_eq!(
         env.events().all(),
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
     assert!(!client.is_attester(&attester));
 
-    client.remove_attester(&attester);
+    client.remove_attester(&admin, &attester);
     assert!(env.events().all().events().is_empty());
 }
 
@@ -154,67 +128,58 @@ fn remove_attester_never_added_is_a_no_op() {
     assert!(!client.is_attester(&attester));
     assert!(env.events().all().events().is_empty());
 
-    client.remove_attester(&attester);
+    client.remove_attester(&admin, &attester);
     assert!(env.events().all().events().is_empty());
 }
 
 #[test]
 fn attester_can_revoke_own_key_and_emits_event() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
+    client.add_attester(&admin, &attester);
     assert_eq!(client.get_attester_count(), 1);
 
     client.revoke_attester(&attester);
+    assert_eq!(
+        env.events().all(),
+        std::vec![AttesterRevoked {
+            attester: attester.clone()
+        }
+        .to_xdr(&env, &client.address)],
+    );
 
     assert!(!client.is_attester(&attester));
     assert_eq!(client.get_attester_info(&attester), None);
     assert_eq!(client.get_attester_status(&attester), None);
     assert_eq!(client.get_attester_count(), 0);
-    assert_eq!(
-        env.events().all(),
-        std::vec![
-            AttesterAdded {
-                attester: attester.clone(),
-            }
-            .to_xdr(&env, &client.address),
-            AttesterRevoked { attester }.to_xdr(&env, &client.address),
-        ],
-    );
 }
 
 #[test]
 fn revoking_unknown_or_already_revoked_attester_is_idempotent() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
     client.revoke_attester(&attester);
     client.revoke_attester(&attester);
 
-    assert_eq!(client.get_attester_count(), 0);
     assert_eq!(
         env.events().all(),
-        std::vec![
-            AttesterRevoked {
-                attester: attester.clone(),
-            }
-            .to_xdr(&env, &client.address),
-            AttesterRevoked { attester }.to_xdr(&env, &client.address),
-        ],
+        std::vec![AttesterRevoked { attester }.to_xdr(&env, &client.address)],
     );
+    assert_eq!(client.get_attester_count(), 0);
 }
 
 #[test]
 fn attester_can_revoke_own_key_while_paused() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
-    client.add_attester(&attester);
-    client.pause();
+    client.add_attester(&admin, &attester);
+    client.pause(&admin);
 
     client.revoke_attester(&attester);
 
@@ -223,12 +188,12 @@ fn attester_can_revoke_own_key_while_paused() {
 }
 
 #[test]
-fn add_attester_before_initialize_fails() {
-    let (env, client, _admin) = setup();
+fn add_attester_without_registrar_role_fails() {
+    let (env, client, admin) = setup();
     let attester = Address::generate(&env);
 
-    let result = client.try_add_attester(&_admin, &attester);
-    assert_eq!(result, Err(Ok(Error::NotInitialized)));
+    let result = client.try_add_attester(&admin, &attester);
+    assert_eq!(result, Err(Ok(Error::RoleNotGranted)));
 }
 
 #[test]
@@ -460,39 +425,59 @@ fn re_adding_an_existing_attester_does_not_consume_cap() {
 #[test]
 fn re_adding_existing_attester_preserves_info_and_emits_no_added_event() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let attester = Address::generate(&env);
     let original_hash = BytesN::from_array(&env, &[1u8; 32]);
-    let original_region = Symbol::new(&env, "west");
+    let original_region = String::from_str(&env, "NG-WE");
     client.add_attester_with_info(
+        &admin,
         &attester,
         &Some(original_hash.clone()),
         &Some(original_region.clone()),
+        &None,
+        &None,
     );
 
-    client.add_attester(&attester);
+    client.add_attester(&admin, &attester);
     assert_eq!(
         client.get_attester_info(&attester),
         Some(AttesterInfo {
             license_hash: Some(original_hash.clone()),
             region: Some(original_region.clone()),
+            valid_from: None,
+            valid_until: None,
+            suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: None,
         }),
     );
     assert!(env.events().all().events().is_empty());
 
     let replacement_hash = BytesN::from_array(&env, &[2u8; 32]);
-    let replacement_region = Symbol::new(&env, "east");
+    let replacement_region = String::from_str(&env, "NG-EA");
     client.add_attester_with_info(
+        &admin,
         &attester,
         &Some(replacement_hash),
         &Some(replacement_region),
+        &None,
+        &None,
     );
     assert_eq!(
         client.get_attester_info(&attester),
         Some(AttesterInfo {
             license_hash: Some(original_hash),
             region: Some(original_region),
+            valid_from: None,
+            valid_until: None,
+            suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: None,
         }),
     );
     assert!(env.events().all().events().is_empty());
@@ -506,7 +491,14 @@ fn update_attester_info_on_unknown_attester_fails() {
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[1u8; 32]);
     let region = String::from_str(&env, "NG-WE");
-    let result = client.try_update_attester_info(&attester, &Some(license_hash), &Some(region));
+    let result = client.try_update_attester_info(
+        &admin,
+        &attester,
+        &Some(license_hash),
+        &Some(region),
+        &None,
+        &None,
+    );
     assert_eq!(result, Err(Ok(Error::AttesterNotFound)));
 }
 
@@ -531,7 +523,14 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     let attester = Address::generate(&env);
     let initial_hash = BytesN::from_array(&env, &[1u8; 32]);
     let initial_region = String::from_str(&env, "NG-WE");
-    client.add_attester_with_info(&attester, &Some(initial_hash), &Some(initial_region));
+    client.add_attester_with_info(
+        &admin,
+        &attester,
+        &Some(initial_hash),
+        &Some(initial_region),
+        &None,
+        &None,
+    );
 
     // Check event was emitted before any other call clears it.
     let expected_added_event = AttesterAdded {
@@ -570,6 +569,8 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         Some(AttesterInfo {
             license_hash: Some(updated_hash),
             region: Some(updated_region),
+            valid_from: Some(100),
+            valid_until: Some(200),
             suspended: false,
             removed: false,
             suspension_reason: None,
@@ -688,7 +689,7 @@ fn suspend_unknown_attester_fails() {
     assert!(!client.is_attester(&never_added));
 
     assert_eq!(
-        client.try_suspend_attester(&never_added),
+        client.try_suspend_attester(&admin, &never_added),
         Err(Ok(Error::AttesterNotFound))
     );
     assert!(!client.is_attester(&never_added));
@@ -718,6 +719,8 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                valid_from: Some(0),
+                valid_until: Some(1),
                 suspended: false,
                 removed: false,
                 suspension_reason: None,
@@ -727,6 +730,8 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             suspended: false,
             suspension_reason: None,
             suspended_since: None,
+            trust_revoked_after: None,
+            status: AttesterStatusKind::Active,
         }),
     );
     assert!(client.is_attester(&attester));
@@ -738,6 +743,8 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                valid_from: Some(0),
+                valid_until: Some(1),
                 suspended: true,
                 removed: false,
                 suspension_reason: Some(Symbol::new(&env, "administrative")),
@@ -745,10 +752,10 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
                 trust_revoked_after: Some(env.ledger().timestamp()),
             },
             suspended: true,
-            removed: false,
             suspension_reason: Some(Symbol::new(&env, "administrative")),
             suspended_since: Some(env.ledger().timestamp()),
             trust_revoked_after: Some(env.ledger().timestamp()),
+            status: AttesterStatusKind::Suspended,
         }),
     );
     assert!(!client.is_attester(&attester));
@@ -760,6 +767,8 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
             info: AttesterInfo {
                 license_hash: Some(license_hash),
                 region: Some(region),
+                valid_from: Some(0),
+                valid_until: Some(1),
                 suspended: false,
                 removed: false,
                 suspension_reason: None,
@@ -767,10 +776,10 @@ fn get_attester_status_reports_metadata_and_suspension_consistently() {
                 trust_revoked_after: Some(env.ledger().timestamp()),
             },
             suspended: false,
-            removed: false,
             suspension_reason: None,
             suspended_since: None,
             trust_revoked_after: Some(env.ledger().timestamp()),
+            status: AttesterStatusKind::Active,
         }),
     );
     assert!(client.is_attester(&attester));
@@ -786,7 +795,7 @@ fn validity_window_controls_authorization_and_status() {
         &admin,
         &future_attester,
         &None,
-        &Some(Symbol::new(&env, "lagos")),
+        &Some(String::from_str(&env, "NG-LA")),
         &Some(1),
         &Some(2),
     );
@@ -835,7 +844,7 @@ fn regional_registrar_is_limited_to_its_region_and_quota() {
     initialize_for_tests(&client, &admin);
 
     let registrar = Address::generate(&env);
-    let lagos = Symbol::new(&env, "lagos");
+    let lagos = String::from_str(&env, "NG-LA");
     client.set_regional_registrar(&registrar, &lagos, &1);
 
     let first = Address::generate(&env);
@@ -846,7 +855,7 @@ fn regional_registrar_is_limited_to_its_region_and_quota() {
         Some(lagos.clone())
     );
     assert!(client.is_attester_for_region(&first, &lagos));
-    assert!(!client.is_attester_for_region(&first, &Symbol::new(&env, "abuja")));
+    assert!(!client.is_attester_for_region(&first, &String::from_str(&env, "NG-FC")));
     assert_eq!(client.get_regional_registrar_count(&registrar), 1);
 
     let second = Address::generate(&env);
@@ -861,7 +870,7 @@ fn regional_registrar_is_limited_to_its_region_and_quota() {
     assert_eq!(client.get_regional_registrar_count(&registrar), 1);
 
     assert_eq!(
-        client.try_set_regional_registrar(&registrar, &Symbol::new(&env, "abuja"), &2),
+        client.try_set_regional_registrar(&registrar, &String::from_str(&env, "NG-FC"), &2),
         Err(Ok(Error::RegionalAttestersRemain))
     );
     assert_eq!(
@@ -870,10 +879,10 @@ fn regional_registrar_is_limited_to_its_region_and_quota() {
     );
 
     client.remove_attester(&admin, &second);
-    client.set_regional_registrar(&registrar, &Symbol::new(&env, "abuja"), &2);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-FC"), &2);
     assert_eq!(
         client.get_regional_registrar(&registrar).unwrap().region,
-        Symbol::new(&env, "abuja")
+        String::from_str(&env, "NG-FC")
     );
 
     let third = Address::generate(&env);
@@ -900,7 +909,7 @@ fn regional_registrar_cannot_assign_a_different_region() {
     initialize_for_tests(&client, &admin);
 
     let registrar = Address::generate(&env);
-    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &2);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &2);
     let attester = Address::generate(&env);
 
     assert_eq!(
@@ -908,7 +917,7 @@ fn regional_registrar_cannot_assign_a_different_region() {
             &registrar,
             &attester,
             &None,
-            &Some(Symbol::new(&env, "abuja")),
+            &Some(String::from_str(&env, "NG-FC")),
             &None,
             &None,
         ),
@@ -920,7 +929,7 @@ fn regional_registrar_cannot_assign_a_different_region() {
     client.add_attester(&registrar, &attester);
     assert_eq!(
         client.get_attester_info(&attester).unwrap().region,
-        Some(Symbol::new(&env, "lagos"))
+        Some(String::from_str(&env, "NG-LA"))
     );
     assert_eq!(
         client.try_add_attesters(
@@ -940,7 +949,7 @@ fn regional_registrar_cannot_reassign_an_existing_enrollment() {
     let attester = Address::generate(&env);
     client.add_attester(&admin, &attester);
     let registrar = Address::generate(&env);
-    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &1);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &1);
 
     assert_eq!(
         client.try_add_attester(&registrar, &attester),
@@ -956,7 +965,7 @@ fn regional_registrar_can_suspend_only_its_region() {
     initialize_for_tests(&client, &admin);
 
     let registrar = Address::generate(&env);
-    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &2);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &2);
     let lagos_attester = Address::generate(&env);
     let abuja_attester = Address::generate(&env);
     client.add_attester(&registrar, &lagos_attester);
@@ -964,7 +973,7 @@ fn regional_registrar_can_suspend_only_its_region() {
         &admin,
         &abuja_attester,
         &None,
-        &Some(Symbol::new(&env, "abuja")),
+        &Some(String::from_str(&env, "NG-FC")),
         &None,
         &None,
     );
@@ -983,7 +992,7 @@ fn regional_batch_removal_respects_storage_limit() {
     initialize_for_tests(&client, &admin);
 
     let registrar = Address::generate(&env);
-    client.set_regional_registrar(&registrar, &Symbol::new(&env, "lagos"), &9);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &9);
     let mut attesters = Vec::new(&env);
     for _ in 0..9 {
         attesters.push_back(Address::generate(&env));
@@ -1018,13 +1027,18 @@ fn validity_schema_migration_preserves_legacy_attester_records() {
 
     let attester = Address::generate(&env);
     let license_hash = BytesN::from_array(&env, &[9u8; 32]);
-    let region = Symbol::new(&env, "west");
+    let region = String::from_str(&env, "NG-WE");
     env.as_contract(&client.address, || {
         env.storage().persistent().set(
             &DataKey::Attester(attester.clone()),
             &StoredAttesterInfo {
                 license_hash: Some(license_hash.clone()),
                 region: Some(region.clone()),
+                suspended: false,
+                removed: false,
+                suspension_reason: None,
+                suspended_since: None,
+                trust_revoked_after: None,
             },
         );
         env.storage().instance().set(&DataKey::SchemaVersion, &3u32);
@@ -1032,7 +1046,7 @@ fn validity_schema_migration_preserves_legacy_attester_records() {
 
     client.migrate();
 
-    assert_eq!(client.get_schema_version(), 4);
+    assert_eq!(client.get_schema_version(), 5);
     assert!(client.is_attester(&attester));
     assert_eq!(
         client.get_attester_info(&attester),
@@ -1041,6 +1055,11 @@ fn validity_schema_migration_preserves_legacy_attester_records() {
             region: Some(region),
             valid_from: None,
             valid_until: None,
+            suspended: false,
+            removed: false,
+            suspension_reason: None,
+            suspended_since: None,
+            trust_revoked_after: None,
         })
     );
 }
@@ -1111,7 +1130,7 @@ fn second_propose_admin_call_overwrites_pending_proposal() {
 #[test]
 fn get_interface_reports_kind_versions_and_features() {
     let (env, client, admin) = setup();
-    client.initialize(&admin);
+    initialize_for_tests(&client, &admin);
 
     let info = client.get_interface();
     assert_eq!(

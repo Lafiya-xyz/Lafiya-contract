@@ -25,7 +25,11 @@ use std::{
 /// Keys allowed in a `[<network>]` table.
 pub const NETWORK_KEYS: &[&str] = &["rpc_url", "rpc_urls", "network_passphrase", "contracts"];
 /// Keys allowed in a `[<network>.contracts]` table.
-pub const CONTRACT_KEYS: &[&str] = &["attester_registry", "attestation_registry"];
+pub const CONTRACT_KEYS: &[&str] = &[
+    "attester_registry",
+    "attestation_registry",
+    "incentive_pool",
+];
 /// Values that can be overridden per invocation, as dotted paths within a network.
 pub const OVERRIDE_KEYS: &[&str] = &[
     "rpc_url",

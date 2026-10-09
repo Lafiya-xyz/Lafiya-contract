@@ -40,17 +40,14 @@
 
 extern crate alloc;
 
-use alloc::{format, string::String, vec, vec::Vec};
+use alloc::{string::String, string::ToString, vec::Vec};
 use core::fmt;
-
-#[cfg(any(test, feature = "std"))]
-use std;
 
 use sha2::{Digest, Sha256};
 
 /// Schema-level size limits to prevent memory exhaustion
-pub const MAX_FIELD_BYTES: usize = 65_536;   // 64 KiB per field
-pub const MAX_FIELDS: usize = 256;            // 256 fields max
+pub const MAX_FIELD_BYTES: usize = 65_536; // 64 KiB per field
+pub const MAX_FIELDS: usize = 256; // 256 fields max
 pub const MAX_PAYLOAD_BYTES: usize = 1_048_576; // 1 MiB total
 
 /// Encoding error type for fallible operations
@@ -71,7 +68,11 @@ impl fmt::Display for EncodeError {
                 write!(f, "field size {} exceeds limit {}", size, MAX_FIELD_BYTES)
             }
             EncodeError::PayloadTooLarge { size } => {
-                write!(f, "payload size {} exceeds limit {}", size, MAX_PAYLOAD_BYTES)
+                write!(
+                    f,
+                    "payload size {} exceeds limit {}",
+                    size, MAX_PAYLOAD_BYTES
+                )
             }
             EncodeError::TooManyFields { count } => {
                 write!(f, "field count {} exceeds limit {}", count, MAX_FIELDS)
@@ -199,7 +200,9 @@ impl FieldValue {
 /// Returns error if any field exceeds MAX_FIELD_BYTES or total payload exceeds MAX_PAYLOAD_BYTES.
 pub fn encode_payload(fields: &[FieldValue]) -> Result<Vec<u8>, EncodeError> {
     if fields.len() > MAX_FIELDS {
-        return Err(EncodeError::TooManyFields { count: fields.len() });
+        return Err(EncodeError::TooManyFields {
+            count: fields.len(),
+        });
     }
 
     let mut out = Vec::new();
@@ -250,7 +253,9 @@ pub fn decode_payload(mut payload: &[u8]) -> Result<Vec<FieldValue>, EncodeError
 
     while !payload.is_empty() {
         if fields.len() >= MAX_FIELDS {
-            return Err(EncodeError::TooManyFields { count: fields.len() + 1 });
+            return Err(EncodeError::TooManyFields {
+                count: fields.len() + 1,
+            });
         }
 
         let tag = payload[0];
@@ -263,7 +268,8 @@ pub fn decode_payload(mut payload: &[u8]) -> Result<Vec<FieldValue>, EncodeError
                 if payload.len() < 4 {
                     return Err(EncodeError::PayloadTooLarge { size: 0 });
                 }
-                let len = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+                let len =
+                    u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
                 payload = &payload[4..];
 
                 if len > MAX_FIELD_BYTES || payload.len() < len {
@@ -292,7 +298,8 @@ pub fn decode_payload(mut payload: &[u8]) -> Result<Vec<FieldValue>, EncodeError
                 if payload.len() < 4 {
                     return Err(EncodeError::PayloadTooLarge { size: 0 });
                 }
-                let len = u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
+                let len =
+                    u32::from_be_bytes([payload[0], payload[1], payload[2], payload[3]]) as usize;
                 payload = &payload[4..];
 
                 if len > MAX_FIELD_BYTES || payload.len() < len {
@@ -349,10 +356,7 @@ pub mod soroban {
 
     /// Compute unsalted commitment using Soroban host crypto (for legacy/verification).
     #[deprecated(since = "0.2.0", note = "use commit_v1_soroban_salted for security")]
-    pub fn commit_v1_soroban(
-        env: &Env,
-        fields: &[FieldValue],
-    ) -> Result<BytesN<32>, EncodeError> {
+    pub fn commit_v1_soroban(env: &Env, fields: &[FieldValue]) -> Result<BytesN<32>, EncodeError> {
         let payload = encode_payload(fields)?;
 
         let mut preimage = Bytes::new(env);
@@ -368,6 +372,7 @@ pub mod soroban {
     }
 }
 
+#[allow(deprecated)]
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -484,7 +489,10 @@ mod tests {
     #[test]
     fn commitment_is_deterministic() {
         let fields = vec![FieldValue::Bool(true), FieldValue::Int64(42)];
-        assert_eq!(commit_v1(&fields).expect("v1"), commit_v1(&fields).expect("v2"));
+        assert_eq!(
+            commit_v1(&fields).expect("v1"),
+            commit_v1(&fields).expect("v2")
+        );
     }
 
     #[test]

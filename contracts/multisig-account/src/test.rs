@@ -5,7 +5,8 @@ use ed25519_dalek::{Signer as _, SigningKey};
 use p256::ecdsa::{
     signature::hazmat::PrehashSigner, Signature as P256Signature, SigningKey as P256SigningKey,
 };
-use soroban_sdk::{auth::Context, BytesN, Env, IntoVal, Vec};
+use soroban_sdk::testutils::Events as _;
+use soroban_sdk::{auth::Context, BytesN, Env, Event, IntoVal, Vec};
 
 pub(crate) fn signing_keys() -> std::vec::Vec<SigningKey> {
     let mut keys = std::vec![
@@ -17,6 +18,7 @@ pub(crate) fn signing_keys() -> std::vec::Vec<SigningKey> {
     keys
 }
 
+#[allow(dead_code)]
 fn five_signing_keys() -> std::vec::Vec<SigningKey> {
     let mut keys = std::vec![
         SigningKey::from_bytes(&[1; 32]),
@@ -76,7 +78,10 @@ fn getters_return_threshold_and_canonical_signer_order() {
 
     let mut expected_signers = Vec::new(&env);
     for key in &keys {
-        expected_signers.push_back(BytesN::from_array(&env, &key.verifying_key().to_bytes()));
+        expected_signers.push_back(SignerKey::Ed25519(BytesN::from_array(
+            &env,
+            &key.verifying_key().to_bytes(),
+        )));
     }
     assert_eq!(client.get_threshold(), 2);
     assert_eq!(client.get_signers(), expected_signers);
@@ -96,6 +101,7 @@ fn check_auth(
     )
 }
 
+#[allow(dead_code)]
 fn p256_signature(env: &Env, key: &P256SigningKey, payload: &[u8; 32]) -> Signature {
     let public_key = key.verifying_key().to_encoded_point(false);
     let public_key_bytes: [u8; 65] = public_key.as_bytes().try_into().unwrap();
@@ -320,8 +326,14 @@ fn successful_auth_emits_signers_and_payload() {
         signers: Vec::from_array(
             &env,
             [
-                BytesN::from_array(&env, &keys[0].verifying_key().to_bytes()),
-                BytesN::from_array(&env, &keys[1].verifying_key().to_bytes()),
+                SignerKey::Ed25519(BytesN::from_array(
+                    &env,
+                    &keys[0].verifying_key().to_bytes(),
+                )),
+                SignerKey::Ed25519(BytesN::from_array(
+                    &env,
+                    &keys[1].verifying_key().to_bytes(),
+                )),
             ],
         ),
     };

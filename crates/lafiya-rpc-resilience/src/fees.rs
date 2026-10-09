@@ -245,11 +245,19 @@ mod tests {
     // after parsing the RPC's JSON (this crate is dependency-free -- see
     // the module doc -- so it takes the already-parsed numbers).
     fn quiet_network_fee_stats() -> FeeStats {
-        FeeStats { p50: 100, p90: 100, p99: 100 }
+        FeeStats {
+            p50: 100,
+            p90: 100,
+            p99: 100,
+        }
     }
 
     fn congested_network_fee_stats() -> FeeStats {
-        FeeStats { p50: 100, p90: 50_000, p99: 500_000 }
+        FeeStats {
+            p50: 100,
+            p90: 50_000,
+            p99: 500_000,
+        }
     }
 
     #[test]
@@ -288,17 +296,15 @@ mod tests {
 
     #[test]
     fn fee_bump_not_triggered_before_threshold() {
-        let decision =
-            decide_fee_bump(2, 5, 100, congested_network_fee_stats(), None).unwrap();
+        let decision = decide_fee_bump(2, 5, 100, congested_network_fee_stats(), None).unwrap();
         assert_eq!(decision, None);
     }
 
     #[test]
     fn fee_bump_triggers_at_threshold_and_bids_p90() {
-        let decision =
-            decide_fee_bump(5, 5, 100, congested_network_fee_stats(), None)
-                .unwrap()
-                .unwrap();
+        let decision = decide_fee_bump(5, 5, 100, congested_network_fee_stats(), None)
+            .unwrap()
+            .unwrap();
         assert_eq!(decision.new_inclusion_fee, 50_000);
     }
 
@@ -306,17 +312,20 @@ mod tests {
     fn fee_bump_always_strictly_increases_even_on_a_quiet_network() {
         // p90 == p50 == current fee here; the bump must still move the bid
         // up, or it wouldn't change the transaction's queue position.
-        let decision =
-            decide_fee_bump(5, 5, 100, quiet_network_fee_stats(), None)
-                .unwrap()
-                .unwrap();
+        let decision = decide_fee_bump(5, 5, 100, quiet_network_fee_stats(), None)
+            .unwrap()
+            .unwrap();
         assert_eq!(decision.new_inclusion_fee, 101);
     }
 
     #[test]
     fn log_resource_margin_records_both_values() {
         let mut log = crate::RecoveryLog::new();
-        log_resource_margin(&mut log, usage(), apply_margin(usage(), 15, NetworkLimits::default()));
+        log_resource_margin(
+            &mut log,
+            usage(),
+            apply_margin(usage(), 15, NetworkLimits::default()),
+        );
         assert_eq!(log.lines().len(), 1);
         assert!(log.lines()[0].contains("simulated instructions=10000000"));
         assert!(log.lines()[0].contains("submitted (margined) instructions=11500000"));
@@ -325,14 +334,23 @@ mod tests {
     #[test]
     fn log_fee_bump_records_old_and_new_fee() {
         let mut log = crate::RecoveryLog::new();
-        log_fee_bump(&mut log, 100, FeeBumpDecision { new_inclusion_fee: 50_000 });
-        assert_eq!(log.lines(), ["fee bump: 100 -> 50000 stroops inclusion fee"]);
+        log_fee_bump(
+            &mut log,
+            100,
+            FeeBumpDecision {
+                new_inclusion_fee: 50_000,
+            },
+        );
+        assert_eq!(
+            log.lines(),
+            ["fee bump: 100 -> 50000 stroops inclusion fee"]
+        );
     }
 
     #[test]
     fn fee_bump_respects_max_fee_budget() {
-        let err = decide_fee_bump(5, 5, 100, congested_network_fee_stats(), Some(1000))
-            .unwrap_err();
+        let err =
+            decide_fee_bump(5, 5, 100, congested_network_fee_stats(), Some(1000)).unwrap_err();
         assert_eq!(
             err,
             FeeError::ExceedsBudget {

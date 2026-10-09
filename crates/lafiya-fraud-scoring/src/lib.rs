@@ -233,7 +233,8 @@ pub fn score_attesters(
         // Revocation ratio, relative to the scored population's mean.
         let revoked = evs.iter().filter(|e| e.revoked).count();
         let revocation_rate = revoked as f64 / evs.len() as f64;
-        let peer_threshold = population_mean_revocation_rate * config.revocation_ratio_peer_multiplier;
+        let peer_threshold =
+            population_mean_revocation_rate * config.revocation_ratio_peer_multiplier;
         if population_mean_revocation_rate > 0.0 && revocation_rate > peer_threshold {
             score += 1.0;
             reasons.push(format!(
@@ -252,7 +253,12 @@ pub fn score_attesters(
         });
     }
 
-    reports.sort_by(|a, b| b.score.partial_cmp(&a.score).unwrap().then(a.attester.cmp(&b.attester)));
+    reports.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap()
+            .then(a.attester.cmp(&b.attester))
+    });
     reports
 }
 
@@ -270,10 +276,16 @@ pub struct CollusionPair {
 
 /// Find attester pairs that have both attested the same record hash at
 /// least `config.collusion_shared_record_threshold` times.
-pub fn find_collusion_pairs(events: &[AttestationEvent], config: &ScoringConfig) -> Vec<CollusionPair> {
+pub fn find_collusion_pairs(
+    events: &[AttestationEvent],
+    config: &ScoringConfig,
+) -> Vec<CollusionPair> {
     let mut attesters_by_hash: HashMap<[u8; 32], HashSet<&str>> = HashMap::new();
     for e in events {
-        attesters_by_hash.entry(e.record_hash).or_default().insert(&e.attester);
+        attesters_by_hash
+            .entry(e.record_hash)
+            .or_default()
+            .insert(&e.attester);
     }
 
     let mut shared_counts: HashMap<(String, String), u32> = HashMap::new();
@@ -320,13 +332,18 @@ mod tests {
 
     /// One honest attester's timeline: one attestation every 20 minutes
     /// (3/hour), each a distinct record, correct region, never revoked.
-    fn honest_attester_events(attester: &str, region: &str, start_hash: u64, count: u32) -> Vec<AttestationEvent> {
+    fn honest_attester_events(
+        attester: &str,
+        region: &str,
+        start_hash: u64,
+        count: u32,
+    ) -> Vec<AttestationEvent> {
         (0..count)
             .map(|i| AttestationEvent {
                 attester: attester.to_string(),
                 record_hash: hash_for(start_hash + i as u64),
                 record_region: region.to_string(),
-                ledger: i * 100, // widely spaced
+                ledger: i * 100,                   // widely spaced
                 timestamp_secs: (i as u64) * 1200, // every 20 minutes
                 revoked: false,
             })
@@ -342,9 +359,9 @@ mod tests {
                 attester: attester.to_string(),
                 record_hash: hash_for((i % 5) as u64 + 1000), // churns 5 hashes
                 record_region: "out-of-region".to_string(),
-                ledger: i, // consecutive ledgers: one big burst
+                ledger: i,                       // consecutive ledgers: one big burst
                 timestamp_secs: (i as u64) * 10, // 80 events inside ~13 minutes
-                revoked: i % 2 == 0, // 50% revoked
+                revoked: i % 2 == 0,             // 50% revoked
             })
             .map(|mut e| {
                 if e.ledger % 7 == 0 {
@@ -361,15 +378,29 @@ mod tests {
         let mut profiles = Vec::new();
         for i in 0..10 {
             let attester = format!("honest-{i}");
-            events.extend(honest_attester_events(&attester, "region-a", i as u64 * 1000, 30));
-            profiles.push(AttesterProfile { attester, region: "region-a".to_string() });
+            events.extend(honest_attester_events(
+                &attester,
+                "region-a",
+                i as u64 * 1000,
+                30,
+            ));
+            profiles.push(AttesterProfile {
+                attester,
+                region: "region-a".to_string(),
+            });
         }
         let config = ScoringConfig::default();
         let reports = score_attesters(&events, &profiles, &config);
 
         assert_eq!(reports.len(), 10);
         for r in &reports {
-            assert_eq!(r.severity, Severity::Low, "false positive on {}: {:?}", r.attester, r.reasons);
+            assert_eq!(
+                r.severity,
+                Severity::Low,
+                "false positive on {}: {:?}",
+                r.attester,
+                r.reasons
+            );
         }
     }
 
@@ -379,36 +410,76 @@ mod tests {
         let mut profiles = Vec::new();
         for i in 0..10 {
             let attester = format!("honest-{i}");
-            events.extend(honest_attester_events(&attester, "region-a", i as u64 * 1000, 30));
-            profiles.push(AttesterProfile { attester, region: "region-a".to_string() });
+            events.extend(honest_attester_events(
+                &attester,
+                "region-a",
+                i as u64 * 1000,
+                30,
+            ));
+            profiles.push(AttesterProfile {
+                attester,
+                region: "region-a".to_string(),
+            });
         }
         for i in 0..3 {
             let attester = format!("fraud-{i}");
             events.extend(fraudulent_attester_events(&attester, "region-a"));
-            profiles.push(AttesterProfile { attester, region: "region-a".to_string() });
+            profiles.push(AttesterProfile {
+                attester,
+                region: "region-a".to_string(),
+            });
         }
 
         let config = ScoringConfig::default();
         let reports = score_attesters(&events, &profiles, &config);
 
-        let fraud_reports: Vec<&RiskReport> = reports.iter().filter(|r| r.attester.starts_with("fraud-")).collect();
+        let fraud_reports: Vec<&RiskReport> = reports
+            .iter()
+            .filter(|r| r.attester.starts_with("fraud-"))
+            .collect();
         assert_eq!(fraud_reports.len(), 3);
         for r in &fraud_reports {
-            assert_eq!(r.severity, Severity::High, "fraud attester not flagged high: {}: score {} reasons {:?}", r.attester, r.score, r.reasons);
-            assert!(r.reasons.len() >= 3, "expected multiple independent signals for {}", r.attester);
+            assert_eq!(
+                r.severity,
+                Severity::High,
+                "fraud attester not flagged high: {}: score {} reasons {:?}",
+                r.attester,
+                r.score,
+                r.reasons
+            );
+            assert!(
+                r.reasons.len() >= 3,
+                "expected multiple independent signals for {}",
+                r.attester
+            );
         }
 
-        let honest_reports: Vec<&RiskReport> = reports.iter().filter(|r| r.attester.starts_with("honest-")).collect();
+        let honest_reports: Vec<&RiskReport> = reports
+            .iter()
+            .filter(|r| r.attester.starts_with("honest-"))
+            .collect();
         assert_eq!(honest_reports.len(), 10);
         for r in &honest_reports {
-            assert_eq!(r.severity, Severity::Low, "false positive on {}: {:?}", r.attester, r.reasons);
+            assert_eq!(
+                r.severity,
+                Severity::Low,
+                "false positive on {}: {:?}",
+                r.attester,
+                r.reasons
+            );
         }
 
         // Precision/recall over this synthetic population, at the default
         // config: every fraudulent attester flagged, zero honest attesters
         // flagged.
-        let true_positives = fraud_reports.iter().filter(|r| r.severity != Severity::Low).count();
-        let false_positives = honest_reports.iter().filter(|r| r.severity != Severity::Low).count();
+        let true_positives = fraud_reports
+            .iter()
+            .filter(|r| r.severity != Severity::Low)
+            .count();
+        let false_positives = honest_reports
+            .iter()
+            .filter(|r| r.severity != Severity::Low)
+            .count();
         let precision = true_positives as f64 / (true_positives + false_positives) as f64;
         let recall = true_positives as f64 / fraud_reports.len() as f64;
         assert_eq!(precision, 1.0);
@@ -482,7 +553,10 @@ mod tests {
     #[test]
     fn attester_with_no_flags_is_low_severity_with_zero_score() {
         let events = honest_attester_events("solo", "region-a", 0, 5);
-        let profiles = vec![AttesterProfile { attester: "solo".to_string(), region: "region-a".to_string() }];
+        let profiles = vec![AttesterProfile {
+            attester: "solo".to_string(),
+            region: "region-a".to_string(),
+        }];
         let reports = score_attesters(&events, &profiles, &ScoringConfig::default());
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].score, 0.0);

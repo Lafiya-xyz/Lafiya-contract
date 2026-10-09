@@ -1,3 +1,4 @@
+#![allow(dead_code)] // CLI wiring for `attester import` is pending
 //! Resumable bulk CHW onboarding from CSV (issue #397).
 //!
 //! # Overview
@@ -37,7 +38,7 @@ use std::collections::HashSet;
 use std::fmt;
 use std::path::Path;
 
-use lafiya_config::{validate_address, validate_rpc_url, ValidationError};
+use lafiya_config::validate_address;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -137,7 +138,7 @@ pub fn parse_and_validate(csv_text: &str) -> Result<Vec<CsvRow>, Vec<RowError>> 
     let col_region = col("region");
 
     for (zero_idx, line) in lines {
-        let lineno = zero_idx + 2; // 1-based, offset by header
+        let lineno = zero_idx + 1; // 1-based; the header was line 1
         let line = line.trim();
         if line.is_empty() {
             continue;
@@ -226,10 +227,7 @@ fn validate_license_hash(line: usize, value: &str) -> Result<(), RowError> {
         return Err(RowError {
             line,
             field: "license_hash",
-            message: format!(
-                "must be exactly 64 hex characters, got {}",
-                value.len()
-            ),
+            message: format!("must be exactly 64 hex characters, got {}", value.len()),
         });
     }
     if let Some(c) = value.chars().find(|c| !c.is_ascii_hexdigit()) {
@@ -257,9 +255,7 @@ fn validate_region(line: usize, value: &str) -> Result<(), RowError> {
         return Err(RowError {
             line,
             field: "region",
-            message: format!(
-                "invalid character '{c}'; allowed: A-Z, a-z, 0-9, '-', '_'"
-            ),
+            message: format!("invalid character '{c}'; allowed: A-Z, a-z, 0-9, '-', '_'"),
         });
     }
     Ok(())
@@ -456,8 +452,7 @@ pub fn write_journal_entry(
         Vec::new()
     };
     entries.push(entry.clone());
-    let json = serde_json::to_string_pretty(&entries)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?;
+    let json = serde_json::to_string_pretty(&entries).map_err(std::io::Error::other)?;
     std::fs::write(journal_path, json)?;
     Ok(())
 }
@@ -468,8 +463,7 @@ pub fn read_journal(journal_path: &Path) -> Result<Vec<JournalEntry>, std::io::E
         return Ok(Vec::new());
     }
     let text = std::fs::read_to_string(journal_path)?;
-    serde_json::from_str(&text)
-        .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))
+    serde_json::from_str(&text).map_err(std::io::Error::other)
 }
 
 // ---------------------------------------------------------------------------
@@ -535,10 +529,7 @@ mod tests {
     #[test]
     fn duplicate_address_is_reported() {
         let lh = "b".repeat(64);
-        let csv = make_csv(&[
-            (VALID_ADDR, &lh, "abuja"),
-            (VALID_ADDR, &lh, "lagos"),
-        ]);
+        let csv = make_csv(&[(VALID_ADDR, &lh, "abuja"), (VALID_ADDR, &lh, "lagos")]);
         let errs = parse_and_validate(&csv).unwrap_err();
         assert!(errs.iter().any(|e| e.field == "address" && e.line == 3));
     }

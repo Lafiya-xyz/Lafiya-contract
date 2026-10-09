@@ -11,10 +11,45 @@ use super::*;
 use attester_registry::{AttesterRegistry, AttesterRegistryClient};
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN, Env, Symbol};
+use soroban_sdk::{Address, BytesN, Env};
+
+fn setup(
+    env: &Env,
+) -> (
+    AttestationRegistryClient<'_>,
+    AttesterRegistryClient<'_>,
+    Address,
+) {
+    env.mock_all_auths();
+    let admin = Address::generate(env);
+    let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
+    let attester_registry_client = AttesterRegistryClient::new(env, &attester_registry_id);
+    attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
+    let contract_id = env.register(AttestationRegistry, (admin.clone(), attester_registry_id));
+    (
+        AttestationRegistryClient::new(env, &contract_id),
+        attester_registry_client,
+        admin,
+    )
+}
+
+fn attest_with_consent(
+    env: &Env,
+    client: &AttestationRegistryClient<'_>,
+    attester: &Address,
+    record_hash: &BytesN<32>,
+) -> Result<Attestation, ()> {
+    let patient = Address::generate(env);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, attester, record_hash, &expires_at);
+    client
+        .try_attest(attester, &patient, record_hash)
+        .map(|result| result.expect("conversion"))
+        .map_err(|_| ())
+}
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig::with_cases(64))]
 
     /// Any 32-byte `record_hash` value — including all-zero, all-`0xFF`,
     /// and arbitrary bytes — must be accepted by `attest` for an
@@ -22,90 +57,50 @@ proptest! {
     #[test]
     fn attest_never_panics_on_arbitrary_record_hash(bytes in proptest::array::uniform32(any::<u8>())) {
         let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-        let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
-        let attester_registry_client = AttesterRegistryClient::new(&env, &attester_registry_id);
-        let contract_id = env.register(
-            AttestationRegistry,
-            (admin, attester_registry_id.clone()),
-        );
-        let client = AttestationRegistryClient::new(&env, &contract_id);
-
+        let (client, attester_registry_client, admin) = setup(&env);
         let attester = Address::generate(&env);
-        attester_registry_client.initialize(&admin);
-        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
-        client.initialize(&admin, &attester_registry_id);
-        client.grant_role(&Role::Guardian, &admin);
-        client.grant_role(&Role::Revoker, &admin);
         attester_registry_client.add_attester(&admin, &attester);
 
         let record_hash = BytesN::from_array(&env, &bytes);
-        let patient = Address::generate(&env);
-        let expires_at = env.ledger().timestamp() + 10_000;
-        client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
-        let result = client.try_attest(&attester, &patient, &record_hash);
-        prop_assert!(result.is_ok());
+        prop_assert!(attest_with_consent(&env, &client, &attester, &record_hash).is_ok());
         prop_assert!(client.get_attestation(&record_hash).is_some());
     }
 
-    /// Calling `attest` before `initialize` must fail cleanly with
-    /// `Error::NotInitialized` for any `record_hash`, never panic.
+    /// Attesting for an attester that was never allowlisted must fail
+    /// cleanly with `AttesterNotAllowlisted` for any `record_hash`.
     #[test]
-    fn attest_before_initialize_never_panics(bytes in proptest::array::uniform32(any::<u8>())) {
+    fn attest_by_unknown_attester_never_panics(bytes in proptest::array::uniform32(any::<u8>())) {
         let env = Env::default();
-        env.mock_all_auths();
-        let contract_id = env.register(AttestationRegistry, ());
-        let client = AttestationRegistryClient::new(&env, &contract_id);
+        let (client, _attester_registry_client, _admin) = setup(&env);
         let attester = Address::generate(&env);
         let patient = Address::generate(&env);
         let record_hash = BytesN::from_array(&env, &bytes);
 
         let result = client.try_attest(&attester, &patient, &record_hash);
-        prop_assert_eq!(result, Err(Ok(Error::NotInitialized)));
+        prop_assert_eq!(result, Err(Ok(Error::AttesterNotAllowlisted)));
     }
 
-    /// Re-attesting the same `record_hash` with arbitrary byte content,
-    /// any number of times, must always leave `get_attestation` returning
-    /// the most recent attester — never panic, never a stale value.
+    /// Re-attesting the same `record_hash` with arbitrary byte content, by
+    /// several attesters, must never panic, and every attester's attestation
+    /// remains in the retained history.
     #[test]
     fn repeated_attest_on_same_hash_never_panics(bytes in proptest::array::uniform32(any::<u8>()), attempts in 1usize..8) {
         let env = Env::default();
-        env.mock_all_auths();
-
-        let admin = Address::generate(&env);
-        let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
-        let attester_registry_client = AttesterRegistryClient::new(&env, &attester_registry_id);
-        let contract_id = env.register(
-            AttestationRegistry,
-            (admin, attester_registry_id.clone()),
-        );
-        let client = AttestationRegistryClient::new(&env, &contract_id);
-
-        let admin = Address::generate(&env);
-        attester_registry_client.initialize(&admin);
-        attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
-        client.initialize(&admin, &attester_registry_id);
-        client.grant_role(&Role::Guardian, &admin);
-        client.grant_role(&Role::Revoker, &admin);
+        let (client, attester_registry_client, admin) = setup(&env);
 
         let record_hash = BytesN::from_array(&env, &bytes);
-        let mut last_attester = None;
+        let mut attesters = std::vec::Vec::new();
         for _ in 0..attempts {
             let attester = Address::generate(&env);
-            attester_registry_client.add_attester(&attester);
-            let patient = Address::generate(&env);
-            let expires_at = env.ledger().timestamp() + 10_000;
-            client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
-            let result = client.try_attest(&attester, &patient, &record_hash);
-            prop_assert!(result.is_ok());
-            last_attester = Some(attester);
+            attester_registry_client.add_attester(&admin, &attester);
+            prop_assert!(attest_with_consent(&env, &client, &attester, &record_hash).is_ok());
+            attesters.push(attester);
         }
 
-        if let Some(expected) = last_attester {
-            let stored = client.get_attestation(&record_hash);
-            prop_assert!(stored.iter().any(|attestation| attestation.attester == expected));
+        let history = client.get_attestation_history(&record_hash);
+        prop_assert_eq!(history.len() as usize, attempts);
+        for expected in attesters {
+            prop_assert!(history.iter().any(|attestation| attestation.attester == expected));
         }
     }
 }

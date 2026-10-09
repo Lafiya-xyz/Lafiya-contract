@@ -10,6 +10,7 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AttesterInfoUpdated` (`attester-registry`)
 - `AttesterRemoved`
 - `AttesterRevoked`
+- `AttesterRotated` (`attester-registry`) — emitted when an attester rotates its key while retaining enrollment
 - `AttesterSuspended`
 - `AttesterReinstated`
 - `AttestationRecorded`
@@ -17,7 +18,7 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AttestationRevoked`
 - `AttestationWithdrawn`
 - `RecordVersionLinked`
-- `Upgraded` (`attester-registry`)
+- `Upgraded` (`attester-registry`, `attestation-registry`)
 - `Paused` (`attester-registry`, `attestation-registry`, `incentive-pool`)
 - `Unpaused` (`attester-registry`, `attestation-registry`, `incentive-pool`)
 - `AttesterRegistryRepointed` (`attestation-registry`, `incentive-pool`)
@@ -27,6 +28,8 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `PayoutClaimed` (`incentive-pool`)
 - `RateLimitHit` (`attestation-registry`) — published at most once per attester per rate-limit window, on the attestation that fills the window
 - `RateLimitSet` (`attestation-registry`)
+- `AdminTransferProposed`, `AdminTransferCancelled` (`attester-registry`, `attestation-registry`, `incentive-pool`)
+- `MultisigConfigured`, `AuthorizationApproved` (`multisig-account`)
 
 `Initialized` is emitted by `attester-registry` from its deployment constructor.
 `MultisigConfigured` is emitted during multisig deployment, and

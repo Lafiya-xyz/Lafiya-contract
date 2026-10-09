@@ -3,8 +3,8 @@
 
 #![cfg(target_arch = "wasm32")]
 
+use crate::{commit_v1_salted, decode_payload, encode_payload, EncodeError, FieldValue, Salt};
 use wasm_bindgen::prelude::*;
-use crate::{commit_v1_salted, encode_payload, decode_payload, Salt, FieldValue, EncodeError};
 
 /// High-level WASM interface for commitment operations
 #[wasm_bindgen]
@@ -39,7 +39,8 @@ impl CommitmentEncoder {
 
         let commitment = match &self.salt {
             Some(salt) => commit_v1_salted(salt, &fields),
-            None => {
+            None =>
+            {
                 #[allow(deprecated)]
                 crate::commit_v1(&fields)
             }
@@ -94,7 +95,14 @@ pub fn generate_salt() -> Vec<u8> {
 
     let mut hasher = Sha256::new();
     hasher.update(timestamp.to_le_bytes());
-    hasher.update(web_sys::window().unwrap().document().unwrap().cookie().unwrap());
+    hasher.update(
+        web_sys::window()
+            .unwrap()
+            .document()
+            .unwrap()
+            .cookie()
+            .unwrap(),
+    );
 
     hasher.finalize().to_vec()
 }

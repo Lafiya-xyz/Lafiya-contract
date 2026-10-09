@@ -12,7 +12,6 @@ extern crate std;
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
 use proptest::prelude::*;
-use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{BytesN, Env, IntoVal, Vec};
 
 const MAX_SIGNERS: usize = 8;
@@ -22,7 +21,7 @@ fn signing_key_strategy() -> impl Strategy<Value = SigningKey> {
 }
 
 fn signer_list_strategy() -> impl Strategy<Value = std::vec::Vec<SigningKey>> {
-    prop::collection::vec(signing_key_strategy(), 0..=MAX_SIGNERS).prop_map(|mut keys| {
+    prop::collection::vec(signing_key_strategy(), 0..=MAX_SIGNERS).prop_map(|keys| {
         let mut unique_keys = std::vec::Vec::new();
         for key in keys {
             let bytes = key.verifying_key().to_bytes();
@@ -38,6 +37,7 @@ fn signer_list_strategy() -> impl Strategy<Value = std::vec::Vec<SigningKey>> {
     })
 }
 
+#[allow(dead_code)]
 fn threshold_strategy(signer_count: usize) -> impl Strategy<Value = u32> {
     0u32..=(signer_count as u32 + 2)
 }

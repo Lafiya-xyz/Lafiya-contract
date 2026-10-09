@@ -26,6 +26,7 @@ pub fn extend_instance_ttl(env: &Env) {
 mod tests {
     use super::*;
 
+    #[allow(clippy::assertions_on_constants)]
     #[test]
     fn ttl_constants_are_reasonable() {
         // Threshold should be less than bump to avoid thrashing
@@ -37,7 +38,10 @@ mod tests {
         );
 
         // Both should be positive
-        assert!(INSTANCE_LIFETIME_THRESHOLD > 0, "TTL threshold must be positive");
+        assert!(
+            INSTANCE_LIFETIME_THRESHOLD > 0,
+            "TTL threshold must be positive"
+        );
         assert!(INSTANCE_BUMP_AMOUNT > 0, "TTL bump amount must be positive");
 
         // Sanity check: both should be measured in ledger seconds (~5s per ledger)
