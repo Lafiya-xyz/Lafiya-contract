@@ -23,7 +23,7 @@ hex = "0.4"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "json", "env-filter"] }
 stellar-xdr = { version = "27.0.0", features = ["std", "base64"] }
-opentelemetry = { version = "0.31", optional = true }
+opentelemetry = { version = "0.33", optional = true }
 opentelemetry_sdk = { version = "0.31", optional = true }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
