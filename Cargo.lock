@@ -1758,7 +1758,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2 0.10.9",
- "stellar-xdr 27.0.0",
+ "stellar-xdr",
  "tempfile",
  "tokio",
  "toml",
@@ -1809,7 +1809,7 @@ version = "0.1.0"
 dependencies = [
  "rustls",
  "serde_json",
- "stellar-xdr 27.0.0",
+ "stellar-xdr",
  "tokio",
  "tracing",
  "ureq",
@@ -1825,7 +1825,7 @@ dependencies = [
  "hex",
  "serde",
  "serde_json",
- "stellar-xdr 27.0.0",
+ "stellar-xdr",
  "tempfile",
  "toml",
  "tracing",
@@ -2861,7 +2861,7 @@ dependencies = [
  "soroban-env-macros",
  "soroban-wasmi",
  "static_assertions",
- "stellar-xdr 28.0.0",
+ "stellar-xdr",
  "wasmparser",
 ]
 
@@ -2923,7 +2923,7 @@ dependencies = [
  "quote",
  "serde",
  "serde_json",
- "stellar-xdr 28.0.0",
+ "stellar-xdr",
  "syn 2.0.119",
 ]
 
@@ -2981,7 +2981,7 @@ dependencies = [
  "soroban-env-common",
  "soroban-spec",
  "soroban-spec-rust",
- "stellar-xdr 28.0.0",
+ "stellar-xdr",
  "syn 2.0.119",
 ]
 
@@ -2993,7 +2993,7 @@ checksum = "2f48c8e183fc140ccd89e1fe1663cc605fb18641967c0bb591f64887599fde59"
 dependencies = [
  "base64 0.22.1",
  "sha2 0.10.9",
- "stellar-xdr 28.0.0",
+ "stellar-xdr",
  "thiserror 1.0.69",
  "wasmparser",
 ]
@@ -3009,7 +3009,7 @@ dependencies = [
  "quote",
  "sha2 0.10.9",
  "soroban-spec",
- "stellar-xdr 28.0.0",
+ "stellar-xdr",
  "syn 2.0.119",
  "thiserror 1.0.69",
 ]
@@ -3074,21 +3074,6 @@ dependencies = [
  "crate-git-revision 0.0.6",
  "data-encoding",
  "heapless",
-]
-
-[[package]]
-name = "stellar-xdr"
-version = "27.0.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "05ff843326969bdf1ef673dcdba94c08f4a3c8f1e58d6e6ef39b1bd4f749179a"
-dependencies = [
- "base64 0.22.1",
- "crate-git-revision 0.0.6",
- "escape-bytes",
- "ethnum",
- "hex",
- "sha2 0.10.9",
- "stellar-strkey 0.0.13",
 ]
 
 [[package]]
