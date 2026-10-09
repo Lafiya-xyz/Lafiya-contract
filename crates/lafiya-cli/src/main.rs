@@ -117,7 +117,7 @@ enum Commands {
         #[arg(long)]
         admin: Option<String>,
     },
-    /// Append-only per-network deployment history (deployments/<network>.jsonl)
+    /// Append-only per-network deployment history (`deployments/<network>.jsonl`)
     Deployments {
         #[command(subcommand)]
         sub: DeploymentsSub,
@@ -126,7 +126,7 @@ enum Commands {
 
 #[derive(Subcommand, Debug)]
 enum DeploymentsSub {
-    /// Append one event record to deployments/<network>.jsonl.
+    /// Append one event record to `deployments/<network>.jsonl`.
     ///
     /// Called automatically by scripts/deploy.sh and scripts/upgrade.sh after
     /// on-chain confirmation; can also be run by hand for an out-of-band
@@ -174,7 +174,7 @@ enum InterfaceTarget {
 
 #[derive(Subcommand, Debug)]
 enum TrustSub {
-    /// Fetch https://<domain>/.well-known/stellar.toml and compare its contract ids and
+    /// Fetch `https://<domain>/.well-known/stellar.toml` and compare its contract ids and
     /// wasm hashes with the local config and on-chain instance data
     Verify {
         /// Domain serving the stellar.toml, e.g. lafiya.xyz

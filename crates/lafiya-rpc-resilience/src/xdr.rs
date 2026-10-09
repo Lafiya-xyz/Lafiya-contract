@@ -1,6 +1,6 @@
 //! Ledger bounds for real Stellar transaction envelopes (issue #407).
 //!
-//! [`apply_ledger_bounds`] takes a base64 `TransactionEnvelope` (as produced
+//! [`apply_ledger_bounds`](crate::xdr::apply_ledger_bounds) takes a base64 `TransactionEnvelope` (as produced
 //! by `stellar contract invoke --build-only` followed by `stellar tx
 //! simulate`) and returns it with:
 //!
