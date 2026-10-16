@@ -168,6 +168,15 @@ fn poll_once(cfg: &Config, rpc: &Rpc, engine: &mut Engine, start: u32) -> anyhow
         if let Some(alert) = engine.observe_wasm(contract, &hash, latest) {
             emit(cfg, &alert, true);
         }
+        // Not every contract exposes `check_invariants`; skip those that don't.
+        match rpc.check_invariants(contract) {
+            Ok(violations) => {
+                if let Some(alert) = engine.observe_invariants(contract, &violations, latest) {
+                    emit(cfg, &alert, true);
+                }
+            }
+            Err(e) => tracing::debug!("check_invariants unavailable for {contract}: {e}"),
+        }
     }
     Ok(latest)
 }

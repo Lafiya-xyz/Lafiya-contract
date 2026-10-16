@@ -25,6 +25,7 @@ for how these events are consumed.
 | `new_admin` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttestationRecorded`
 
@@ -40,6 +41,7 @@ for how these events are consumed.
 | `evicted_sequence` | `Option<u64>` | data |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttestationRevoked`
 
@@ -54,6 +56,7 @@ for how these events are consumed.
 | `reason` | `Symbol` | data |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttestationWithdrawn`
 
@@ -64,6 +67,7 @@ for how these events are consumed.
 |---|---|---|
 | `record_hash` | `BytesN<32>` | topic_list |
 | `attester` | `Address` | topic_list |
+| `seq` | `u64` | data |
 
 ### `AttesterRegistryRepointed`
 
@@ -76,6 +80,7 @@ for how these events are consumed.
 | `new` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Paused`
 
@@ -87,6 +92,7 @@ for how these events are consumed.
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `RateLimitHit`
 
@@ -97,6 +103,7 @@ for how these events are consumed.
 |---|---|---|
 | `attester` | `Address` | topic_list |
 | `retry_after_ledger` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `RateLimitSet`
 
@@ -107,6 +114,7 @@ for how these events are consumed.
 |---|---|---|
 | `max_per_window` | `u32` | data |
 | `window_ledgers` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Unpaused`
 
@@ -118,6 +126,7 @@ for how these events are consumed.
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ## `attester-registry`
 
@@ -132,6 +141,7 @@ for how these events are consumed.
 | `new_admin` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterAdded`
 
@@ -143,6 +153,7 @@ for how these events are consumed.
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterInfoUpdated`
 
@@ -154,6 +165,7 @@ for how these events are consumed.
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterReinstated`
 
@@ -165,6 +177,7 @@ for how these events are consumed.
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterRemoved`
 
@@ -176,6 +189,7 @@ for how these events are consumed.
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterRevoked`
 
@@ -185,6 +199,7 @@ for how these events are consumed.
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `seq` | `u64` | data |
 
 ### `AttesterSuspended`
 
@@ -196,6 +211,7 @@ for how these events are consumed.
 | `attester` | `Address` | topic_list |
 | `reason` | `Symbol` | data |
 | `since` | `u64` | data |
+| `seq` | `u64` | data |
 
 ### `Initialized`
 
@@ -207,6 +223,7 @@ for how these events are consumed.
 | `admin` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Paused`
 
@@ -218,6 +235,7 @@ for how these events are consumed.
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Unpaused`
 
@@ -229,6 +247,7 @@ for how these events are consumed.
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Upgraded`
 
@@ -240,3 +259,4 @@ for how these events are consumed.
 | `new_wasm_hash` | `BytesN<32>` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |

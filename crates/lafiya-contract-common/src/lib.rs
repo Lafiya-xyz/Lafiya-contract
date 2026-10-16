@@ -9,6 +9,7 @@
 
 pub mod admin;
 pub mod pausable;
+pub mod storage;
 pub mod ttl;
 
 pub use admin::Admin;

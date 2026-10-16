@@ -9,6 +9,8 @@ pub struct Metrics {
     pub checkpoint_ledger: IntGauge,
     pub events_total: IntCounter,
     pub ingest_errors_total: IntCounter,
+    /// Holes in a contract's event sequence numbers (dropped events).
+    pub event_seq_gaps_total: IntCounter,
     /// Labelled by `kind` (`attester` / `attestation`).
     pub reconcile_checks_total: IntCounterVec,
     pub reconcile_mismatches_total: IntCounterVec,
@@ -51,6 +53,10 @@ impl Metrics {
             ingest_errors_total: counter(
                 "lafiya_indexer_ingest_errors_total",
                 "Failed ingestion steps (retried)",
+            ),
+            event_seq_gaps_total: counter(
+                "lafiya_indexer_event_seq_gaps_total",
+                "Gaps detected in per-contract event sequence numbers",
             ),
             reconcile_checks_total: counter_vec(
                 "lafiya_indexer_reconcile_checks_total",

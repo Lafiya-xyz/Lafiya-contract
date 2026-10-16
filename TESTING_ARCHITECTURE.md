@@ -68,3 +68,36 @@
 ├── mutation-testing (PR, critical-files)
 └── differential-testing (release builds)
 ```
+
+## Shared Test Helpers (`lafiya-test-utils`)
+
+`crates/lafiya-test-utils` is a **dev-dependency only** crate; it never links
+into contract wasm. Add it to a contract with:
+
+```toml
+[dev-dependencies]
+lafiya-test-utils = { path = "../../crates/lafiya-test-utils" }
+```
+
+| Helper | Purpose |
+|---|---|
+| `new_env()` | `Env::default()` with all auths mocked |
+| `addr(&env)` | fresh random `Address` |
+| `advance_ledgers(&env, n)` / `advance_time(&env, secs)` | time travel |
+| `register_token(&env)` / `register_funded_token(&env, &to, amount)` | mock Stellar asset token and its admin client |
+| `assert_events(&env, &contract, &[event, ..])` | all events from `contract` equal `expected`, in order |
+| `assert_last_event(&env, &contract, &event)` | the most recent event equals `event` |
+
+```rust
+use lafiya_test_utils::{advance_ledgers, assert_last_event, new_env, register_funded_token};
+
+let env = new_env();
+let (token, _) = register_funded_token(&env, &admin, 1_000);
+advance_ledgers(&env, 10);
+assert_last_event(&env, &client.address, &expected_event);
+```
+
+Contract-specific builders (e.g. wiring an attestation registry to an attester
+registry) stay in each contract's `test.rs`, because the helper crate must not
+depend on contracts. Migrated so far: `attester-registry`,
+`attestation-registry` and `incentive-pool` test setups.

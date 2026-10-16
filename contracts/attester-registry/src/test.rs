@@ -5,12 +5,18 @@ use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::{Env, Event, IntoVal, String};
 
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
-    let env = Env::default();
-    env.mock_all_auths();
+    let env = lafiya_test_utils::new_env();
     let admin = Address::generate(&env);
     let contract_id = env.register(AttesterRegistry, (admin.clone(),));
     let client = AttesterRegistryClient::new(&env, &contract_id);
     (env, client, admin)
+}
+
+/// The sequence number of the most recently emitted event.
+fn last_seq(env: &Env, contract: &Address) -> u64 {
+    env.as_contract(contract, || {
+        storage::get(env, &DataKey::EventSeq).unwrap_or(0)
+    })
 }
 
 fn initialize_for_tests(client: &AttesterRegistryClient, admin: &Address) {
@@ -80,13 +86,16 @@ fn add_attester_allowlists_and_emits_event() {
         )]
     );
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AttesterAdded {
+        seq: last_seq(&env, &client.address),
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
 
@@ -103,6 +112,7 @@ fn remove_attester_revokes_allowlisting() {
     assert!(client.is_attester(&attester));
 
     let expected_event = AttesterRemoved {
+        seq: last_seq(&env, &client.address) + 1,
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
@@ -145,6 +155,7 @@ fn attester_can_revoke_own_key_and_emits_event() {
     assert_eq!(
         env.events().all(),
         std::vec![AttesterRevoked {
+            seq: last_seq(&env, &client.address),
             attester: attester.clone()
         }
         .to_xdr(&env, &client.address)],
@@ -167,7 +178,11 @@ fn revoking_unknown_or_already_revoked_attester_is_idempotent() {
 
     assert_eq!(
         env.events().all(),
-        std::vec![AttesterRevoked { attester }.to_xdr(&env, &client.address)],
+        std::vec![AttesterRevoked {
+            attester,
+            seq: last_seq(&env, &client.address)
+        }
+        .to_xdr(&env, &client.address)],
     );
     assert_eq!(client.get_attester_count(), 0);
 }
@@ -331,14 +346,17 @@ fn successful_admin_transfer_flow() {
         )]
     );
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AdminTransferred {
+        seq: last_seq(&env, &client.address),
         previous_admin: admin.clone(),
         new_admin: new_admin.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
 
@@ -533,13 +551,16 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     );
 
     // Check event was emitted before any other call clears it.
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_added_event = AttesterAdded {
+        seq: last_seq(&env, &client.address),
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_added_event.to_xdr(&env, &client.address)],
     );
 
@@ -554,13 +575,15 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         &Some(200),
     );
 
+    let updated_events = env.events().all();
     let expected_updated_event = AttesterInfoUpdated {
+        seq: last_seq(&env, &client.address),
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        updated_events,
         std::vec![expected_updated_event.to_xdr(&env, &client.address)],
     );
 
@@ -1148,4 +1171,90 @@ fn get_interface_reports_kind_versions_and_features() {
 fn get_interface_works_before_initialize() {
     let (_, client, _) = setup();
     assert_eq!(client.get_interface().interface_version, INTERFACE_VERSION);
+}
+
+// ───────────────────────── check_invariants ─────────────────────────
+
+fn corrupt(env: &Env, client: &AttesterRegistryClient, f: impl FnOnce()) {
+    env.as_contract(&client.address, f);
+}
+
+#[test]
+fn check_invariants_passes_on_healthy_state() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    client.add_attester(&admin, &Address::generate(&env));
+
+    let report = client.check_invariants();
+    assert!(report.ok);
+    assert_eq!(report.checked, 4);
+    assert!(report.violations.is_empty());
+}
+
+#[test]
+fn check_invariants_detects_count_above_cap() {
+    let (env, client, _admin) = setup();
+    corrupt(&env, &client, || {
+        storage::set(&env, &DataKey::MaxAttesters, &1u32);
+        storage::set(&env, &DataKey::AttesterCount, &2u32);
+    });
+    let report = client.check_invariants();
+    assert!(!report.ok);
+    assert_eq!(
+        report.violations,
+        soroban_sdk::vec![&env, Symbol::new(&env, "count_exceeds_cap")]
+    );
+}
+
+#[test]
+fn check_invariants_detects_missing_admin_stale_schema_and_half_pending_admin() {
+    let (env, client, _admin) = setup();
+    corrupt(&env, &client, || {
+        storage::remove(&env, &DataKey::Admin);
+        storage::set(&env, &DataKey::SchemaVersion, &1u32);
+        storage::set(&env, &DataKey::PendingAdmin, &Address::generate(&env));
+    });
+    let report = client.check_invariants();
+    assert_eq!(
+        report.violations,
+        soroban_sdk::vec![
+            &env,
+            Symbol::new(&env, "admin_missing"),
+            Symbol::new(&env, "schema_version_stale"),
+            Symbol::new(&env, "pending_admin_inconsistent"),
+        ]
+    );
+}
+
+#[test]
+fn check_invariants_cost_is_within_budget() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    env.cost_estimate().budget().reset_default();
+    client.check_invariants();
+    let cpu = env.cost_estimate().budget().cpu_instruction_cost();
+    std::println!("check_invariants cpu: {cpu}");
+    assert!(cpu < 250_000, "check_invariants cpu {cpu} over budget");
+}
+
+// ───────────────────────── event sequence numbers ─────────────────────────
+
+#[test]
+fn event_seq_advances_once_per_event_and_not_on_failed_calls() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let attester = Address::generate(&env);
+
+    let before = last_seq(&env, &client.address);
+    client.add_attester(&admin, &attester);
+    assert_eq!(last_seq(&env, &client.address), before + 1);
+
+    // A rejected call reverts, including its sequence increment.
+    assert!(client
+        .try_suspend_attester(&admin, &Address::generate(&env))
+        .is_err());
+    assert_eq!(last_seq(&env, &client.address), before + 1);
+
+    client.remove_attester(&admin, &attester);
+    assert_eq!(last_seq(&env, &client.address), before + 2);
 }

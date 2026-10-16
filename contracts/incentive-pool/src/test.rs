@@ -4,6 +4,8 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::{Address, BytesN, Env, Event, IntoVal};
 
+use lafiya_test_utils::{new_env, register_funded_token, register_token};
+
 const ONE_UNIT: i128 = 1_000_000; // 1 USDC (6 decimals)
 const POOL_CAP: i128 = 100_000 * ONE_UNIT; // 100 000 USDC
 const CLAIM_CAP: i128 = 50 * ONE_UNIT; // 50 USDC per claim
@@ -17,8 +19,7 @@ fn setup() -> (
     Address,
     Address,
 ) {
-    let env = Env::default();
-    env.mock_all_auths();
+    let env = new_env();
 
     let admin = Address::generate(&env);
     let attester_registry_id = env.register(attester_registry::AttesterRegistry, (admin.clone(),));
@@ -28,12 +29,8 @@ fn setup() -> (
     attester_registry_client.grant_role(&attester_registry::Role::Guardian, &admin);
 
     // Deploy a token (Stellar asset contract for testing).
-    let token_admin = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(token_admin.clone())
-        .address();
-
-    soroban_sdk::token::StellarAssetClient::new(&env, &token).mint(&admin, &(2 * POOL_CAP));
+    let (token, token_client) = register_funded_token(&env, &admin, 2 * POOL_CAP);
+    let token_admin = token_client.admin();
 
     let approver = Address::generate(&env);
 
@@ -95,16 +92,12 @@ fn double_initialize_fails() {
 
 #[test]
 fn initialize_rejects_invalid_attester_registry() {
-    let env = Env::default();
-    env.mock_all_auths();
+    let env = new_env();
 
     let admin = Address::generate(&env);
     let contract_id = env.register(IncentivePool, ());
     let client = IncentivePoolClient::new(&env, &contract_id);
-    let token_admin = Address::generate(&env);
-    let token = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
+    let (token, _) = register_token(&env);
     let non_contract = Address::generate(&env);
 
     let result = client.try_initialize(
