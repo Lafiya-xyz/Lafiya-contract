@@ -216,8 +216,7 @@ fn decode_uint_additional<'a>(
                 return Err(CborError("truncated: need 8 bytes for uint64".into()));
             }
             let n = u64::from_be_bytes([
-                data[0], data[1], data[2], data[3],
-                data[4], data[5], data[6], data[7],
+                data[0], data[1], data[2], data[3], data[4], data[5], data[6], data[7],
             ]);
             Ok((n, &data[8..]))
         }
@@ -245,7 +244,18 @@ mod tests {
 
     #[test]
     fn uint_roundtrip() {
-        for n in [0u64, 1, 23, 24, 255, 256, 65535, 65536, u32::MAX as u64, u64::MAX] {
+        for n in [
+            0u64,
+            1,
+            23,
+            24,
+            255,
+            256,
+            65535,
+            65536,
+            u32::MAX as u64,
+            u64::MAX,
+        ] {
             let v = CborValue::Uint(n);
             assert_eq!(roundtrip(&v), v, "n={n}");
         }
@@ -299,5 +309,54 @@ mod tests {
     #[test]
     fn rejects_empty_input() {
         assert!(decode_value(&[]).is_err());
+    }
+}
+
+/// Kani bounded proofs (`cargo kani -p lafiya-qr`); see
+/// `docs/formal-verification/kani.md` for bounds and soundness caveats.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// Scalar values survive encode -> decode with nothing left over.
+    #[kani::proof]
+    #[kani::unwind(12)]
+    fn scalar_roundtrip() {
+        let mut out = Vec::new();
+        match kani::any::<u8>() % 3 {
+            0 => {
+                let v: u64 = kani::any();
+                encode_value(&CborValue::Uint(v), &mut out);
+                let (d, rest) = decode_value(&out).unwrap();
+                assert!(rest.is_empty());
+                assert!(matches!(d, CborValue::Uint(x) if x == v));
+            }
+            1 => {
+                // Decoder yields Uint for non-negative ints, so restrict to negatives.
+                let v: i64 = kani::any();
+                kani::assume(v < 0);
+                encode_value(&CborValue::Int(v), &mut out);
+                let (d, rest) = decode_value(&out).unwrap();
+                assert!(rest.is_empty());
+                assert!(matches!(d, CborValue::Int(x) if x == v));
+            }
+            _ => {
+                let v: bool = kani::any();
+                encode_value(&CborValue::Bool(v), &mut out);
+                let (d, rest) = decode_value(&out).unwrap();
+                assert!(rest.is_empty());
+                assert!(matches!(d, CborValue::Bool(x) if x == v));
+            }
+        }
+    }
+
+    /// decode_value never panics on arbitrary input of up to 5 bytes.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn decode_never_panics() {
+        let buf: [u8; 5] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= 5);
+        let _ = decode_value(&buf[..n]);
     }
 }

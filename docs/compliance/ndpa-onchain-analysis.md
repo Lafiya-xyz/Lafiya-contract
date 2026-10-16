@@ -149,3 +149,7 @@ column records that; maintainers fill in issue numbers as they file them.
 Any PR that adds or changes a `#[contracttype]` stored under a `DataKey`, or a
 `#[contractevent]`, must update section 3 and, if risk changes, section 5.
 See the checklist in CONTRIBUTING.md.
+
+## 8. Formal DPIA
+
+The structured DPIA (template, risk register, sign-off, update triggers) is in [dpia-onchain-layer.md](dpia-onchain-layer.md), using [dpia-template.md](dpia-template.md).

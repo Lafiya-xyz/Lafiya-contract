@@ -70,6 +70,20 @@ are still available.
 Bounds: 4 keys (one lost), 2 recovery sets, at most 3 applied changes: 1,296 distinct
 states.
 
+### `IncentivePool.tla`: value conservation for `contracts/incentive-pool`
+
+| Action | Contract function |
+| --- | --- |
+| `Fund(x)` / `Withdraw(x)` | `fund` / `withdraw` |
+| `Approve(i, a, x)` | `approve_work_item` |
+| `Claim(i)` | `claim` |
+| `SetPaused(b)` | `pause` / `unpause` |
+
+Invariants: `Conservation` (pool balance = deposited − paid), `NoOverdraw`, `NoDoublePay`, `PaidCoversClaims`, `Caps` (per-claim and per-attester), `ClaimedApproved`, `AttesterAccounting`. Bounds: 2 items, 2 attesters, amounts 1..3, total deposits ≤ 6.
+`IncentivePool.doublepay-counterexample.cfg` injects the bug (claim skips the already-claimed check) and must fail `NoDoublePay`.
+
+**Trace validation.** `emit_pool_trace` (in `contracts/incentive-pool/src/test.rs`) drives 200 pseudo-random contract calls and writes one JSON state per call when `LAFIYA_POOL_TRACE` is set. `trace_check.py` replays the spec's transition relation and invariants over the trace; `--self-test` also injects a double-pay mutation and requires it to be rejected. Cross-reference: `formal-verification/invariants.md`.
+
 ## Findings
 
 | # | Finding | Resolution |

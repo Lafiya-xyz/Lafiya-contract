@@ -21,3 +21,8 @@ jobs:
           java-version: "21"
       - name: Model-check specs (tla2tools pinned in run.sh)
         run: verification/tla/run.sh
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Trace validation (incentive-pool traces vs IncentivePool.tla)
+        run: |
+          LAFIYA_POOL_TRACE="$RUNNER_TEMP/pool.jsonl" cargo test -p incentive-pool emit_pool_trace
+          python3 verification/tla/trace_check.py --self-test "$RUNNER_TEMP/pool.jsonl"

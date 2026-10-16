@@ -539,3 +539,54 @@ mod tests {
         assert!(matches!(result, Err(EncodeError::TooManyFields { .. })));
     }
 }
+
+/// Kani bounded proofs (`cargo kani -p lafiya-commitment`); see
+/// `docs/formal-verification/kani.md` for bounds and soundness caveats.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    fn any_field() -> FieldValue {
+        match kani::any::<u8>() % 6 {
+            0 => FieldValue::Absent,
+            1 => FieldValue::Null,
+            2 => FieldValue::Int64(kani::any()),
+            3 => FieldValue::Bool(kani::any()),
+            4 => {
+                let n: usize = kani::any();
+                kani::assume(n <= 3);
+                let buf: [u8; 3] = kani::any();
+                FieldValue::Bytes(buf[..n].to_vec())
+            }
+            _ => {
+                // Text restricted to ASCII so it is valid UTF-8 by construction.
+                let n: usize = kani::any();
+                kani::assume(n <= 3);
+                let buf: [u8; 3] = kani::any();
+                kani::assume(buf.iter().all(|b| *b < 0x80));
+                FieldValue::Text(String::from_utf8(buf[..n].to_vec()).unwrap())
+            }
+        }
+    }
+
+    /// decode(encode(x)) == x for up to two fields of any variant.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn encode_decode_roundtrip() {
+        let fields = [any_field(), any_field()];
+        let n: usize = kani::any();
+        kani::assume(n <= 2);
+        let payload = encode_payload(&fields[..n]).unwrap();
+        assert_eq!(decode_payload(&payload).unwrap(), fields[..n].to_vec());
+    }
+
+    /// decode_payload never panics on arbitrary short input.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn decode_never_panics() {
+        let buf: [u8; 6] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= 6);
+        let _ = decode_payload(&buf[..n]);
+    }
+}

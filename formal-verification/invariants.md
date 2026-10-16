@@ -121,3 +121,12 @@ jobs:
 - Kani model checker: https://model-checking.github.io/kani/
 - Invariant-driven testing: https://en.wikipedia.org/wiki/Invariant_(mathematics)
 - Multisig threshold: https://en.wikipedia.org/wiki/M-of-n_code
+
+## Incentive Pool (TLA+ and trace validation)
+
+Value conservation, no double pay, and claim caps for `incentive-pool` are specified in `verification/tla/IncentivePool.tla` (see `verification/tla/README.md`), model-checked by TLC in `.github/workflows/tla.yml`, and checked against real contract traces by `verification/tla/trace_check.py`.
+
+## Codec proofs (Kani)
+
+Bounded proofs for the commitment, base45 and CBOR codecs are described in `docs/formal-verification/kani.md`.
+

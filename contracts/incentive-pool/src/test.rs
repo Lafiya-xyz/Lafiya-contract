@@ -876,3 +876,76 @@ fn attester_total_claimed_starts_at_zero() {
     let attester = Address::generate(&env);
     assert_eq!(client.get_attester_total_claimed(&attester), 0);
 }
+
+// ─────────────────────── Trace emission (TLA+ trace validation) ───────────────────────
+
+/// Drives a deterministic pseudo-random op sequence and, when
+/// `LAFIYA_POOL_TRACE` is set, writes one JSON line per op for
+/// `verification/tla/trace_check.py` (which replays it against
+/// `IncentivePool.tla`'s transition relation).
+#[test]
+fn emit_pool_trace() {
+    use std::io::Write;
+    let (env, client, registry, _admin, _approver, token, _ta) = setup();
+    let attesters = [Address::generate(&env), Address::generate(&env)];
+    for a in &attesters {
+        registry.add_attester(&registry.get_admin(), a);
+    }
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    let mut out = std::vec::Vec::new();
+    let mut seed: u64 = 0x5eed;
+    let mut next = move |m: u64| {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 33) % m
+    };
+    let item = |env: &Env, i: u8| BytesN::from_array(env, &[i; 32]);
+    for _ in 0..200 {
+        let (op, ok, args) = match next(4) {
+            0 => {
+                let x = (next(3) as i128 + 1) * ONE_UNIT;
+                let ok = client.try_fund(&x).is_ok();
+                ("fund", ok, std::format!("\"x\":{x}"))
+            }
+            1 => {
+                let x = (next(3) as i128 + 1) * ONE_UNIT;
+                let to = Address::generate(&env);
+                let ok = client.try_withdraw(&to, &x).is_ok();
+                ("withdraw", ok, std::format!("\"x\":{x}"))
+            }
+            2 => {
+                let (i, a) = (next(4) as u8 + 1, next(2) as usize);
+                let x = (next(3) as i128 + 1) * ONE_UNIT;
+                let ok = client
+                    .try_approve_work_item(&item(&env, i), &attesters[a], &x)
+                    .is_ok();
+                (
+                    "approve",
+                    ok,
+                    std::format!("\"item\":{i},\"attester\":{a},\"x\":{x}"),
+                )
+            }
+            _ => {
+                let i = next(4) as u8 + 1;
+                let ok = client.try_claim(&item(&env, i)).is_ok();
+                ("claim", ok, std::format!("\"item\":{i}"))
+            }
+        };
+        let (dep, paid) = (client.get_total_deposited(), client.get_total_paid());
+        let bal = token_client.balance(&client.address);
+        assert_eq!(bal, dep - paid, "conservation");
+        let per: std::vec::Vec<i128> = attesters
+            .iter()
+            .map(|a| client.get_attester_total_claimed(a))
+            .collect();
+        out.push(std::format!(
+            "{{\"op\":\"{op}\",\"ok\":{ok},{args},\"deposited\":{dep},\"paid\":{paid},\"balance\":{bal},\"per_attester\":[{},{}]}}",
+            per[0], per[1]
+        ));
+    }
+    if let Ok(path) = std::env::var("LAFIYA_POOL_TRACE") {
+        let mut f = std::fs::File::create(path).unwrap();
+        writeln!(f, "{}", out.join("\n")).unwrap();
+    }
+}
