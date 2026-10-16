@@ -1,0 +1,26 @@
+name: Kani Proofs
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - "crates/lafiya-commitment/**"
+      - "crates/lafiya-qr/**"
+      - ".github/workflows/kani.yml"
+
+jobs:
+  kani:
+    name: Kani (bounded model checking)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: model-checking/kani-github-action@v1
+        with:
+          working-directory: crates/lafiya-commitment
+          args: --output-format terse
+      - uses: model-checking/kani-github-action@v1
+        with:
+          working-directory: crates/lafiya-qr
+          args: --output-format terse

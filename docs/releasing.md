@@ -207,3 +207,7 @@ For details on the redeployment, initialization, and upgrade state migration pro
 - [Contract Upgrade Runbook](runbooks/contract-upgrade.md)
 
 Always follow the instructions in the runbook when performing redeployments to ensure that downstream services are not interrupted.
+
+## Data protection review
+
+Before tagging a release, confirm whether it adds or changes a stored `DataKey` type, a contract event, the commitment or QR format, or indexer/dashboard stored fields. If so, update the [on-chain DPIA](compliance/dpia-onchain-layer.md) (data inventory, risk register, sign-off) in the same release PR. See the update triggers in the [DPIA template](compliance/dpia-template.md#6-review-and-update-triggers).

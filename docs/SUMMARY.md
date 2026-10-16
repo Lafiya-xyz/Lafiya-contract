@@ -31,6 +31,7 @@
 
 - [Runbook: contract upgrade](runbooks/contract-upgrade.md)
 - [Runbook: RPC outage recovery](runbooks/rpc-outage-recovery.md)
+- [Runbook: disaster-recovery game day](runbooks/game-day.md)
 - [CLI reference: lafiya-cli](reference/cli/lafiya-cli.md)
 - [CLI reference: cargo xtask](reference/cli/xtask.md)
 - [Network configuration](imported/config.md)

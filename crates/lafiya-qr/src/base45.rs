@@ -167,3 +167,32 @@ mod tests {
         assert!(err.contains("invalid base45 length"), "{err}");
     }
 }
+
+/// Kani bounded proofs (`cargo kani -p lafiya-qr`); see
+/// `docs/formal-verification/kani.md` for bounds and soundness caveats.
+#[cfg(kani)]
+mod kani_proofs {
+    use super::*;
+
+    /// decode(encode(x)) == x for inputs of up to 3 bytes.
+    #[kani::proof]
+    #[kani::unwind(8)]
+    fn roundtrip() {
+        let buf: [u8; 3] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= 3);
+        assert_eq!(decode(&encode(&buf[..n])).unwrap(), buf[..n].to_vec());
+    }
+
+    /// decode never panics on any ASCII string of up to 6 characters.
+    #[kani::proof]
+    #[kani::unwind(10)]
+    fn decode_never_panics() {
+        let buf: [u8; 6] = kani::any();
+        let n: usize = kani::any();
+        kani::assume(n <= 6);
+        kani::assume(buf[..n].iter().all(|b| *b < 0x80));
+        let s = core::str::from_utf8(&buf[..n]).unwrap();
+        let _ = decode(s);
+    }
+}
