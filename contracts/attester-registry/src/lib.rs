@@ -100,6 +100,8 @@ enum DataKey {
     RegionalRegistrarCount(Address),
     /// Registrar responsible for an attester's regional enrollment.
     RegionalAttester(Address),
+    /// Ledger timestamp at which a pre-announced removal takes effect.
+    ScheduledRemoval(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -354,6 +356,23 @@ pub struct AttesterRemoved {
     pub schema_version: u32,
 }
 
+/// Emitted when a future removal is pre-announced for an attester.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterRemovalScheduled {
+    #[topic]
+    pub attester: Address,
+    pub effective_at: u64,
+}
+
+/// Emitted when a pre-announced removal is cancelled.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterRemovalCancelled {
+    #[topic]
+    pub attester: Address,
+}
+
 /// Emitted when an attester revokes its own key.
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -547,6 +566,72 @@ impl AttesterRegistry {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
+    }
+
+    /// Pre-announce that `attester` stops being active at `effective_at`
+    /// (strictly in the future). Until then the attester stays active; from
+    /// `effective_at` onward `is_attester` is false, so approvals pending in
+    /// the pool fail at that boundary. Replaces any earlier schedule.
+    pub fn schedule_removal(
+        env: Env,
+        registrar: Address,
+        attester: Address,
+        effective_at: u64,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
+        Self::require_not_paused(&env)?;
+        let present = env
+            .storage()
+            .persistent()
+            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()))
+            .is_some_and(|info| !info.removed);
+        if !present {
+            return Err(Error::AttesterNotFound);
+        }
+        if effective_at <= env.ledger().timestamp() {
+            return Err(Error::InvalidValidityWindow);
+        }
+        env.storage()
+            .persistent()
+            .set(&DataKey::ScheduledRemoval(attester.clone()), &effective_at);
+        AttesterRemovalScheduled {
+            attester,
+            effective_at,
+        }
+        .publish(&env);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Cancel a pending scheduled removal. A no-op if none is pending or it
+    /// has already taken effect.
+    pub fn cancel_scheduled_removal(
+        env: Env,
+        registrar: Address,
+        attester: Address,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
+        Self::require_not_paused(&env)?;
+        let key = DataKey::ScheduledRemoval(attester.clone());
+        let pending = env
+            .storage()
+            .persistent()
+            .get::<_, u64>(&key)
+            .is_some_and(|at| at > env.ledger().timestamp());
+        if pending {
+            env.storage().persistent().remove(&key);
+            AttesterRemovalCancelled { attester }.publish(&env);
+        }
+        Ok(())
+    }
+
+    /// The pending scheduled removal time for `attester`, if any.
+    pub fn get_scheduled_removal(env: Env, attester: Address) -> Option<u64> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::ScheduledRemoval(attester))
     }
 
     /// Return the latest address to which `attester` was rotated, if any.
@@ -1308,7 +1393,10 @@ impl AttesterRegistry {
             .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()))
             .map(|info| !info.removed && !info.suspended)
             .unwrap_or(false);
-        active && Self::valid_at(Self::validity(&env, &attester), env.ledger().timestamp())
+        let now = env.ledger().timestamp();
+        active
+            && !Self::removal_effective(&env, &attester, now)
+            && Self::valid_at(Self::validity(&env, &attester), now)
     }
 
     /// Whether `attester` was active at the supplied ledger timestamp.
@@ -1331,7 +1419,9 @@ impl AttesterRegistry {
                 active = change.active;
             }
         }
-        active && Self::valid_at(Self::validity(&env, &attester), timestamp)
+        active
+            && !Self::removal_effective(&env, &attester, timestamp)
+            && Self::valid_at(Self::validity(&env, &attester), timestamp)
     }
 
     /// Whether `attester` is active and authorized for `region`. Attesters
@@ -1577,7 +1667,18 @@ impl AttesterRegistry {
         );
     }
 
+    /// Whether a scheduled removal for `attester` has taken effect by `timestamp`.
+    fn removal_effective(env: &Env, attester: &Address, timestamp: u64) -> bool {
+        env.storage()
+            .persistent()
+            .get::<_, u64>(&DataKey::ScheduledRemoval(attester.clone()))
+            .is_some_and(|at| timestamp >= at)
+    }
+
     fn clear_regional_attester(env: &Env, attester: &Address) {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::ScheduledRemoval(attester.clone()));
         let key = DataKey::RegionalAttester(attester.clone());
         if let Some(registrar) = env.storage().persistent().get::<_, Address>(&key) {
             env.storage().persistent().remove(&key);

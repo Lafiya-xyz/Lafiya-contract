@@ -289,6 +289,71 @@
       ]
     },
     {
+      "contract": "attestation-registry",
+      "name": "AttestationCoverageRecorded",
+      "prefix_topics": [
+        "attestation_coverage_recorded"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": "bytes32",
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "coverage_version",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "coverage_bitmap",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterRemovalScheduled",
+      "prefix_topics": [
+        "attester_removal_scheduled"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "effective_at",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterRemovalCancelled",
+      "prefix_topics": [
+        "attester_removal_cancelled"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        }
+      ]
+    },
+    {
       "contract": "attester-registry",
       "name": "AttesterSuspended",
       "prefix_topics": [

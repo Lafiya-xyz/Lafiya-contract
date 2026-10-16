@@ -9,11 +9,14 @@ Lafiya contracts currently declare the following on-chain event schemas:
 - `AttesterAdded`
 - `AttesterInfoUpdated` (`attester-registry`)
 - `AttesterRemoved`
+- `AttesterRemovalScheduled`
+- `AttesterRemovalCancelled`
 - `AttesterRevoked`
 - `AttesterRotated` (`attester-registry`) — emitted when an attester rotates its key while retaining enrollment
 - `AttesterSuspended`
 - `AttesterReinstated`
 - `AttestationRecorded`
+- `AttestationCoverageRecorded` (`attestation-registry`)
 - `AttestationBatchAnchored` (`attestation-registry`)
 - `AttestationRevoked`
 - `AttestationWithdrawn`

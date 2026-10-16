@@ -1491,3 +1491,53 @@ fn set_attestation_rate_limit_requires_admin_auth() {
     env.mock_auths(&[]);
     assert!(client.try_set_attestation_rate_limit(&1, &100).is_err());
 }
+
+#[test]
+fn attestation_coverage_is_recorded_merged_and_reset() {
+    let (env, client, attester_registry, admin) = setup();
+    let a = enroll(&env, &attester_registry, &admin);
+    let b = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 90);
+    let expires_at = env.ledger().timestamp() + 10_000;
+
+    // Unknown coverage by default, and invalid bitmaps are rejected.
+    attest_with_consent(&env, &client, &a, &record_hash);
+    assert_eq!(client.get_attestation_coverage(&record_hash, &a), None);
+    assert_eq!(client.get_record_coverage(&record_hash), None);
+    let patient = Address::generate(&env);
+    client.consent_attestation(&patient, &b, &record_hash, &expires_at);
+    for bad in [0u32, 0b10_0000] {
+        assert_eq!(
+            client.try_attest_with_coverage(&b, &patient, &record_hash, &1, &bad),
+            Err(Ok(Error::InvalidCoverage))
+        );
+    }
+    assert_eq!(
+        client.try_attest_with_coverage(&b, &patient, &record_hash, &2, &1),
+        Err(Ok(Error::InvalidCoverage))
+    );
+
+    client.attest_with_coverage(&b, &patient, &record_hash, &1, &0b00011);
+    assert_eq!(
+        client.get_attestation_coverage(&record_hash, &b),
+        Some(FieldCoverage {
+            version: 1,
+            bitmap: 0b00011
+        })
+    );
+
+    // Union across active attesters; a plain re-attest resets to unknown.
+    let patient2 = Address::generate(&env);
+    client.consent_attestation(&patient2, &a, &record_hash, &expires_at);
+    client.attest_with_coverage(&a, &patient2, &record_hash, &1, &0b01100);
+    assert_eq!(
+        client.get_record_coverage(&record_hash).unwrap().bitmap,
+        0b01111
+    );
+    attest_with_consent(&env, &client, &a, &record_hash);
+    assert_eq!(client.get_attestation_coverage(&record_hash, &a), None);
+    assert_eq!(
+        client.get_record_coverage(&record_hash).unwrap().bitmap,
+        0b00011
+    );
+}

@@ -56,6 +56,7 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `22` | `InvalidRecordVersion` | The supplied previous hash or version relationship is invalid. |
 | `23` | `BatchTooLarge` | The batch contains more requests than the supported maximum. |
 | `24` | `InvalidCommitmentVersion` | The commitment scheme version does not fit in one byte. |
+| `25` | `InvalidCoverage` | The coverage bitmap version is unsupported, or the bitmap is empty or sets unknown bits. |
 
 ## `multisig-account`
 

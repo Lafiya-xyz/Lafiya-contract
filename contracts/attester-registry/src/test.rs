@@ -1149,3 +1149,41 @@ fn get_interface_works_before_initialize() {
     let (_, client, _) = setup();
     assert_eq!(client.get_interface().interface_version, INTERFACE_VERSION);
 }
+
+#[test]
+fn scheduled_removal_takes_effect_at_boundary() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    env.ledger().set_timestamp(1_000);
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+
+    assert!(client
+        .try_schedule_removal(&admin, &attester, &1_000)
+        .is_err());
+    client.schedule_removal(&admin, &attester, &2_000);
+    assert_eq!(client.get_scheduled_removal(&attester), Some(2_000));
+
+    env.ledger().set_timestamp(1_999);
+    assert!(client.is_attester(&attester));
+    env.ledger().set_timestamp(2_000);
+    assert!(!client.is_attester(&attester));
+    assert!(!client.is_attester_at(&attester, &2_000));
+    assert!(client.is_attester_at(&attester, &1_999));
+}
+
+#[test]
+fn scheduled_removal_can_be_cancelled() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    env.ledger().set_timestamp(1_000);
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &2_000);
+    client.cancel_scheduled_removal(&admin, &attester);
+    assert_eq!(client.get_scheduled_removal(&attester), None);
+    env.ledger().set_timestamp(3_000);
+    assert!(client.is_attester(&attester));
+}

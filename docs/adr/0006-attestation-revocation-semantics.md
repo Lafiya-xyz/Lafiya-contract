@@ -99,3 +99,16 @@ semantics, and its gas impact (see Consequences below).
   considered if the operational need arises.
 - This decision should be reviewed before any mainnet deployment and referenced
   in the security threat model.
+
+## Addendum: scheduled removal
+
+`attester-registry` supports planned offboarding via
+`schedule_removal(registrar, attester, effective_at)` (strictly future
+timestamp; cancel with `cancel_scheduled_removal`). Events:
+`AttesterRemovalScheduled` and `AttesterRemovalCancelled`. The attester stays
+active until `effective_at`; at and after that ledger time `is_attester` and
+`is_attester_at` return false (boundary is inclusive of the effective time).
+Approvals pending in the pool are evaluated with `is_attester` when they are
+consumed, so they fail from `effective_at` onward. The record itself is not
+marked removed (no trust cutoff is written) until an explicit
+`remove_attester`; an explicit removal or self-revocation clears the schedule.

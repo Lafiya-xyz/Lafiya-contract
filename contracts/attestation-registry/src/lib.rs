@@ -164,6 +164,8 @@ enum DataKey {
     PreviousRecordHash(BytesN<32>),
     /// Next version hash for a record hash.
     NextRecordHash(BytesN<32>),
+    /// Field coverage declared by an attester's latest attestation of a record.
+    AttestationCoverage(BytesN<32>, Address),
 }
 
 /// Revoker-configured per-attester attestation rate limit: at most
@@ -197,6 +199,34 @@ pub struct Attestation {
     pub timestamp: u64,
     /// Commitment scheme version: `0` is legacy/unversioned, `1` is LRC-1.
     pub commitment_version: u32,
+}
+
+/// Current version of the `FieldCoverage` bitmap layout.
+pub const COVERAGE_VERSION: u32 = 1;
+/// Coverage bits (version 1): blood group, genotype, allergies, medications, conditions.
+pub const COVERAGE_BITS_V1: u32 = 0b1_1111;
+
+/// Which categories of the emergency card an attester actually verified.
+/// Bits (v1): 0 blood group, 1 genotype, 2 allergies, 3 medications,
+/// 4 conditions. An attestation with no stored coverage has unknown coverage
+/// (legacy attestations and plain `attest` calls).
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct FieldCoverage {
+    pub version: u32,
+    pub bitmap: u32,
+}
+
+/// Emitted when an attestation declares its verified-field coverage.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationCoverageRecorded {
+    #[topic]
+    pub record_hash: BytesN<32>,
+    #[topic]
+    pub attester: Address,
+    pub coverage_version: u32,
+    pub coverage_bitmap: u32,
 }
 
 /// Metadata for a batch of record commitments anchored by one attester.
@@ -485,6 +515,8 @@ pub enum Error {
     BatchTooLarge = 23,
     /// The commitment scheme version does not fit in one byte.
     InvalidCommitmentVersion = 24,
+    /// The coverage bitmap version is unsupported, or the bitmap is empty or sets unknown bits.
+    InvalidCoverage = 25,
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -882,6 +914,93 @@ impl AttestationRegistry {
             commitment_version,
             None,
         )
+    }
+
+    /// Record an attestation that also declares which card categories were
+    /// verified (`FieldCoverage`, version `COVERAGE_VERSION`). Re-attesting
+    /// replaces this attester's coverage; a plain `attest` resets it to
+    /// unknown.
+    pub fn attest_with_coverage(
+        env: Env,
+        attester: Address,
+        patient: Address,
+        record_hash: BytesN<32>,
+        coverage_version: u32,
+        coverage_bitmap: u32,
+    ) -> Result<Attestation, Error> {
+        if coverage_version != COVERAGE_VERSION
+            || coverage_bitmap == 0
+            || coverage_bitmap & !COVERAGE_BITS_V1 != 0
+        {
+            return Err(Error::InvalidCoverage);
+        }
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_allowlisted_attester(&env, &attester)?;
+        let attestation = Self::record_attestation(
+            &env,
+            attester.clone(),
+            patient,
+            record_hash.clone(),
+            0,
+            None,
+        )?;
+        let key = DataKey::AttestationCoverage(record_hash.clone(), attester.clone());
+        env.storage().persistent().set(
+            &key,
+            &FieldCoverage {
+                version: coverage_version,
+                bitmap: coverage_bitmap,
+            },
+        );
+        AttestationCoverageRecorded {
+            record_hash,
+            attester,
+            coverage_version,
+            coverage_bitmap,
+        }
+        .publish(&env);
+        Ok(attestation)
+    }
+
+    /// Coverage declared by `attester`'s latest attestation of `record_hash`;
+    /// `None` means unknown coverage.
+    pub fn get_attestation_coverage(
+        env: Env,
+        record_hash: BytesN<32>,
+        attester: Address,
+    ) -> Option<FieldCoverage> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttestationCoverage(record_hash, attester))
+    }
+
+    /// Merged coverage of a record: the bitwise union of coverage declared by
+    /// every attester whose attestation is currently active. `None` if no
+    /// active attestation declares coverage (unknown).
+    pub fn get_record_coverage(env: Env, record_hash: BytesN<32>) -> Option<FieldCoverage> {
+        let mut bitmap = 0u32;
+        for attestation in Self::get_attestation_history(env.clone(), record_hash.clone()).iter() {
+            if Self::get_attester_attestation_status(
+                env.clone(),
+                record_hash.clone(),
+                attestation.attester.clone(),
+            ) != AttesterAttestationStatus::Active
+            {
+                continue;
+            }
+            if let Some(c) = Self::get_attestation_coverage(
+                env.clone(),
+                record_hash.clone(),
+                attestation.attester,
+            ) {
+                bitmap |= c.bitmap;
+            }
+        }
+        (bitmap != 0).then_some(FieldCoverage {
+            version: COVERAGE_VERSION,
+            bitmap,
+        })
     }
 
     /// Record a verification and explicitly link this record hash to its
@@ -1743,6 +1862,12 @@ impl AttestationRegistry {
         let new_previous_link = Self::check_version_link(env, &record_hash, previous_record_hash)?;
         Self::consume_rate_limit(env, &attester)?;
         let attestation_expires_at = Self::consume_consent(env, &attester, patient, &record_hash)?;
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AttestationCoverage(
+                record_hash.clone(),
+                attester.clone(),
+            ));
 
         let attestation = Attestation {
             attester: attester.clone(),

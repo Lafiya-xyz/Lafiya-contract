@@ -103,3 +103,26 @@ implementation **MUST** run the whole table in CI and fail on any mismatch.
 - **Patch:** wording and clarifications only.
 
 Implementations **SHOULD** report the model version they implement.
+
+## Verified-field coverage (optional)
+
+`attestation-registry` can record which card categories an attester verified,
+via `attest_with_coverage(attester, patient, record_hash, coverage_version,
+coverage_bitmap)`. Coverage version `1` bits: 0 blood group, 1 genotype,
+2 allergies, 3 medications, 4 conditions. Unknown bits or an empty bitmap are
+rejected (`InvalidCoverage`); a different version is unsupported, so clients
+negotiate by reading the version returned with the coverage and treating
+unrecognised versions as unknown.
+
+- **Backward compatibility:** attestations without declared coverage (all
+  existing ones, and plain `attest*` calls) have *unknown* coverage
+  (`get_attestation_coverage` returns none). The `Attestation` record is
+  unchanged; coverage is stored separately.
+- **Repeated attestations:** an attester's re-attestation replaces its own
+  coverage; a plain re-attest resets it to unknown.
+- **Quorum / multiple attesters:** `get_record_coverage` returns the bitwise
+  union of coverage from attesters whose attestations are currently active
+  (withdrawn or revoked ones are excluded).
+- **SDK/verdicts:** clients should show coverage next to a `Verified` verdict
+  and show "coverage unknown" when none is declared. It never changes the
+  verdict itself.
