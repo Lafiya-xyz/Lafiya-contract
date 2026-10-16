@@ -10,4 +10,5 @@ pub mod ingest;
 pub mod metrics;
 pub mod reconcile;
 pub mod rpc;
+pub mod sequence;
 pub mod store;

@@ -1,13 +1,14 @@
 //! Cursor-checkpointed ingestion from `getEvents`, and backfill from an
 //! archived export.
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use sqlx::PgPool;
 
 use crate::decode::{cursor_ledger, RawEvent};
 use crate::metrics::Metrics;
+use crate::sequence::SeqTracker;
 use crate::rpc::{EventSource, RpcError, Start};
 use crate::store::{self, Checkpoint, StoreError};
 
@@ -66,6 +67,8 @@ pub struct Ingestor<S> {
     /// deployment ledger).
     pub start_ledger: Option<u32>,
     pub page_limit: u32,
+    /// Detects dropped events from per-contract sequence numbers.
+    pub seq_tracker: Mutex<SeqTracker>,
 }
 
 impl<S: EventSource> Ingestor<S> {
@@ -102,6 +105,21 @@ impl<S: EventSource> Ingestor<S> {
             }
             other => other?,
         };
+
+        let gaps = self
+            .seq_tracker
+            .lock()
+            .map(|mut t| t.observe(&page.events))
+            .unwrap_or_default();
+        for g in &gaps {
+            self.metrics.event_seq_gaps_total.inc();
+            tracing::error!(
+                contract = %g.contract_id,
+                expected = g.expected,
+                got = g.got,
+                "event sequence gap: the RPC dropped events; re-sync this range"
+            );
+        }
 
         let next = store::checkpoint_after(&page.cursor, &page.events, resume);
         let applied = store::apply_page(&self.pool, &page.events, &next).await?;

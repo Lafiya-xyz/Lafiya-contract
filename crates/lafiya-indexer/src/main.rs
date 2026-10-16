@@ -125,6 +125,7 @@ async fn run(pool: sqlx::PgPool, args: RunArgs) -> anyhow::Result<()> {
         metrics: metrics.clone(),
         start_ledger: args.start_ledger,
         page_limit: args.page_limit,
+        seq_tracker: Default::default(),
     };
     let reconciler = Reconciler {
         pool: pool.clone(),

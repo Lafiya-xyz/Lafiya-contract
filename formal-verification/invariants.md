@@ -77,6 +77,26 @@ __check_auth(payload, signers) = Ok  ⟹  |{s ∈ signers : verify(s, payload) =
 **Property:** Can't bypass threshold with partial signatures
 **Test:** Test 5-of-5, 3-of-5, 1-of-1 scenarios; verify rejection at threshold-1
 
+## On-Chain Runtime Checks (`check_invariants()`)
+
+Both registries expose a read-only `check_invariants() -> InvariantReport`
+(`ok`, `checked`, `violations`) so monitors can verify consistency without
+trusting an indexer. The `lafiya-watchdog` calls it every poll and raises a
+critical `invariant_violation` alert when `violations` is non-empty.
+
+| Violation symbol | Contract | Checks | Related |
+|---|---|---|---|
+| `admin_missing` | both | an admin is set | Invariant 3 |
+| `count_exceeds_cap` | attester-registry | `AttesterCount <= MaxAttesters` | Invariant 2 |
+| `schema_version_stale` | both | stored schema version equals the build's | upgrade runbook |
+| `pending_admin_inconsistent` | both | `PendingAdmin` and its expiry are set together | Invariant 3 |
+| `registry_wiring_invalid` | attestation-registry | the configured attester registry exposes the allowlist interface | Invariant 4 |
+| `rate_limit_window_zero` | attestation-registry | an enabled rate limit has a non-zero window | - |
+
+Every check is O(1) storage reads (CPU is asserted below 250k and 400k
+instructions in the contract tests). Corruption tests inject bad state
+through test-only storage writes and assert the matching symbol is reported.
+
 ## Gaps Not Covered by Formal Verification
 
 1. **Cross-contract calls:** Attestation registry calling attester registry (is_attester)

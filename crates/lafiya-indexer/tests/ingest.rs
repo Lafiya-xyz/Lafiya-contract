@@ -155,6 +155,7 @@ fn ingestor(pool: &PgPool, source: &MockSource) -> Ingestor<MockSource> {
         metrics: Arc::new(Metrics::new()),
         start_ledger: Some(100),
         page_limit: 3,
+        seq_tracker: Default::default(),
     }
 }
 

@@ -283,6 +283,8 @@ name = "attestation-registry"
 version = "0.1.0"
 dependencies = [
  "attester-registry",
+ "lafiya-contract-common",
+ "lafiya-test-utils",
  "proptest",
  "soroban-sdk",
 ]
@@ -291,6 +293,8 @@ dependencies = [
 name = "attester-registry"
 version = "0.1.0"
 dependencies = [
+ "lafiya-contract-common",
+ "lafiya-test-utils",
  "proptest",
  "soroban-sdk",
 ]
@@ -1585,6 +1589,7 @@ name = "incentive-pool"
 version = "0.1.0"
 dependencies = [
  "attester-registry",
+ "lafiya-test-utils",
  "proptest",
  "soroban-sdk",
 ]
@@ -1814,6 +1819,13 @@ dependencies = [
  "tracing",
  "ureq",
  "wiremock",
+]
+
+[[package]]
+name = "lafiya-test-utils"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
 ]
 
 [[package]]

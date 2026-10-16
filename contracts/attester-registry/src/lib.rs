@@ -3,6 +3,8 @@
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod storage;
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
     String, Symbol, Vec,
@@ -100,6 +102,18 @@ enum DataKey {
     RegionalRegistrarCount(Address),
     /// Registrar responsible for an attester's regional enrollment.
     RegionalAttester(Address),
+    /// Last event sequence number emitted by this contract (instance storage).
+    EventSeq,
+}
+
+/// Result of `check_invariants`: `violations` names every failed check.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InvariantReport {
+    pub ok: bool,
+    /// Number of invariants evaluated (fixed per contract version).
+    pub checked: u32,
+    pub violations: Vec<Symbol>,
 }
 
 /// Operational capabilities managed by the owner.
@@ -118,6 +132,8 @@ pub struct AttesterRotated {
     pub previous_attester: Address,
     #[topic]
     pub new_attester: Address,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Metadata associated with an allowlisted attester.
@@ -289,6 +305,8 @@ pub struct AdminTransferred {
     pub new_admin: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when the current admin nominates a successor.
@@ -300,6 +318,8 @@ pub struct AdminTransferProposed {
     #[topic]
     pub proposed_admin: Address,
     pub expires_at: u64,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when a pending admin transfer is cancelled.
@@ -310,6 +330,8 @@ pub struct AdminTransferCancelled {
     pub admin: Address,
     #[topic]
     pub proposed_admin: Address,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted once, when the contract is initialized.
@@ -320,6 +342,8 @@ pub struct Initialized {
     pub admin: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when an attester is added to the allowlist.
@@ -330,6 +354,8 @@ pub struct AttesterAdded {
     pub attester: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when an already-allowlisted attester's metadata is updated via
@@ -342,6 +368,8 @@ pub struct AttesterInfoUpdated {
     pub attester: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when an attester is removed from the allowlist.
@@ -352,6 +380,8 @@ pub struct AttesterRemoved {
     pub attester: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when an attester revokes its own key.
@@ -360,6 +390,8 @@ pub struct AttesterRemoved {
 pub struct AttesterRevoked {
     #[topic]
     pub attester: Address,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when an attester is suspended.
@@ -372,6 +404,8 @@ pub struct AttesterSuspended {
     pub since: u64,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when a suspended attester is reinstated.
@@ -382,6 +416,8 @@ pub struct AttesterReinstated {
     pub attester: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when the contract is upgraded to new wasm.
@@ -392,6 +428,8 @@ pub struct Upgraded {
     pub new_wasm_hash: BytesN<32>,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when state-changing operations are paused.
@@ -402,6 +440,8 @@ pub struct Paused {
     pub by: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when state-changing operations are unpaused.
@@ -412,6 +452,8 @@ pub struct Unpaused {
     pub by: Address,
     pub contract_kind: Symbol,
     pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -436,17 +478,14 @@ impl AttesterRegistry {
     /// be called once; the caller must authorize as the given `admin`.
     pub fn __constructor(env: Env, admin: Address) {
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Admin, &admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::set(&env, &DataKey::Admin, &admin);
+        storage::set(&env, &DataKey::SchemaVersion, &SCHEMA_VERSION);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Initialized {
             admin,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
     }
@@ -462,43 +501,30 @@ impl AttesterRegistry {
         new_attester.require_auth();
         Self::require_not_paused(&env)?;
         if previous_attester == new_attester
-            || !env
-                .storage()
-                .persistent()
-                .has(&DataKey::Attester(previous_attester.clone()))
-            || env
-                .storage()
-                .persistent()
-                .has(&DataKey::Attester(new_attester.clone()))
+            || !storage::has(&env, &DataKey::Attester(previous_attester.clone()))
+            || storage::has(&env, &DataKey::Attester(new_attester.clone()))
         {
             return Err(Error::AttesterNotFound);
         }
 
-        let info: StoredAttesterInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Attester(previous_attester.clone()))
-            .filter(|info: &StoredAttesterInfo| !info.removed)
-            .ok_or(Error::AttesterNotFound)?;
+        let info: StoredAttesterInfo =
+            storage::get(&env, &DataKey::Attester(previous_attester.clone()))
+                .filter(|info: &StoredAttesterInfo| !info.removed)
+                .ok_or(Error::AttesterNotFound)?;
         let suspended = info.suspended;
         let (valid_from, valid_until) = Self::validity(&env, &previous_attester);
-        let registrar: Option<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RegionalAttester(previous_attester.clone()));
+        let registrar: Option<Address> =
+            storage::get(&env, &DataKey::RegionalAttester(previous_attester.clone()));
         Self::clear_regional_attester(&env, &previous_attester);
-        env.storage()
-            .persistent()
-            .remove(&DataKey::Attester(previous_attester.clone()));
+        storage::remove(&env, &DataKey::Attester(previous_attester.clone()));
         Self::set_validity(&env, &previous_attester, None, None);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(new_attester.clone()), &info);
+        storage::set(&env, &DataKey::Attester(new_attester.clone()), &info);
         Self::set_validity(&env, &new_attester, valid_from, valid_until);
         if let Some(registrar) = registrar {
             Self::record_regional_attester(&env, &registrar, &new_attester);
         }
-        env.storage().persistent().set(
+        storage::set(
+            &env,
             &DataKey::AttesterRotation(previous_attester.clone()),
             &new_attester,
         );
@@ -507,11 +533,10 @@ impl AttesterRegistry {
         AttesterRotated {
             previous_attester,
             new_attester,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -519,41 +544,35 @@ impl AttesterRegistry {
     /// while paused so a compromised key can be stopped without admin action.
     pub fn revoke_attester(env: Env, attester: Address) -> Result<(), Error> {
         attester.require_auth();
-        let existing = env
-            .storage()
-            .persistent()
-            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()))
-            .filter(|info| !info.removed);
+        let existing =
+            storage::get::<_, StoredAttesterInfo>(&env, &DataKey::Attester(attester.clone()))
+                .filter(|info| !info.removed);
         if let Some(mut info) = existing {
             info.removed = true;
             info.suspended = false;
             info.suspension_reason = None;
             info.suspended_since = None;
             info.trust_revoked_after = Some(env.ledger().timestamp());
-            env.storage()
-                .persistent()
-                .set(&DataKey::Attester(attester.clone()), &info);
+            storage::set(&env, &DataKey::Attester(attester.clone()), &info);
             Self::clear_regional_attester(&env, &attester);
             let count = Self::attester_count(&env);
             if count > 0 {
-                env.storage()
-                    .instance()
-                    .set(&DataKey::AttesterCount, &(count - 1));
+                storage::set(&env, &DataKey::AttesterCount, &(count - 1));
             }
             Self::record_status_change(&env, &attester, false);
         }
-        AttesterRevoked { attester }.publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        AttesterRevoked {
+            attester,
+            seq: storage::next_event_seq(&env),
+        }
+        .publish(&env);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
     /// Return the latest address to which `attester` was rotated, if any.
     pub fn get_attester_rotation(env: Env, attester: Address) -> Option<Address> {
-        env.storage()
-            .persistent()
-            .get(&DataKey::AttesterRotation(attester))
+        storage::get(&env, &DataKey::AttesterRotation(attester))
     }
 
     /// Return the current admin address.
@@ -564,30 +583,22 @@ impl AttesterRegistry {
     /// Grant a registrar or guardian capability. Only the owner may change roles.
     pub fn grant_role(env: Env, role: Role, account: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
-        env.storage()
-            .instance()
-            .set(&DataKey::Role(role, account.clone()), &true);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::set(&env, &DataKey::Role(role, account.clone()), &true);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
     /// Revoke a registrar or guardian capability. Only the owner may change roles.
     pub fn revoke_role(env: Env, role: Role, account: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
-        env.storage()
-            .instance()
-            .remove(&DataKey::Role(role, account.clone()));
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::remove(&env, &DataKey::Role(role, account.clone()));
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
     /// Return whether `account` holds `role`.
     pub fn has_role(env: Env, role: Role, account: Address) -> bool {
-        env.storage().instance().has(&DataKey::Role(role, account))
+        storage::has(&env, &DataKey::Role(role, account))
     }
 
     /// Assign a delegated registrar to one region with a concurrent enrollment quota.
@@ -601,22 +612,14 @@ impl AttesterRegistry {
         Self::admin(&env)?.require_auth();
         Self::validate_region(&Some(region.clone()))?;
         let key = DataKey::RegionalRegistrar(registrar.clone());
-        if let Some(current) = env
-            .storage()
-            .instance()
-            .get::<_, RegionalRegistrarInfo>(&key)
-        {
+        if let Some(current) = storage::get::<_, RegionalRegistrarInfo>(&env, &key) {
             let count = Self::regional_registrar_count(&env, &registrar);
             if current.region != region && count > 0 {
                 return Err(Error::RegionalAttestersRemain);
             }
         }
-        env.storage()
-            .instance()
-            .set(&key, &RegionalRegistrarInfo { region, quota });
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::set(&env, &key, &RegionalRegistrarInfo { region, quota });
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -624,20 +627,14 @@ impl AttesterRegistry {
     /// attributed to the address and continue to count if it is later re-granted.
     pub fn revoke_regional_registrar(env: Env, registrar: Address) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
-        env.storage()
-            .instance()
-            .remove(&DataKey::RegionalRegistrar(registrar));
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::remove(&env, &DataKey::RegionalRegistrar(registrar));
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
     /// Return a registrar's current regional assignment, if any.
     pub fn get_regional_registrar(env: Env, registrar: Address) -> Option<RegionalRegistrarInfo> {
-        env.storage()
-            .instance()
-            .get(&DataKey::RegionalRegistrar(registrar))
+        storage::get(&env, &DataKey::RegionalRegistrar(registrar))
     }
 
     /// Return the number of enrolled attesters attributed to `registrar`.
@@ -657,66 +654,47 @@ impl AttesterRegistry {
             .ledger()
             .timestamp()
             .saturating_add(ADMIN_PROPOSAL_TTL_SECONDS);
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingAdmin, &new_admin);
-        env.storage()
-            .instance()
-            .set(&DataKey::PendingAdminExpiresAt, &expires_at);
+        storage::set(&env, &DataKey::PendingAdmin, &new_admin);
+        storage::set(&env, &DataKey::PendingAdminExpiresAt, &expires_at);
         AdminTransferProposed {
             current_admin,
             proposed_admin: new_admin,
             expires_at,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
     /// Accept the proposed admin transfer. The caller must authorize as the pending admin.
     pub fn accept_admin(env: Env) -> Result<(), Error> {
         let previous_admin = Self::admin(&env)?;
-        let pending_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .ok_or(Error::NoPendingTransfer)?;
-        let expires_at: u64 = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdminExpiresAt)
-            .unwrap_or(0);
+        let pending_admin: Address =
+            storage::get(&env, &DataKey::PendingAdmin).ok_or(Error::NoPendingTransfer)?;
+        let expires_at: u64 = storage::get(&env, &DataKey::PendingAdminExpiresAt).unwrap_or(0);
         if env.ledger().timestamp() > expires_at {
-            env.storage().instance().remove(&DataKey::PendingAdmin);
-            env.storage()
-                .instance()
-                .remove(&DataKey::PendingAdminExpiresAt);
+            storage::remove(&env, &DataKey::PendingAdmin);
+            storage::remove(&env, &DataKey::PendingAdminExpiresAt);
             return Err(Error::ProposalExpired);
         }
 
         pending_admin.require_auth();
 
-        env.storage()
-            .instance()
-            .set(&DataKey::Admin, &pending_admin);
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.storage()
-            .instance()
-            .remove(&DataKey::PendingAdminExpiresAt);
+        storage::set(&env, &DataKey::Admin, &pending_admin);
+        storage::remove(&env, &DataKey::PendingAdmin);
+        storage::remove(&env, &DataKey::PendingAdminExpiresAt);
 
         AdminTransferred {
             previous_admin,
             new_admin: pending_admin,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         Ok(())
     }
@@ -725,18 +703,14 @@ impl AttesterRegistry {
     pub fn cancel_admin_proposal(env: Env) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
-        let proposed_admin: Address = env
-            .storage()
-            .instance()
-            .get(&DataKey::PendingAdmin)
-            .ok_or(Error::NoPendingTransfer)?;
-        env.storage().instance().remove(&DataKey::PendingAdmin);
-        env.storage()
-            .instance()
-            .remove(&DataKey::PendingAdminExpiresAt);
+        let proposed_admin: Address =
+            storage::get(&env, &DataKey::PendingAdmin).ok_or(Error::NoPendingTransfer)?;
+        storage::remove(&env, &DataKey::PendingAdmin);
+        storage::remove(&env, &DataKey::PendingAdminExpiresAt);
         AdminTransferCancelled {
             admin,
             proposed_admin,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
         Ok(())
@@ -748,16 +722,15 @@ impl AttesterRegistry {
     /// Requires a Guardian.
     pub fn pause(env: Env, guardian: Address) -> Result<(), Error> {
         Self::require_role(&env, Role::Guardian, &guardian)?;
-        env.storage().instance().set(&DataKey::Paused, &true);
+        storage::set(&env, &DataKey::Paused, &true);
         Paused {
             by: guardian,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -765,25 +738,21 @@ impl AttesterRegistry {
     pub fn unpause(env: Env) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
-        env.storage().instance().set(&DataKey::Paused, &false);
+        storage::set(&env, &DataKey::Paused, &false);
         Unpaused {
             by: admin,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
     /// Whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
-        env.storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false)
+        storage::get(&env, &DataKey::Paused).unwrap_or(false)
     }
 
     /// Add `attester` to the allowlist. Requires a global or regional registrar.
@@ -797,12 +766,10 @@ impl AttesterRegistry {
             .as_ref()
             .map(|assignment| Some(assignment.region.clone()))
             .unwrap_or(None);
-        let already_present = env
-            .storage()
-            .persistent()
-            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()))
-            .map(|info| !info.removed)
-            .unwrap_or(false);
+        let already_present =
+            storage::get::<_, AttesterInfo>(&env, &DataKey::Attester(attester.clone()))
+                .map(|info| !info.removed)
+                .unwrap_or(false);
         if !already_present {
             Self::ensure_regional_quota(&env, &registrar, regional_scope.as_ref())?;
         }
@@ -812,16 +779,12 @@ impl AttesterRegistry {
             if count >= max {
                 return Err(Error::AllowlistFull);
             }
-            env.storage()
-                .instance()
-                .set(&DataKey::AttesterCount, &(count + 1));
+            storage::set(&env, &DataKey::AttesterCount, &(count + 1));
         }
         if already_present {
-            let existing: StoredAttesterInfo = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Attester(attester.clone()))
-                .ok_or(Error::AttesterNotFound)?;
+            let existing: StoredAttesterInfo =
+                storage::get(&env, &DataKey::Attester(attester.clone()))
+                    .ok_or(Error::AttesterNotFound)?;
             if regional_scope.is_some() {
                 Self::ensure_regional_existing(
                     &env,
@@ -842,20 +805,17 @@ impl AttesterRegistry {
             suspended_since: None,
             trust_revoked_after: None,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(attester.clone()), &info);
+        storage::set(&env, &DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
         if !already_present && regional_scope.is_some() {
             Self::record_regional_attester(&env, &registrar, &attester);
         }
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         AttesterAdded {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
         Ok(())
@@ -881,12 +841,10 @@ impl AttesterRegistry {
         Self::validate_region(&region)?;
         Self::validate_validity_window(valid_from, valid_until)?;
         let region = Self::scoped_region(regional_scope.as_ref(), region)?;
-        let already_present = env
-            .storage()
-            .persistent()
-            .get::<_, AttesterInfo>(&DataKey::Attester(attester.clone()))
-            .map(|info| !info.removed)
-            .unwrap_or(false);
+        let already_present =
+            storage::get::<_, AttesterInfo>(&env, &DataKey::Attester(attester.clone()))
+                .map(|info| !info.removed)
+                .unwrap_or(false);
         if !already_present {
             Self::ensure_regional_quota(&env, &registrar, regional_scope.as_ref())?;
         }
@@ -896,16 +854,12 @@ impl AttesterRegistry {
             if count >= max {
                 return Err(Error::AllowlistFull);
             }
-            env.storage()
-                .instance()
-                .set(&DataKey::AttesterCount, &(count + 1));
+            storage::set(&env, &DataKey::AttesterCount, &(count + 1));
         }
         if already_present {
-            let existing: StoredAttesterInfo = env
-                .storage()
-                .persistent()
-                .get(&DataKey::Attester(attester.clone()))
-                .ok_or(Error::AttesterNotFound)?;
+            let existing: StoredAttesterInfo =
+                storage::get(&env, &DataKey::Attester(attester.clone()))
+                    .ok_or(Error::AttesterNotFound)?;
             if regional_scope.is_some() {
                 Self::ensure_regional_existing(
                     &env,
@@ -926,21 +880,18 @@ impl AttesterRegistry {
             suspended_since: None,
             trust_revoked_after: None,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(attester.clone()), &info);
+        storage::set(&env, &DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
         Self::set_validity(&env, &attester, valid_from, valid_until);
         if !already_present && regional_scope.is_some() {
             Self::record_regional_attester(&env, &registrar, &attester);
         }
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         AttesterAdded {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
         Ok(())
@@ -966,10 +917,7 @@ impl AttesterRegistry {
         Self::require_not_paused(&env)?;
         Self::validate_region(&region)?;
         Self::validate_validity_window(valid_from, valid_until)?;
-        let existing: StoredAttesterInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Attester(attester.clone()))
+        let existing: StoredAttesterInfo = storage::get(&env, &DataKey::Attester(attester.clone()))
             .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
         if existing.region != region {
@@ -980,17 +928,14 @@ impl AttesterRegistry {
             region,
             ..existing
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(attester.clone()), &info);
+        storage::set(&env, &DataKey::Attester(attester.clone()), &info);
         Self::set_validity(&env, &attester, valid_from, valid_until);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         AttesterInfoUpdated {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
         Ok(())
@@ -1028,10 +973,7 @@ impl AttesterRegistry {
 
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
-            let already_present = env
-                .storage()
-                .persistent()
-                .get::<_, StoredAttesterInfo>(&key)
+            let already_present = storage::get::<_, StoredAttesterInfo>(&env, &key)
                 .map(|info| !info.removed)
                 .unwrap_or(false);
             if !already_present {
@@ -1050,7 +992,7 @@ impl AttesterRegistry {
                     suspended_since: None,
                     trust_revoked_after: None,
                 };
-                env.storage().persistent().set(&key, &info);
+                storage::set(&env, &key, &info);
                 Self::record_status_change(&env, &attester, true);
                 Self::set_validity(&env, &attester, None, None);
                 if regional_scope.is_some() {
@@ -1061,17 +1003,14 @@ impl AttesterRegistry {
                     attester: attester.clone(),
                     contract_kind: Symbol::new(&env, "attester_registry"),
                     schema_version: EVENT_SCHEMA_VERSION,
+                    seq: storage::next_event_seq(&env),
                 }
                 .publish(&env);
             }
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::AttesterCount, &count);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::set(&env, &DataKey::AttesterCount, &count);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         Ok(())
     }
@@ -1097,11 +1036,10 @@ impl AttesterRegistry {
         if attesters.len() > BATCH_LIMIT {
             return Err(Error::BatchTooLarge);
         }
-        if attesters.iter().any(|attester| {
-            env.storage()
-                .persistent()
-                .has(&DataKey::RegionalAttester(attester))
-        }) && attesters.len() > REGIONAL_REMOVE_BATCH_LIMIT
+        if attesters
+            .iter()
+            .any(|attester| storage::has(&env, &DataKey::RegionalAttester(attester)))
+            && attesters.len() > REGIONAL_REMOVE_BATCH_LIMIT
         {
             return Err(Error::BatchTooLarge);
         }
@@ -1110,11 +1048,7 @@ impl AttesterRegistry {
 
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
-            if let Some(mut info) = env
-                .storage()
-                .persistent()
-                .get::<_, StoredAttesterInfo>(&key)
-            {
+            if let Some(mut info) = storage::get::<_, StoredAttesterInfo>(&env, &key) {
                 if info.removed {
                     continue;
                 }
@@ -1123,7 +1057,7 @@ impl AttesterRegistry {
                 info.suspension_reason = None;
                 info.suspended_since = None;
                 info.trust_revoked_after = Some(env.ledger().timestamp());
-                env.storage().persistent().set(&key, &info);
+                storage::set(&env, &key, &info);
                 Self::clear_regional_attester(&env, &attester);
                 count = count.saturating_sub(1);
                 Self::record_status_change(&env, &attester, false);
@@ -1131,17 +1065,14 @@ impl AttesterRegistry {
                     attester: attester.clone(),
                     contract_kind: Symbol::new(&env, "attester_registry"),
                     schema_version: EVENT_SCHEMA_VERSION,
+                    seq: storage::next_event_seq(&env),
                 }
                 .publish(&env);
             }
         }
 
-        env.storage()
-            .instance()
-            .set(&DataKey::AttesterCount, &count);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::set(&env, &DataKey::AttesterCount, &count);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         Ok(())
     }
@@ -1151,10 +1082,8 @@ impl AttesterRegistry {
     pub fn remove_attester(env: Env, registrar: Address, attester: Address) -> Result<(), Error> {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
-        let mut info = env
-            .storage()
-            .persistent()
-            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()));
+        let mut info =
+            storage::get::<_, StoredAttesterInfo>(&env, &DataKey::Attester(attester.clone()));
         let was_present = info.as_ref().map(|info| !info.removed).unwrap_or(false);
         if let Some(ref mut info) = info {
             info.removed = true;
@@ -1162,29 +1091,24 @@ impl AttesterRegistry {
             info.suspension_reason = None;
             info.suspended_since = None;
             info.trust_revoked_after = Some(env.ledger().timestamp());
-            env.storage()
-                .persistent()
-                .set(&DataKey::Attester(attester.clone()), info);
+            storage::set(&env, &DataKey::Attester(attester.clone()), info);
             Self::clear_regional_attester(&env, &attester);
         }
         if was_present {
             let count = Self::attester_count(&env);
             if count > 0 {
-                env.storage()
-                    .instance()
-                    .set(&DataKey::AttesterCount, &(count - 1));
+                storage::set(&env, &DataKey::AttesterCount, &(count - 1));
             }
             Self::record_status_change(&env, &attester, false);
             AttesterRemoved {
                 attester: attester.clone(),
                 contract_kind: Symbol::new(&env, "attester_registry"),
                 schema_version: EVENT_SCHEMA_VERSION,
+                seq: storage::next_event_seq(&env),
             }
             .publish(&env);
         }
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -1195,12 +1119,8 @@ impl AttesterRegistry {
     pub fn set_max_attesters(env: Env, max_attesters: u32) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
-        env.storage()
-            .instance()
-            .set(&DataKey::MaxAttesters, &max_attesters);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::set(&env, &DataKey::MaxAttesters, &max_attesters);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -1212,6 +1132,36 @@ impl AttesterRegistry {
     /// The current number of allowlisted attesters.
     pub fn get_attester_count(env: Env) -> u32 {
         Self::attester_count(&env)
+    }
+
+    /// Bounded self-diagnostic for auditors and monitors: evaluates a fixed
+    /// set of O(1) storage invariants and names any that fail. Read-only.
+    pub fn check_invariants(env: Env) -> InvariantReport {
+        let mut violations = Vec::new(&env);
+        let mut check = |ok: bool, name: &str| {
+            if !ok {
+                violations.push_back(Symbol::new(&env, name));
+            }
+        };
+        check(storage::has(&env, &DataKey::Admin), "admin_missing");
+        check(
+            Self::attester_count(&env) <= Self::max_attesters(&env),
+            "count_exceeds_cap",
+        );
+        check(
+            Self::get_schema_version(env.clone()) == SCHEMA_VERSION,
+            "schema_version_stale",
+        );
+        check(
+            storage::has(&env, &DataKey::PendingAdmin)
+                == storage::has(&env, &DataKey::PendingAdminExpiresAt),
+            "pending_admin_inconsistent",
+        );
+        InvariantReport {
+            ok: violations.is_empty(),
+            checked: 4,
+            violations,
+        }
     }
 
     /// Suspend an allowlisted attester. A global registrar may suspend any
@@ -1232,10 +1182,7 @@ impl AttesterRegistry {
     ) -> Result<(), Error> {
         let regional_scope = Self::registrar_scope(&env, &registrar)?;
         Self::require_not_paused(&env)?;
-        let mut info: StoredAttesterInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Attester(attester.clone()))
+        let mut info: StoredAttesterInfo = storage::get(&env, &DataKey::Attester(attester.clone()))
             .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
         if let Some(assignment) = regional_scope {
@@ -1248,9 +1195,7 @@ impl AttesterRegistry {
         info.suspension_reason = Some(reason.clone());
         info.suspended_since = Some(since);
         info.trust_revoked_after = Some(since);
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(attester.clone()), &info);
+        storage::set(&env, &DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, false);
         AttesterSuspended {
             attester,
@@ -1258,11 +1203,10 @@ impl AttesterRegistry {
             since,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -1274,56 +1218,45 @@ impl AttesterRegistry {
     ) -> Result<(), Error> {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
-        let mut info: StoredAttesterInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Attester(attester.clone()))
+        let mut info: StoredAttesterInfo = storage::get(&env, &DataKey::Attester(attester.clone()))
             .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
         info.suspended = false;
         info.suspension_reason = None;
         info.suspended_since = None;
-        env.storage()
-            .persistent()
-            .set(&DataKey::Attester(attester.clone()), &info);
+        storage::set(&env, &DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
         AttesterReinstated {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
     /// Whether `attester` is allowlisted, not suspended, and within its validity
     /// window. Callable by anyone, including other contracts.
     pub fn is_attester(env: Env, attester: Address) -> bool {
-        let active = env
-            .storage()
-            .persistent()
-            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()))
-            .map(|info| !info.removed && !info.suspended)
-            .unwrap_or(false);
+        let active =
+            storage::get::<_, StoredAttesterInfo>(&env, &DataKey::Attester(attester.clone()))
+                .map(|info| !info.removed && !info.suspended)
+                .unwrap_or(false);
         active && Self::valid_at(Self::validity(&env, &attester), env.ledger().timestamp())
     }
 
     /// Whether `attester` was active at the supplied ledger timestamp.
     pub fn is_attester_at(env: Env, attester: Address, timestamp: u64) -> bool {
-        let count: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttesterStatusChangeCount(attester.clone()))
-            .unwrap_or(0);
+        let count: u32 =
+            storage::get(&env, &DataKey::AttesterStatusChangeCount(attester.clone())).unwrap_or(0);
         let mut active = false;
         for sequence in 1..=count {
-            let change: Option<AttesterStatusChange> = env
-                .storage()
-                .persistent()
-                .get(&DataKey::AttesterStatusChange(attester.clone(), sequence));
+            let change: Option<AttesterStatusChange> = storage::get(
+                &env,
+                &DataKey::AttesterStatusChange(attester.clone(), sequence),
+            );
             if let Some(change) = change {
                 if change.timestamp > timestamp {
                     break;
@@ -1351,9 +1284,7 @@ impl AttesterRegistry {
     /// Return the first timestamp at which attestations by this attester
     /// stopped being trusted.
     pub fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64> {
-        env.storage()
-            .persistent()
-            .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester))
+        storage::get::<_, StoredAttesterInfo>(&env, &DataKey::Attester(attester))
             .and_then(|info| info.trust_revoked_after)
     }
 
@@ -1414,10 +1345,7 @@ impl AttesterRegistry {
 
     /// Query the current storage schema version of the contract.
     pub fn get_schema_version(env: Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::SchemaVersion)
-            .unwrap_or(1)
+        storage::get(&env, &DataKey::SchemaVersion).unwrap_or(1)
     }
 
     /// Upgrade the contract's Wasm code to a new version.
@@ -1439,11 +1367,10 @@ impl AttesterRegistry {
             new_wasm_hash,
             contract_kind: Symbol::new(&env, "attester_registry"),
             schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
         }
         .publish(&env);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -1468,12 +1395,8 @@ impl AttesterRegistry {
         // remain readable and need no bulk rewrite.
         let _ = stored;
 
-        env.storage()
-            .instance()
-            .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        storage::set(&env, &DataKey::SchemaVersion, &SCHEMA_VERSION);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
     }
 
@@ -1494,19 +1417,12 @@ impl AttesterRegistry {
         registrar: &Address,
     ) -> Result<Option<RegionalRegistrarInfo>, Error> {
         Self::admin(env)?;
-        if env
-            .storage()
-            .instance()
-            .has(&DataKey::Role(Role::Registrar, registrar.clone()))
-        {
+        if storage::has(env, &DataKey::Role(Role::Registrar, registrar.clone())) {
             registrar.require_auth();
             return Ok(None);
         }
 
-        let assignment = env
-            .storage()
-            .instance()
-            .get(&DataKey::RegionalRegistrar(registrar.clone()))
+        let assignment = storage::get(env, &DataKey::RegionalRegistrar(registrar.clone()))
             .ok_or(Error::RoleNotGranted)?;
         registrar.require_auth();
         Ok(Some(assignment))
@@ -1538,10 +1454,8 @@ impl AttesterRegistry {
         existing: &StoredAttesterInfo,
     ) -> Result<(), Error> {
         let assignment = scope.ok_or(Error::RoleNotGranted)?;
-        let assigned_registrar: Option<Address> = env
-            .storage()
-            .persistent()
-            .get(&DataKey::RegionalAttester(attester.clone()));
+        let assigned_registrar: Option<Address> =
+            storage::get(env, &DataKey::RegionalAttester(attester.clone()));
         if assigned_registrar.as_ref() != Some(registrar)
             || existing.region.as_ref() != Some(&assignment.region)
         {
@@ -1564,13 +1478,12 @@ impl AttesterRegistry {
     }
 
     fn record_regional_attester(env: &Env, registrar: &Address, attester: &Address) {
-        env.storage()
-            .persistent()
-            .set(&DataKey::RegionalAttester(attester.clone()), registrar);
+        storage::set(env, &DataKey::RegionalAttester(attester.clone()), registrar);
         let count_key = DataKey::RegionalRegistrarCount(registrar.clone());
         let count = Self::regional_registrar_count(env, registrar);
-        env.storage().persistent().set(&count_key, &(count + 1));
-        env.storage().persistent().extend_ttl(
+        storage::set(env, &count_key, &(count + 1));
+        storage::extend_ttl(
+            env,
             &count_key,
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
@@ -1579,16 +1492,17 @@ impl AttesterRegistry {
 
     fn clear_regional_attester(env: &Env, attester: &Address) {
         let key = DataKey::RegionalAttester(attester.clone());
-        if let Some(registrar) = env.storage().persistent().get::<_, Address>(&key) {
-            env.storage().persistent().remove(&key);
+        if let Some(registrar) = storage::get::<_, Address>(env, &key) {
+            storage::remove(env, &key);
             let count = Self::regional_registrar_count(env, &registrar);
             if count > 0 {
                 let count_key = DataKey::RegionalRegistrarCount(registrar);
                 if count == 1 {
-                    env.storage().persistent().remove(&count_key);
+                    storage::remove(env, &count_key);
                 } else {
-                    env.storage().persistent().set(&count_key, &(count - 1));
-                    env.storage().persistent().extend_ttl(
+                    storage::set(env, &count_key, &(count - 1));
+                    storage::extend_ttl(
+                        env,
                         &count_key,
                         INSTANCE_LIFETIME_THRESHOLD,
                         INSTANCE_BUMP_AMOUNT,
@@ -1599,17 +1513,11 @@ impl AttesterRegistry {
     }
 
     fn regional_registrar_count(env: &Env, registrar: &Address) -> u32 {
-        env.storage()
-            .persistent()
-            .get(&DataKey::RegionalRegistrarCount(registrar.clone()))
-            .unwrap_or(0)
+        storage::get(env, &DataKey::RegionalRegistrarCount(registrar.clone())).unwrap_or(0)
     }
 
     fn validity(env: &Env, attester: &Address) -> (Option<u64>, Option<u64>) {
-        env.storage()
-            .persistent()
-            .get(&DataKey::AttesterValidity(attester.clone()))
-            .unwrap_or((None, None))
+        storage::get(env, &DataKey::AttesterValidity(attester.clone())).unwrap_or((None, None))
     }
 
     fn set_validity(
@@ -1620,19 +1528,14 @@ impl AttesterRegistry {
     ) {
         let key = DataKey::AttesterValidity(attester.clone());
         if valid_from.is_none() && valid_until.is_none() {
-            env.storage().persistent().remove(&key);
+            storage::remove(env, &key);
         } else {
-            env.storage()
-                .persistent()
-                .set(&key, &(valid_from, valid_until));
+            storage::set(env, &key, &(valid_from, valid_until));
         }
     }
 
     fn attester_info(env: &Env, attester: &Address) -> Option<AttesterInfo> {
-        let stored: StoredAttesterInfo = env
-            .storage()
-            .persistent()
-            .get(&DataKey::Attester(attester.clone()))?;
+        let stored: StoredAttesterInfo = storage::get(env, &DataKey::Attester(attester.clone()))?;
         if stored.removed {
             return None;
         }
@@ -1669,19 +1572,12 @@ impl AttesterRegistry {
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+        storage::get(env, &DataKey::Admin).ok_or(Error::NotInitialized)
     }
 
     fn require_role(env: &Env, role: Role, account: &Address) -> Result<(), Error> {
         Self::admin(env)?;
-        if !env
-            .storage()
-            .instance()
-            .has(&DataKey::Role(role, account.clone()))
-        {
+        if !storage::has(env, &DataKey::Role(role, account.clone())) {
             return Err(Error::RoleNotGranted);
         }
         account.require_auth();
@@ -1689,11 +1585,7 @@ impl AttesterRegistry {
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {
-        let paused: bool = env
-            .storage()
-            .instance()
-            .get(&DataKey::Paused)
-            .unwrap_or(false);
+        let paused: bool = storage::get(env, &DataKey::Paused).unwrap_or(false);
         if paused {
             return Err(Error::ContractPaused);
         }
@@ -1701,34 +1593,27 @@ impl AttesterRegistry {
     }
 
     fn max_attesters(env: &Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::MaxAttesters)
-            .unwrap_or(DEFAULT_MAX_ATTESTERS)
+        storage::get(env, &DataKey::MaxAttesters).unwrap_or(DEFAULT_MAX_ATTESTERS)
     }
 
     fn attester_count(env: &Env) -> u32 {
-        env.storage()
-            .instance()
-            .get(&DataKey::AttesterCount)
-            .unwrap_or(0)
+        storage::get(env, &DataKey::AttesterCount).unwrap_or(0)
     }
 
     fn record_status_change(env: &Env, attester: &Address, active: bool) {
-        let count: u32 = env
-            .storage()
-            .persistent()
-            .get(&DataKey::AttesterStatusChangeCount(attester.clone()))
-            .unwrap_or(0);
+        let count: u32 =
+            storage::get(env, &DataKey::AttesterStatusChangeCount(attester.clone())).unwrap_or(0);
         let sequence = count + 1;
-        env.storage().persistent().set(
+        storage::set(
+            env,
             &DataKey::AttesterStatusChange(attester.clone(), sequence),
             &AttesterStatusChange {
                 timestamp: env.ledger().timestamp(),
                 active,
             },
         );
-        env.storage().persistent().set(
+        storage::set(
+            env,
             &DataKey::AttesterStatusChangeCount(attester.clone()),
             &sequence,
         );
