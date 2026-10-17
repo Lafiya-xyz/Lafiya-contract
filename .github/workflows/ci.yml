@@ -69,6 +69,8 @@ jobs:
       # pinned synthetic ledger range and compares it with the committed output.
       - run: python -m unittest discover -s dashboard -v
       - run: git diff --exit-code dashboard/fixtures
+      - run: python -m unittest discover -s sandbox -v
+      - run: python3 sandbox/chaos/chaos.py run sandbox/chaos/scenarios.toml
 
   fmt:
     name: Format
