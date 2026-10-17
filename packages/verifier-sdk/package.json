@@ -26,16 +26,20 @@
   "engines": {
     "node": ">=20.19"
   },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/mark-cjs.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "size": "node scripts/check-size.mjs"
+    "size": "node scripts/check-size.mjs",
+    "check:supply-chain": "node scripts/check-supply-chain.mjs"
   },
   "dependencies": {
     "@lafiya/attestation-registry": "file:../../bindings/attestation-registry",
-    "@lafiya/attester-registry": "file:../../bindings/attester-registry",
-    "buffer": "6.0.3"
+    "@lafiya/attester-registry": "file:../../bindings/attester-registry"
   },
   "devDependencies": {
     "@stellar/stellar-sdk": "^14.5.0",

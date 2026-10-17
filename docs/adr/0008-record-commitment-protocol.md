@@ -54,7 +54,7 @@ Rejected because it allows cross-context replay of hashes and exposes sensitive 
 - Commitments are bound to the specific versioned context of Lafiya emergency records.
 
 ### Trade-offs and risks
-- The patient's profile store must securely store the generated `salt`. If the `salt` is lost, the card cannot be re-verified against the on-chain registry.
+- The patient's profile store must securely store the generated `salt`. If the `salt` is lost, the card cannot be re-verified against the on-chain registry. [ADR-0018](0018-deterministic-salt-derivation.md) addresses this by deriving each salt with HKDF-SHA256 from a single patient master secret, so only that secret needs to be backed up.
 - Standard JSON stringifiers do not sort keys automatically, requiring helper canonicalization methods in both Rust and TypeScript implementations.
 
 ## References

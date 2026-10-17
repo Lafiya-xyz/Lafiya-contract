@@ -114,6 +114,25 @@ See ADR-0014. When present, this is a CBOR map with at minimum:
 | `4` | `ledger_seq` | uint |
 | `5` | `attester_sig` | bytes(64) |
 
+### 4.4 Reserved for algorithm identifiers (ADR-0019)
+
+The following keys are reserved so that algorithm identifiers can be added before the v1
+freeze without colliding with other fields. Values come from the registry in
+[ADR-0019](../adr/0019-cryptographic-agility.md) (`crates/lafiya-commitment/src/alg.rs`).
+Until they are specified, encoders MUST NOT emit them. When absent, the algorithm is the one
+implied by this spec: Ed25519 for signatures, and the hash fixed by `lrc_version` for
+commitments. Decoders that predate these keys ignore them like any unknown key. That fails
+safe, because a signature made with another algorithm then fails Ed25519 verification
+instead of passing.
+
+| Location | Key | Name | Type | Meaning |
+|----------|-----|------|------|---------|
+| Top-level map | `11` | `patient_sig_alg` | uint | Signature algorithm of `patient_sig` (key `9`). |
+| Offline receipt (key `7`) | `6` | `sig_alg` | uint | Signature algorithm of `attester` / `attester_sig`. |
+
+A new commitment hash is never signalled by a separate field: it is a new `lrc_version`,
+because each LRC version fixes its hash function.
+
 ---
 
 ## 5. Size budgets

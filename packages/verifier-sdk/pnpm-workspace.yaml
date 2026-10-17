@@ -1,2 +1,8 @@
+# Dependency lifecycle scripts never run (see docs/verifier-sdk.md, "Supply
+# chain"). Every package that ships one must be listed here explicitly;
+# strictDepBuilds fails the install on any unlisted one.
 allowBuilds:
-  esbuild: set this to true or false
+  # Vitest's bundler. Its postinstall only validates the platform binary,
+  # which pnpm already installs through optionalDependencies.
+  esbuild: false
+strictDepBuilds: true

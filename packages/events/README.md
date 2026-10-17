@@ -33,6 +33,76 @@ for await (const ev of streamEvents({
   skipping the missing events. Backfill that range from an archive or an
   indexer, then resume.
 
+## Long-lived consumers
+
+```ts
+import { streamEvents, type CursorStore } from "@lafiya/events";
+
+const store: CursorStore = {
+  load: () => db.get("lafiya-cursor"),
+  save: (cursor) => db.put("lafiya-cursor", cursor),
+};
+
+for await (const ev of streamEvents({
+  rpc: server,
+  contracts: [attestationRegistryId],
+  startLedger,          // used only when the store is empty
+  cursorStore: store,   // restored on start, saved as you go
+  onGap: async ({ fromLedger, toLedger }) => {
+    await backfillFromIndexer(fromLedger, toLedger);
+  },
+  retry: { attempts: 5, baseDelayMs: 500, maxDelayMs: 30_000 },
+})) {
+  await handle(ev);
+}
+```
+
+### Guarantees
+
+- **Ordering.** Events are yielded in strictly increasing `cursor` order
+  (ledger, then transaction, operation and event index; `compareCursors`
+  implements it). Anything at or before the last event seen, such as a page
+  replayed after a reconnect or served by a lagging RPC node, is dropped, so
+  one stream never yields the same cursor twice.
+- **Backpressure.** `streamEvents` is a pull-based async iterator: the next
+  `getEvents` page is requested only after the consumer has pulled every
+  event of the current one. At most one page (`pageSize` events) is held in
+  memory, however slow the consumer is.
+- **Persistence.** With a `cursorStore`, a loaded cursor wins over `cursor`
+  and `startLedger`. An event's cursor is saved only once the consumer pulls
+  the *next* event, i.e. after the loop body for it has finished, and the
+  page cursor is saved once a page is fully consumed so filtered-out events
+  are not re-scanned. A rejected `save` ends the stream with that error.
+- **Transient failures.** Failed `getEvents` calls are retried with
+  exponential backoff; `retry.attempts` consecutive failures rethrow the last
+  error. After any failure the next page re-checks retention, because an
+  outage is when a cursor falls out of the RPC's window.
+- **Gaps.** When needed ledgers are outside retention (at start, or after an
+  outage), `onGap({ fromLedger, toLedger })` is awaited and the stream then
+  continues from the oldest retained ledger. `fromLedger` is the ledger of
+  the last cursor, so the range is inclusive and may overlap events already
+  delivered. Without `onGap`, `RetentionGapError` is thrown. Backfill must
+  be idempotent: a restart before the next event is saved reports the same
+  gap again.
+
+### Exactly-once at the consumer
+
+Delivery is **at-least-once across restarts**: if the process stops while
+handling an event (or the loop `break`s), that event's cursor was never
+saved and it is yielded again on the next run. Get exactly-once *effects*
+with either idiom:
+
+1. **Commit together.** In the loop body, write the handler's effects and
+   `ev.cursor` in one database transaction. Give the stream a store whose
+   `load` reads that cursor and whose `save` does nothing: the cursor then
+   moves exactly when the effects do.
+2. **Idempotent handler.** Key every effect on `ev.cursor` (a unique,
+   ordered id), e.g. `INSERT ... ON CONFLICT (cursor) DO NOTHING`, or skip
+   events whose cursor is `<=` the last one you applied.
+
+Events from a gap backfill should be keyed the same way so they deduplicate
+against events the stream delivers.
+
 ## Generated decoders
 
 `src/generated.ts` is generated from the `#[contractevent]` entries in the

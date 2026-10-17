@@ -91,4 +91,65 @@ pnpm typecheck && pnpm test && pnpm build && pnpm size
   contracts when `LAFIYA_IT_RPC_URL`, `LAFIYA_IT_ATTESTATION_REGISTRY`,
   `LAFIYA_IT_ATTESTER_REGISTRY`, and `LAFIYA_IT_RECORD_HASH` are set, and is
   skipped otherwise.
-- `pnpm size` enforces the gzipped bundle budget (8 KiB) in CI.
+- `pnpm size` enforces a gzipped budget per entry point and module format
+  (`.` ESM 8 KiB, CJS 9 KiB) over the SDK's own code: the entry file plus
+  every module it reaches by relative import. The `verifier-sdk` workflow
+  fails on regression and posts the report on the pull request. Raise a
+  budget only in the PR that needs it, with the reason.
+- `pnpm check:supply-chain` enforces the policy below.
+
+## Supply chain
+
+The verifier runs in safety-critical UIs, often on slow connections, so
+every runtime dependency is attack surface and download weight. Policy,
+checked by `scripts/check-supply-chain.mjs` in CI:
+
+- **Allowlisted runtime dependencies only.** Adding one means editing the
+  allowlist in the script, with a reason, in review.
+- **No install scripts.** `.npmrc` sets `ignore-scripts=true`, and
+  `pnpm-workspace.yaml` sets `strictDepBuilds: true` with no dependency
+  allowed to build, so an install fails if a dependency starts shipping a
+  lifecycle script. The package itself defines no install hooks.
+- **Lockfile integrity.** CI installs with `--frozen-lockfile`. Every
+  registry package in `pnpm-lock.yaml` must carry an `sha512` integrity hash
+  (pnpm checks each tarball against it), and nothing may resolve from a
+  tarball URL or git. The only non-registry entries allowed are the local
+  bindings.
+- **Provenance.** `publishConfig.provenance` is `true`, and tags
+  `verifier-sdk-v*` publish from CI with `npm publish --provenance`, so every
+  release is attested to the commit and workflow that built it. The publish
+  job refuses to run while the bindings are still `file:` dependencies (see
+  [PUBLISHING.md](../PUBLISHING.md)).
+
+### Dependency inventory
+
+`pnpm ls --prod --depth 1`:
+
+```text
+@lafiya/verifier@0.1.0
+├─┬ @lafiya/attestation-registry@file:../../bindings/attestation-registry
+│ ├─┬ @stellar/stellar-sdk@14.6.1
+│ │ ├── @stellar/stellar-base@14.1.0
+│ │ ├── axios@1.20.0
+│ │ ├── bignumber.js@9.3.1
+│ │ ├── commander@14.0.3
+│ │ ├── eventsource@2.0.2
+│ │ ├── feaxios@0.0.23
+│ │ ├── randombytes@2.1.0
+│ │ ├── toml@3.0.0
+│ │ └── urijs@1.19.11
+│ └── buffer@6.0.3
+└─┬ @lafiya/attester-registry@file:../../bindings/attester-registry
+  ├── @stellar/stellar-sdk@14.6.1 [deduped]
+  └── buffer@6.0.3 [deduped]
+```
+
+| Dependency | Status | Justification |
+| --- | --- | --- |
+| `@lafiya/attestation-registry`, `@lafiya/attester-registry` | Kept | Generated clients for the two registries; the single source of truth for their interfaces. Only `src/rpc.ts` (`BindingsChainReader`) imports them. |
+| `@stellar/stellar-sdk` (transitive, ~60 packages) | Kept | XDR encoding, simulation and Soroban RPC. Re-implementing them would trade an audited, widely used dependency for unaudited code. Consumers that verify offline (`OfflineChainReader`) or bring their own `ChainReader` never execute it, and the ESM build is `sideEffects: false`, so bundlers can drop it. |
+| `buffer` | Removed as a direct dependency | It was only used to build `BytesN` arguments; the contract spec encoder accepts a `Uint8Array`, so `rpc.ts` now passes one. It remains a transitive dependency of the bindings. |
+
+QR parsing, trust-anchor checks, LRC-1 commitments (WebCrypto) and the
+verdict logic use no dependencies at all.
+
