@@ -27,6 +27,24 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `14` | `RegionalQuotaExceeded` | The registrar's concurrent enrollment quota has been reached. |
 | `15` | `RegionalAttestersRemain` | The registrar's region cannot change while its attesters remain enrolled. |
 | `16` | `InvalidRegion` | The region is not a valid ISO 3166-2 style code such as `NG-LA`. |
+| `17` | `ProbationNotFound` | No probation record exists for the attester, or it cannot be finalized yet. |
+| `18` | `InvalidProbationConfig` | A probation rate cap needs a non-zero rate window. |
+| `19` | `TierMatrixTooLarge` | The capability matrix exceeds `MAX_TIER_CLASSES` entries. |
+| `20` | `NoPendingTierMatrix` | No capability matrix proposal is pending. |
+| `21` | `TierMatrixTimelocked` | The pending capability matrix's timelock has not elapsed. |
+| `22` | `BondNotConfigured` | Bonds are not configured; call `set_bond_config` first. |
+| `23` | `InvalidBondConfig` | Bond config needs positive minimum and quorum, and `unbond_delay` above `challenge_window`. |
+| `24` | `InvalidBondAmount` | The bond or slash amount must be positive. |
+| `25` | `BondNotFound` | The attester has no bond. |
+| `26` | `InsufficientBond` | The unlocked bond is smaller than the requested slash. |
+| `27` | `TooManyOpenCases` | The attester already has the maximum number of open slash cases. |
+| `28` | `SlashCaseNotFound` | No slash case exists with this id. |
+| `29` | `SlashCaseWrongState` | The slash case is not in a state that allows this action. |
+| `30` | `AlreadyApproved` | This account already approved the slash case. |
+| `31` | `ChallengeWindowOpen` | The challenge window is still open; the slash cannot execute yet. |
+| `32` | `ChallengeWindowClosed` | The challenge window has closed; the slash can no longer be appealed. |
+| `33` | `BondWithdrawalNotReady` | The unbonding cooldown has not been requested or has not elapsed. |
+| `34` | `SlashCasesOpen` | Open slash cases block withdrawing the bond. |
 
 ## `attestation-registry`
 
@@ -56,6 +74,10 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `22` | `InvalidRecordVersion` | The supplied previous hash or version relationship is invalid. |
 | `23` | `BatchTooLarge` | The batch contains more requests than the supported maximum. |
 | `24` | `InvalidCommitmentVersion` | The commitment scheme version does not fit in one byte. |
+| `25` | `AttesterTierInsufficient` | The attester's tier is below the minimum required for the attestation class. |
+| `26` | `FacilityRegistryNotSet` | A facility-scoped attestation was submitted but no facility registry is configured. |
+| `27` | `FacilityNotAffiliated` | The attester is not affiliated with the supplied facility. |
+| `28` | `ProbationRateLimited` | The attester exhausted its probation rate cap. |
 
 ## `multisig-account`
 
@@ -91,3 +113,4 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `13` | `PayoutCapExceeded` | The payout would exceed the per-claim cap. |
 | `14` | `TransferFailed` | The token transfer call returned an error. |
 | `15` | `NonPositiveAmount` | A non-positive amount was provided where a positive amount is required. |
+| `16` | `PayoutNotEligible` | The attester is on probation and not yet eligible for payouts. |

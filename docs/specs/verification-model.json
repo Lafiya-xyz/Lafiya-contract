@@ -1,5 +1,5 @@
 {
-  "model_version": "1.0.0",
+  "model_version": "1.1.0",
   "verdicts": [
     "WrongNetwork",
     "Indeterminate",
@@ -11,6 +11,14 @@
     "AttesterSuspended",
     "Superseded",
     "Verified"
+  ],
+  "annotations": [
+    "attester_tier",
+    "attestation_class",
+    "attester_on_probation",
+    "facility_id",
+    "facility_affiliated_at_attestation",
+    "facility_active"
   ],
   "default_input": {
     "network_matches": true,
@@ -41,6 +49,10 @@
     { "id": "suspended", "input": { "attester_status": "suspended" }, "verdict": "AttesterSuspended" },
     { "id": "suspended-beats-superseded", "input": { "attester_status": "suspended", "superseded": true }, "verdict": "AttesterSuspended" },
     { "id": "superseded", "input": { "superseded": true }, "verdict": "Superseded" },
+    { "id": "nurse-tier-annotation-keeps-verified", "input": { "attester_tier": "nurse", "attestation_class": "vitals" }, "verdict": "Verified" },
+    { "id": "probation-annotation-keeps-verified", "input": { "attester_on_probation": true }, "verdict": "Verified" },
+    { "id": "disaffiliated-facility-annotation-keeps-verified", "input": { "facility_id": 7, "facility_affiliated_at_attestation": true, "facility_active": false }, "verdict": "Verified" },
+    { "id": "suspended-with-tier-annotation", "input": { "attester_tier": "physician", "attester_status": "suspended" }, "verdict": "AttesterSuspended" },
     { "id": "offline-clean", "input": { "offline": true }, "verdict": "Verified", "qualifier": "as_of_bundle" },
     { "id": "offline-revoked", "input": { "offline": true, "revoked": true }, "verdict": "Revoked", "qualifier": "as_of_bundle" }
   ]

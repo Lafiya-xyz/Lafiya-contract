@@ -49,6 +49,8 @@ pub fn default_rules() -> Vec<EventRule> {
         ),
         rule("pause_toggled", &["paused", "unpaused"], Severity::High),
         rule("bulk_revocation", &["attestation_revoked"], Severity::Info),
+        rule("probation_breach", &["probation_breach"], Severity::High),
+        rule("attester_slashed", &["slash_executed"], Severity::High),
     ]
 }
 
@@ -305,6 +307,14 @@ mod tests {
             .as_ref()
             .unwrap()
             .ends_with(&"ab".repeat(32)));
+    }
+
+    #[test]
+    fn probation_breach_and_slash_are_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("probation_breach", 1, &["GATT"]));
+        assert_eq!(kinds(&a), vec![("probation_breach", Severity::High)]);
+        let a = Engine::new(&cfg()).evaluate(&ev("slash_executed", 1, &["1", "GATT"]));
+        assert_eq!(kinds(&a), vec![("attester_slashed", Severity::High)]);
     }
 
     #[test]

@@ -22,6 +22,7 @@ use soroban_sdk::{
 #[contractclient(name = "AttesterRegistryClient")]
 pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
+    fn is_payout_eligible(env: Env, attester: Address) -> bool;
 }
 
 const SCHEMA_VERSION: u32 = 1;
@@ -198,6 +199,8 @@ pub enum Error {
     TransferFailed = 14,
     /// A non-positive amount was provided where a positive amount is required.
     NonPositiveAmount = 15,
+    /// The attester is on probation and not yet eligible for payouts.
+    PayoutNotEligible = 16,
 }
 
 // ──────────────────────────── Contract ────────────────────────────
@@ -573,6 +576,10 @@ impl IncentivePool {
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
         }
+        // A registry without probation support leaves payouts open.
+        if let Ok(Ok(false)) = registry.try_is_payout_eligible(&attester) {
+            return Err(Error::PayoutNotEligible);
+        }
 
         // Enforce per-claim cap at approval time.
         let max_per_claim: i128 = env
@@ -640,6 +647,10 @@ impl IncentivePool {
         let registry = AttesterRegistryClient::new(&env, &registry_id);
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
+        }
+        // A registry without probation support leaves payouts open.
+        if let Ok(Ok(false)) = registry.try_is_payout_eligible(&attester) {
+            return Err(Error::PayoutNotEligible);
         }
 
         // Enforce per-attester cumulative cap.

@@ -876,3 +876,43 @@ fn attester_total_claimed_starts_at_zero() {
     let attester = Address::generate(&env);
     assert_eq!(client.get_attester_total_claimed(&attester), 0);
 }
+
+// ─────────────────────── Probation payout gate ───────────────────────
+
+#[test]
+fn probationary_attester_cannot_be_approved_or_claim_until_promoted() {
+    let (env, client, attester_registry, admin, _approver, _token, _ta) = setup();
+    attester_registry.set_probation_config(&(7 * 24 * 60 * 60), &0, &0, &false);
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&admin, &attester);
+    client.fund(&ONE_UNIT);
+
+    let work_item_id = BytesN::from_array(&env, &[9u8; 32]);
+    assert_eq!(
+        client.try_approve_work_item(&work_item_id, &attester, &ONE_UNIT),
+        Err(Ok(Error::PayoutNotEligible))
+    );
+
+    attester_registry.promote_attester(&admin, &attester);
+    client.approve_work_item(&work_item_id, &attester, &ONE_UNIT);
+    client.claim(&work_item_id);
+    assert!(client.is_work_item_claimed(&work_item_id));
+}
+
+#[test]
+fn approved_item_cannot_be_claimed_if_attester_is_flagged_afterwards() {
+    let (env, client, attester_registry, admin, _approver, _token, _ta) = setup();
+    attester_registry.set_probation_config(&(7 * 24 * 60 * 60), &0, &0, &true);
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&admin, &attester);
+    client.fund(&ONE_UNIT);
+    let work_item_id = BytesN::from_array(&env, &[8u8; 32]);
+    client.approve_work_item(&work_item_id, &attester, &ONE_UNIT);
+
+    // Policy tightens before the claim.
+    attester_registry.set_probation_config(&(7 * 24 * 60 * 60), &0, &0, &false);
+    assert_eq!(
+        client.try_claim(&work_item_id),
+        Err(Ok(Error::PayoutNotEligible))
+    );
+}

@@ -47,6 +47,8 @@ is submitted. An alert with no matching announcement is an incident.
 | `wasm_changed_without_event` | critical | On-chain wasm hash changed with no `upgraded` event | Treat as compromise or a watchdog blind spot; investigate immediately |
 | `multisig_reconfigured` | critical | Multisig signer set, threshold, or recovery changed | Confirm with every signer out of band |
 | `pause_toggled` | high | Registry paused or unpaused | Confirm with the admin; unplanned unpause during an incident is critical |
+| `probation_breach` | high | A probationary attester breached a limit (`ProbationBreach`) | Review its attestations since `ProbationStarted`; promote only after review ([spec](../specs/attester-probation.md)) |
+| `attester_slashed` | high | A bond slash executed (`SlashExecuted`) | Confirm the case evidence and consider suspending or removing the attester |
 | `mass_enrollment` | high | More than N attesters added within M ledgers | Check the batch against the approved attester list |
 | `bulk_revocation` | info | Attestation revoked | Watch for bursts |
 | `watchdog_lag` | critical | Watchdog is behind the network by more than `max_lag_ledgers` | Check RPC health ([rpc-outage-recovery.md](rpc-outage-recovery.md)); nothing is being watched |
