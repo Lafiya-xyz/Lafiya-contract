@@ -3,6 +3,14 @@
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+mod bond;
+mod probation;
+mod tiers;
+
+pub use bond::*;
+pub use probation::*;
+pub use tiers::*;
+
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
     String, Symbol, Vec,
@@ -25,13 +33,16 @@ pub const INTERFACE_VERSION: u32 = 1;
 pub const EVENT_VERSION: u32 = 1;
 
 /// Optional features this build supports, reported by `get_interface`.
-pub const FEATURES: [&str; 6] = [
+pub const FEATURES: [&str; 9] = [
     "pause",
     "metadata",
     "suspension",
     "batch",
     "max_attesters",
     "migrate",
+    "probation",
+    "tiers",
+    "bond",
 ];
 
 /// Interface and capability metadata returned by `get_interface`, so
@@ -100,6 +111,26 @@ enum DataKey {
     RegionalRegistrarCount(Address),
     /// Registrar responsible for an attester's regional enrollment.
     RegionalAttester(Address),
+    /// Probation policy applied to new enrollments (instance storage).
+    ProbationConfig,
+    /// An attester's probation window (persistent storage).
+    Probation(Address),
+    /// An attester's capability tier (persistent storage).
+    AttesterTier(Address),
+    /// Active capability matrix, class -> minimum tier (instance storage).
+    TierMatrix,
+    /// Proposed capability matrix awaiting its timelock (instance storage).
+    PendingTierMatrix,
+    /// Bond policy (instance storage).
+    BondConfig,
+    /// An attester's escrowed bond (persistent storage).
+    Bond(Address),
+    /// Last allocated slash case id (instance storage).
+    SlashCaseCount,
+    /// A slash case by id (persistent storage).
+    SlashCase(u64),
+    /// Open slash case ids for an attester (persistent storage).
+    AttesterCases(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -277,6 +308,42 @@ pub enum Error {
     RegionalAttestersRemain = 15,
     /// The region is not a valid ISO 3166-2 style code such as `NG-LA`.
     InvalidRegion = 16,
+    /// No probation record exists for the attester, or it cannot be finalized yet.
+    ProbationNotFound = 17,
+    /// A probation rate cap needs a non-zero rate window.
+    InvalidProbationConfig = 18,
+    /// The capability matrix exceeds `MAX_TIER_CLASSES` entries.
+    TierMatrixTooLarge = 19,
+    /// No capability matrix proposal is pending.
+    NoPendingTierMatrix = 20,
+    /// The pending capability matrix's timelock has not elapsed.
+    TierMatrixTimelocked = 21,
+    /// Bonds are not configured; call `set_bond_config` first.
+    BondNotConfigured = 22,
+    /// Bond config needs positive minimum and quorum, and `unbond_delay` above `challenge_window`.
+    InvalidBondConfig = 23,
+    /// The bond or slash amount must be positive.
+    InvalidBondAmount = 24,
+    /// The attester has no bond.
+    BondNotFound = 25,
+    /// The unlocked bond is smaller than the requested slash.
+    InsufficientBond = 26,
+    /// The attester already has the maximum number of open slash cases.
+    TooManyOpenCases = 27,
+    /// No slash case exists with this id.
+    SlashCaseNotFound = 28,
+    /// The slash case is not in a state that allows this action.
+    SlashCaseWrongState = 29,
+    /// This account already approved the slash case.
+    AlreadyApproved = 30,
+    /// The challenge window is still open; the slash cannot execute yet.
+    ChallengeWindowOpen = 31,
+    /// The challenge window has closed; the slash can no longer be appealed.
+    ChallengeWindowClosed = 32,
+    /// The unbonding cooldown has not been requested or has not elapsed.
+    BondWithdrawalNotReady = 33,
+    /// Open slash cases block withdrawing the bond.
+    SlashCasesOpen = 34,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -502,6 +569,9 @@ impl AttesterRegistry {
             &DataKey::AttesterRotation(previous_attester.clone()),
             &new_attester,
         );
+        probation::rotate(&env, &previous_attester, &new_attester);
+        tiers::rotate(&env, &previous_attester, &new_attester);
+        bond::rotate(&env, &previous_attester, &new_attester);
         Self::record_status_change(&env, &previous_attester, false);
         Self::record_status_change(&env, &new_attester, !suspended);
         AttesterRotated {
@@ -534,6 +604,8 @@ impl AttesterRegistry {
                 .persistent()
                 .set(&DataKey::Attester(attester.clone()), &info);
             Self::clear_regional_attester(&env, &attester);
+            probation::clear(&env, &attester);
+            tiers::clear(&env, &attester);
             let count = Self::attester_count(&env);
             if count > 0 {
                 env.storage()
@@ -846,6 +918,7 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
+        probation::begin(&env, &attester);
         if !already_present && regional_scope.is_some() {
             Self::record_regional_attester(&env, &registrar, &attester);
         }
@@ -930,6 +1003,7 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
+        probation::begin(&env, &attester);
         Self::set_validity(&env, &attester, valid_from, valid_until);
         if !already_present && regional_scope.is_some() {
             Self::record_regional_attester(&env, &registrar, &attester);
@@ -1052,6 +1126,7 @@ impl AttesterRegistry {
                 };
                 env.storage().persistent().set(&key, &info);
                 Self::record_status_change(&env, &attester, true);
+                probation::begin(&env, &attester);
                 Self::set_validity(&env, &attester, None, None);
                 if regional_scope.is_some() {
                     Self::record_regional_attester(&env, &registrar, &attester);
@@ -1125,6 +1200,8 @@ impl AttesterRegistry {
                 info.trust_revoked_after = Some(env.ledger().timestamp());
                 env.storage().persistent().set(&key, &info);
                 Self::clear_regional_attester(&env, &attester);
+                probation::clear(&env, &attester);
+                tiers::clear(&env, &attester);
                 count = count.saturating_sub(1);
                 Self::record_status_change(&env, &attester, false);
                 AttesterRemoved {
@@ -1166,6 +1243,8 @@ impl AttesterRegistry {
                 .persistent()
                 .set(&DataKey::Attester(attester.clone()), info);
             Self::clear_regional_attester(&env, &attester);
+            probation::clear(&env, &attester);
+            tiers::clear(&env, &attester);
         }
         if was_present {
             let count = Self::attester_count(&env);
@@ -1252,6 +1331,7 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, false);
+        probation::flag_if_active(&env, &attester, &reason);
         AttesterSuspended {
             attester,
             reason,
@@ -1744,3 +1824,7 @@ mod large_test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod governance_test;

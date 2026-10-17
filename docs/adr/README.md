@@ -45,3 +45,5 @@ Terms used throughout these ADRs — *attester*, *CHW*, *record hash* / *record 
 | [ADR-0011](0011-rpc-provider-failover-and-transaction-recovery.md) | RPC provider failover and transaction-recovery strategy | Proposed |
 | [ADR-0012](0012-per-attestation-blinded-commitments.md) | Per-attestation blinded commitments to prevent record-hash linkability | Proposed |
 | [ADR-0017](0017-attester-enumeration-strategy.md) | Derive the attester directory from events plus a mutation cursor, not on-chain enumeration storage | Proposed |
+| [ADR-0018](0018-attester-bond-and-slashing.md) | Optional attester bonds with quorum-gated, appealable slashing | Proposed |
+| [ADR-0019](0019-facility-registry.md) | Facility registry linking attesters and attestations to licensed facilities | Proposed |
