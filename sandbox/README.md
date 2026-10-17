@@ -98,3 +98,30 @@ them from your app or scripts with `--source lafiya-sandbox-chw-lagos-1`.
    history, `patient-003` was attested by an attester who is now suspended,
    `patient-004` by one who has since been removed, and `patient-007` and
    `patient-008` are revoked.
+
+## Replay
+
+Reproduce a field incident locally from recorded events (the `lafiya-watchdog
+export` JSONL also used by the dashboard):
+
+```bash
+python3 sandbox/replay.py --events events.jsonl --from 1100 --to 2100 \
+  --attesters attesters.json > sandbox/scenarios/incident.toml
+cargo xtask sandbox up     --scenario incident   # replay in recorded order
+cargo xtask sandbox verify --scenario incident   # exit 1 + diff vs recorded final state
+```
+
+Events are applied in `(ledger, tx_hash)` order, so the same window always yields
+the same scenario (`python3 -m unittest discover -s sandbox` replays a 1,000-event
+window twice). `sandbox/scenarios/replay-regression.toml` is generated from the
+dashboard fixtures (ledgers 1100-4100: multi-attester histories plus a revocation).
+
+Known non-determinism, and how it is handled:
+
+| Source | Handling |
+| --- | --- |
+| Ledger close times and sequence numbers differ locally | Not preserved; order is. State, not timestamps, is compared. |
+| Transactions in one ledger have no defined order in events | Sorted by `tx_hash`. |
+| Attester addresses are not the sandbox's DEV keys | Mapped to stable names `a-<address prefix>`. |
+| Events outside the window (earlier attesters or records) | Attesters seen only via `attestation_recorded` are added as active. |
+| Intermediate suspend/reinstate cycles | Only the final status is replayed. |

@@ -1,0 +1,20 @@
+name: Chaos scenarios
+
+# Nightly: tooling must fail closed when the RPC lies, lags, or drops.
+on:
+  schedule:
+    - cron: "43 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  chaos:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 sandbox/chaos/chaos.py run sandbox/chaos/scenarios.toml

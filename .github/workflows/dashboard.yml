@@ -64,6 +64,18 @@ jobs:
             --ledger-from "$START_LEDGER" --ledger-to "$to" --contracts "$CONTRACTS" \
             --out site
           cp pages/dashboard/events.jsonl site/events.jsonl
+      - name: Sign snapshot
+        # Optional: set secret LAFIYA_DASHBOARD_SIGNING_KEY (Ed25519 PEM). Without it
+        # the snapshot is published unsigned. Rotation: dashboard/VERIFY.md.
+        env:
+          SIGNING_KEY: ${{ secrets.LAFIYA_DASHBOARD_SIGNING_KEY }}
+        run: |
+          if [ -n "$SIGNING_KEY" ]; then
+            umask 077
+            printf '%s\n' "$SIGNING_KEY" > "$RUNNER_TEMP/snapshot.key"
+            python3 dashboard/snapshot.py sign --data site/data --key "$RUNNER_TEMP/snapshot.key"
+            rm -f "$RUNNER_TEMP/snapshot.key"
+          fi
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
