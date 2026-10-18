@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>multisig-account passkey signing</title>
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 48rem; margin: 2rem auto; padding: 0 1rem; }
+      textarea { width: 100%; min-height: 8rem; font-family: ui-monospace, monospace; }
+      pre { background: #f4f4f4; padding: 0.75rem; overflow-x: auto; }
+      .warn { color: #8a4b00; }
+    </style>
+  </head>
+  <body>
+    <h1>Approve a multisig-account call with a passkey</h1>
+
+    <section>
+      <h2>1. Register a passkey signer (once)</h2>
+      <button id="register">Create passkey</button>
+      <p>Add this public key to the account policy as <code>SignerKey::Secp256r1</code>:</p>
+      <pre id="public-key">-</pre>
+    </section>
+
+    <section>
+      <h2>2. Load the ceremony file</h2>
+      <textarea id="ceremony" placeholder="Paste ceremony.json (createCeremony / lafiya-cli)"></textarea>
+      <button id="load">Decode</button>
+    </section>
+
+    <section>
+      <h2>3. Review what you are approving</h2>
+      <p class="warn">
+        The passkey prompt only names this site. It cannot show the call below, so check it
+        here: the quorum approves the whole invocation tree.
+      </p>
+      <pre id="intent">Load a ceremony first.</pre>
+      <label><input type="checkbox" id="reviewed" disabled /> I have reviewed this call</label>
+    </section>
+
+    <section>
+      <h2>4. Sign</h2>
+      <button id="sign" disabled>Sign with passkey</button>
+      <pre id="result">-</pre>
+    </section>
+
+    <script type="module" src="./main.js"></script>
+  </body>
+</html>

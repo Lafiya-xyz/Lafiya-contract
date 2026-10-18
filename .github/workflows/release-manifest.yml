@@ -3,8 +3,8 @@ name: Release
 # Tag pipeline (docs/releasing.md#automated-release-flow): reproducible wasm ->
 # SHA256SUMS -> provenance metadata assertion -> release manifest (generated +
 # validated + checked against SHA256SUMS) -> bindings -> signed SLSA build
-# provenance -> GitHub release -> follow-up PR adding the wasm to the
-# upgrade-compatibility fixtures.
+# provenance -> CycloneDX SBOMs + VEX -> GitHub release -> follow-up PR adding
+# the wasm to the upgrade-compatibility fixtures.
 #
 # Triggers:
 #   - workflow_call from release-please.yml after a release PR merges (a tag
@@ -75,10 +75,33 @@ jobs:
           python-version: "3.12"
       - run: pip install -r requirements-dev.lock
 
+      - uses: anchore/sbom-action/download-syft@006b7ce8314066bdf1765b4500370d40fa6917a3 # v0.24.2
+        with:
+          syft-version: v1.53.0
+
+      # One CycloneDX SBOM per contract wasm, the CLI, every npm package and
+      # the indexer image, plus the VEX document, all as release assets.
+      - name: Generate + validate SBOMs and VEX
+        run: |
+          mkdir -p dist
+          cargo build --release --locked -p lafiya-cli
+          python3 scripts/generate_sboms.py -o dist
+          for pkg in packages/*/; do
+            name=$(basename "$pkg")
+            syft scan "dir:$pkg" --source-name "$name" -o "cyclonedx-json@1.6=dist/npm-$name.sbom.cdx.json"
+          done
+          docker build -f crates/lafiya-indexer/Dockerfile -t lafiya-indexer:"$TAG" .
+          syft scan "docker:lafiya-indexer:$TAG" --source-name lafiya-indexer \
+            -o "cyclonedx-json@1.6=dist/image-lafiya-indexer.sbom.cdx.json"
+          cp security/vex/vex.cdx.json dist/vex.cdx.json
+          python3 scripts/validate_sboms.py --vex dist/vex.cdx.json dist/*.sbom.cdx.json
+
       - name: Generate + validate release manifest
         run: |
-          python3 scripts/generate_release_manifest.py --pretty -o release-manifest.json
-          python3 scripts/validate_release_manifest.py release-manifest.json
+          python3 scripts/generate_release_manifest.py --pretty \
+            --sbom-dir dist --vex dist/vex.cdx.json -o release-manifest.json
+          cp release-manifest.json dist/release-manifest.json
+          python3 scripts/validate_release_manifest.py dist/release-manifest.json
           python3 scripts/check_manifest_compatibility.py \
             release-manifest.json \
             docs/release-manifest/examples/lafiya-web.requirements.json

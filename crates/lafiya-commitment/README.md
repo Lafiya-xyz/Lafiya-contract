@@ -40,3 +40,49 @@ node crates/lafiya-commitment/reference-ts/lrc1.test.ts
 Both suites load `vectors/lrc1-test-vectors.json` and assert their output
 matches it byte-for-byte, which is the cross-language determinism the spike
 was asked to demonstrate.
+
+## Security notes
+
+Salts and the pre-hash record fields are secret: anyone holding them can
+run a dictionary attack against the on-chain commitment. The crate handles
+them as follows.
+
+- **Zeroization.** `Salt` overwrites its 32 bytes with zeros on drop and
+  implements `Zeroize`/`ZeroizeOnDrop`. The salted preimage built by
+  `commit_v1_salted` (salt plus encoded fields) lives in a `Zeroizing`
+  buffer that is allocated at its exact final size, so it never reallocates
+  and leaves stale copies in freed memory. The WASM `CommitmentEncoder`
+  wipes the `Uint8Array` copy it receives from JS and its own stack copy.
+- **No accidental copies or logging.** `Salt` implements neither `Clone`,
+  `Copy`, `Debug` nor `Display`. A compile-time guard in `src/lib.rs`
+  (`secret_type_guards`) makes the crate, and therefore `cargo clippy`, fail
+  if any of those are ever derived for it.
+- **Constant-time comparison.** Use `verify_v1_salted` (or
+  `commitments_eq` for two raw commitments) instead of `==` when one side
+  was recomputed from secret inputs. `Salt` only offers equality through
+  `subtle::ConstantTimeEq`. The LRC-2 `verify_disclosure` root check uses
+  the same constant-time comparison.
+
+### Limits of these guarantees
+
+Zeroization is best effort, not a guarantee that no copy ever exists:
+
+- `Salt::from_bytes` takes its array by value; the caller's copy, and any
+  temporaries the compiler spills to the stack or registers, are outside
+  this crate's control.
+- `FieldValue` is an ordinary owned value (`Clone`, `Debug`) because it is
+  also used for non-secret data. Callers holding sensitive fields should
+  wrap them in `zeroize::Zeroizing` themselves.
+- The SHA-256 implementation (`sha2`) does not zeroize its internal block
+  buffer, and the Soroban `commit_v1_soroban_salted` path copies the
+  preimage into host-managed `Bytes`, which this crate cannot wipe.
+- In WASM, linear memory is a JS `ArrayBuffer`: anything with a reference to
+  the module's memory can read it, and the original `Uint8Array` the caller
+  passed in stays in the JS heap until the caller overwrites it
+  (`salt.fill(0)`). Call `encoder.free()` explicitly; relying on the
+  `FinalizationRegistry` defers zeroization indefinitely.
+- Constant-time behavior is provided by `subtle`'s optimization barriers.
+  It holds for the comparison itself, not for SHA-256 or the encoding,
+  whose running time depends on the (public) field lengths. JIT-compiled
+  WASM gives no formal constant-time guarantee; `subtle` is the best
+  available mitigation there.

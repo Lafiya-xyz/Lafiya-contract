@@ -44,6 +44,8 @@ use alloc::{string::String, string::ToString, vec::Vec};
 use core::fmt;
 
 use sha2::{Digest, Sha256};
+use subtle::{Choice, ConstantTimeEq};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 /// Schema-level size limits to prevent memory exhaustion
 pub const MAX_FIELD_BYTES: usize = 65_536; // 64 KiB per field
@@ -86,11 +88,27 @@ impl std::error::Error for EncodeError {}
 
 /// High-entropy salt for dictionary-attack resistance (32 bytes).
 /// Required for [`commit_v1_salted`] to prevent brute-forcing low-entropy records.
-#[derive(Clone, Debug, PartialEq, Eq)]
+///
+/// A leaked salt turns the on-chain commitment back into a dictionary-attack
+/// target, so this type is deliberately restrictive:
+///
+/// - its bytes are overwritten with zeros when it is dropped;
+/// - it implements neither `Clone` nor `Copy`, so no unzeroized duplicate
+///   can be made implicitly;
+/// - it implements neither `Debug` nor `Display`, so it cannot end up in
+///   logs or panic messages;
+/// - equality is only available through [`ConstantTimeEq`].
+///
+/// The absence of `Clone`/`Copy`/`Debug` is asserted at compile time below.
+/// See the "Security notes" section of the crate README for the limits of
+/// these guarantees.
 pub struct Salt([u8; 32]);
 
 impl Salt {
     /// Create a salt from a fixed byte array (for re-verification).
+    ///
+    /// `bytes` is moved in by value; the caller is responsible for zeroizing
+    /// any other copy it still holds.
     pub fn from_bytes(bytes: [u8; 32]) -> Self {
         Salt(bytes)
     }
@@ -104,6 +122,59 @@ impl Salt {
     pub fn as_bytes_mut(&mut self) -> &mut [u8; 32] {
         &mut self.0
     }
+}
+
+impl Zeroize for Salt {
+    fn zeroize(&mut self) {
+        self.0.zeroize();
+    }
+}
+
+impl Drop for Salt {
+    fn drop(&mut self) {
+        self.zeroize();
+    }
+}
+
+impl ZeroizeOnDrop for Salt {}
+
+impl ConstantTimeEq for Salt {
+    fn ct_eq(&self, other: &Self) -> Choice {
+        self.0.ct_eq(&other.0)
+    }
+}
+
+/// Compile-time guard: secret types must never implement `Clone`, `Copy` or
+/// `Debug`. Adding one of those derives to [`Salt`] makes the blanket impls
+/// below overlap, so the crate fails to compile (and so does `cargo clippy`).
+#[allow(dead_code)]
+mod secret_type_guards {
+    use super::Salt;
+
+    macro_rules! assert_not_impl {
+        ($ty:ty: $($tr:path),+) => {$(
+            const _: fn() = || {
+                trait AmbiguousIfImpl<A> {
+                    fn some_item() {}
+                }
+                impl<T: ?Sized> AmbiguousIfImpl<()> for T {}
+                struct Invalid;
+                impl<T: ?Sized + $tr> AmbiguousIfImpl<Invalid> for T {}
+                let _ = <$ty as AmbiguousIfImpl<_>>::some_item;
+            };
+        )+};
+    }
+
+    assert_not_impl!(Salt: Clone, Copy, core::fmt::Debug, core::fmt::Display);
+}
+
+/// Compare two 32-byte commitments in constant time.
+///
+/// Use this instead of `==` whenever one side is recomputed from secret
+/// inputs (salt and record fields): a short-circuiting comparison leaks, via
+/// timing, how many leading bytes of a guessed preimage's hash match.
+pub fn commitments_eq(a: &[u8; 32], b: &[u8; 32]) -> bool {
+    a.ct_eq(b).into()
 }
 
 /// Domain-separation tag mixed into every LRC-1 commitment. Distinguishes a
@@ -151,6 +222,17 @@ pub enum FieldValue {
 }
 
 impl FieldValue {
+    /// Exact number of bytes [`FieldValue::encode`] appends for this field.
+    fn encoded_len(&self) -> usize {
+        match self {
+            FieldValue::Absent | FieldValue::Null => 1,
+            FieldValue::Text(s) => 5 + s.len(),
+            FieldValue::Int64(_) => 9,
+            FieldValue::Bool(_) => 2,
+            FieldValue::Bytes(b) => 5 + b.len(),
+        }
+    }
+
     fn encode(&self, out: &mut Vec<u8>) -> Result<(), EncodeError> {
         match self {
             FieldValue::Absent => {
@@ -229,21 +311,71 @@ pub fn commit_v1(fields: &[FieldValue]) -> Result<[u8; 32], EncodeError> {
     Ok(hasher.finalize().into())
 }
 
+/// Build the salted LRC-1 payload: the salt encoded as a leading
+/// `TAG_BYTES` field, followed by `fields`.
+///
+/// The buffer holds both the salt and the record's pre-hash inputs, so it is
+/// returned as [`Zeroizing`] and allocated at its exact final size up front:
+/// a growing `Vec` would reallocate and leave unzeroized copies behind in
+/// freed memory.
+fn salted_payload(salt: &Salt, fields: &[FieldValue]) -> Result<Zeroizing<Vec<u8>>, EncodeError> {
+    if fields.len() + 1 > MAX_FIELDS {
+        return Err(EncodeError::TooManyFields {
+            count: fields.len() + 1,
+        });
+    }
+
+    // Validate sizes in the same order `encode_payload` would, so that the
+    // buffer can be allocated once at its exact final length.
+    let mut total = 5 + salt.0.len();
+    for field in fields {
+        if let FieldValue::Text(_) | FieldValue::Bytes(_) = field {
+            let len = field.encoded_len() - 5;
+            if len > MAX_FIELD_BYTES {
+                return Err(EncodeError::FieldTooLarge { size: len });
+            }
+        }
+        total += field.encoded_len();
+        if total > MAX_PAYLOAD_BYTES {
+            return Err(EncodeError::PayloadTooLarge { size: total });
+        }
+    }
+
+    let mut out = Zeroizing::new(Vec::with_capacity(total));
+    out.push(TAG_BYTES);
+    out.extend_from_slice(&(salt.0.len() as u32).to_be_bytes());
+    out.extend_from_slice(&salt.0);
+    for field in fields {
+        field.encode(&mut out)?;
+    }
+    debug_assert_eq!(out.len(), total);
+    Ok(out)
+}
+
 /// Compute the LRC-1 record commitment with high-entropy salt:
 /// `SHA-256(DOMAIN_TAG || VERSION_V1 || salt_field || canonical_payload)`.
 /// The salt is encoded as a TAG_BYTES field prepended to the fields.
+///
+/// The intermediate preimage buffer is zeroized before this function
+/// returns.
 pub fn commit_v1_salted(salt: &Salt, fields: &[FieldValue]) -> Result<[u8; 32], EncodeError> {
-    // Prepend salt as a mandatory first field
-    let mut salted_fields = Vec::with_capacity(fields.len() + 1);
-    salted_fields.push(FieldValue::Bytes(salt.0.to_vec()));
-    salted_fields.extend_from_slice(fields);
-
-    let payload = encode_payload(&salted_fields)?;
+    let payload = salted_payload(salt, fields)?;
     let mut hasher = Sha256::new();
     hasher.update(DOMAIN_TAG);
     hasher.update([VERSION_V1]);
-    hasher.update(&payload);
+    hasher.update(&payload[..]);
     Ok(hasher.finalize().into())
+}
+
+/// Recompute a salted LRC-1 commitment and compare it with `expected` in
+/// constant time (see [`commitments_eq`]).
+pub fn verify_v1_salted(
+    salt: &Salt,
+    fields: &[FieldValue],
+    expected: &[u8; 32],
+) -> Result<bool, EncodeError> {
+    let recomputed = commit_v1_salted(salt, fields)?;
+    Ok(commitments_eq(&recomputed, expected))
 }
 
 /// Decode a LRC-1 canonical payload back into fields (round-trip verification).
@@ -335,19 +467,14 @@ pub mod soroban {
         salt: &Salt,
         fields: &[FieldValue],
     ) -> Result<BytesN<32>, EncodeError> {
-        // Prepend salt as first field
-        let mut salted_fields = Vec::with_capacity(fields.len() + 1);
-        salted_fields.push(FieldValue::Bytes(salt.0.to_vec()));
-        salted_fields.extend_from_slice(fields);
-
-        let payload = encode_payload(&salted_fields)?;
+        let payload = salted_payload(salt, fields)?;
 
         let mut preimage = Bytes::new(env);
         for byte in DOMAIN_TAG {
             preimage.push_back(*byte);
         }
         preimage.push_back(VERSION_V1);
-        for byte in &payload {
+        for byte in payload.iter() {
             preimage.push_back(*byte);
         }
 
@@ -508,6 +635,114 @@ mod tests {
 
         // Different commitments prove the salt affects the result
         assert_ne!(salted, unsalted);
+    }
+
+    #[test]
+    fn salted_payload_matches_prepended_bytes_field() {
+        let salt = Salt::from_bytes([7u8; 32]);
+        let fields = vec![
+            FieldValue::Text("genotype".into()),
+            FieldValue::Absent,
+            FieldValue::Null,
+            FieldValue::Int64(-1),
+            FieldValue::Bool(false),
+            FieldValue::Bytes(vec![9, 8, 7]),
+        ];
+
+        let mut prepended = vec![FieldValue::Bytes(salt.as_bytes().to_vec())];
+        prepended.extend_from_slice(&fields);
+
+        let payload = salted_payload(&salt, &fields).expect("valid");
+        assert_eq!(
+            &payload[..],
+            &encode_payload(&prepended).expect("valid")[..]
+        );
+        assert_eq!(payload.capacity(), payload.len(), "no slack to reallocate");
+    }
+
+    #[test]
+    fn salted_payload_reports_same_errors_as_encode_payload() {
+        let salt = Salt::from_bytes([1u8; 32]);
+        let cases = [
+            vec![FieldValue::Bytes(vec![0u8; MAX_FIELD_BYTES + 1])],
+            vec![FieldValue::Text("x".repeat(MAX_FIELD_BYTES)); 17],
+            vec![FieldValue::Null; MAX_FIELDS],
+        ];
+        for fields in cases {
+            let mut prepended = vec![FieldValue::Bytes(salt.as_bytes().to_vec())];
+            prepended.extend_from_slice(&fields);
+            assert_eq!(
+                salted_payload(&salt, &fields).map(|p| p.len()),
+                encode_payload(&prepended).map(|p| p.len()),
+            );
+        }
+    }
+
+    #[test]
+    fn verify_v1_salted_accepts_only_matching_commitment() {
+        let salt = Salt::from_bytes([42u8; 32]);
+        let fields = vec![FieldValue::Text("SS".into())];
+        let commitment = commit_v1_salted(&salt, &fields).expect("valid");
+
+        assert!(verify_v1_salted(&salt, &fields, &commitment).expect("valid"));
+
+        let mut tampered = commitment;
+        tampered[31] ^= 1;
+        assert!(!verify_v1_salted(&salt, &fields, &tampered).expect("valid"));
+
+        let other_salt = Salt::from_bytes([43u8; 32]);
+        assert!(!verify_v1_salted(&other_salt, &fields, &commitment).expect("valid"));
+    }
+
+    #[test]
+    fn commitments_eq_compares_every_byte() {
+        let a = [0x5au8; 32];
+        for i in 0..32 {
+            let mut b = a;
+            b[i] ^= 0x80;
+            assert!(!commitments_eq(&a, &b), "difference at byte {i} missed");
+        }
+        assert!(commitments_eq(&a, &a));
+    }
+
+    #[test]
+    fn salt_equality_is_constant_time() {
+        let a = Salt::from_bytes([3u8; 32]);
+        let b = Salt::from_bytes([3u8; 32]);
+        let c = Salt::from_bytes([4u8; 32]);
+        assert!(bool::from(a.ct_eq(&b)));
+        assert!(!bool::from(a.ct_eq(&c)));
+    }
+
+    #[test]
+    fn salt_zeroize_clears_bytes() {
+        let mut salt = Salt::from_bytes([0xabu8; 32]);
+        salt.zeroize();
+        assert_eq!(salt.as_bytes(), &[0u8; 32]);
+    }
+
+    #[test]
+    fn salt_is_zeroized_on_drop() {
+        use core::mem::MaybeUninit;
+
+        let mut slot = MaybeUninit::new(Salt::from_bytes([0xabu8; 32]));
+        // SAFETY: `slot` holds an initialized `Salt`; it is dropped exactly
+        // once and only its plain-byte field is read afterwards, which is
+        // still valid memory because `Salt` owns no heap allocation.
+        let after_drop = unsafe {
+            core::ptr::drop_in_place(slot.as_mut_ptr());
+            core::ptr::read(core::ptr::addr_of!((*slot.as_ptr()).0))
+        };
+        assert_eq!(after_drop, [0u8; 32]);
+    }
+
+    #[test]
+    fn salted_payload_buffer_is_zeroizing() {
+        fn assert_zeroize_on_drop<T: ZeroizeOnDrop>(_: &T) {}
+        let salt = Salt::from_bytes([5u8; 32]);
+        let payload = salted_payload(&salt, &[FieldValue::Bool(true)]).expect("valid");
+        assert_zeroize_on_drop(&payload);
+        assert_zeroize_on_drop(&salt);
     }
 
     #[test]

@@ -51,8 +51,10 @@ known-first-party = [
     "extract_interface",
     "gen_events_doc",
     "generate_release_manifest",
+    "generate_sboms",
     "spec_types",
     "validate_release_manifest",
+    "validate_sboms",
 ]
 
 [tool.mypy]

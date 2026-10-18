@@ -1770,13 +1770,15 @@ dependencies = [
 
 [[package]]
 name = "lafiya-commitment"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "soroban-sdk",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1929,8 +1931,10 @@ dependencies = [
  "attestation-registry",
  "attester-registry",
  "ed25519-dalek 3.0.0",
+ "hex",
  "p256",
  "proptest",
+ "serde_json",
  "sha2 0.10.9",
  "soroban-sdk",
 ]

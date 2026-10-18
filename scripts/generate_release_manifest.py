@@ -7,7 +7,13 @@ definitions, and config/networks.toml, and emits one JSON document that binds
 them together for a release. See docs/adr/0010-release-manifest-and-compatibility.md.
 
 Usage:
-    scripts/generate_release_manifest.py [--previous PATH] [--pretty] [-o PATH]
+    scripts/generate_release_manifest.py [--previous PATH] [--sbom-dir DIR] [--vex PATH]
+                                         [--pretty] [-o PATH]
+
+--sbom-dir lists the CycloneDX SBOMs written by scripts/generate_sboms.py (and
+the syft scans in the release workflow) under `sboms`; --vex records the VEX
+document and its statements under `vex`. Both are release assets, so paths
+in the manifest are file names relative to the manifest.
 
 Building the wasm artifacts first (`make wasm`) lets the manifest include real
 sha256 hashes; without a build, wasm.sha256 is null and the manifest still
@@ -23,6 +29,8 @@ import tomllib
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from generate_sboms import SBOM_KINDS, SBOM_SUFFIX
 
 Json = dict[str, Any]
 
@@ -255,7 +263,52 @@ def build_compatibility() -> Json:
     }
 
 
-def generate(previous_manifest: Json | None) -> Json:
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def build_sboms(sbom_dir: Path) -> list[Json]:
+    sboms: list[Json] = []
+    for path in sorted(sbom_dir.glob(f"*{SBOM_SUFFIX}")):
+        prefix, _, artifact = path.name.removesuffix(SBOM_SUFFIX).partition("-")
+        if prefix not in SBOM_KINDS:
+            raise ValueError(f"{path.name}: unknown SBOM kind prefix {prefix!r}")
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        sboms.append(
+            {
+                "artifact": artifact,
+                "kind": SBOM_KINDS[prefix],
+                "path": path.name,
+                "format": doc["bomFormat"],
+                "spec_version": doc["specVersion"],
+                "sha256": sha256_file(path),
+            }
+        )
+    return sboms
+
+
+def build_vex(vex_path: Path) -> Json:
+    doc = json.loads(vex_path.read_text(encoding="utf-8"))
+    return {
+        "path": vex_path.name,
+        "format": doc["bomFormat"],
+        "spec_version": doc["specVersion"],
+        "sha256": sha256_file(vex_path),
+        "statements": [
+            {
+                "id": v["id"],
+                "state": v["analysis"]["state"],
+                "justification": v["analysis"].get("justification"),
+                "affects": sorted(a["ref"] for a in v.get("affects", [])),
+            }
+            for v in doc.get("vulnerabilities", [])
+        ],
+    }
+
+
+def generate(
+    previous_manifest: Json | None, sbom_dir: Path | None = None, vex_path: Path | None = None
+) -> Json:
     contracts = build_contracts()
     contracts_by_name = {c["name"]: c for c in contracts}
     catalog = {
@@ -269,7 +322,7 @@ def generate(previous_manifest: Json | None) -> Json:
         git_tag: str | None = run_git("describe", "--tags", "--exact-match", "HEAD")
     except subprocess.CalledProcessError:
         git_tag = None
-    return {
+    manifest: Json = {
         "manifest_version": 1,
         "release": {
             "workspace_version": workspace_version(),
@@ -284,6 +337,11 @@ def generate(previous_manifest: Json | None) -> Json:
         "compatibility": build_compatibility(),
         "catalog": catalog,
     }
+    if sbom_dir is not None:
+        manifest["sboms"] = build_sboms(sbom_dir)
+    if vex_path is not None:
+        manifest["vex"] = build_vex(vex_path)
+    return manifest
 
 
 def main() -> None:
@@ -291,6 +349,8 @@ def main() -> None:
     parser.add_argument(
         "--previous", type=Path, help="prior release manifest, used to classify event compatibility"
     )
+    parser.add_argument("--sbom-dir", type=Path, help="directory holding *.sbom.cdx.json files")
+    parser.add_argument("--vex", type=Path, help="CycloneDX VEX document for this release")
     parser.add_argument("-o", "--output", type=Path, help="write to this path instead of stdout")
     parser.add_argument("--pretty", action="store_true", help="indent the JSON output")
     args = parser.parse_args()
@@ -299,7 +359,7 @@ def main() -> None:
     if args.previous:
         previous_manifest = json.loads(args.previous.read_text(encoding="utf-8"))
 
-    manifest = generate(previous_manifest)
+    manifest = generate(previous_manifest, args.sbom_dir, args.vex)
     text = json.dumps(manifest, indent=2 if args.pretty else None, sort_keys=False)
     if args.output:
         args.output.write_text(text + "\n", encoding="utf-8")

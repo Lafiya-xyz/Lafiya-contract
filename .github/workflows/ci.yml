@@ -207,6 +207,28 @@ jobs:
           path: target/wasm32v1-none/release/*.wasm
           retention-days: 7
 
+  # Pre-1.0 public-API gate for the native library crates consumed outside
+  # this repo. A breaking change must come with the matching version bump in
+  # the crate's Cargo.toml (0.MINOR while 0.x); see CONTRIBUTING.md.
+  semver-checks:
+    name: Semver checks (native crates)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true' && github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@cargo-semver-checks
+      # The crates are not on crates.io, so the PR's merge base is the
+      # baseline. A crate that does not exist at the baseline is skipped.
+      - run: >-
+          cargo semver-checks check-release
+          --baseline-rev "$(git merge-base HEAD origin/${{ github.base_ref }})"
+          -p lafiya-commitment -p lafiya-config -p lafiya-fraud-scoring
+
   docs-checks:
     name: Docs & catalog checks
     runs-on: ubuntu-latest
@@ -226,7 +248,7 @@ jobs:
   ci-success:
     name: ci-success
     if: always()
-    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, build-wasm, docs-checks]
+    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, build-wasm, semver-checks, docs-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate results

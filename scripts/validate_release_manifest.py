@@ -6,13 +6,17 @@ cross-check internal consistency the JSON Schema alone can't express:
   script does not rebuild wasm (that's CI's job), but it does verify that any
   bindings[].generated_from_wasm_sha256 matches its contract's wasm.sha256, so
   a manifest can never claim bindings were generated from a hash the manifest
-  itself doesn't also report.
+  itself doesn't also report;
+- every sboms[] / vex entry whose file sits next to the manifest (as release
+  assets do) must match its recorded sha256, and VEX statement ids must be
+  unique.
 
 Usage:
     scripts/validate_release_manifest.py MANIFEST.json
 """
 
 import argparse
+import hashlib
 import json
 import sys
 from pathlib import Path
@@ -20,6 +24,21 @@ from typing import Any
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_PATH = ROOT / "docs" / "release-manifest" / "schema.json"
+
+
+def asset_errors(manifest: dict[str, Any], manifest_dir: Path) -> list[str]:
+    errors: list[str] = []
+    entries = [(f"sboms[{s['artifact']}]", s) for s in manifest.get("sboms", [])]
+    if "vex" in manifest:
+        entries.append(("vex", manifest["vex"]))
+    for label, entry in entries:
+        path = manifest_dir / entry["path"]
+        if path.is_file() and hashlib.sha256(path.read_bytes()).hexdigest() != entry["sha256"]:
+            errors.append(f"{label}.sha256 does not match {entry['path']}")
+    ids = [s["id"] for s in manifest.get("vex", {}).get("statements", [])]
+    for dup in sorted({i for i in ids if ids.count(i) > 1}):
+        errors.append(f"vex.statements has more than one statement for {dup}")
+    return errors
 
 
 def cross_check(manifest: dict[str, Any]) -> list[str]:
@@ -60,7 +79,7 @@ def main() -> int:
         path = "/".join(str(p) for p in err.path) or "<root>"
         print(f"schema error at {path}: {err.message}", file=sys.stderr)
 
-    consistency_errors = cross_check(manifest)
+    consistency_errors = cross_check(manifest) + asset_errors(manifest, args.manifest.parent)
     for err in consistency_errors:
         print(f"consistency error: {err}", file=sys.stderr)
 

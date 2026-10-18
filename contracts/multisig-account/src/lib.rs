@@ -691,4 +691,6 @@ mod fuzz_test;
 #[cfg(test)]
 mod integration_test;
 #[cfg(test)]
+mod passkey_vectors_test;
+#[cfg(test)]
 mod test;

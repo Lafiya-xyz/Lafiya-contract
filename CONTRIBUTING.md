@@ -147,6 +147,46 @@ If proptest finds a failing case, it shrinks it to a minimal repro and writes it
 
 If a crash or invariant violation surfaces while working on either fuzz target, file it as its own bug report and fix it — don't fold an unrelated fix into a feature PR.
 
+### Native Crates: Miri, Sanitizers, and Semver Checks
+The pure-Rust library crates `lafiya-commitment`, `lafiya-config`, and
+`lafiya-fraud-scoring` are consumed outside this repo, so they get two extra
+checks:
+
+- **Miri and sanitizers (nightly, non-blocking).** `.github/workflows/native-crates-nightly.yml`
+  runs each crate's test suite under Miri, plus AddressSanitizer and
+  LeakSanitizer, on a pinned nightly toolchain. A failure opens or comments on
+  the "Nightly Miri/sanitizer run failed" issue. Reproduce locally with:
+  ```bash
+  rustup toolchain install nightly-2026-10-01 --component miri,rust-src
+  MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly-2026-10-01 miri test -p lafiya-commitment
+  ```
+  A test that cannot run under Miri (FFI, very slow loops) is marked
+  `#[cfg_attr(miri, ignore = "<reason>")]` and added to the exceptions below.
+
+  | Exception | Reason | Tracking |
+  | --- | --- | --- |
+  | `lafiya-qr` (whole crate) | Not a workspace member yet and its test suite does not compile | Add it to the workspace and fix the tests, then add it to the Miri matrix |
+
+- **Semver checks (blocking on PRs).** The `Semver checks (native crates)` CI
+  job runs `cargo semver-checks` against the PR's merge base. A PR that
+  changes a crate's public API in a breaking way without the matching version
+  bump in that crate's `Cargo.toml` fails.
+
+**Breaking changes before 1.0.** These crates are versioned independently of
+the workspace, and SemVer allows breaking changes in `0.x`. The process is:
+
+1. Prefer an additive change: add the new item and mark the old one
+   `#[deprecated(since = "0.N.0", note = "use ... instead")]`.
+2. If the break is necessary, bump the crate's `0.MINOR` version (for example
+   `0.1.x` → `0.2.0`) in its own `Cargo.toml` in the same PR; a patch bump is
+   only for non-breaking changes. This bump is the "version intent" the
+   semver-checks job looks for.
+3. Tick **Breaking change?** in the PR template, and mark the commit as
+   breaking (`feat(commitment)!: ...` or a `BREAKING CHANGE:` footer naming
+   the crate and the migration) so release-please records it in the changelog.
+4. Changes to the commitment *encoding* are never a crate-level break: they
+   need a new commitment version under ADR-0008 ([stability policy](docs/stability-policy.md)).
+
 ### Task Runner
 Developer and CI tasks run through `cargo xtask` (the `xtask/` workspace member, aliased
 in `.cargo/config.toml`). It needs only the Rust toolchain pinned in `rust-toolchain.toml`

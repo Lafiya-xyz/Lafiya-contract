@@ -220,7 +220,7 @@ pub fn verify_disclosure(
     // Collect leaves in index order and recompute the root.
     let ordered: Vec<[u8; 32]> = leaf_map.into_values().collect();
     let recomputed = make_root(&ordered);
-    recomputed == *root
+    crate::commitments_eq(&recomputed, root)
 }
 
 // ---------------------------------------------------------------------------
