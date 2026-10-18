@@ -6,6 +6,15 @@
 //! administrative operations on the `attester-registry` and
 //! `attestation-registry` contracts.
 #![no_std]
+#![cfg_attr(
+    dylint_lib = "lafiya_lints",
+    allow(
+        storage_in_loop,
+        persistent_set_without_ttl,
+        unchecked_amount_arithmetic,
+        reason = "baseline: pre-existing findings, tracked for per-site cleanup (docs/custom-lints.md)"
+    )
+)]
 
 // Unlike `attester-registry` and `attestation-registry`, this crate does not set
 // `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`. `__constructor`

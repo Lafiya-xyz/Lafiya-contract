@@ -1,0 +1,22 @@
+{
+  "en": {
+    "admin_transferred": "Admin rights of contract {contract} moved to {topic1}.",
+    "upgraded": "Contract {contract} was upgraded.",
+    "paused": "Contract {contract} was paused.",
+    "unpaused": "Contract {contract} was resumed.",
+    "rate_limit_set": "The rate limit of contract {contract} was changed.",
+    "attestation_registry_repointed": "Contract {contract} now uses a different attester registry.",
+    "attester_added": "Attester {topic0} was added by contract {contract}.",
+    "attester_removed": "Attester {topic0} was removed by contract {contract}.",
+    "attester_suspended": "Attester {topic0} was suspended by contract {contract}.",
+    "attester_reinstated": "Attester {topic0} was reinstated by contract {contract}.",
+    "attester_revoked": "Attester {topic0} was revoked by contract {contract}.",
+    "attester_info_updated": "Details of attester {topic0} were updated on contract {contract}."
+  },
+  "fr": {
+    "admin_transferred": "Les droits d'administration du contrat {contract} ont été transférés à {topic1}.",
+    "upgraded": "Le contrat {contract} a été mis à jour.",
+    "paused": "Le contrat {contract} a été suspendu.",
+    "unpaused": "Le contrat {contract} a été réactivé."
+  }
+}

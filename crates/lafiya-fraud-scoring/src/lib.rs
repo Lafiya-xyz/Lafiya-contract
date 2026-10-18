@@ -72,6 +72,9 @@ pub struct ScoringConfig {
     pub collusion_shared_record_threshold: u32,
     pub high_severity_score: f64,
     pub medium_severity_score: f64,
+    /// Attesters whose events are ignored entirely (e.g. the canary attester,
+    /// see docs/runbooks/canary-attestations.md).
+    pub excluded_attesters: Vec<String>,
 }
 
 impl Default for ScoringConfig {
@@ -86,6 +89,7 @@ impl Default for ScoringConfig {
             collusion_shared_record_threshold: 5,
             high_severity_score: 3.0,
             medium_severity_score: 1.0,
+            excluded_attesters: Vec::new(),
         }
     }
 }
@@ -155,6 +159,9 @@ pub fn score_attesters(
 
     let mut by_attester: HashMap<&str, Vec<&AttestationEvent>> = HashMap::new();
     for event in events {
+        if config.excluded_attesters.contains(&event.attester) {
+            continue;
+        }
         by_attester.entry(&event.attester).or_default().push(event);
     }
 

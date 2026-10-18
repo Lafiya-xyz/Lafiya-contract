@@ -53,7 +53,7 @@ jobs:
           bash -n scripts/smoke-test.sh
           bash -n scripts/smoke-test.test.sh
       - name: ShellCheck
-        run: shellcheck scripts/smoke-test.sh scripts/smoke-test.test.sh
+        run: shellcheck scripts/smoke-test.sh scripts/smoke-test.test.sh scripts/canary.sh scripts/check_lint_allows.sh
       - name: Run smoke-test.sh regression test
         run: bash scripts/smoke-test.test.sh
 
@@ -69,6 +69,28 @@ jobs:
       # pinned synthetic ledger range and compares it with the committed output.
       - run: python -m unittest discover -s dashboard -v
       - run: git diff --exit-code dashboard/fixtures
+      - run: python -m unittest discover -s dashboard/governance -v
+      - run: python -m unittest discover -s scripts -p "test_status_page.py" -v
+
+  dylint:
+    name: Custom Dylint lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/check_lint_allows.sh
+      # Toolchain comes from lints/rust-toolchain; expect a few extra minutes
+      # (first run builds the lint crate; the cargo cache absorbs repeats).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin
+            ~/.dylint_drivers
+            lints/target
+          key: dylint-${{ hashFiles('lints/Cargo.lock', 'lints/rust-toolchain') }}
+      - run: cargo install cargo-dylint dylint-link --locked
+      - run: cargo test --manifest-path lints/Cargo.toml
+      - run: cargo dylint --path lints --all -- --workspace --all-targets
 
   fmt:
     name: Format

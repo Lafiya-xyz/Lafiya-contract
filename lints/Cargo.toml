@@ -1,0 +1,21 @@
+[package]
+name = "lafiya_lints"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+# Not a workspace member: it builds on a pinned nightly (see rust-toolchain).
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clippy_utils = { git = "https://github.com/rust-lang/rust-clippy", tag = "rust-1.99.0" }
+dylint_linting = "6"
+
+[dev-dependencies]
+dylint_testing = "6"
+
+[package.metadata.rust-analyzer]
+rustc_private = true

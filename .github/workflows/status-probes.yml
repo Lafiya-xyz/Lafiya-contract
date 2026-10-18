@@ -1,0 +1,44 @@
+name: Status probes
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: status-probes
+  cancel-in-progress: false
+
+jobs:
+  probe:
+    runs-on: ubuntu-latest
+    if: vars.LAFIYA_RPC_URL != ''
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch history
+        run: |
+          mkdir -p out
+          git fetch origin gh-pages || true
+          git show origin/gh-pages:status/history-github.jsonl > out/history-github.jsonl 2>/dev/null || true
+      - name: Probe (public read paths only)
+        run: >-
+          python3 scripts/status_probe.py
+          --deployment "${{ vars.LAFIYA_STATUS_DEPLOYMENT }}" --location github
+          --rpc-url "${{ vars.LAFIYA_RPC_URL }}" --indexer-url "${{ vars.LAFIYA_INDEXER_URL }}"
+          --fixture-hash "${{ vars.LAFIYA_FIXTURE_HASH }}" --history out/history-github.jsonl
+        continue-on-error: true
+      - name: Render status page
+        run: python3 scripts/status_page.py --history out/history-github.jsonl --incidents docs/status-incidents.json --out out
+      - name: Publish to gh-pages
+        run: |
+          git config user.name "github-actions"; git config user.email "github-actions@users.noreply.github.com"
+          git checkout --orphan tmp-status; git rm -rf . >/dev/null
+          git fetch origin gh-pages && git checkout origin/gh-pages -- . 2>/dev/null || true
+          mkdir -p status && cp out/* status/
+          git add status && git commit -m "chore(status): update probes" && git push origin HEAD:gh-pages

@@ -269,6 +269,8 @@ def main(argv=None):
     p.add_argument("--ledger-to", type=int, required=True)
     p.add_argument("--contracts", required=True, help="comma separated contract IDs")
     p.add_argument("--out", required=True)
+    p.add_argument("--exclude-attester", action="append", default=[],
+                   help="attester address to omit (canary attester); repeatable")
     args = p.parse_args(argv)
 
     with open(args.attesters, encoding="utf-8") as f:
@@ -276,6 +278,7 @@ def main(argv=None):
     events = [
         e for e in load_events(args.events)
         if args.ledger_from <= e["ledger"] < args.ledger_to
+        and e.get("data", "") not in args.exclude_attester
     ]
     provenance = {
         "network": args.network,
