@@ -103,3 +103,5 @@ implementation **MUST** run the whole table in CI and fail on any mismatch.
 - **Patch:** wording and clarifications only.
 
 Implementations **SHOULD** report the model version they implement.
+
+Responder presentation guidelines (contrast, redundancy, wording, checklist): [verdict-ux-guidelines](../integration/verdict-ux-guidelines.md).

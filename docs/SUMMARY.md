@@ -53,6 +53,8 @@
   - [ADR-0012: Multi-jurisdiction deployment topology](adr/0012-multi-jurisdiction-deployment-topology.md)
   - [ADR template](adr/0000-template.md)
 - [Spike: contract interface conformance](spikes/0137-contract-interface-conformance.md)
+- [Responder verdict UX guidelines](integration/verdict-ux-guidelines.md)
+- [Spike: ZK selective disclosure](spikes/0608-zk-selective-disclosure.md)
 
 # Security
 

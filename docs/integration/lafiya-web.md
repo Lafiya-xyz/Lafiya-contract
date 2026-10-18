@@ -233,3 +233,24 @@ Copy into every `lafiya-web` PR that touches verification:
 - [ ] Every contract, RPC, and SDK error in section 4 maps to its translation key.
 - [ ] Contract IDs come from the release manifest or config, not constants.
 - [ ] The manifest compatibility check passes in CI.
+- [ ] Indexer expectations are covered by `consumer-contracts/lafiya-web.json` (section 7).
+- [ ] Verdict screens pass the checklist in [verdict-ux-guidelines.md](verdict-ux-guidelines.md).
+
+## 7. Consumer-driven contract tests
+
+`lafiya-web` expectations of the indexer API (paths, query parameters, required response
+fields, cursor pagination) are stored in
+[`crates/lafiya-indexer/consumer-contracts/lafiya-web.json`](../../crates/lafiya-indexer/consumer-contracts/lafiya-web.json).
+The `consumer-contracts` workflow runs `scripts/check_consumer_contracts.py` against
+`openapi.yaml` on every PR touching the spec or the fixtures; a breaking change fails CI.
+Run locally: `pip install pyyaml && python scripts/check_consumer_contracts.py`.
+
+**Versioning rules**
+
+- *Additive* (new endpoint, optional query parameter, new response field): allowed without a
+  fixture change; bump the OpenAPI `info.version` minor.
+- *Breaking* (removing or renaming a path, parameter, or field; making a required field
+  optional or a non-null cursor nullable; changing ordering or pagination semantics): requires
+  a new API major version, a fixture update reviewed by the `lafiya-web` owners in the same PR,
+  and a deprecation window per the [stability policy](../stability-policy.md).
+- Fixture changes are consumer changes: they need `lafiya-web` owner approval.
