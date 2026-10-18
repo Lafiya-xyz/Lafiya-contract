@@ -11,6 +11,35 @@ permissions:
   contents: read
 
 jobs:
+  # Docs quality gates: external + internal link check (cached, with the
+  # `.lycheeignore` allowlist), spell check against the project dictionary
+  # in `_typos.toml`, and the fenced snippets marked `testable`.
+  quality:
+    name: Docs quality gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Restore lychee cache
+        uses: actions/cache@v4
+        with:
+          path: .lycheecache
+          key: lychee-${{ github.sha }}
+          restore-keys: lychee-
+      - name: Check links
+        uses: lycheeverse/lychee-action@v2
+        with:
+          args: --config lychee.toml --cache --max-cache-age 1d './**/*.md'
+          fail: true
+      - name: Spell check
+        uses: crate-ci/typos@v1
+        with:
+          config: _typos.toml
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Run testable snippets
+        run: python3 scripts/docs/run_snippets.py
+
   docs:
     runs-on: ubuntu-latest
     permissions:

@@ -23,7 +23,7 @@ its own to call. Building and submitting a `__check_auth`-authorized call is
 covered instead by [`@lafiya/multisig-auth`](../packages/multisig-auth), a
 hand-maintained helper package (not generated) for computing the signature
 payload and encoding N-of-M signatures in the shape the contract expects.
-`scripts/conformance/check_bindings_drift.py` covers `multisig-account`'s
+`cargo xtask generate --check` covers `multisig-account`'s
 bindings the same way it does the other two contracts.
 
 ## Publishing & Consumption Strategy

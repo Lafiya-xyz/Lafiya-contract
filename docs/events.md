@@ -14,6 +14,27 @@ for how these events are consumed.
 
 ## `attestation-registry`
 
+### `AdminTransferCancelled`
+
+- **Prefix topics:** `admin_transfer_cancelled`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `admin` | `Address` | topic_list |
+| `proposed_admin` | `Address` | topic_list |
+
+### `AdminTransferProposed`
+
+- **Prefix topics:** `admin_transfer_proposed`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `current_admin` | `Address` | topic_list |
+| `proposed_admin` | `Address` | topic_list |
+| `expires_at` | `u64` | data |
+
 ### `AdminTransferred`
 
 - **Prefix topics:** `admin_transferred`
@@ -26,6 +47,18 @@ for how these events are consumed.
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
 
+### `AttestationBatchAnchored`
+
+- **Prefix topics:** `attestation_batch_anchored`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `root` | `BytesN<32>` | topic_list |
+| `attester` | `Address` | data |
+| `timestamp` | `u64` | data |
+| `leaf_count` | `u32` | data |
+
 ### `AttestationRecorded`
 
 - **Prefix topics:** `attestation_recorded`
@@ -36,6 +69,8 @@ for how these events are consumed.
 | `record_hash` | `BytesN<32>` | topic_list |
 | `attester` | `Address` | data |
 | `timestamp` | `u64` | data |
+| `expires_at` | `u64` | data |
+| `commitment_version` | `u32` | data |
 | `sequence` | `u64` | data |
 | `evicted_sequence` | `Option<u64>` | data |
 | `contract_kind` | `Symbol` | data |
@@ -108,6 +143,16 @@ for how these events are consumed.
 | `max_per_window` | `u32` | data |
 | `window_ledgers` | `u32` | data |
 
+### `RecordVersionLinked`
+
+- **Prefix topics:** `record_version_linked`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `previous_record_hash` | `BytesN<32>` | topic_list |
+| `record_hash` | `BytesN<32>` | topic_list |
+
 ### `Unpaused`
 
 - **Prefix topics:** `unpaused`
@@ -119,7 +164,37 @@ for how these events are consumed.
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
 
+### `Upgraded`
+
+- **Prefix topics:** `upgraded`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `new_wasm_hash` | `BytesN<32>` | topic_list |
+
 ## `attester-registry`
+
+### `AdminTransferCancelled`
+
+- **Prefix topics:** `admin_transfer_cancelled`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `admin` | `Address` | topic_list |
+| `proposed_admin` | `Address` | topic_list |
+
+### `AdminTransferProposed`
+
+- **Prefix topics:** `admin_transfer_proposed`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `current_admin` | `Address` | topic_list |
+| `proposed_admin` | `Address` | topic_list |
+| `expires_at` | `u64` | data |
 
 ### `AdminTransferred`
 
@@ -186,6 +261,16 @@ for how these events are consumed.
 |---|---|---|
 | `attester` | `Address` | topic_list |
 
+### `AttesterRotated`
+
+- **Prefix topics:** `attester_rotated`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `previous_attester` | `Address` | topic_list |
+| `new_attester` | `Address` | topic_list |
+
 ### `AttesterSuspended`
 
 - **Prefix topics:** `attester_suspended`
@@ -196,6 +281,8 @@ for how these events are consumed.
 | `attester` | `Address` | topic_list |
 | `reason` | `Symbol` | data |
 | `since` | `u64` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 
 ### `Initialized`
 

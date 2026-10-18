@@ -40,6 +40,18 @@ def _strip_docs(node: Any) -> Any:
     return node
 
 
+def _normalize_type_keys(node: Any) -> Any:
+    """Keep snapshots stable across CLI versions that serialize `type`/`type_`."""
+    if isinstance(node, dict):
+        return {
+            ("type_" if key == "type" else key): _normalize_type_keys(value)
+            for key, value in node.items()
+        }
+    if isinstance(node, list):
+        return [_normalize_type_keys(value) for value in node]
+    return node
+
+
 def _entry_name(kind: str, body: dict[str, Any]) -> str:
     if kind == "function_v0":
         return str(body["name"])

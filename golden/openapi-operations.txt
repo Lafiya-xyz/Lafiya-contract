@@ -1,0 +1,5 @@
+GET /health
+GET /metrics
+GET /attesters
+GET /attestations
+GET /records/{hash}/history

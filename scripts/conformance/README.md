@@ -23,10 +23,15 @@ runs four independent checks against the built contract `.wasm` files in
    the Wasm against the tables in `docs/error-codes.md`.
 3. **`gen_events_doc.py --check`** -- verifies `docs/events.md` (the
    generated event schema reference) is still in sync with the Wasm.
-4. **`check_bindings_drift.py`** -- regenerates the TypeScript client with
-   the same `stellar contract bindings typescript` command `make bindings`
-   uses, and diffs its function/error surface against the committed
-   `bindings/<contract>/src/index.ts`.
+4. **`cargo xtask generate --check`** -- the single golden-snapshot gate
+   for every generated artifact: interface snapshots, TypeScript bindings
+   (`bindings/<contract>/src/index.ts`), error/event catalogs,
+   `docs/events.md`, the event decoders, the indexer OpenAPI operation
+   index (`golden/openapi-operations.txt`) and the release manifest
+   (`golden/release-manifest.json`, build-specific fields masked). It
+   regenerates everything, restores the committed files, and prints a
+   semantic diff (one line per changed JSON key path, changed lines for
+   text) for anything that drifted.
 
 5. **`gen_events_ts.py --check`** -- verifies the generated TypeScript
    event decoders in `packages/events/src/generated.ts` (`@lafiya/events`)
@@ -43,8 +48,8 @@ etc.), not just Rust-level signature changes.
 ## Running it
 
 ```bash
-make conformance          # build contracts, run all four checks
-make conformance-update   # regenerate snapshots + docs/events.md after a deliberate interface change
+make conformance          # build contracts, run all checks
+make conformance-update   # `cargo xtask generate`: rewrite every generated artifact after a deliberate change
 ```
 
 These checks run on every pull request in the `conformance` job of
@@ -54,8 +59,7 @@ These checks run on every pull request in the `conformance` job of
 Requires the `stellar` CLI on `PATH` (same prerequisite as `make bindings`;
 see `docs/typescript-bindings.md`).
 
-`check_bindings_drift.py` does not have an `--update` mode -- if it finds
-drift, regenerate the affected bindings the normal way (`make bindings`)
+If `cargo xtask generate --check` reports drift, run `cargo xtask generate`
 and commit the result, so the diff gets human review.
 
 ## Scope
@@ -74,5 +78,4 @@ coverage to `multisig-account` or a future contract.
 | `check_snapshot.py` | Interface snapshot diff/update |
 | `check_error_docs.py` | Error code <-> `docs/error-codes.md` cross-check |
 | `gen_events_doc.py` | Generates/checks `docs/events.md` |
-| `check_bindings_drift.py` | TS binding regeneration diff |
 | `snapshots/*.json` | Committed golden interface snapshots |

@@ -1,12 +1,10 @@
-"""Tests for check_error_docs.py, gen_events_doc.py and check_bindings_drift.py."""
+"""Tests for check_error_docs.py and gen_events_doc.py."""
 
 import pathlib
 from typing import Any
 
 import pytest
-from conftest import completed
 
-import check_bindings_drift
 import check_error_docs
 import gen_events_doc
 
@@ -48,7 +46,7 @@ DOCS = """# Errors
 
 @pytest.fixture
 def one_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    for mod in (check_error_docs, gen_events_doc, check_bindings_drift):
+    for mod in (check_error_docs, gen_events_doc):
         monkeypatch.setattr(mod, "CONTRACTS", {"demo": dict(CFG)})
     monkeypatch.setattr(check_error_docs, "extract", lambda _: [ERROR_ENUM])
     monkeypatch.setattr(gen_events_doc, "extract", lambda _: [EVENT])
@@ -135,89 +133,3 @@ def test_events_doc_write_then_check(
 
     monkeypatch.setattr("sys.argv", ["gen_events_doc.py", "--check"])
     gen_events_doc.main()
-
-
-# --- check_bindings_drift ---------------------------------------------------
-
-
-def index_ts(functions: list[str], errors: dict[int, str]) -> str:
-    fns = "\n".join(
-        f"  {f}: ({{a}}: {{a: string}}, options?: MethodOptions) => Promise<void>"
-        for f in functions
-    )
-    errs = ",\n".join(f'  {c}: {{message:"{n}"}}' for c, n in errors.items())
-    return f"export const Errors = {{\n{errs}\n}}\nexport interface Client {{\n{fns}\n}}\n"
-
-
-def test_client_surface() -> None:
-    fns, errs = check_bindings_drift.client_surface(index_ts(["pause", "attest"], {1: "A"}))
-    assert fns == {"pause", "attest"}
-    assert errs == {1: "A"}
-
-
-@pytest.fixture
-def bindings(tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
-    committed = tmp_path / "committed"
-    (committed / "src").mkdir(parents=True)
-    state: dict[str, Any] = {"fresh": index_ts(["pause"], {1: "A"}), "cfg": {**CFG}}
-    state["cfg"]["bindings_dir"] = committed
-    state["committed"] = committed / "src" / "index.ts"
-
-    def regenerate(_cfg: dict[str, pathlib.Path], out_dir: pathlib.Path) -> None:
-        (out_dir / "src").mkdir(parents=True, exist_ok=True)
-        (out_dir / "src" / "index.ts").write_text(state["fresh"])
-
-    monkeypatch.setattr(check_bindings_drift, "regenerate", regenerate)
-    monkeypatch.setattr(check_bindings_drift, "CONTRACTS", {"demo": state["cfg"]})
-    return state
-
-
-def test_bindings_missing(bindings: dict[str, Any], tmp_path: pathlib.Path) -> None:
-    assert not check_bindings_drift.check_one("demo", bindings["cfg"], tmp_path / "out")
-
-
-def test_bindings_in_sync(
-    bindings: dict[str, Any], tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    bindings["committed"].write_text(bindings["fresh"])
-    assert check_bindings_drift.check_one("demo", bindings["cfg"], tmp_path / "out")
-    monkeypatch.setattr("sys.argv", ["check_bindings_drift.py"])
-    with pytest.raises(SystemExit) as exc:
-        check_bindings_drift.main()
-    assert exc.value.code == 0
-
-
-def test_bindings_drift(
-    bindings: dict[str, Any], tmp_path: pathlib.Path, capsys: pytest.CaptureFixture[str]
-) -> None:
-    bindings["committed"].write_text(index_ts(["old"], {1: "B", 2: "C"}))
-    bindings["fresh"] = index_ts(["pause"], {1: "A", 3: "D"})
-    assert not check_bindings_drift.check_one("demo", bindings["cfg"], tmp_path / "out")
-    out = capsys.readouterr().out
-    assert "contract exposes `pause`" in out
-    assert "bindings expose `old`" in out
-    assert "error 3 (D) missing" in out
-    assert "error 2 (C) in bindings" in out
-    assert "error 1 is `A`" in out
-
-
-def test_bindings_unknown_contract(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr("sys.argv", ["check_bindings_drift.py", "nope"])
-    with pytest.raises(SystemExit, match="unknown contract"):
-        check_bindings_drift.main()
-
-
-def test_regenerate_invokes_stellar(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: pathlib.Path
-) -> None:
-    calls: list[list[str]] = []
-
-    def run(cmd: list[str], **_: Any) -> Any:
-        calls.append(cmd)
-        return completed(returncode=len(calls) - 1, stderr="bad")
-
-    monkeypatch.setattr("subprocess.run", run)
-    check_bindings_drift.regenerate(CFG, tmp_path)
-    assert calls[0][:4] == ["stellar", "contract", "bindings", "typescript"]
-    with pytest.raises(SystemExit, match="bindings generation failed"):
-        check_bindings_drift.regenerate(CFG, tmp_path)

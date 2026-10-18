@@ -3,6 +3,7 @@
 use clap::{Parser, Subcommand};
 
 mod docs;
+mod generate;
 mod sandbox;
 
 #[derive(Parser, Debug)]
@@ -20,6 +21,12 @@ enum Task {
         #[arg(long)]
         check: bool,
     },
+    /// Regenerate every committed generated artifact (golden snapshots)
+    Generate {
+        /// Fail with a semantic diff instead of writing if anything drifted
+        #[arg(long)]
+        check: bool,
+    },
     /// Local sandbox chain seeded from a scenario file (DEV ONLY keys)
     Sandbox {
         #[command(subcommand)]
@@ -30,6 +37,7 @@ enum Task {
 fn main() -> anyhow::Result<()> {
     match Cli::parse().task {
         Task::Docs { check } => docs::run(check),
+        Task::Generate { check } => generate::run(check),
         Task::Sandbox { sub } => sandbox::run(&sub),
     }
 }

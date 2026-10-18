@@ -1,0 +1,8 @@
+# Allowlist for lychee (see lychee.toml): one regex per line.
+# Local development endpoints referenced in docs.
+^https?://localhost
+^https?://127\.0\.0\.1
+# Placeholders in examples.
+^https?://example\.(com|org)
+# GitHub edit/new links and rate-limited pages.
+^https://github\.com/Lafiya-xyz/Lafiya-contract/(edit|new)/

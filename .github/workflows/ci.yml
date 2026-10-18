@@ -4,6 +4,10 @@ on:
   push:
     branches: [main]
   pull_request:
+  # Nightly full run: PRs only test the crates their diff affects.
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -13,6 +17,8 @@ env:
   # Pinned stellar-cli used by the conformance job. Its `contract info
   # interface` JSON shape must match scripts/conformance/snapshots/.
   STELLAR_CLI_VERSION: "25.2.0"
+  # Compile jobs share one sccache store (GitHub Actions cache backend).
+  SCCACHE_GHA_ENABLED: "true"
 
 permissions:
   contents: read
@@ -27,8 +33,11 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      test-scope: ${{ steps.scope.outputs.packages }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
       - uses: dorny/paths-filter@v3
         id: filter
         with:
@@ -42,6 +51,20 @@ jobs:
               - 'rust-toolchain.toml'
               - '.config/nextest.toml'
               - '.github/workflows/ci.yml'
+      # PRs test only the affected crates (and their dependents); main,
+      # nightly and manual runs test the whole workspace.
+      - name: Select affected crates
+        id: scope
+        env:
+          BASE_REF: ${{ github.base_ref }}
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            packages=$(python3 scripts/ci/affected_crates.py "origin/$BASE_REF")
+          else
+            packages=--workspace
+          fi
+          echo "packages=$packages" >> "$GITHUB_OUTPUT"
+          echo "Test scope: \`$packages\`" >> "$GITHUB_STEP_SUMMARY"
 
   shell-lint:
     name: Shell lint (smoke-test.sh)
@@ -87,12 +110,18 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           components: clippy
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          # Compiled artifacts come from sccache; keep only the registry here.
+          cache-targets: false
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   # Build once, test many: compile every test binary a single time and fan
@@ -104,12 +133,20 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-targets: false
       - uses: taiki-e/install-action@nextest
-      - run: cargo nextest archive --workspace --all-features --locked --archive-file nextest-archive.tar.zst
+      - run: >-
+          cargo nextest archive ${{ needs.changes.outputs.test-scope }}
+          --all-features --locked --archive-file nextest-archive.tar.zst
+      - run: sccache --show-stats >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
         with:
           name: nextest-archive
@@ -188,12 +225,17 @@ jobs:
     needs: changes
     if: needs.changes.outputs.rust == 'true'
     runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           targets: wasm32v1-none
+      - uses: mozilla-actions/sccache-action@v0.0.9
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-targets: false
       # Only the Soroban contract crates target wasm32v1-none; the other
       # workspace members (lafiya-cli, lafiya-config, lafiya-commitment) are
       # std binaries/libs that can't build for this no_std-only target.
@@ -216,17 +258,73 @@ jobs:
         run: python .github/scripts/check_readme_contracts.py
       - name: Check README versions match Cargo.toml
         run: python .github/scripts/check_readme_versions.py
-      - name: Check error/event catalogs are regenerated
-        run: python3 scripts/conformance/gen_catalog.py --check
       - name: Run the verification-model truth table
         run: python3 scripts/verification_model.py
+
+  # Golden snapshots: regenerates every generated artifact (snapshots,
+  # bindings, catalogs, event docs/decoders, OpenAPI index, release
+  # manifest) and fails with a semantic diff on drift.
+  golden:
+    name: Generated artifacts (golden snapshots)
+    runs-on: ubuntu-latest
+    env:
+      RUSTC_WRAPPER: sccache
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32v1-none
+      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          cache-targets: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Stellar CLI
+        run: |
+          curl -sSfL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" -o stellar-cli.tar.gz
+          tar -xzf stellar-cli.tar.gz stellar
+          sudo mv stellar /usr/local/bin/
+      - run: cargo xtask generate --check
+
+  # Per-job wall-clock timings for this run, as a summary table and a JSON
+  # artifact, so PR-latency changes can be tracked over time.
+  timings:
+    name: Job timings
+    if: always()
+    needs: [shell-lint, dashboard, changes, fmt, clippy, build-tests, test, fuzz, test-report, build-wasm, docs-checks, golden]
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+    steps:
+      - name: Collect job timings
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh api --paginate "repos/${{ github.repository }}/actions/runs/${{ github.run_id }}/attempts/${{ github.run_attempt }}/jobs" \
+            --jq '.jobs[] | select(.completed_at != null) | {name, conclusion, started_at, completed_at,
+                  seconds: ((.completed_at | fromdate) - (.started_at | fromdate))}' \
+            | jq -s 'sort_by(-.seconds)' > timings.json
+          {
+            echo "### Job timings"
+            echo
+            echo "| Job | Result | Duration |"
+            echo "|---|---|--:|"
+            jq -r '.[] | "| \(.name) | \(.conclusion) | \(.seconds / 60 | floor)m \(.seconds % 60)s |"' timings.json
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: job-timings
+          path: timings.json
+          retention-days: 90
 
   # Single required check for branch protection. Jobs skipped by the path
   # filter count as success; any failure or cancellation fails this job.
   ci-success:
     name: ci-success
     if: always()
-    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, build-wasm, docs-checks]
+    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, build-wasm, docs-checks, golden]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate results

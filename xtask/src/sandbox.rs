@@ -10,6 +10,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+#[allow(deprecated)] // demo records keep the unsalted v1 layout (salt is a field)
 use lafiya_commitment::{commit_v1, FieldValue};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -277,11 +278,9 @@ pub fn demo_record(record: &str) -> DemoRecord {
         .map(|(_, v)| FieldValue::Text(v.clone()))
         .collect();
     values.push(FieldValue::Bytes(salt.to_vec()));
-    DemoRecord {
-        hash: commit_v1(&values),
-        fields,
-        salt,
-    }
+    #[allow(deprecated)]
+    let hash = commit_v1(&values).expect("demo fields are within encoding limits");
+    DemoRecord { hash, fields, salt }
 }
 
 // ---------------------------------------------------------------------------
