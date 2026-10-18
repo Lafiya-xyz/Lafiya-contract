@@ -8,6 +8,7 @@
 - [Event indexing and data flow](architecture/event-indexing.md)
 - [Storage versioning](architecture/storage-versioning.md)
 - [Storage cost](storage-cost.md)
+- [Capacity forecast](capacity-forecast.md)
 
 # Contracts
 

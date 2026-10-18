@@ -1026,6 +1026,7 @@ impl AttesterRegistry {
         let max = Self::max_attesters(&env);
         let mut count = Self::attester_count(&env);
 
+        // loop-bound: BATCH_LIMIT -- <=40 addresses (<=20 regional), one persistent write each
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
             let already_present = env
@@ -1097,6 +1098,7 @@ impl AttesterRegistry {
         if attesters.len() > BATCH_LIMIT {
             return Err(Error::BatchTooLarge);
         }
+        // loop-bound: BATCH_LIMIT -- <=40 addresses, in-memory check only
         if attesters.iter().any(|attester| {
             env.storage()
                 .persistent()
@@ -1108,6 +1110,7 @@ impl AttesterRegistry {
 
         let mut count = Self::attester_count(&env);
 
+        // loop-bound: BATCH_LIMIT -- <=40 addresses (<=8 regional), one persistent write each
         for attester in attesters.iter() {
             let key = DataKey::Attester(attester.clone());
             if let Some(mut info) = env
@@ -1319,6 +1322,7 @@ impl AttesterRegistry {
             .get(&DataKey::AttesterStatusChangeCount(attester.clone()))
             .unwrap_or(0);
         let mut active = false;
+        // loop-bound: ACCEPTED(admin) -- one entry per admin-authorized status change; no cap, grows with attester lifecycle churn (follow-up: binary search)
         for sequence in 1..=count {
             let change: Option<AttesterStatusChange> = env
                 .storage()
@@ -1363,6 +1367,7 @@ impl AttesterRegistry {
             if bytes.len() < 4 || bytes.len() > 7 || bytes.get(2) != Some(b'-') {
                 return Err(Error::InvalidRegion);
             }
+            // loop-bound: LOCAL -- region length checked to 4..=7 bytes on the line above
             for (index, byte) in bytes.iter().enumerate() {
                 let valid = if index == 2 {
                     byte == b'-'
@@ -1400,6 +1405,7 @@ impl AttesterRegistry {
     /// Callable by anyone.
     pub fn get_interface(env: Env) -> InterfaceInfo {
         let mut features = Vec::new(&env);
+        // loop-bound: FEATURES -- fixed compile-time array
         for feature in FEATURES {
             features.push_back(Symbol::new(&env, feature));
         }

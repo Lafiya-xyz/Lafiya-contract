@@ -57,6 +57,16 @@ jobs:
       - name: Run smoke-test.sh regression test
         run: bash scripts/smoke-test.test.sh
 
+  loop-bounds:
+    name: Loop bounds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require annotated bounds and a current report
+        run: python3 scripts/check_loop_bounds.py
+      - name: Capacity model tests
+        run: python3 -m unittest discover -s scripts -p 'test_capacity_model.py'
+
   dashboard:
     name: Dashboard generator + reproducibility
     runs-on: ubuntu-latest

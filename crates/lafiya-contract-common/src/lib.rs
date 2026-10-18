@@ -8,6 +8,7 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod admin;
+pub mod migration;
 pub mod pausable;
 pub mod ttl;
 

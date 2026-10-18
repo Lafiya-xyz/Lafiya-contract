@@ -11,6 +11,7 @@ mod attester_import;
 mod audit;
 mod auth_decode;
 mod logging;
+mod rehearsal;
 
 use anyhow::Context;
 use clap::{Parser, Subcommand};
@@ -96,6 +97,11 @@ enum Commands {
         #[command(subcommand)]
         sub: AuditSub,
     },
+    /// Snapshot and diff contract storage around an upgrade (rehearsal)
+    Rehearsal {
+        #[command(subcommand)]
+        sub: RehearsalSub,
+    },
     /// Negotiate the interface of a deployed contract via `get_interface`
     Interface {
         /// Which contract to query
@@ -121,6 +127,29 @@ enum Commands {
     Deployments {
         #[command(subcommand)]
         sub: DeploymentsSub,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum RehearsalSub {
+    /// Dump all instance and persistent data entries of a contract to a JSON file
+    Snapshot {
+        /// Contract id (C...)
+        contract_id: String,
+        /// Output snapshot file
+        #[arg(long)]
+        out: PathBuf,
+        /// Read `stellar contract read --output json` text from this file instead of running it
+        #[arg(long)]
+        from_file: Option<PathBuf>,
+    },
+    /// Diff two snapshots; fails on any change not in the allow-list
+    Diff {
+        before: PathBuf,
+        after: PathBuf,
+        /// JSON allow-list: {"allow":[{"kind":"SchemaVersion","change":"modified"}]}
+        #[arg(long)]
+        allow: PathBuf,
     },
 }
 
@@ -454,6 +483,24 @@ fn main() -> anyhow::Result<()> {
         return run_audit(sub);
     }
 
+    if let Commands::Rehearsal { sub } = &cli.command {
+        return match sub {
+            RehearsalSub::Snapshot {
+                contract_id,
+                out,
+                from_file,
+            } => {
+                validate_address("contract_id", contract_id)?;
+                rehearsal::snapshot(contract_id, &cli.network, from_file.as_deref(), out)
+            }
+            RehearsalSub::Diff {
+                before,
+                after,
+                allow,
+            } => rehearsal::run_diff(before, after, allow),
+        };
+    }
+
     if let Commands::Config {
         sub: ConfigSub::Schema,
     } = &cli.command
@@ -515,7 +562,8 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        Commands::Audit { .. } => {} // handled above
+        Commands::Audit { .. } => {}     // handled above
+        Commands::Rehearsal { .. } => {} // handled above
         Commands::Trust { .. } => {
             anyhow::bail!("`trust` is not available in this build")
         }
