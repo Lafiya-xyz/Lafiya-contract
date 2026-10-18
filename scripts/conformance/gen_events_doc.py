@@ -54,7 +54,7 @@ def render_contract(name: str, cfg: dict[str, Path]) -> str:
         lines.append("| Field | Type | Location |")
         lines.append("|---|---|---|")
         for p in spec["params"]:
-            lines.append(f"| `{p['name']}` | `{render_type(p['type'])}` | {p['location']} |")
+            lines.append(f"| `{p['name']}` | `{render_type(p.get('type_', p.get('type')))}` | {p['location']} |")
         lines.append("")
     return "\n".join(lines)
 

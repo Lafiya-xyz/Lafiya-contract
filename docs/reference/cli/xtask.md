@@ -8,9 +8,10 @@ Lafiya developer tasks
 Usage: xtask <COMMAND>
 
 Commands:
-  docs     Generate the contract and CLI reference pages of the docs site
-  sandbox  Local sandbox chain seeded from a scenario file (DEV ONLY keys)
-  help     Print this message or the help of the given subcommand(s)
+  docs      Generate the contract and CLI reference pages of the docs site
+  generate  Regenerate every committed generated artifact (golden snapshots)
+  sandbox   Local sandbox chain seeded from a scenario file (DEV ONLY keys)
+  help      Print this message or the help of the given subcommand(s)
 
 Options:
   -h, --help  Print help
@@ -25,6 +26,18 @@ Usage: xtask docs [OPTIONS]
 
 Options:
       --check  Fail instead of writing if the committed pages are out of date
+  -h, --help   Print help
+```
+
+## `cargo xtask generate`
+
+```text
+Regenerate every committed generated artifact (golden snapshots)
+
+Usage: xtask generate [OPTIONS]
+
+Options:
+      --check  Fail with a semantic diff instead of writing if anything drifted
   -h, --help   Print help
 ```
 

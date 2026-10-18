@@ -99,7 +99,7 @@ pub fn run(check: bool) -> Result<()> {
     Ok(())
 }
 
-fn build_wasm() -> Result<()> {
+pub(crate) fn build_wasm() -> Result<()> {
     let mut cmd = Command::new("cargo");
     cmd.args(["build", "--release", "--target", "wasm32v1-none"]);
     for c in CONTRACTS {

@@ -66,7 +66,7 @@ functions do not emit a `Deprecated { fn_name }` event.**
 | Events keep the old shape for 2 releases; `event_version` | **Not yet enforced**: [#442](https://github.com/Lafiya-xyz/Lafiya-contract/issues/442) |
 | Function deprecation window; `interface_version` / `get_interface().features` | **Not yet enforced**: [#443](https://github.com/Lafiya-xyz/Lafiya-contract/issues/443) |
 | Storage is append-only; `SCHEMA_VERSION` bump and `Schema-Impact` trailer | **Reviewer-enforced** (runbook and `DataKey` doc comments). Automated upgrade-from-every-release test: [#375](https://github.com/Lafiya-xyz/Lafiya-contract/issues/375) |
-| Bindings match the contract spec | **Enforced locally** by `check_bindings_drift.py` (see #448). npm deprecation is not applicable until packages are published ([PUBLISHING.md](../PUBLISHING.md)) |
+| Bindings match the contract spec | **Enforced locally** by `cargo xtask generate --check` (see #448). npm deprecation is not applicable until packages are published ([PUBLISHING.md](../PUBLISHING.md)) |
 | CLI deprecation warnings and window | **Reviewer-enforced**. Consolidating the scripts into the CLI: [#402](https://github.com/Lafiya-xyz/Lafiya-contract/issues/402), full subcommand coverage: [#394](https://github.com/Lafiya-xyz/Lafiya-contract/issues/394) |
 | Commitment encodings are only ever added as new versions | **Reviewer-enforced** under ADR-0008. Cross-implementation vectors in CI: [#387](https://github.com/Lafiya-xyz/Lafiya-contract/issues/387) |
 | Consumers can check a release against their requirements | **Available** through `scripts/check_manifest_compatibility.py` (ADR-0010), which consumers run in their own CI |

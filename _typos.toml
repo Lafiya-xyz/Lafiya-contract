@@ -1,0 +1,30 @@
+# Spell check configuration (crate-ci/typos, `docs.yml`).
+# Project dictionary: words below are accepted as spelled.
+
+[files]
+extend-exclude = [
+  "target/",
+  "**/node_modules/",
+  "Cargo.lock",
+  "**/package-lock.json",
+  "bindings/*/src/index.ts",
+  "scripts/conformance/snapshots/",
+  "golden/",
+  "*.wasm",
+  "*.svg",
+]
+
+[default]
+# Hex strings, hashes and Stellar strkeys are not words.
+extend-ignore-re = [
+  "\\b[0-9a-fA-F]{16,}\\b",
+  "\\b[GC][A-Z2-7]{55}\\b",
+]
+
+[default.extend-words]
+lafiya = "lafiya"
+soroban = "soroban"
+stroops = "stroops"
+strkey = "strkey"
+attester = "attester"
+attesters = "attesters"

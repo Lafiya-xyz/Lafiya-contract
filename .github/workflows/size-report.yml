@@ -1,0 +1,91 @@
+name: Size report
+
+# Posts a sticky PR comment with per-contract wasm size and per-entry-point
+# resource-budget deltas vs. the base branch (scripts/ci/size_report.py),
+# with twiggy attributing size growth. Budgets stay enforced pass/fail by
+# the CI budget checks; this report is for reviewers.
+
+on:
+  pull_request:
+    paths:
+      - "contracts/**"
+      - "crates/**"
+      - "budgets/**"
+      - "Cargo.toml"
+      - "Cargo.lock"
+      - "rust-toolchain.toml"
+      - "scripts/ci/size_report.py"
+      - ".github/workflows/size-report.yml"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: size-report-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  CONTRACTS: -p multisig-account -p attester-registry -p attestation-registry
+
+jobs:
+  report:
+    name: Wasm size & budget delta
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: twiggy
+      - name: Build head
+        run: |
+          cargo build --release --locked --target wasm32v1-none $CONTRACTS
+          mkdir -p size/head && cp target/wasm32v1-none/release/*.wasm size/head/
+      - name: Build base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          git worktree add base "$BASE_SHA"
+          # Share target/ so unchanged dependencies are not rebuilt.
+          (cd base && CARGO_TARGET_DIR="$GITHUB_WORKSPACE/target/base" \
+            cargo build --release --locked --target wasm32v1-none $CONTRACTS)
+          mkdir -p size/base && cp target/base/wasm32v1-none/release/*.wasm size/base/
+          cp base/budgets/baseline.json size/base-baseline.json 2>/dev/null || echo '{}' > size/base-baseline.json
+      - name: Attribute size growth
+        run: |
+          mkdir -p size/twiggy
+          for wasm in size/head/*.wasm; do
+            name=$(basename "$wasm" .wasm)
+            if [ -f "size/base/$name.wasm" ]; then
+              twiggy diff -n 20 "size/base/$name.wasm" "$wasm" > "size/twiggy/$name.diff.txt" || true
+            fi
+            twiggy top -n 15 "$wasm" > "size/twiggy/$name.top.txt" || true
+          done
+      - name: Render report
+        run: |
+          python3 scripts/ci/size_report.py \
+            --base-wasm size/base --head-wasm size/head \
+            --base-budgets size/base-baseline.json --head-budgets budgets/baseline.json \
+            --twiggy-dir size/twiggy > size/report.md
+          cat size/report.md >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: size-report
+          path: size/
+          retention-days: 14
+      - name: Post sticky comment
+        uses: marocchino/sticky-pull-request-comment@v2
+        # Fork PRs get a read-only token; the report is still in the job summary.
+        continue-on-error: true
+        with:
+          header: lafiya-size-report
+          path: size/report.md
