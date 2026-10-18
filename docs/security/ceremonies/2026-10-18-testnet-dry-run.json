@@ -1,0 +1,41 @@
+{
+  "ceremony": "2026-10-18-testnet-dry-run",
+  "network": "testnet",
+  "kind": "dry-run",
+  "procedure": "docs/runbooks/key-ceremony.md",
+  "accounts": {
+    "admin": {
+      "contract_id": "CD77H3QJIVZ4NBZSWEV5DR6S4JAVTZZ3VUZTNUNASIVBFLF27BZ4COJM",
+      "threshold": 2,
+      "signers": [
+        {"seat": "admin-1", "public_key": "GAFVRWTIY2V5XYYWTRSXHBNPUPAGDZGO65R4YAFFWO3ZALZIQRYAY2BC"},
+        {"seat": "admin-2", "public_key": "GBG7DPYBGYY52QTTA4HON4Y3KZLHQ33RFAUNHCMYTRJ63RP337IAYYGX"},
+        {"seat": "admin-4", "public_key": "GA64WEBD66O5DAIZ3C5WRCSAXCHUSONX76MEGOPIAUZJABQPHOOWF7M3"}
+      ],
+      "signer_set_hash": "6db57bd3676fe8c186fbd42f84351ed49682c0759d7937dd02c371b07aa930bc"
+    },
+    "guardian": {
+      "contract_id": "CCMFO2SONSO5GNHK2ZLC52VFIRW3KCEASAKNQ5ER2VJWWBD6XM7HE5DA",
+      "threshold": 1,
+      "signers": [
+        {"seat": "guardian-1", "public_key": "GBD46NUEETSNCNPXSRNXLRNZ5THX6CLBNSVAER32RC4ZUY66OLIHSM7A"},
+        {"seat": "guardian-2", "public_key": "GD5QG446KYZVAYA6NLSOFK7USKGNIYL43V43XGTBPMHRIICMWZR2CPWR"}
+      ],
+      "signer_set_hash": "0a7f3ceba24e8e3ae02d7fb23dbd6ac157ba31144fe1c8b89e5ce8fd07bb1ea5"
+    }
+  },
+  "bindings": [
+    {
+      "label": "attester-registry",
+      "contract_id": "CB3IK6IXEAYOBWZ4KO5IVYPW75X3CFSK3VPHKGKWYEJFALCQWYEAPKAI",
+      "admin": "admin",
+      "guardian": "guardian"
+    },
+    {
+      "label": "attestation-registry",
+      "contract_id": "CBPF6QCJVZ3OV7HJQ5LQWIZD4I3UJJIYD7FWJUUZ3QYNLM35T5CJDOFG",
+      "admin": "admin",
+      "guardian": "guardian"
+    }
+  ]
+}

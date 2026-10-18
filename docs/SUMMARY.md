@@ -8,6 +8,7 @@
 - [Event indexing and data flow](architecture/event-indexing.md)
 - [Storage versioning](architecture/storage-versioning.md)
 - [Storage cost](storage-cost.md)
+- [Benchmark history and regression bisect](benchmarks.md)
 
 # Contracts
 
@@ -31,6 +32,8 @@
 
 - [Runbook: contract upgrade](runbooks/contract-upgrade.md)
 - [Runbook: RPC outage recovery](runbooks/rpc-outage-recovery.md)
+- [Runbook: key-generation ceremony](runbooks/key-ceremony.md)
+- [Runbook: admin and guardian key rotation](runbooks/admin-key-rotation.md)
 - [CLI reference: lafiya-cli](reference/cli/lafiya-cli.md)
 - [CLI reference: cargo xtask](reference/cli/xtask.md)
 - [Network configuration](imported/config.md)
@@ -58,6 +61,8 @@
 
 - [Disclosure policy](imported/security.md)
 - [Formal verification (TLA+)](imported/formal-verification.md)
+- [Wasm artifact policy](security/wasm-policy.md)
+- [Off-chain threat model](security/threat-model-offchain.md)
 
 # Reference
 

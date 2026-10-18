@@ -25,8 +25,10 @@ dev = [
     "mypy>=1.13",
     "pytest>=8",
     "pytest-cov>=5",
+    "pyyaml>=6",
     "ruff>=0.8",
     "types-jsonschema",
+    "types-pyyaml",
 ]
 
 [tool.setuptools]

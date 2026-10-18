@@ -12,6 +12,7 @@ members = [
     "crates/lafiya-rpc-resilience",
     "crates/lafiya-watchdog",
     "crates/lafiya-fraud-scoring",
+    "crates/lafiya-bench",
 ]
 
 [workspace.package]

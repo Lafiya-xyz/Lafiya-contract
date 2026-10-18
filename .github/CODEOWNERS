@@ -5,3 +5,9 @@
 /crates/    @Coredevjay
 /scripts/   @Coredevjay
 /docs/      @Coredevjay
+
+# Wasm host-surface allowlist: widening it must be reviewed by a code owner
+# (docs/security/wasm-policy.md). Enforce with "Require review from Code
+# Owners" on main.
+/security/wasm-policy.json    @Coredevjay
+/scripts/check_wasm_policy.py @Coredevjay

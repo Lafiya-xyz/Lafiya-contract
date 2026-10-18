@@ -199,6 +199,14 @@ jobs:
       # std binaries/libs that can't build for this no_std-only target.
       - name: Build contract crates
         run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
+      # Host-function allowlist, start/float/instruction rules and size
+      # limits (docs/security/wasm-policy.md). The import diff goes to the
+      # job summary so reviewers see any widened host surface in the PR.
+      - name: Wasm policy (imports, instructions, size)
+        run: |
+          env_json=$(find ~/.cargo/registry/src -path '*soroban-env-common-*' -name env.json | sort -V | tail -1)
+          python3 scripts/check_wasm_policy.py ${env_json:+--env-json "$env_json"} \
+            --markdown "$GITHUB_STEP_SUMMARY" target/wasm32v1-none/release/*.wasm
       # Reused by downstream integration/differential/budget jobs instead of
       # rebuilding the contracts.
       - uses: actions/upload-artifact@v4

@@ -138,6 +138,10 @@ The values depend only on the commit, so reproducibility holds. CI and the tag
 pipeline assert them with `scripts/check_wasm_meta.py --commit <sha>`; locally,
 `stellar contract info meta --wasm <file>` shows them.
 
+The same pipeline then runs `scripts/check_wasm_policy.py`, which checks each
+wasm's host imports, instructions and size against
+[`security/wasm-policy.json`](security/wasm-policy.md).
+
 ### Signed build provenance
 
 Tag builds attach signed [SLSA](https://slsa.dev/) provenance for every `.wasm`

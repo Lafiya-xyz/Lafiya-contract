@@ -2,7 +2,9 @@
 
 Decision record: [ADR-0012](../adr/0012-chw-attester-key-custody.md).
 Applies to every Community Health Worker (CHW) whose address is allowlisted in
-`attester-registry`.
+`attester-registry`. The admin and guardian multisig keys that control the
+registries are generated in a witnessed ceremony instead:
+[key-generation ceremony](../runbooks/key-ceremony.md).
 
 ## 1. Account type
 

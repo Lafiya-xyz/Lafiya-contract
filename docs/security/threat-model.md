@@ -17,6 +17,10 @@ Status labels used on every leaf:
 - **accepted (ADR …)**: a deliberate, documented trade-off.
 - **open (#…)**: a known gap with a tracking issue.
 
+Off-chain components (indexer, watchdog, CLI, verifier SDK, QR flow, build
+and distribution) are modelled in the
+[off-chain threat model](threat-model-offchain.md).
+
 Issue links point to [Lafiya-xyz/Lafiya-contract](https://github.com/Lafiya-xyz/Lafiya-contract/issues).
 There is no security traceability registry yet. [#380](https://github.com/Lafiya-xyz/Lafiya-contract/issues/380)
 will map each leaf below to a regression test.

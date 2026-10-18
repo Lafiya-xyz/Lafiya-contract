@@ -1,10 +1,10 @@
 name: Release
 
 # Tag pipeline (docs/releasing.md#automated-release-flow): reproducible wasm ->
-# SHA256SUMS -> provenance metadata assertion -> release manifest (generated +
-# validated + checked against SHA256SUMS) -> bindings -> signed SLSA build
-# provenance -> GitHub release -> follow-up PR adding the wasm to the
-# upgrade-compatibility fixtures.
+# SHA256SUMS -> provenance metadata and wasm policy assertions -> release
+# manifest (generated + validated + checked against SHA256SUMS) -> bindings ->
+# signed SLSA build provenance -> GitHub release -> follow-up PR adding the
+# wasm to the upgrade-compatibility fixtures.
 #
 # Triggers:
 #   - workflow_call from release-please.yml after a release PR merges (a tag
@@ -69,6 +69,9 @@ jobs:
 
       - name: Assert provenance metadata in every wasm
         run: python3 scripts/check_wasm_meta.py --commit "$(git rev-parse HEAD)" target/wasm32v1-none/release/*.wasm
+
+      - name: Assert wasm policy (host imports, instructions, size)
+        run: python3 scripts/check_wasm_policy.py --markdown "$GITHUB_STEP_SUMMARY" target/wasm32v1-none/release/*.wasm
 
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
         with:

@@ -1741,6 +1741,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lafiya-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "lafiya-cli"
 version = "0.1.0"
 dependencies = [
