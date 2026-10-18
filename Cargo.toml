@@ -10,6 +10,7 @@ members = [
     "crates/lafiya-commitment",
     "crates/lafiya-contract-common",
     "crates/lafiya-rpc-resilience",
+    "crates/lafiya-relayer",
     "crates/lafiya-watchdog",
     "crates/lafiya-fraud-scoring",
 ]

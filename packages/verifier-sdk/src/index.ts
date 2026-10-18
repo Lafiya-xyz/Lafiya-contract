@@ -11,3 +11,10 @@ export {
   type OnChainAttestation,
 } from "./chain.js";
 export { BindingsChainReader } from "./rpc.js";
+export {
+  QuorumChainReader,
+  QuorumError,
+  type QuorumMetrics,
+  type QuorumOptions,
+  type QuorumProvider,
+} from "./quorum.js";

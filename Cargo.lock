@@ -1804,6 +1804,13 @@ name = "lafiya-fraud-scoring"
 version = "0.1.0"
 
 [[package]]
+name = "lafiya-relayer"
+version = "0.1.0"
+dependencies = [
+ "lafiya-rpc-resilience",
+]
+
+[[package]]
 name = "lafiya-rpc-resilience"
 version = "0.1.0"
 dependencies = [

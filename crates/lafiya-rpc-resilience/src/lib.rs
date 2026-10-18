@@ -39,6 +39,12 @@ pub mod mock;
 /// decisions (issue #408). See the module doc in `fees.rs`.
 pub mod fees;
 
+/// Fee-bump submission loop and sponsor-balance monitoring (issue #612).
+pub mod feebump;
+
+/// Quorum reads across independent providers (issue #613).
+pub mod quorum;
+
 /// Applying ledger bounds to real transaction envelopes.
 pub mod xdr;
 

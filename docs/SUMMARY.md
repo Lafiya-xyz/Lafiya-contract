@@ -31,6 +31,11 @@
 
 - [Runbook: contract upgrade](runbooks/contract-upgrade.md)
 - [Runbook: RPC outage recovery](runbooks/rpc-outage-recovery.md)
+- [Runbook: relayer and sponsor account](runbooks/relayer-operations.md)
+- [Fee-bump transactions](fee-bump.md)
+- [Quorum reads](security/quorum-reads.md)
+- [Relayer threat model](security/relayer-threat-model.md)
+- [Attester onboarding workflow](process/attester-onboarding.md)
 - [CLI reference: lafiya-cli](reference/cli/lafiya-cli.md)
 - [CLI reference: cargo xtask](reference/cli/xtask.md)
 - [Network configuration](imported/config.md)
