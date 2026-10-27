@@ -627,6 +627,9 @@ impl CustomAccountInterface for MultisigAccount {
             return Err(Error::TooManySigners);
         }
 
+        // Pass 1: cheap checks only (strict ordering doubles as duplicate
+        // detection in O(n)), so malformed or under-quorum input exits before
+        // any signature verification.
         let mut signer_configs = Vec::new(&env);
         let mut authorized_signers = Vec::new(&env);
         let mut signed_weight = 0u32;
@@ -640,21 +643,6 @@ impl CustomAccountInterface for MultisigAccount {
                 }
             }
 
-            let is_typed_signer = env
-                .storage()
-                .instance()
-                .has(&DataKey::TypedSigner(signature.public_key.clone()));
-            let is_legacy_ed25519_signer = match &signature.public_key {
-                SignerKey::Ed25519(public_key) => env
-                    .storage()
-                    .instance()
-                    .has(&DataKey::Signer(public_key.clone())),
-                SignerKey::Secp256r1(_) => false,
-            };
-            if !is_typed_signer && !is_legacy_ed25519_signer {
-                return Err(Error::UnknownSigner);
-            }
-
             let signer_config: SignerConfig = match env
                 .storage()
                 .instance()
@@ -662,17 +650,25 @@ impl CustomAccountInterface for MultisigAccount {
             {
                 Some(config) => config,
                 None => match &signature.public_key {
-                    SignerKey::Ed25519(public_key) if is_legacy_ed25519_signer => SignerConfig {
-                        public_key: SignerKey::Ed25519(public_key.clone()),
-                        weight: 1,
-                        role: None,
-                    },
+                    SignerKey::Ed25519(public_key)
+                        if env
+                            .storage()
+                            .instance()
+                            .has(&DataKey::Signer(public_key.clone())) =>
+                    {
+                        SignerConfig {
+                            public_key: SignerKey::Ed25519(public_key.clone()),
+                            weight: 1,
+                            role: None,
+                        }
+                    }
                     _ => return Err(Error::UnknownSigner),
                 },
             };
             signed_weight = signed_weight
                 .checked_add(signer_config.weight)
                 .ok_or(Error::InvalidPolicy)?;
+            authorized_signers.push_back(signer_config.public_key.clone());
             signer_configs.push_back(signer_config);
 
             match &signature.public_key {
@@ -712,13 +708,30 @@ impl CustomAccountInterface for MultisigAccount {
             }
         }
 
+        // Pass 2: the expensive cryptographic verification, run once the
+        // policy is known to be satisfiable.
+        let payload: Bytes = signature_payload.clone().into();
+        for signature in signatures.iter() {
+            match &signature.public_key {
+                SignerKey::Ed25519(public_key) => {
+                    env.crypto()
+                        .ed25519_verify(public_key, &payload, &signature.signature)
+                }
+                SignerKey::Secp256r1(public_key) => env.crypto().secp256r1_verify(
+                    public_key,
+                    &signature_payload,
+                    &signature.signature,
+                ),
+            }
+        }
+
         env.storage()
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
         AuthorizationApproved {
             timestamp: env.ledger().timestamp(),
-            payload: signature_payload.clone().into(),
+            payload,
             signers: authorized_signers,
         }
         .publish(&env);
