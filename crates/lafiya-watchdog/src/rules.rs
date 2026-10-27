@@ -8,6 +8,7 @@ use std::collections::{BTreeMap, VecDeque};
 /// Alert kinds with a fixed meaning, referenced by the incident runbooks.
 pub const UNKNOWN_WASM_UPGRADE: &str = "unknown_wasm_upgrade";
 pub const WASM_CHANGED_WITHOUT_EVENT: &str = "wasm_changed_without_event";
+pub const INVARIANT_VIOLATION: &str = "invariant_violation";
 pub const MASS_ENROLLMENT: &str = "mass_enrollment";
 pub const WATCHDOG_LAG: &str = "watchdog_lag";
 pub const WATCHDOG_FAILING: &str = "watchdog_failing";
@@ -281,6 +282,32 @@ impl Engine {
     }
 }
 
+impl Engine {
+    /// Alert when a contract's on-chain `check_invariants()` reports violations.
+    pub fn observe_invariants(
+        &self,
+        contract: &str,
+        violations: &[String],
+        ledger: u32,
+    ) -> Option<Alert> {
+        if violations.is_empty() {
+            return None;
+        }
+        Some(Alert {
+            kind: INVARIANT_VIOLATION.into(),
+            severity: Severity::Critical,
+            summary: format!("on-chain invariants violated: {}", violations.join(", ")),
+            ledger,
+            contract: contract.into(),
+            details: violations
+                .iter()
+                .map(|v| format!("violation: {v}"))
+                .collect(),
+            explorer_link: None,
+        })
+    }
+}
+
 /// Dead-man's-switch state: tracks lag and consecutive poll failures.
 #[derive(Debug, Default)]
 pub struct HealthMonitor {
@@ -502,6 +529,19 @@ mod tests {
         assert_eq!(
             (a.kind.as_str(), a.severity),
             (WASM_CHANGED_WITHOUT_EVENT, Severity::Critical)
+        );
+    }
+
+    #[test]
+    fn invariant_violations_are_critical_and_healthy_is_silent() {
+        let e = Engine::new(&cfg());
+        assert!(e.observe_invariants("CREG", &[], 1).is_none());
+        let a = e
+            .observe_invariants("CREG", &["count_exceeds_cap".into()], 2)
+            .unwrap();
+        assert_eq!(
+            (a.kind.as_str(), a.severity),
+            (INVARIANT_VIOLATION, Severity::Critical)
         );
     }
 

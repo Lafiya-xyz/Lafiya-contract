@@ -25,6 +25,7 @@ for how these events are consumed.
 | `new_admin` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttestationRecorded`
 
@@ -40,6 +41,7 @@ for how these events are consumed.
 | `evicted_sequence` | `Option<u64>` | data |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttestationTtlExtended`
 
@@ -109,6 +111,7 @@ for how these events are consumed.
 | `reason` | `Symbol` | data |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttestationWithdrawn`
 
@@ -119,6 +122,7 @@ for how these events are consumed.
 |---|---|---|
 | `record_hash` | `BytesN<32>` | topic_list |
 | `attester` | `Address` | topic_list |
+| `seq` | `u64` | data |
 
 ### `AttesterRegistryRepointed`
 
@@ -131,6 +135,7 @@ for how these events are consumed.
 | `new` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Paused`
 
@@ -142,6 +147,7 @@ for how these events are consumed.
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `RateLimitHit`
 
@@ -152,6 +158,7 @@ for how these events are consumed.
 |---|---|---|
 | `attester` | `Address` | topic_list |
 | `retry_after_ledger` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `RateLimitSet`
 
@@ -162,6 +169,7 @@ for how these events are consumed.
 |---|---|---|
 | `max_per_window` | `u32` | data |
 | `window_ledgers` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Unpaused`
 
@@ -173,6 +181,7 @@ for how these events are consumed.
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ## `incentive-pool`
 
@@ -226,6 +235,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `new_admin` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterAdded`
 
@@ -237,6 +247,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterInfoUpdated`
 
@@ -248,6 +259,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterReinstated`
 
@@ -259,6 +271,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterRemoved`
 
@@ -270,6 +283,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `attester` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `AttesterRevoked`
 
@@ -279,6 +293,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `seq` | `u64` | data |
 
 ### `AttesterSuspended`
 
@@ -290,6 +305,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `attester` | `Address` | topic_list |
 | `reason` | `Symbol` | data |
 | `since` | `u64` | data |
+| `seq` | `u64` | data |
 
 ### `Initialized`
 
@@ -301,6 +317,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `admin` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Paused`
 
@@ -312,6 +329,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Unpaused`
 
@@ -323,6 +341,7 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `by` | `Address` | topic_list |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
 
 ### `Upgraded`
 

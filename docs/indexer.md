@@ -215,6 +215,7 @@ restarts cannot fix it, only a backfill can.
 |---|---|
 | `lafiya_indexer_lag_ledgers` | > 60 for 5 minutes (about 5 minutes behind). |
 | `rate(lafiya_indexer_events_total[1m])` | Events per second, for dashboards. |
+| `lafiya_indexer_event_seq_gaps_total` | Gaps in a contract's event sequence numbers (see below). Any increase means the RPC dropped events. |
 | `lafiya_indexer_ingest_errors_total` | Increasing steadily (RPC or database problems; retried with backoff). |
 | `lafiya_indexer_reconcile_mismatches_total{kind}` | Any sustained increase: derived state disagrees with chain. |
 | `lafiya_indexer_checkpoint_ledger` | Not advancing. |
@@ -415,3 +416,24 @@ DATABASE_URL=postgres://postgres:pg@localhost:5432/postgres crates/lafiya-indexe
 
 Database tests create an isolated schema per test and are skipped when
 `DATABASE_URL` is unset.
+
+## Event sequence numbers (gap detection)
+
+Every event emitted by `attester-registry` and `attestation-registry` carries a
+trailing `seq: u64` data field: a per-contract counter in instance storage that
+starts at 1 and advances by one per event, in the same transaction as the
+emission (a reverted call also reverts its increment). The indexer tracks the
+last `seq` per contract; a jump logs an error and increments
+`lafiya_indexer_event_seq_gaps_total`. A dropped event is detected within the
+page it would have appeared in, or on the next page if it was the last event of
+a page.
+
+- The tracker is in-memory: after a restart the first event per contract only
+  seeds it, so a gap that falls exactly across a restart is not reported.
+- Events without `seq` (emitted before this schema, or by other contracts) are
+  ignored.
+- **Compatibility (stability policy):** a new trailing event data field is a
+  non-breaking change. Consumers decoding events by field name keep working;
+  consumers that decode the data map positionally or strictly by field count
+  must accept the extra `seq` field.
+- **Cost:** one instance-storage read and write per emitted event.

@@ -13,6 +13,7 @@ pub mod metrics;
 pub mod reconcile;
 pub mod reorg;
 pub mod rpc;
+pub mod sequence;
 pub mod store;
 
 pub use ingest::{IngestConfig, IngestError, Ingestor};

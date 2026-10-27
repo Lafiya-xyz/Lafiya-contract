@@ -5,12 +5,18 @@ use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::{Env, Event, IntoVal, String};
 
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
-    let env = Env::default();
-    env.mock_all_auths();
+    let env = lafiya_test_utils::new_env();
     let admin = Address::generate(&env);
     let contract_id = env.register(AttesterRegistry, (admin.clone(),));
     let client = AttesterRegistryClient::new(&env, &contract_id);
     (env, client, admin)
+}
+
+/// The sequence number of the most recently emitted event.
+fn last_seq(env: &Env, contract: &Address) -> u64 {
+    env.as_contract(contract, || {
+        storage::get(env, &DataKey::EventSeq).unwrap_or(0)
+    })
 }
 
 fn initialize_for_tests(client: &AttesterRegistryClient, admin: &Address) {
@@ -82,13 +88,16 @@ fn add_attester_allowlists_and_emits_event() {
         )]
     );
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AttesterAdded {
+        seq: last_seq(&env, &client.address),
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
 
@@ -105,6 +114,7 @@ fn remove_attester_revokes_allowlisting() {
     assert!(client.is_attester(&attester));
 
     let expected_event = AttesterRemoved {
+        seq: last_seq(&env, &client.address) + 1,
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
@@ -147,6 +157,7 @@ fn attester_can_revoke_own_key_and_emits_event() {
     assert_eq!(
         env.events().all(),
         std::vec![AttesterRevoked {
+            seq: last_seq(&env, &client.address),
             attester: attester.clone()
         }
         .to_xdr(&env, &client.address)],
@@ -169,7 +180,11 @@ fn revoking_unknown_or_already_revoked_attester_is_idempotent() {
 
     assert_eq!(
         env.events().all(),
-        std::vec![AttesterRevoked { attester }.to_xdr(&env, &client.address)],
+        std::vec![AttesterRevoked {
+            attester,
+            seq: last_seq(&env, &client.address)
+        }
+        .to_xdr(&env, &client.address)],
     );
     assert_eq!(client.get_attester_count(), 0);
 }
@@ -333,14 +348,17 @@ fn successful_admin_transfer_flow() {
         )]
     );
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AdminTransferred {
+        seq: last_seq(&env, &client.address),
         previous_admin: admin.clone(),
         new_admin: new_admin.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
 
@@ -535,13 +553,16 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
     );
 
     // Check event was emitted before any other call clears it.
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_added_event = AttesterAdded {
+        seq: last_seq(&env, &client.address),
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_added_event.to_xdr(&env, &client.address)],
     );
 
@@ -556,13 +577,15 @@ fn update_attester_info_updates_metadata_and_emits_distinct_event() {
         &Some(200),
     );
 
+    let updated_events = env.events().all();
     let expected_updated_event = AttesterInfoUpdated {
+        seq: last_seq(&env, &client.address),
         attester: attester.clone(),
         contract_kind: Symbol::new(&env, "attester_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        updated_events,
         std::vec![expected_updated_event.to_xdr(&env, &client.address)],
     );
 

@@ -14,6 +14,7 @@ doctest = false
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
+lafiya-test-utils = { path = "../../crates/lafiya-test-utils" }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 proptest = "1"

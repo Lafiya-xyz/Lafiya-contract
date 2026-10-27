@@ -70,6 +70,7 @@ async fn api_matches_contract_state() {
         metrics: metrics.clone(),
         start_ledger: Some(start.parse().unwrap()),
         page_limit: 5,
+        seq_tracker: Default::default(),
     };
     while !ingestor.step().await.unwrap().caught_up {}
 

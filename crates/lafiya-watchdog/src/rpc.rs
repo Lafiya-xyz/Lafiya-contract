@@ -4,8 +4,11 @@
 use crate::Event;
 use serde_json::{json, Value};
 use stellar_xdr::{
-    ContractDataDurability, ContractExecutable, LedgerEntryData, LedgerKey, LedgerKeyContractData,
-    Limits, ReadXdr, ScAddress, ScVal, WriteXdr,
+    ContractDataDurability, ContractExecutable, HostFunction, InvokeContractArgs,
+    InvokeHostFunctionOp, LedgerEntryData, LedgerKey, LedgerKeyContractData, Limits, Memo,
+    MuxedAccount, Operation, OperationBody, Preconditions, ReadXdr, ScAddress, ScVal,
+    SequenceNumber, Transaction, TransactionEnvelope, TransactionExt, TransactionV1Envelope,
+    Uint256, WriteXdr,
 };
 
 pub struct Rpc {
@@ -104,6 +107,66 @@ impl Rpc {
             _ => anyhow::bail!("unexpected ledger entry for {contract}"),
         }
     }
+
+    /// Simulates the contract's read-only `check_invariants()` view and
+    /// returns the names of any violated invariants (empty when healthy).
+    /// Errors if the contract does not expose the view.
+    pub fn check_invariants(&self, contract: &str) -> anyhow::Result<Vec<String>> {
+        let tx = Transaction {
+            source_account: MuxedAccount::Ed25519(Uint256([0; 32])),
+            fee: 100,
+            seq_num: SequenceNumber(0),
+            cond: Preconditions::None,
+            memo: Memo::None,
+            operations: vec![Operation {
+                source_account: None,
+                body: OperationBody::InvokeHostFunction(InvokeHostFunctionOp {
+                    host_function: HostFunction::InvokeContract(InvokeContractArgs {
+                        contract_address: contract.parse()?,
+                        function_name: "check_invariants"
+                            .try_into()
+                            .map_err(|_| anyhow::anyhow!("invalid function name"))?,
+                        args: Default::default(),
+                    }),
+                    auth: Default::default(),
+                }),
+            }]
+            .try_into()
+            .map_err(|_| anyhow::anyhow!("too many operations"))?,
+            ext: TransactionExt::V0,
+        };
+        let envelope = TransactionEnvelope::Tx(TransactionV1Envelope {
+            tx,
+            signatures: Default::default(),
+        });
+        let r = self.call(
+            "simulateTransaction",
+            json!({ "transaction": envelope.to_xdr_base64(Limits::none())? }),
+        )?;
+        if let Some(e) = r.get("error") {
+            anyhow::bail!("check_invariants simulation failed for {contract}: {e}");
+        }
+        let xdr = r["results"][0]["xdr"]
+            .as_str()
+            .ok_or_else(|| anyhow::anyhow!("check_invariants: no result for {contract}"))?;
+        violations_from_report(&ScVal::from_xdr_base64(xdr, Limits::none())?)
+    }
+}
+
+/// Extracts `violations` from an `InvariantReport` map value.
+pub fn violations_from_report(report: &ScVal) -> anyhow::Result<Vec<String>> {
+    let ScVal::Map(Some(map)) = report else {
+        anyhow::bail!("InvariantReport is not a map");
+    };
+    for entry in map.iter() {
+        if matches!(&entry.key, ScVal::Symbol(k) if k.to_utf8_string_lossy() == "violations") {
+            let ScVal::Vec(Some(list)) = &entry.val else {
+                anyhow::bail!("violations is not a vec");
+            };
+            return Ok(list.iter().map(render).collect());
+        }
+    }
+    anyhow::bail!("InvariantReport has no violations field")
 }
 
 /// Render an `ScVal` compactly for alert text.

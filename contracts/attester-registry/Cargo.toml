@@ -12,8 +12,10 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+lafiya-contract-common = { path = "../../crates/lafiya-contract-common" }
 
 [dev-dependencies]
+lafiya-test-utils = { path = "../../crates/lafiya-test-utils" }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 proptest = "1.11"
 ed25519-dalek = "3.0.0"

@@ -12,8 +12,10 @@ doctest = false
 
 [dependencies]
 soroban-sdk = { workspace = true }
+lafiya-contract-common = { path = "../../crates/lafiya-contract-common" }
 
 [dev-dependencies]
+lafiya-test-utils = { path = "../../crates/lafiya-test-utils" }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 # Only needed to register the real contract in integration tests. The
 # release build calls attester-registry purely through the #[contractclient]

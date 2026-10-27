@@ -4,13 +4,14 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _, Ledger as _};
 use soroban_sdk::{BytesN, Env, Event, IntoVal};
 
+use lafiya_test_utils::{advance_ledgers, new_env};
+
 type ArClient = attester_registry::AttesterRegistryClient<'static>;
 
 /// Registers an attester-registry and an attestation-registry wired to it.
 /// The returned admin holds every role in both contracts.
 fn setup() -> (Env, AttestationRegistryClient<'static>, ArClient, Address) {
-    let env = Env::default();
-    env.mock_all_auths();
+    let env = new_env();
     let admin = Address::generate(&env);
 
     let attester_registry_id = env.register(attester_registry::AttesterRegistry, (admin.clone(),));
@@ -28,6 +29,13 @@ fn setup() -> (Env, AttestationRegistryClient<'static>, ArClient, Address) {
     client.grant_role(&Role::Revoker, &admin);
 
     (env, client, attester_registry_client, admin)
+}
+
+/// The sequence number of the most recently emitted event.
+fn last_seq(env: &Env, contract: &Address) -> u64 {
+    env.as_contract(contract, || {
+        storage::get(env, &DataKey::EventSeq).unwrap_or(0)
+    })
 }
 
 fn enroll(env: &Env, registry: &ArClient, admin: &Address) -> Address {
@@ -53,10 +61,6 @@ fn attest_with_consent(
     client.attest(attester, &patient, record_hash)
 }
 
-fn advance_ledgers(env: &Env, n: u32) {
-    env.ledger().with_mut(|l| l.sequence_number += n);
-}
-
 fn recorded_event(
     env: &Env,
     record_hash: &BytesN<32>,
@@ -64,6 +68,7 @@ fn recorded_event(
     expires_at: u64,
     sequence: u64,
     evicted_sequence: Option<u64>,
+    seq: u64,
 ) -> AttestationRecorded {
     AttestationRecorded {
         record_hash: record_hash.clone(),
@@ -75,6 +80,7 @@ fn recorded_event(
         evicted_sequence,
         contract_kind: Symbol::new(env, "attestation_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
+        seq,
     }
 }
 
@@ -165,14 +171,17 @@ fn set_attester_registry_by_admin_succeeds() {
 
     client.set_attester_registry(&new_registry);
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AttesterRegistryRepointed {
+        seq: last_seq(&env, &client.address),
         previous: attester_registry.address.clone(),
         new: new_registry.clone(),
         contract_kind: Symbol::new(&env, "attestation_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
     assert_eq!(client.get_attester_registry(), new_registry);
@@ -453,6 +462,8 @@ fn attest_emits_event() {
 
     let attestation = attest_with_consent(&env, &client, &attester, &record_hash);
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected = recorded_event(
         &env,
         &record_hash,
@@ -460,11 +471,9 @@ fn attest_emits_event() {
         env.ledger().timestamp() + 10_000,
         1,
         None,
+        last_seq(&env, &client.address),
     );
-    assert_eq!(
-        env.events().all(),
-        std::vec![expected.to_xdr(&env, &client.address)],
-    );
+    assert_eq!(events, std::vec![expected.to_xdr(&env, &client.address)],);
 }
 
 // ───────────────────────── Record versions and batches ─────────────────────────
@@ -790,6 +799,8 @@ fn attest_event_reports_sequence_and_fifo_eviction() {
     }
 
     let attestation = last.unwrap();
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected = recorded_event(
         &env,
         &record_hash,
@@ -797,9 +808,10 @@ fn attest_event_reports_sequence_and_fifo_eviction() {
         env.ledger().timestamp() + 10_000,
         MAX_HISTORY + 1,
         Some(1),
+        last_seq(&env, &client.address),
     );
     assert_eq!(
-        env.events().all().events().last(),
+        events.events().last(),
         Some(&expected.to_xdr(&env, &client.address)),
     );
 }
@@ -817,12 +829,15 @@ fn attester_can_withdraw_only_their_own_attestation() {
     let second = attest_with_consent(&env, &client, &attester_b, &record_hash);
 
     client.withdraw_attestation(&attester_a, &record_hash);
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AttestationWithdrawn {
+        seq: last_seq(&env, &client.address),
         record_hash: record_hash.clone(),
         attester: attester_a.clone(),
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)]
     );
 
@@ -911,7 +926,10 @@ fn revoke_attestation_happy_path() {
 
     client.revoke_attestation(&admin, &record_hash, &reason);
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AttestationRevoked {
+        seq: last_seq(&env, &client.address),
         record_hash: record_hash.clone(),
         by: admin.clone(),
         removed_count: 1,
@@ -920,7 +938,7 @@ fn revoke_attestation_happy_path() {
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)]
     );
     assert_eq!(client.get_attestation(&record_hash), None);
@@ -1093,14 +1111,17 @@ fn successful_admin_transfer_flow() {
     );
 
     client.accept_admin();
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
     let expected_event = AdminTransferred {
+        seq: last_seq(&env, &client.address),
         previous_admin: admin.clone(),
         new_admin: new_admin.clone(),
         contract_kind: Symbol::new(&env, "attestation_registry"),
         schema_version: EVENT_SCHEMA_VERSION,
     };
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![expected_event.to_xdr(&env, &client.address)],
     );
     assert_eq!(client.get_admin(), new_admin);
@@ -1367,7 +1388,11 @@ fn rate_limit_hit_event_emitted_when_window_fills() {
     let record_hash = hash(&env, 1);
     let attestation = attest_with_consent(&env, &client, &attester, &record_hash);
 
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
+    let last = last_seq(&env, &client.address);
     let hit = RateLimitHit {
+        seq: last - 1,
         attester: attester.clone(),
         retry_after_ledger: start + 100,
     };
@@ -1378,9 +1403,10 @@ fn rate_limit_hit_event_emitted_when_window_fills() {
         env.ledger().timestamp() + 10_000,
         1,
         None,
+        last,
     );
     assert_eq!(
-        env.events().all(),
+        events,
         std::vec![
             hit.to_xdr(&env, &client.address),
             recorded.to_xdr(&env, &client.address)
