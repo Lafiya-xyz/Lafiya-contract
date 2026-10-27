@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="360" height="240" viewBox="0 0 360 240" role="img" aria-labelledby="t">
+  <title id="t">UNAVAILABLE verdict screen</title>
+  <rect width="360" height="240" fill="#ffffff"/>
+  <rect x="16" y="16" width="328" height="120" rx="12" fill="#2b2b2b"/>
+  <text x="40" y="92" font-family="sans-serif" font-size="56" fill="#ffffff" aria-hidden="true">?</text>
+  <text x="110" y="92" font-family="sans-serif" font-size="32" font-weight="700" fill="#ffffff">UNAVAILABLE</text>
+  <text x="24" y="168" font-family="sans-serif" font-size="18" fill="#111111">Could not check this card.</text>
+  <text x="24" y="196" font-family="sans-serif" font-size="16" fill="#333333">Offline copy from 3 Oct. Tap to retry.</text>
+</svg>

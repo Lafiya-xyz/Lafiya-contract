@@ -1,0 +1,22 @@
+# Trivy / Grype vulnerability exceptions for the lafiya-indexer container image.
+#
+# Every exception MUST include all of the following fields:
+#   id            - The vulnerability identifier (e.g. CVE-2024-12345 or GHSA-xxxx-xxxx-xxxx).
+#   justification - Why the exception is acceptable (risk analysis, compensating controls).
+#   owner         - GitHub handle or team responsible for re-reviewing the exception.
+#   expiry        - ISO-8601 date (YYYY-MM-DD) after which the exception is no longer valid.
+#
+# Exceptions without a justification, owner, or expiry are rejected by the
+# security-scan workflow. Expired exceptions fail the scan gate.
+#
+# Example entry:
+#   - id: CVE-2024-12345
+#     justification: >-
+#       Vulnerable code path is not reachable in the indexer runtime; the affected
+#       package is only used at build time and is not present in the final image.
+#     owner: "@lafiya-security"
+#     expiry: "2025-12-31"
+#
+# This file is intentionally empty until a justified exception is required.
+
+exceptions: []

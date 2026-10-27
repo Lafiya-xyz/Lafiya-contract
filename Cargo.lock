@@ -283,8 +283,7 @@ name = "attestation-registry"
 version = "0.1.0"
 dependencies = [
  "attester-registry",
- "lafiya-contract-common",
- "lafiya-test-utils",
+ "facility-registry",
  "proptest",
  "soroban-sdk",
 ]
@@ -293,8 +292,7 @@ dependencies = [
 name = "attester-registry"
 version = "0.1.0"
 dependencies = [
- "lafiya-contract-common",
- "lafiya-test-utils",
+ "ed25519-dalek 3.0.0",
  "proptest",
  "soroban-sdk",
 ]
@@ -1050,6 +1048,13 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40404c3f5f511ec4da6fe866ddf6a717c309fdbb69fbbad7b0f3edab8f2e835f"
 
 [[package]]
+name = "facility-registry"
+version = "0.1.0"
+dependencies = [
+ "soroban-sdk",
+]
+
+[[package]]
 name = "fastrand"
 version = "2.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1746,6 +1751,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lafiya-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "lafiya-cli"
 version = "0.1.0"
 dependencies = [
@@ -1775,13 +1790,15 @@ dependencies = [
 
 [[package]]
 name = "lafiya-commitment"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "soroban-sdk",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1801,12 +1818,20 @@ dependencies = [
 name = "lafiya-contract-common"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 
 [[package]]
 name = "lafiya-fraud-scoring"
 version = "0.1.0"
+
+[[package]]
+name = "lafiya-relayer"
+version = "0.1.0"
+dependencies = [
+ "lafiya-rpc-resilience",
+]
 
 [[package]]
 name = "lafiya-rpc-resilience"
@@ -1822,10 +1847,11 @@ dependencies = [
 ]
 
 [[package]]
-name = "lafiya-test-utils"
+name = "lafiya-verification-model"
 version = "0.1.0"
 dependencies = [
- "soroban-sdk",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1941,8 +1967,10 @@ dependencies = [
  "attestation-registry",
  "attester-registry",
  "ed25519-dalek 3.0.0",
+ "hex",
  "p256",
  "proptest",
+ "serde_json",
  "sha2 0.10.9",
  "soroban-sdk",
 ]

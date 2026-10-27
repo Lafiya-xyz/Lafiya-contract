@@ -3,6 +3,25 @@
 Status: reviewed for the initial dashboard (issue #416). Re-review whenever a
 new aggregate, dimension, or finer granularity is added.
 
+## Formal rule (k-anonymity and small-cell suppression)
+
+A cell is one (ISO week, region) pair for one metric (`new`, `reverified`,
+`revoked`). Let `k` be the threshold (`--k-threshold`, default **10**, minimum 2).
+
+1. **Primary:** a cell with `0 < n < k` is suppressed. Zero is published.
+2. **Complementary:** if exactly one cell of a metric is suppressed in a week,
+   the smallest remaining non-zero cell of that week is suppressed too, so no
+   cell can be derived from a total.
+3. **Differencing:** only completed ISO weeks are published. The newest week in
+   the input is withheld until a later week appears, so two consecutive
+   snapshots never differ by a partial count. `--include-open-week` disables
+   this and must not be used for the public site.
+
+Rationale for `k = 10`: a patient or CHW is hidden among at least ten others in
+the same region and week; lower values were judged too easy to single out in
+low-volume states, higher values suppress most pilot cells. Raise it per
+deployment, never below 5 on public sites.
+
 ## What the chain reveals already
 
 Lafiya stores only record **hashes** on chain (ADR-0001). An

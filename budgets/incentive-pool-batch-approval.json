@@ -1,0 +1,27 @@
+{
+  "contract": "incentive-pool",
+  "function": "approve_work_items",
+  "max_batch_approvals": 16,
+  "method": "Footprint analysis of the code path (per item and per batch), checked against Soroban per-transaction limits. Re-measure with `stellar contract invoke --sim-only` against a 16-item batch and update `budgets/baseline.json` when the code path changes.",
+  "network_limits_assumed": {
+    "tx_max_write_ledger_entries": 50,
+    "tx_max_read_ledger_entries": 100
+  },
+  "per_item": {
+    "write_entries": 1,
+    "read_entries_typical": 4,
+    "read_entries_notes": "WorkItem key + attestation-registry AttestationSequence, RevokedThrough and the latest Attestation entry. Records with long, interleaved version history (up to MAX_HISTORY=10) read more; such batches fail at simulation and must be split.",
+    "events": 1
+  },
+  "per_batch_fixed": {
+    "write_entries": 2,
+    "write_entries_notes": "incentive-pool instance entry + EpochApproved counter",
+    "read_entries": 4,
+    "read_entries_notes": "instance entries of incentive-pool, attester-registry and attestation-registry + EpochApproved; plus 1 attester-registry read per distinct attester (memoized in-call)"
+  },
+  "at_cap": {
+    "write_entries": 18,
+    "read_entries_typical_distinct_attesters": 84
+  },
+  "justification": "16 items keep writes at 18/50 and typical reads at 84/100 even with every item from a distinct attester; 32 items would exceed the read limit (148)."
+}

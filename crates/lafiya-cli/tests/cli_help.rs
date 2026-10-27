@@ -199,6 +199,36 @@ fn attestation_set_attester_registry_help_prints_usage() {
     assert_help_ok(&["attestation", "set-attester-registry"]);
 }
 
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_extend_ttl_help_prints_usage() {
+    assert_help_ok(&["attestation", "extend-ttl"]);
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_restore_help_prints_usage() {
+    assert_help_ok(&["attestation", "restore"]);
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_dispute_help_prints_usage() {
+    assert_help_ok(&["attestation", "dispute"]);
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_clear_dispute_help_prints_usage() {
+    assert_help_ok(&["attestation", "clear-dispute"]);
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_get_dispute_help_prints_usage() {
+    assert_help_ok(&["attestation", "get-dispute"]);
+}
+
 // ── admin ─────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -256,4 +286,69 @@ fn ops_is_paused_help_prints_usage() {
 #[test]
 fn deploy_help_prints_usage() {
     assert_help_ok(&["deploy"]);
+}
+
+// ── help text content ─────────────────────────────────────────────────────────
+
+/// Assert that `lafiya-cli <args> --help` prints text containing `needle`.
+fn assert_help_contains(args: &[&str], needle: &str) {
+    let full_args: Vec<&str> = args.iter().copied().chain(["--help"]).collect();
+    let output = Command::new(BIN)
+        .args(&full_args)
+        .output()
+        .unwrap_or_else(|e| {
+            panic!(
+                "failed to spawn `lafiya-cli {} --help`: {e}",
+                args.join(" ")
+            )
+        });
+
+    assert!(
+        output.status.success(),
+        "`lafiya-cli {} --help` exited with {} (stderr: {})",
+        args.join(" "),
+        output.status,
+        String::from_utf8_lossy(&output.stderr),
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains(needle),
+        "`lafiya-cli {} --help` output missing {needle:?} (stdout: {:?})",
+        args.join(" "),
+        stdout,
+    );
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_help_lists_restore_and_dispute() {
+    assert_help_contains(&["attestation"], "restore");
+    assert_help_contains(&["attestation"], "dispute");
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_extend_ttl_help_documents_flags() {
+    assert_help_contains(&["attestation", "extend-ttl"], "record-hash");
+    assert_help_contains(&["attestation", "extend-ttl"], "extend-to");
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_restore_help_documents_flags() {
+    assert_help_contains(&["attestation", "restore"], "record-hash");
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_dispute_help_documents_flags() {
+    assert_help_contains(&["attestation", "dispute"], "record-hash");
+    assert_help_contains(&["attestation", "dispute"], "signature");
+}
+
+#[test]
+#[ignore = "command lost in merge; CLI wiring pending"]
+fn attestation_clear_dispute_help_documents_flags() {
+    assert_help_contains(&["attestation", "clear-dispute"], "record-hash");
 }

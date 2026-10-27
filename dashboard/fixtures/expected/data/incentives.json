@@ -1,1 +1,16 @@
-[]
+[
+  {
+    "funded": 75000,
+    "paid": 15000,
+    "programme": "kano_mch",
+    "refunded": 10000,
+    "remaining": 50000
+  },
+  {
+    "funded": 40000,
+    "paid": 15000,
+    "programme": "lagos_imm",
+    "refunded": 0,
+    "remaining": 25000
+  }
+]

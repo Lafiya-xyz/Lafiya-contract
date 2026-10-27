@@ -60,10 +60,22 @@ def version_in_range(version_str: str, range_str: str) -> bool:
     return lo <= v < hi
 
 
+# Contracts that must appear in the manifest's compatibility matrix. The
+# incentive-pool is held to the same coverage as the registries so its
+# interface and binding versions are validated on every release.
+REQUIRED_MATRIX_CONTRACTS = ("incentive-pool",)
+
+
 def check(manifest: dict[str, Any], requirements: dict[str, Any]) -> list[str]:
     errors: list[str] = []
     contracts_by_name = {c["name"]: c for c in manifest.get("contracts", [])}
     bindings_by_contract = {b["contract"]: b for b in manifest.get("bindings", [])}
+
+    matrix = manifest.get("compatibility_matrix", {})
+    matrix_contracts = matrix.get("contracts", {}) if isinstance(matrix, dict) else {}
+    for contract_name in REQUIRED_MATRIX_CONTRACTS:
+        if contract_name not in matrix_contracts:
+            errors.append(f"{contract_name}: missing from manifest compatibility matrix")
 
     for contract_name, req in requirements.get("contracts", {}).items():
         contract = contracts_by_name.get(contract_name)

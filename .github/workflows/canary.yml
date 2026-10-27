@@ -1,0 +1,46 @@
+name: Canary attestation
+
+# Scheduled write-path check on testnet using the dedicated canary attester.
+# Mainnet stays disabled until CANARY_MAINNET_APPROVED is set (see runbook).
+on:
+  schedule:
+    - cron: "7 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  canary:
+    runs-on: ubuntu-latest
+    environment: testnet
+    if: vars.CANARY_ATT_REGISTRY != ''
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Install Stellar CLI
+        env:
+          CLI_URL: https://github.com/stellar/stellar-cli/releases/download/v0.8.0/soroban-cli-0.8.0-x86_64-unknown-linux-gnu
+          CLI_SHA256: bb4683b49915415925a45a00c8b6a54389b70acd831738dc45578d26e05dee24
+        run: |
+          curl -fsSL "$CLI_URL" -o stellar-cli
+          echo "$CLI_SHA256  stellar-cli" | sha256sum -c -
+          chmod +x stellar-cli
+          sudo mv stellar-cli /usr/local/bin/
+      - name: Submit and verify canary
+        env:
+          ATT_REGISTRY: ${{ vars.CANARY_ATT_REGISTRY }}
+          NETWORK_URL: ${{ vars.CANARY_NETWORK_URL }}
+          NETWORK_NAME: ${{ vars.CANARY_NETWORK_NAME }}
+          CANARY_ADDRESS: ${{ vars.CANARY_ATTESTER_ADDRESS }}
+          CANARY_SECRET: ${{ secrets.CANARY_ATTESTER_SECRET }}
+          CANARY_MAINNET_APPROVED: ${{ vars.CANARY_MAINNET_APPROVED }}
+        run: ./scripts/canary.sh
+      - name: Alert on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          curl -fsS -X POST -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${{ github.repository }}/issues" \
+            -d "{\"title\":\"Canary attestation failed\",\"body\":\"Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}\"}"

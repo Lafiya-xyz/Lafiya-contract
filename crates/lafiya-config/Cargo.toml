@@ -13,6 +13,18 @@ sha2 = "0.10"
 toml = "1.1"
 thiserror = "2.0"
 schemars = "1.0"
+# HTTP client used by chain verification (`config verify --against-chain`)
+# and by HTTP-based secret providers. Optional so the core loader stays lean.
+ureq = { version = "2.10", optional = true, default-features = false, features = ["json", "tls"] }
+# Base64 decoding for secret-store payloads (e.g. Vault/KV style responses).
+base64 = { version = "0.22", optional = true }
+
+[features]
+default = []
+# Enables `config verify --against-chain` (chain queries over HTTP).
+chain-verify = ["dep:ureq"]
+# Enables HTTP-backed secret providers (e.g. `secret+http://`, `secret+vault://`).
+secret-http = ["dep:ureq", "dep:base64"]
 
 [dev-dependencies]
 tempfile = "3.10"

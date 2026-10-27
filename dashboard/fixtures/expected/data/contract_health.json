@@ -13,6 +13,18 @@
   },
   {
     "admin": "GADMIN",
+    "contract": "CPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPPP",
+    "last_admin_action": {
+      "event": "initialized",
+      "ledger": 40000,
+      "tx_hash": "402a1b2f203343ec2122b100b528e5e59b12b230ce01eeb18e92eb26a59a705c"
+    },
+    "paused": false,
+    "wasm_hash": null,
+    "wasm_in_manifest": null
+  },
+  {
+    "admin": "GADMIN",
     "contract": "CRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRRR",
     "last_admin_action": {
       "event": "upgraded",

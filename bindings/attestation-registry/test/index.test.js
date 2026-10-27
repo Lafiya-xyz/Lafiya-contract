@@ -1,7 +1,18 @@
 import { describe, expect, it } from "vitest";
 import { Client } from "../dist/index.js";
 
-const EXPECTED_METHODS = ["attest", "initialize", "get_attestation"];
+const EXPECTED_METHODS = [
+  "attest",
+  "initialize",
+  "get_attestation",
+  "extend_attestation_ttl",
+  "set_quorum_policy",
+  "get_quorum_policy",
+  "get_verification",
+  "dispute_attestation",
+  "clear_dispute",
+  "get_dispute",
+];
 
 describe("attestation-registry generated bindings", () => {
   const client = new Client({

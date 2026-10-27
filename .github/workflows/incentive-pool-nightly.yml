@@ -1,0 +1,28 @@
+name: Incentive pool nightly properties
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  properties:
+    name: Stateful model + fuzz (extended)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Run extended profile
+        run: cargo test -p incentive-pool --release -- stateful_test fuzz_test --nocapture
+        env:
+          PROPTEST_CASES: 10000
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: incentive-pool-proptest-regressions
+          path: contracts/incentive-pool/proptest-regressions/

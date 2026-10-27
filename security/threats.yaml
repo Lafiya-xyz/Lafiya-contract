@@ -169,6 +169,440 @@ threats:
       - "sec_t015_repoint_blocked_or_timelocked"
       - "sec_t015_inconsistent_registry_prevented"
 
+  # ---------------------------------------------------------------------------
+  # Off-chain components (docs/security/threat-model-offchain.md).
+  # These entries are checked by scripts/check_threat_traceability.py: every
+  # `code` path and `tests` entry (`path::test name`) must exist, `dfd` must
+  # name a section of the model, and partial/open entries must name the gap
+  # and the issue tracking it.
+  # ---------------------------------------------------------------------------
+
+  # Indexer
+  T-101:
+    title: "Poisoned RPC feeds fabricated or altered events to the indexer"
+    component: "lafiya-indexer"
+    stride: "S,T"
+    boundary: "TB4 RPC -> indexer"
+    dfd: "docs/security/threat-model-offchain.md#41-indexer"
+    mitigation: "Malformed known events are rejected at decode; the reconciler samples derived state against contract storage and counts mismatches"
+    owner: "@Coredevjay"
+    status: "partial"
+    code:
+      - "crates/lafiya-indexer/src/decode.rs"
+      - "crates/lafiya-indexer/src/reconcile.rs"
+    tests:
+      - "crates/lafiya-indexer/src/decode.rs::rejects_malformed_known_event"
+      - "crates/lafiya-indexer/src/reconcile.rs::attester_comparison"
+    gap: "The reconciler reads through the same RPC that supplied the events, so a provider that lies consistently passes"
+    issue: "to-file: indexer reconciles against an independent RPC provider"
+
+  T-102:
+    title: "RPC history pruning silently drops events from the index"
+    component: "lafiya-indexer"
+    stride: "T,D"
+    boundary: "TB4 RPC -> indexer"
+    dfd: "docs/security/threat-model-offchain.md#41-indexer"
+    mitigation: "Retention guard exits non-zero instead of skipping a pruned range; cursor checkpoints resume without loss or duplicates"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-indexer/src/ingest.rs"
+    tests:
+      - "crates/lafiya-indexer/src/ingest.rs::retention_check_fails_below_oldest_ledger"
+      - "crates/lafiya-indexer/tests/ingest.rs::fails_loudly_when_cursor_falls_outside_retention"
+      - "crates/lafiya-indexer/tests/ingest.rs::resumes_after_restart_without_loss_or_duplicates"
+
+  T-103:
+    title: "Unbounded API queries exhaust the indexer database"
+    component: "lafiya-indexer"
+    stride: "D"
+    boundary: "TB6 consumers -> indexer API"
+    dfd: "docs/security/threat-model-offchain.md#41-indexer"
+    mitigation: "Read-only GET routes only; keyset pagination clamps every page to MAX_LIMIT"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-indexer/src/api.rs::MAX_LIMIT"
+    tests:
+      - "crates/lafiya-indexer/tests/e2e.rs::api_matches_contract_state"
+
+  T-104:
+    title: "Indexer API aggregates record-hash history that links a patient"
+    component: "lafiya-indexer"
+    stride: "I"
+    boundary: "TB6 consumers -> indexer API"
+    dfd: "docs/security/threat-model-offchain.md#41-indexer"
+    mitigation: "Serves only data already public on-chain (hashes, no health data) per ADR-0001; linkability itself is tracked on the contract side (#433)"
+    owner: "@Coredevjay"
+    status: "accepted"
+    rationale: "ADR-0001: the ledger is public; the indexer adds convenience, not new information"
+    code:
+      - "crates/lafiya-indexer/src/api.rs"
+      - "docs/adr/0001-hash-only-on-chain-footprint.md"
+
+  # Watchdog
+  T-111:
+    title: "Spoofed alerts posted to the on-call webhook"
+    component: "lafiya-watchdog"
+    stride: "S,R"
+    boundary: "watchdog -> alert sinks"
+    dfd: "docs/security/threat-model-offchain.md#42-watchdog"
+    mitigation: "Webhook URL kept out of git (templated from the secret store, gitleaks scan)"
+    owner: "@Coredevjay"
+    status: "open"
+    code:
+      - "crates/lafiya-watchdog/src/sinks.rs"
+      - ".gitleaks.toml"
+    tests:
+      - "crates/lafiya-watchdog/src/sinks.rs::webhook_formats"
+    gap: "Alert payloads are unsigned, so anyone holding the URL can page on-call with fake alerts or flood it to hide a real one"
+    issue: "to-file: sign watchdog webhook payloads (HMAC) and verify in the receiver"
+
+  T-112:
+    title: "Watchdog dies or lags, so a privileged event goes unnoticed"
+    component: "lafiya-watchdog"
+    stride: "D,R"
+    boundary: "TB4 RPC -> watchdog"
+    dfd: "docs/security/threat-model-offchain.md#42-watchdog"
+    mitigation: "Heartbeat rule alerts on lag and RPC failures; external dead-man's switch pages when pings stop"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-watchdog/src/rules.rs"
+      - "docs/runbooks/watchdog.md"
+    tests:
+      - "crates/lafiya-watchdog/src/rules.rs::heartbeat_alerts_on_lag_and_failures"
+      - "crates/lafiya-watchdog/tests/scenario.rs::every_critical_rule_reaches_the_webhook"
+
+  T-113:
+    title: "Poisoned RPC hides privileged events from the watchdog"
+    component: "lafiya-watchdog"
+    stride: "T"
+    boundary: "TB4 RPC -> watchdog"
+    dfd: "docs/security/threat-model-offchain.md#42-watchdog"
+    mitigation: "Contract wasm hash is polled independently of events, so a code change without an upgrade event is critical; runbook requires a different provider from admin tooling"
+    owner: "@Coredevjay"
+    status: "partial"
+    code:
+      - "crates/lafiya-watchdog/src/rules.rs"
+    tests:
+      - "crates/lafiya-watchdog/src/rules.rs::wasm_change_without_event_is_critical"
+    gap: "Only wasm changes are cross-checked; a provider can still drop admin-transfer, role, or repoint events"
+    issue: "to-file: watchdog cross-checks privileged state (admin, roles, registry wiring) against a second provider"
+
+  T-114:
+    title: "Upgrade to unreviewed wasm passes as routine"
+    component: "lafiya-watchdog"
+    stride: "T,E"
+    boundary: "TB5 ledger -> watchdog"
+    dfd: "docs/security/threat-model-offchain.md#42-watchdog"
+    mitigation: "Upgrades to a hash missing from the release manifests raise a critical alert"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-watchdog/src/config.rs"
+      - "crates/lafiya-watchdog/src/rules.rs::UNKNOWN_WASM_UPGRADE"
+    tests:
+      - "crates/lafiya-watchdog/src/rules.rs::upgrade_to_unknown_wasm_is_flagged"
+      - "crates/lafiya-watchdog/src/rules.rs::known_upgrade_only_raises_upgrade_alert"
+
+  # CLI and operator tooling
+  T-121:
+    title: "Operator targets the wrong network or a look-alike contract"
+    component: "lafiya-cli"
+    stride: "S"
+    boundary: "TB2 operator -> TB4 RPC"
+    dfd: "docs/security/threat-model-offchain.md#43-cli-and-operator-tooling"
+    mitigation: "`trust verify` checks contract ids against the domain's stellar.toml over WebPKI; interface check rejects a contract of the wrong kind or version"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-cli/src/trust.rs"
+      - "crates/lafiya-cli/src/interface.rs"
+    tests:
+      - "crates/lafiya-cli/src/trust.rs::reports_contract_id_mismatch_from_local_https"
+      - "crates/lafiya-cli/src/trust.rs::untrusted_certificate_is_rejected"
+      - "crates/lafiya-cli/src/interface.rs::rejects_wrong_contract_kind"
+
+  T-122:
+    title: "Signers approve an opaque or malicious authorization tree"
+    component: "lafiya-cli"
+    stride: "T,E"
+    boundary: "TB2 operator -> multisig signers"
+    dfd: "docs/security/threat-model-offchain.md#43-cli-and-operator-tooling"
+    mitigation: "`auth decode` renders the invocation tree and the payload hash each signer must see on their device, and warns on token transfers"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-cli/src/auth_decode.rs"
+    tests:
+      - "crates/lafiya-cli/src/auth_decode.rs::golden_upgrade"
+      - "crates/lafiya-cli/src/auth_decode.rs::golden_token_transfer_warns"
+      - "crates/lafiya-cli/src/auth_decode.rs::payload_hash_matches_stellar_cli_fixture"
+
+  T-123:
+    title: "Secret seeds leak into CLI logs"
+    component: "lafiya-cli"
+    stride: "I"
+    boundary: "TB2 operator -> log sinks"
+    dfd: "docs/security/threat-model-offchain.md#43-cli-and-operator-tooling"
+    mitigation: "Log layer redacts S... seeds and mnemonics, in text and JSON output"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-cli/src/logging.rs"
+    tests:
+      - "crates/lafiya-cli/src/logging.rs::redacts_secret_seeds"
+      - "crates/lafiya-cli/src/logging.rs::redacts_mnemonic_phrases"
+      - "crates/lafiya-cli/src/logging.rs::json_logs_are_valid_and_redacted"
+
+  T-124:
+    title: "Operator actions cannot be attributed or the trail is edited"
+    component: "lafiya-cli"
+    stride: "R"
+    boundary: "TB2 operator"
+    dfd: "docs/security/threat-model-offchain.md#43-cli-and-operator-tooling"
+    mitigation: "Hash-chained audit log and deployment ledger; verification detects edited, deleted, or reordered records"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-cli/src/audit.rs"
+      - "crates/lafiya-cli/src/deployment_ledger.rs"
+    tests:
+      - "crates/lafiya-cli/src/audit.rs::edited_record_breaks_chain"
+      - "crates/lafiya-cli/src/audit.rs::never_stores_secrets_or_raw_args"
+      - "crates/lafiya-cli/src/deployment_ledger.rs::verify_detects_tampered_line"
+
+  T-125:
+    title: "`config env` output injects shell commands when eval'd"
+    component: "lafiya-cli"
+    stride: "T,E"
+    boundary: "TB2 config file -> operator shell"
+    dfd: "docs/security/threat-model-offchain.md#43-cli-and-operator-tooling"
+    mitigation: "Values are single-quoted with embedded quotes escaped"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-cli/src/main.rs"
+    tests:
+      - "crates/lafiya-cli/src/main.rs::shell_quote_escapes_single_quotes"
+
+  T-126:
+    title: "Ambiguous RPC timeout leads to a duplicate admin transaction"
+    component: "lafiya-cli"
+    stride: "T,D"
+    boundary: "TB2 operator -> TB4 RPC"
+    dfd: "docs/security/threat-model-offchain.md#43-cli-and-operator-tooling"
+    mitigation: "lafiya-rpc-resilience classifies failures and polls before resubmitting across providers"
+    owner: "@Coredevjay"
+    status: "partial"
+    code:
+      - "crates/lafiya-rpc-resilience/src/lib.rs"
+      - "crates/lafiya-cli/src/rpc_client.rs"
+    tests:
+      - "crates/lafiya-rpc-resilience/tests/failure_injection.rs::ambiguous_timeout_after_send_polls_instead_of_resubmitting"
+      - "crates/lafiya-rpc-resilience/tests/failure_injection.rs::primary_provider_down_fails_over_to_secondary_without_duplicate_submission"
+      - "crates/lafiya-cli/src/rpc_client.rs::native_client_returns_not_implemented"
+    gap: "The CLI's native RPC client is still unimplemented, so submissions go through stellar-cli without the poll-before-retry state machine"
+    issue: "to-file: wire lafiya-rpc-resilience into the CLI submit path"
+
+  T-127:
+    title: "Tampered bulk-import CSV enrols the wrong attesters"
+    component: "lafiya-cli"
+    stride: "T"
+    boundary: "programme records -> TB2 operator"
+    dfd: "docs/security/threat-model-offchain.md#43-cli-and-operator-tooling"
+    mitigation: "Import validates addresses, hashes and regions, rejects duplicates, and shows a diff and batch plan before anything is signed"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-cli/src/attester_import.rs"
+    tests:
+      - "crates/lafiya-cli/src/attester_import.rs::invalid_address_is_reported"
+      - "crates/lafiya-cli/src/attester_import.rs::duplicate_address_is_reported"
+      - "crates/lafiya-cli/src/attester_import.rs::diff_classifies_new_and_unchanged"
+
+  # Verifier SDK and bindings
+  T-131:
+    title: "Card or QR steers the verifier to an attacker contract or network"
+    component: "verifier-sdk"
+    stride: "S,T"
+    boundary: "TB8 card -> verifier"
+    dfd: "docs/security/threat-model-offchain.md#44-verifier-sdk-and-bindings"
+    mitigation: "Registry ids come only from configured trust anchors; a QR naming another contract or network is rejected before any chain read"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "packages/verifier-sdk/src/verifier.ts"
+      - "packages/verifier-sdk/src/trust.ts"
+    tests:
+      - "packages/verifier-sdk/test/verifier.test.ts::never reads a contract taken from the QR code"
+      - "packages/verifier-sdk/test/qr-trust.test.ts::validates explicit config"
+
+  T-132:
+    title: "Lying RPC returns a fake attestation to the verifier"
+    component: "verifier-sdk"
+    stride: "S,T"
+    boundary: "TB4 RPC -> verifier"
+    dfd: "docs/security/threat-model-offchain.md#44-verifier-sdk-and-bindings"
+    mitigation: "Offline snapshot bundles give a second path that does not depend on the live provider"
+    owner: "@Coredevjay"
+    status: "open"
+    code:
+      - "packages/verifier-sdk/src/chain.ts::OfflineChainReader"
+    tests:
+      - "packages/verifier-sdk/test/verifier.test.ts::verifies offline from a snapshot bundle"
+    gap: "Online verification trusts one RPC response; nothing cross-checks providers or ledger proofs"
+    issue: "#390"
+
+  T-133:
+    title: "SDK and Rust canonicalize a record differently"
+    component: "verifier-sdk"
+    stride: "T"
+    boundary: "TB6 verifier"
+    dfd: "docs/security/threat-model-offchain.md#44-verifier-sdk-and-bindings"
+    mitigation: "Both implementations run the shared LRC-1 vectors and normalize text to NFC"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "packages/verifier-sdk/src/commitment.ts"
+      - "crates/lafiya-commitment/src/lib.rs"
+    tests:
+      - "packages/verifier-sdk/test/commitment.test.ts::normalizes text to NFC"
+      - "packages/verifier-sdk/test/commitment.test.ts::has vectors"
+
+  T-134:
+    title: "App shows \"verified\" for an ambiguous or degraded result"
+    component: "verifier-sdk"
+    stride: "T"
+    boundary: "verifier -> TB9 responder"
+    dfd: "docs/security/threat-model-offchain.md#44-verifier-sdk-and-bindings"
+    mitigation: "Closed verdict set with a truth table; every failure reason is returned, highest precedence first"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "packages/verifier-sdk/src/verdict.ts"
+    tests:
+      - "packages/verifier-sdk/test/verifier.test.ts::covers every verdict"
+      - "packages/verifier-sdk/test/verifier.test.ts::reports every failure, highest precedence first"
+
+  T-135:
+    title: "Spoofed stellar.toml installs attacker trust anchors"
+    component: "verifier-sdk"
+    stride: "S"
+    boundary: "TB10 home domain -> verifier"
+    dfd: "docs/security/threat-model-offchain.md#44-verifier-sdk-and-bindings"
+    mitigation: "Anchors are fetched over HTTPS from the configured home domain and validated; the CLI rejects untrusted certificates"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "packages/verifier-sdk/src/trust.ts"
+      - "crates/lafiya-cli/src/trust.rs"
+    tests:
+      - "packages/verifier-sdk/test/qr-trust.test.ts::discovers anchors from SEP-1 stellar.toml"
+      - "crates/lafiya-cli/src/trust.rs::untrusted_certificate_is_rejected"
+
+  # QR flow
+  T-141:
+    title: "Forged or cloned card points at another patient's attested hash"
+    component: "qr-flow"
+    stride: "S"
+    boundary: "TB8 card -> verifier"
+    dfd: "docs/security/threat-model-offchain.md#45-qr-flow"
+    mitigation: "With disclosed fields the commitment is recomputed and must match; LRC-2 payloads reject a commitment mismatch"
+    owner: "@Coredevjay"
+    status: "partial"
+    code:
+      - "crates/lafiya-qr/src/lib.rs"
+      - "packages/verifier-sdk/src/verifier.ts"
+    tests:
+      - "crates/lafiya-qr/src/lib.rs::negative_vectors_all_rejected"
+    gap: "A byte-for-byte cloned card verifies; patient_sig is a soft check and nothing binds the card to the person holding it"
+    issue: "#389"
+
+  T-142:
+    title: "Phishing link in the QR fallback_url"
+    component: "qr-flow"
+    stride: "S,I"
+    boundary: "TB8 card -> responder"
+    dfd: "docs/security/threat-model-offchain.md#45-qr-flow"
+    mitigation: "Spec makes fallback_url display-only; the SDK parser does not read it, so it never reaches verification"
+    owner: "@Coredevjay"
+    status: "partial"
+    code:
+      - "docs/specs/qr-payload-v1.md"
+      - "packages/verifier-sdk/src/qr.ts::parseQrPayload"
+    gap: "No test pins that behaviour, and apps get no guidance for showing the URL as untrusted"
+    issue: "to-file: test and UI guidance for untrusted fallback_url"
+
+  T-143:
+    title: "Malformed or oversized QR crashes the scanner"
+    component: "qr-flow"
+    stride: "D"
+    boundary: "TB8 card -> decoder"
+    dfd: "docs/security/threat-model-offchain.md#45-qr-flow"
+    mitigation: "Decoder returns typed errors for bad prefix, base45, truncated CBOR, and unknown versions; negative vectors are shared"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-qr/src/lib.rs"
+      - "crates/lafiya-qr/src/base45.rs"
+      - "crates/lafiya-qr/src/cbor.rs"
+    tests:
+      - "crates/lafiya-qr/src/lib.rs::rejects_truncated_cbor"
+      - "crates/lafiya-qr/src/base45.rs::rejects_invalid_length_mod3_eq1"
+      - "crates/lafiya-qr/src/cbor.rs::rejects_empty_input"
+
+  T-144:
+    title: "Testnet card accepted by a mainnet verifier"
+    component: "qr-flow"
+    stride: "S"
+    boundary: "TB8 card -> verifier"
+    dfd: "docs/security/threat-model-offchain.md#45-qr-flow"
+    mitigation: "Network id is derived from the passphrase and checked before anything else"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "crates/lafiya-qr/src/lib.rs"
+    tests:
+      - "crates/lafiya-qr/src/lib.rs::network_mismatch_is_rejected"
+
+  T-145:
+    title: "Forged or replayed offline receipt"
+    component: "qr-flow"
+    stride: "S,T"
+    boundary: "TB8 card -> verifier (offline)"
+    dfd: "docs/security/threat-model-offchain.md#45-qr-flow"
+    mitigation: "Receipts are signed and checked against the snapshot bundle (ADR-0014); maxAgeDays bounds how stale an accepted receipt may be"
+    owner: "@Coredevjay"
+    status: "mitigated"
+    code:
+      - "packages/verifier-sdk/src/chain.ts::OfflineChainReader"
+      - "docs/adr/0014-offline-attestation-receipts.md"
+    tests:
+      - "crates/lafiya-qr/src/lib.rs::round_trip_offline_receipt"
+      - "packages/verifier-sdk/test/verifier.test.ts::verifies offline from a snapshot bundle"
+
+  # Build and distribution of off-chain artifacts
+  T-151:
+    title: "Compromised build injects code into CLI, indexer, watchdog, or SDK releases"
+    component: "release-pipeline"
+    stride: "T,E"
+    boundary: "TB7 CI -> operators and apps"
+    dfd: "docs/security/threat-model-offchain.md#46-build-and-distribution"
+    mitigation: "Actions pinned by SHA with harden-runner; Dependabot and Scorecard; lockfiles pinned; wasm gets SLSA provenance and a host-import policy"
+    owner: "@Coredevjay"
+    status: "partial"
+    code:
+      - ".github/workflows/release-manifest.yml"
+      - ".github/dependabot.yml"
+      - "packages/verifier-sdk/pnpm-lock.yaml"
+      - "scripts/check_wasm_policy.py"
+    tests:
+      - "scripts/tests/test_check_wasm_policy.py::test_each_rule_fires"
+    gap: "Off-chain binaries and npm packages ship without signed provenance, so operators cannot check a CLI build the way they check wasm"
+    issue: "to-file: SLSA provenance for lafiya-cli, indexer, watchdog binaries and npm packages"
+
 test_naming_convention: "sec_t<threat_id>_<description>"
 test_doc_example: |
   /// Security test for T-001: Uninitialized Admin

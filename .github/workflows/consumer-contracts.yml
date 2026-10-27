@@ -1,0 +1,23 @@
+name: consumer-contracts
+
+on:
+  pull_request:
+    paths:
+      - "crates/lafiya-indexer/openapi.yaml"
+      - "crates/lafiya-indexer/consumer-contracts/**"
+      - "scripts/check_consumer_contracts.py"
+      - ".github/workflows/consumer-contracts.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  provider-verification:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - run: python scripts/check_consumer_contracts.py

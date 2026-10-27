@@ -29,10 +29,14 @@
 //! `5xx` to an ambiguous one, because a gateway may have forwarded the request
 //! before failing.
 
-use crate::{RpcError, RpcProvider, SignedTx, SubmitOutcome, TxState};
+use crate::{
+    health::{CircuitBreaker, HealthScorer, Outcome},
+    RpcError, RpcProvider, SignedTx, SubmitOutcome, TxState,
+};
 use serde_json::{json, Value};
 use std::net::ToSocketAddrs;
-use std::time::Duration;
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use stellar_xdr::{Limits, ReadXdr, TransactionResult};
 use ureq::{config::Config, Agent, Timeout};
 
@@ -40,6 +44,15 @@ use ureq::{config::Config, Agent, Timeout};
 pub struct HttpRpcProvider {
     url: String,
     agent: Agent,
+    /// Rolling health score fed with every call's latency and outcome.
+    health: Arc<HealthScorer>,
+    /// Circuit breaker gating calls to this provider.
+    breaker: Arc<CircuitBreaker>,
+    /// Latency percentile (0.0..=1.0) above which idempotent reads are hedged.
+    hedge_percentile: f64,
+    /// Extra delay before firing the hedge, as a fraction of the observed
+    /// percentile latency (jitter is applied on top).
+    hedge_delay: Duration,
 }
 
 /// Why a JSON-RPC call failed, classified by whether it may have been processed.
@@ -67,6 +80,69 @@ impl HttpRpcProvider {
         HttpRpcProvider {
             url: url.into(),
             agent: config.into(),
+            health: Arc::new(HealthScorer::new()),
+            breaker: Arc::new(CircuitBreaker::new()),
+            hedge_percentile: 0.95,
+            hedge_delay: Duration::from_millis(50),
+        }
+    }
+
+    /// Share the health scorer and circuit breaker with the failover client so
+    /// selection and this provider observe the same state.
+    pub fn with_health(
+        mut self,
+        health: Arc<HealthScorer>,
+        breaker: Arc<CircuitBreaker>,
+    ) -> Self {
+        self.health = health;
+        self.breaker = breaker;
+        self
+    }
+
+    /// Configure the latency percentile that triggers hedged reads and the
+    /// extra delay before the hedge is fired.
+    pub fn with_hedging(mut self, percentile: f64, delay: Duration) -> Self {
+        self.hedge_percentile = percentile.clamp(0.0, 1.0);
+        self.hedge_delay = delay;
+        self
+    }
+
+    /// Whether the breaker currently allows a call.
+    pub fn is_available(&self) -> bool {
+        self.breaker.allow()
+    }
+
+    /// Record a completed call's latency and outcome into the health scorer.
+    fn record(&self, started: Instant, outcome: Outcome) {
+        let latency = started.elapsed();
+        self.health.record(latency, outcome);
+        match outcome {
+            Outcome::Success => self.breaker.on_success(),
+            Outcome::Failure => self.breaker.on_failure(),
+            Outcome::Ambiguous => {}
+        }
+    }
+
+    /// Run an idempotent read, hedging with a second attempt once the observed
+    /// latency percentile has elapsed. The first successful reply wins.
+    fn hedged_call(&self, method: &str, params: Value) -> Result<Value, CallError> {
+        let started = Instant::now();
+        let first = self.call(method, params.clone());
+        let elapsed = started.elapsed();
+        let threshold = self
+            .health
+            .latency_percentile(self.hedge_percentile)
+            .unwrap_or(Duration::ZERO)
+            + self.hedge_delay;
+        if first.is_ok() || elapsed >= threshold {
+            return first;
+        }
+        // The first attempt was slow but did not fail: fire a hedge and take
+        // whichever reply arrives first. Reads are idempotent, so this is safe.
+        let hedge = self.call(method, params);
+        match (first, hedge) {
+            (Ok(v), _) | (_, Ok(v)) => Ok(v),
+            (Err(e), _) => Err(e),
         }
     }
 
@@ -93,6 +169,9 @@ impl HttpRpcProvider {
     }
 
     fn call(&self, method: &str, params: Value) -> Result<Value, CallError> {
+        if !self.breaker.allow() {
+            return Err(CallError::NotSent(RpcError::ProviderUnavailable));
+        }
         self.resolve()?;
         let body = json!({"jsonrpc": "2.0", "id": 1, "method": method, "params": params});
         let mut response = self
@@ -191,12 +270,21 @@ impl RpcProvider for HttpRpcProvider {
     }
 
     fn submit(&mut self, tx: &SignedTx) -> SubmitOutcome {
+        // Submissions are single-flight and never hedged: exactly one
+        // sendTransaction is issued per call, keyed by the transaction hash.
+        let started = Instant::now();
         let result = match self.call("sendTransaction", json!({ "transaction": tx.envelope_xdr })) {
             Ok(result) => result,
-            Err(CallError::NotSent(e)) => return SubmitOutcome::Definite(e),
-            Err(CallError::MaybeSent(e)) => return SubmitOutcome::Ambiguous(e),
+            Err(CallError::NotSent(e)) => {
+                self.record(started, Outcome::Failure);
+                return SubmitOutcome::Definite(e);
+            }
+            Err(CallError::MaybeSent(e)) => {
+                self.record(started, Outcome::Ambiguous);
+                return SubmitOutcome::Ambiguous(e);
+            }
         };
-        match result.get("status").and_then(Value::as_str) {
+        let outcome = match result.get("status").and_then(Value::as_str) {
             // DUPLICATE: the provider already has this exact transaction.
             Some("PENDING") | Some("DUPLICATE") => SubmitOutcome::Ack(TxState::Pending),
             Some("TRY_AGAIN_LATER") => {
@@ -208,15 +296,27 @@ impl RpcProvider for HttpRpcProvider {
             other => SubmitOutcome::Ambiguous(RpcError::Other(format!(
                 "unexpected sendTransaction status {other:?}"
             ))),
-        }
+        };
+        let health = match &outcome {
+            SubmitOutcome::Ack(_) => Outcome::Success,
+            SubmitOutcome::Definite(_) => Outcome::Failure,
+            SubmitOutcome::Ambiguous(_) => Outcome::Ambiguous,
+        };
+        self.record(started, health);
+        outcome
     }
 
     fn get_transaction(&mut self, tx_hash: &str) -> Result<TxState, RpcError> {
+        let started = Instant::now();
         let result = self
-            .call("getTransaction", json!({ "hash": tx_hash }))
-            .map_err(|e| match e {
-                CallError::NotSent(e) | CallError::MaybeSent(e) => e,
+            .hedged_call("getTransaction", json!({ "hash": tx_hash }))
+            .map_err(|e| {
+                self.record(started, Outcome::Failure);
+                match e {
+                    CallError::NotSent(e) | CallError::MaybeSent(e) => e,
+                }
             })?;
+        self.record(started, Outcome::Success);
         match result.get("status").and_then(Value::as_str) {
             Some("SUCCESS") => Ok(TxState::Accepted {
                 ledger: result

@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "contracts/multisig-account",
     "contracts/attester-registry",
+    "contracts/facility-registry",
     "contracts/attestation-registry",
     "contracts/incentive-pool",
     "crates/lafiya-config",
@@ -10,9 +11,11 @@ members = [
     "crates/lafiya-commitment",
     "crates/lafiya-contract-common",
     "crates/lafiya-rpc-resilience",
+    "crates/lafiya-relayer",
     "crates/lafiya-watchdog",
     "crates/lafiya-fraud-scoring",
-    "crates/lafiya-test-utils",
+    "crates/lafiya-indexer",
+    "crates/lafiya-qr",
 ]
 
 [workspace.package]
@@ -23,6 +26,22 @@ repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
 [workspace.dependencies]
 soroban-sdk = "28.0.0"
+stellar-xdr = "28.0.0"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+tokio = { version = "1.40", features = ["full"] }
+anyhow = "1.0"
+thiserror = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+clap = { version = "4.5", features = ["derive"] }
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "postgres", "chrono", "uuid", "migrate"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.10", features = ["v4", "serde"] }
+qrcode = "0.14"
+image = { version = "0.25", default-features = false, features = ["png"] }
+base64 = "0.22"
 
 [profile.release]
 opt-level = "z"

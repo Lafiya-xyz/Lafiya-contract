@@ -18,9 +18,14 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 attestation-registry = { path = "../attestation-registry", features = ["testutils"] }
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 ed25519-dalek = "3.0.0"
+hex = "0.4"
 p256 = "0.13.2"
 sha2 = "0.10.9"
 proptest = "1"
+serde_json = "1.0"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(dylint_lib, values(any()))'] }

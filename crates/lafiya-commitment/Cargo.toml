@@ -1,19 +1,21 @@
 [package]
 name = "lafiya-commitment"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Reference implementation of the Lafiya Record Commitment (LRC-1) canonicalization and domain-separated hashing scheme"
 license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
 [features]
-# Enable the LRC-2 per-field selective-disclosure prototype (see ADR-0012).
+# Enable the LRC-2 per-field selective-disclosure prototype (see ADR-0023).
 lrc2 = []
 std = []
 soroban = ["dep:soroban-sdk"]
 
 [dependencies]
 sha2 = "0.10"
+subtle = { version = "2.6", default-features = false }
+zeroize = { version = "1.9", default-features = false, features = ["alloc"] }
 soroban-sdk = { workspace = true, optional = true }
 
 [dev-dependencies]

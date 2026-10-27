@@ -11,6 +11,18 @@
 
 use super::CborValue;
 
+/// Maximum number of elements allowed in a CBOR array or map.
+///
+/// This bounds allocation when decoding attacker-controlled input: a tiny
+/// payload can otherwise claim a huge element count. The limit is far above
+/// anything the QR payload spec needs.
+pub const MAX_CONTAINER_LEN: u64 = 1024;
+
+/// Maximum nesting depth for arrays/maps.
+///
+/// Prevents stack exhaustion from deeply nested attacker-controlled input.
+pub const MAX_DEPTH: usize = 16;
+
 // ---------------------------------------------------------------------------
 // Encoder
 // ---------------------------------------------------------------------------
@@ -93,7 +105,32 @@ impl core::fmt::Display for CborError {
 
 impl std::error::Error for CborError {}
 
+/// Decode a single CBOR value from the front of `data`.
+///
+/// Returns the decoded value and the unconsumed remainder. Callers that expect
+/// exactly one value should use [`decode_exact`].
 pub fn decode_value(data: &[u8]) -> Result<(CborValue, &[u8]), CborError> {
+    decode_value_at_depth(data, 0)
+}
+
+/// Decode exactly one CBOR value, rejecting trailing bytes.
+pub fn decode_exact(data: &[u8]) -> Result<CborValue, CborError> {
+    let (value, rest) = decode_value(data)?;
+    if !rest.is_empty() {
+        return Err(CborError(format!(
+            "trailing bytes after CBOR value: {}",
+            rest.len()
+        )));
+    }
+    Ok(value)
+}
+
+fn decode_value_at_depth(data: &[u8], depth: usize) -> Result<(CborValue, &[u8]), CborError> {
+    if depth > MAX_DEPTH {
+        return Err(CborError(format!(
+            "CBOR nesting depth exceeds maximum of {MAX_DEPTH}"
+        )));
+    }
     if data.is_empty() {
         return Err(CborError("unexpected end of CBOR input".into()));
     }
@@ -111,13 +148,20 @@ pub fn decode_value(data: &[u8]) -> Result<(CborValue, &[u8]), CborError> {
         1 => {
             // Negative integer: value is -1 - n
             let (n, rest) = decode_uint_additional(additional, rest)?;
+            // n may exceed i64::MAX; reject rather than overflow.
+            if n > i64::MAX as u64 {
+                return Err(CborError(format!(
+                    "negative integer magnitude {n} out of range"
+                )));
+            }
             let v = -1i64 - n as i64;
             Ok((CborValue::Int(v), rest))
         }
         2 => {
             // Byte string
             let (len, rest) = decode_uint_additional(additional, rest)?;
-            let len = len as usize;
+            let len = usize::try_from(len)
+                .map_err(|_| CborError(format!("byte string length {len} out of range")))?;
             if rest.len() < len {
                 return Err(CborError(format!(
                     "byte string of length {len} exceeds remaining input ({})",
@@ -129,7 +173,8 @@ pub fn decode_value(data: &[u8]) -> Result<(CborValue, &[u8]), CborError> {
         3 => {
             // Text string
             let (len, rest) = decode_uint_additional(additional, rest)?;
-            let len = len as usize;
+            let len = usize::try_from(len)
+                .map_err(|_| CborError(format!("text string length {len} out of range")))?;
             if rest.len() < len {
                 return Err(CborError(format!(
                     "text string of length {len} exceeds remaining input ({})",
@@ -143,9 +188,18 @@ pub fn decode_value(data: &[u8]) -> Result<(CborValue, &[u8]), CborError> {
         4 => {
             // Array
             let (count, mut rest) = decode_uint_additional(additional, rest)?;
-            let mut arr = Vec::with_capacity(count.min(64) as usize);
+            check_container_len(count, "array")?;
+            // Each element needs at least one byte, so a count larger than the
+            // remaining input can never be satisfied.
+            if count > rest.len() as u64 {
+                return Err(CborError(format!(
+                    "array count {count} exceeds remaining input ({})",
+                    rest.len()
+                )));
+            }
+            let mut arr = Vec::with_capacity(count as usize);
             for _ in 0..count {
-                let (item, r) = decode_value(rest)?;
+                let (item, r) = decode_value_at_depth(rest, depth + 1)?;
                 arr.push(item);
                 rest = r;
             }
@@ -154,9 +208,17 @@ pub fn decode_value(data: &[u8]) -> Result<(CborValue, &[u8]), CborError> {
         5 => {
             // Map (we only support unsigned integer keys for this spec)
             let (count, mut rest) = decode_uint_additional(additional, rest)?;
-            let mut entries: Vec<(u64, CborValue)> = Vec::with_capacity(count.min(64) as usize);
+            check_container_len(count, "map")?;
+            // Each entry needs at least two bytes (key + value).
+            if count > (rest.len() as u64) / 2 {
+                return Err(CborError(format!(
+                    "map count {count} exceeds remaining input ({})",
+                    rest.len()
+                )));
+            }
+            let mut entries: Vec<(u64, CborValue)> = Vec::with_capacity(count as usize);
             for _ in 0..count {
-                let (key_val, r) = decode_value(rest)?;
+                let (key_val, r) = decode_value_at_depth(rest, depth + 1)?;
                 let key = match key_val {
                     CborValue::Uint(k) => k,
                     other => {
@@ -165,7 +227,7 @@ pub fn decode_value(data: &[u8]) -> Result<(CborValue, &[u8]), CborError> {
                         )))
                     }
                 };
-                let (val, r2) = decode_value(r)?;
+                let (val, r2) = decode_value_at_depth(r, depth + 1)?;
                 entries.push((key, val));
                 rest = r2;
             }
@@ -183,6 +245,15 @@ pub fn decode_value(data: &[u8]) -> Result<(CborValue, &[u8]), CborError> {
         }
         _ => Err(CborError(format!("unsupported CBOR major type: {major}"))),
     }
+}
+
+fn check_container_len(count: u64, kind: &str) -> Result<(), CborError> {
+    if count > MAX_CONTAINER_LEN {
+        return Err(CborError(format!(
+            "{kind} count {count} exceeds maximum of {MAX_CONTAINER_LEN}"
+        )));
+    }
+    Ok(())
 }
 
 fn decode_uint_additional<'a>(
@@ -299,5 +370,94 @@ mod tests {
     #[test]
     fn rejects_empty_input() {
         assert!(decode_value(&[]).is_err());
+    }
+
+    #[test]
+    fn decode_exact_rejects_trailing_bytes() {
+        let mut buf = Vec::new();
+        encode_value(&CborValue::Uint(1), &mut buf);
+        buf.push(0x00);
+        assert!(decode_exact(&buf).is_err());
+    }
+
+    #[test]
+    fn decode_exact_accepts_single_value() {
+        let mut buf = Vec::new();
+        encode_value(&CborValue::Text("ok".into()), &mut buf);
+        assert_eq!(decode_exact(&buf).unwrap(), CborValue::Text("ok".into()));
+    }
+
+    #[test]
+    fn rejects_truncated_uint() {
+        // 0x1b = uint64 follows, but no payload bytes.
+        assert!(decode_value(&[0x1b]).is_err());
+        assert!(decode_value(&[0x1a, 0x00]).is_err());
+        assert!(decode_value(&[0x19, 0x00]).is_err());
+        assert!(decode_value(&[0x18]).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_byte_string() {
+        // Byte string of length 4 with only 2 bytes present.
+        assert!(decode_value(&[0x44, 0x01, 0x02]).is_err());
+    }
+
+    #[test]
+    fn rejects_truncated_text_string() {
+        // Text string of length 4 with only 2 bytes present.
+        assert!(decode_value(&[0x64, b'a', b'b']).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_array_count() {
+        // Array claiming 2^32 elements with no payload.
+        assert!(decode_value(&[0x9a, 0xff, 0xff, 0xff, 0xff]).is_err());
+    }
+
+    #[test]
+    fn rejects_oversized_map_count() {
+        // Map claiming 2^32 entries with no payload.
+        assert!(decode_value(&[0xba, 0xff, 0xff, 0xff, 0xff]).is_err());
+    }
+
+    #[test]
+    fn rejects_array_count_above_max_container_len() {
+        // Array claiming MAX_CONTAINER_LEN + 1 elements; supply enough bytes
+        // that the remaining-input check alone would not reject it.
+        let count = MAX_CONTAINER_LEN + 1;
+        let mut buf = Vec::new();
+        encode_type_len(4, count, &mut buf);
+        buf.extend(std::iter::repeat(0x00).take(count as usize));
+        assert!(decode_value(&buf).is_err());
+    }
+
+    #[test]
+    fn rejects_excessive_nesting() {
+        // MAX_DEPTH + 2 nested single-element arrays.
+        let mut buf = vec![0x81u8; MAX_DEPTH + 2];
+        buf.push(0x00);
+        assert!(decode_value(&buf).is_err());
+    }
+
+    #[test]
+    fn rejects_negative_int_out_of_range() {
+        // Major type 1 with value u64::MAX would overflow i64.
+        let mut buf = Vec::new();
+        encode_type_len(1, u64::MAX, &mut buf);
+        assert!(decode_value(&buf).is_err());
+    }
+
+    #[test]
+    fn accepts_container_at_max_len() {
+        let count = MAX_CONTAINER_LEN;
+        let mut buf = Vec::new();
+        encode_type_len(4, count, &mut buf);
+        buf.extend(std::iter::repeat(0x00).take(count as usize));
+        let (value, rest) = decode_value(&buf).expect("decode");
+        assert!(rest.is_empty());
+        match value {
+            CborValue::Array(arr) => assert_eq!(arr.len(), count as usize),
+            other => panic!("expected array, got {other:?}"),
+        }
     }
 }

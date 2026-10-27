@@ -21,7 +21,9 @@ hard commitment.
 | **Error codes** (`#[contracterror]`) | Per-contract enum, `u32` codes | Renumbering, reusing, or changing the meaning of an existing code. **Never allowed**. Add new codes at the end | Never. Retired codes stay reserved forever | [`error-codes.md`](error-codes.md) and the error catalog (#442) |
 | **TypeScript bindings / SDK** (`bindings/*`) | npm SemVer (`package.json` `version`) | Any generated type or method change that follows from a breaking contract change; removing exports | Same as the contract change that caused it. The old major keeps working against old deployments | `CHANGELOG.md`, `npm deprecate` on superseded versions once packages are published ([PUBLISHING.md](../PUBLISHING.md)) |
 | **CLI** (`lafiya-cli`, `scripts/*.sh`) | SemVer of the `lafiya-cli` crate | Removing or renaming a subcommand or flag; changing output formats that scripts parse | At least **1 minor release** with the old spelling still working and printing a deprecation warning to stderr | `--help` text, stderr warnings, `CHANGELOG.md` |
+| **Native library crates** (`lafiya-commitment`, `lafiya-config`, `lafiya-fraud-scoring`) | Each crate's own `Cargo.toml` version (SemVer, independent of the workspace) | Removing or changing a public item, trait impl, or function signature | None required pre-1.0, but a breaking change needs a `0.MINOR` bump ([CONTRIBUTING.md](../CONTRIBUTING.md#native-crates-miri-sanitizers-and-semver-checks)) | Crate version, `CHANGELOG.md` |
 | **Commitment scheme** (LRC, [ADR-0008](adr/0008-record-commitment-canonicalization.md)) | Version byte inside the commitment preimage (`VERSION_V1`, ...) | Any change to canonicalization or encoding. This always produces a **new version**, never an edit to an existing one | Old versions remain verifiable by every verifier for at least **10 years** (the lifetime of an emergency health card) | ADR-0008 or its successor ADR, new test vectors, `CHANGELOG.md` |
+| **Cryptographic algorithm ids** ([ADR-0019](adr/0019-cryptographic-agility.md), `lafiya-commitment::alg`) | One-byte ids per namespace (hash, signature, KDF) | Reusing, renumbering, or changing the algorithm or parameters behind an id. **Never allowed**. Retired ids stay reserved | Activating a successor opens a dual-hash or hybrid-signature window of at least **2 minor releases**. Old algorithms remain verifiable for the 10-year card lifetime unless actually broken | ADR-0019 registry and playbook, new test vectors, `CHANGELOG.md` |
 
 Adding things is always allowed without a deprecation window: new functions,
 new events, new trailing error codes, new appended `DataKey` variants, new
@@ -56,6 +58,26 @@ functions do not emit a `Deprecated { fn_name }` event.**
 4. After the deprecation window, remove the old surface in a release whose
    version bump follows ADR-0010 (major from `1.0.0`, minor while `0.x`).
 
+## Contract metadata (SEP-46)
+
+Every contract wasm (`attestation-registry`, `attester-registry`,
+`multisig-account`, `incentive-pool`) must embed these `contractmetav0` keys:
+
+| Key | Meaning | Must equal |
+| --- | --- | --- |
+| `crate_version` | version | workspace `package.version` in `Cargo.toml` |
+| `source_repo` | repo | `github:Lafiya-xyz/Lafiya-contract` |
+| `source_rev` | commit | the commit being released (`--commit`) |
+| `interface_version` | interface version | the crate's `INTERFACE_VERSION` const |
+| `crate_name`, `home_domain` | identity | the `contracts/*` package name; `lafiya-xyz.github.io` |
+
+`scripts/check_wasm_meta.py --require-all` fails if any key is missing or
+empty, disagrees with Cargo or source, or a contract crate has no wasm. It runs
+in `deployments-verify.yml` and `release-manifest.yml`. The release manifest
+records each wasm's `meta_digest` (sha256 of the sorted `key=value` lines).
+Bumping `INTERFACE_VERSION` also requires updating that contract's
+`interface_version` `contractmeta!` entry (literal only; the check catches drift).
+
 ## Enforcement
 
 | Rule | Status |
@@ -68,5 +90,7 @@ functions do not emit a `Deprecated { fn_name }` event.**
 | Storage is append-only; `SCHEMA_VERSION` bump and `Schema-Impact` trailer | **Reviewer-enforced** (runbook and `DataKey` doc comments). Automated upgrade-from-every-release test: [#375](https://github.com/Lafiya-xyz/Lafiya-contract/issues/375) |
 | Bindings match the contract spec | **Enforced locally** by `check_bindings_drift.py` (see #448). npm deprecation is not applicable until packages are published ([PUBLISHING.md](../PUBLISHING.md)) |
 | CLI deprecation warnings and window | **Reviewer-enforced**. Consolidating the scripts into the CLI: [#402](https://github.com/Lafiya-xyz/Lafiya-contract/issues/402), full subcommand coverage: [#394](https://github.com/Lafiya-xyz/Lafiya-contract/issues/394) |
+| Native crates' breaking API changes carry a version bump | **Enforced in CI** by the `Semver checks (native crates)` job (`cargo semver-checks` against the PR merge base) |
+| Native crates are free of undefined behaviour | **Nightly, non-blocking**: Miri and sanitizers in `native-crates-nightly.yml`; failures are tracked in an issue |
 | Commitment encodings are only ever added as new versions | **Reviewer-enforced** under ADR-0008. Cross-implementation vectors in CI: [#387](https://github.com/Lafiya-xyz/Lafiya-contract/issues/387) |
 | Consumers can check a release against their requirements | **Available** through `scripts/check_manifest_compatibility.py` (ADR-0010), which consumers run in their own CI |

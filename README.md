@@ -186,6 +186,25 @@ and verifiable. `attestation-registry` now exposes `get_schema_version` and
 pre-upgrade checklist, the `upgrade()` call sequence, verifying the wasm hash against
 reviewed source, and `migrate()` handling for storage-schema-changing upgrades. The
 mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
+| `set_probation_config(duration: u64, rate_cap: u32, rate_window_ledgers: u32, payout_eligible: bool)` | Sets the probation policy for new enrollments (admin). |
+| `get_probation_state(attester: Address) -> ProbationState` | `Standard`, `Probation` or `Flagged` at the current ledger time. |
+| `get_probation_limits(attester: Address) -> Option<ProbationLimits>` | Limits read by the pool and attestation registry; `None` once `Standard`. |
+| `is_payout_eligible(attester: Address) -> bool` | Whether probation rules allow incentive-pool payouts. |
+| `promote_attester(registrar: Address, attester: Address)` | Ends probation early. |
+| `flag_probation(caller: Address, attester: Address, reason: Symbol)` | Blocks automatic promotion. |
+| `report_probation_breach(caller: Address, attester: Address, kind: Symbol)` | Emits `ProbationBreach` for the watchdog and flags the attester. |
+| `finalize_probation(attester: Address)` | Housekeeping after an unflagged probation expires. |
+| `set_attester_tier(registrar: Address, attester: Address, tier: Tier)` | Assigns a capability tier (default `Chw`). |
+| `propose_tier_matrix(new_matrix: Map<Symbol, Tier>)` | Proposes the class -> minimum tier matrix; applicable after a 48h timelock. |
+| `apply_tier_matrix()` / `cancel_tier_matrix()` | Applies or discards the pending matrix (admin). |
+| `is_class_allowed(attester: Address, class: Symbol) -> bool` | Whether the attester's tier satisfies the matrix for `class`. |
+| `set_bond_config(token: Address, min_bond: i128, challenge_window: u64, quorum: u32, unbond_delay: u64, recipient: Address)` | Configures optional attester bonds (admin). |
+| `post_bond(attester: Address, amount: i128)` | Escrows a bond. |
+| `propose_slash(proposer: Address, attester: Address, amount: i128, evidence_hash: BytesN<32>) -> u64` | Opens a slash case and locks the amount. |
+| `approve_slash(approver: Address, case_id: u64)` | Adds an approval; quorum starts the challenge window. |
+| `appeal_slash(case_id: u64)` / `resolve_appeal(case_id: u64, uphold: bool)` | Attester appeal and admin ruling. |
+| `execute_slash(case_id: u64)` | Pays the slashed amount to the recipient after the window. |
+| `request_bond_withdrawal(attester: Address)` / `withdraw_bond(attester: Address)` | Unbonding with cooldown. |
 
 ### `attestation-registry`
 
@@ -235,6 +254,22 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 | `set_attester_rate_limit(attester: Address, max_per_window: u32)` | See the contract rustdoc for details. |
 | `remove_attester_rate_limit(attester: Address)` | See the contract rustdoc for details. |
 | `get_rate_limit_retry_after(attester: Address) -> Option<u32>` | See the contract rustdoc for details. |
+| `attest_with_scope(attester: Address, patient: Address, record_hash: BytesN<32>, class: Option<Symbol>, facility_id: Option<u64>)` | Attests under an attestation class (tier-checked) and/or facility (affiliation-checked). |
+| `get_attestation_scope(record_hash: BytesN<32>)` | Class and facility of the latest active attestation. |
+| `set_facility_registry(facility_registry: Address)` | Points facility-scoped attestations at a facility registry (admin). |
+| `get_facility_registry()` | The configured facility registry. |
+
+### `facility-registry`
+
+| Function | Description |
+| --- | --- |
+| `__constructor(admin: Address)` | Sets the admin at deployment. |
+| `enroll_facility(license_hash: BytesN<32>, region: Option<String>) -> u64` | Enrolls a licensed facility (admin). |
+| `deactivate_facility(facility_id: u64)` / `reactivate_facility(facility_id: u64)` | Toggles a facility's validity (admin). |
+| `affiliate_attester(facility_id: u64, attester: Address)` / `disaffiliate_attester(facility_id: u64, attester: Address)` | Manages attester affiliations (admin). |
+| `is_affiliated(facility_id: u64, attester: Address) -> bool` | Current affiliation with an active facility. |
+| `was_affiliated_at(facility_id: u64, attester: Address, timestamp: u64) -> bool` | Historical affiliation. |
+| `get_mutation_seq() -> u64` | Mutation cursor for the event-derived directory (ADR-0017). |
 
 ### `incentive-pool`
 
@@ -262,9 +297,17 @@ mechanical steps are automated by [`scripts/upgrade.sh`](scripts/upgrade.sh).
 | `fund(amount: i128)` | See the contract rustdoc for details. |
 | `withdraw(to: Address, amount: i128)` | See the contract rustdoc for details. |
 | `approve_work_item(work_item_id: BytesN<32>, attester: Address, payout_amount: i128)` | See the contract rustdoc for details. |
+| `approve_scheduled_work_item(work_item_id: BytesN<32>, attester: Address, work_type: u32, region_class: u32)` | See the contract rustdoc for details. |
+| `get_work_item_schedule_version(work_item_id: BytesN<32>) -> u32` | See the contract rustdoc for details. |
+| `propose_payout_rate(work_type: u32, region_class: u32, amount: i128)` | See the contract rustdoc for details. |
+| `apply_payout_rate(work_type: u32, region_class: u32) -> Result<u32, Error>` | See the contract rustdoc for details. |
+| `get_payout_rate(work_type: u32, region_class: u32) -> Option<PayoutRate>` | See the contract rustdoc for details. |
+| `get_pending_payout_rate(work_type: u32, region_class: u32) -> Option<PendingPayoutRate>` | See the contract rustdoc for details. |
+| `get_schedule_version() -> u32` | See the contract rustdoc for details. |
 | `claim(work_item_id: BytesN<32>)` | See the contract rustdoc for details. |
 | `pause()` | See the contract rustdoc for details. |
 | `unpause()` | See the contract rustdoc for details. |
+| `can_receive(address: Address) -> Result<bool, Error>` | See the contract rustdoc for details. |
 | `is_paused() -> bool` | See the contract rustdoc for details. |
 
 ### `multisig-account`
@@ -292,7 +335,10 @@ Bounded USDC payout/escrow contract for the M2 milestone. Donors fund the pool, 
 | `set_max_per_attester(max: i128)` | Sets the per-attester cumulative claim cap. Requires admin auth. |
 | `fund(amount: i128)` | Deposits tokens from the caller into the pool. Requires admin auth. Blocked while paused. Emits `PoolFunded`. |
 | `withdraw(to: Address, amount: i128)` | Withdraws tokens from the pool to `to`. Requires admin auth. Blocked while paused. Emits `PoolWithdrawn`. |
-| `approve_work_item(work_item_id, attester, payout_amount)` | Approves a work item for payout. Requires approver auth. Verifies attester is allowlisted, enforces per-claim cap. Blocked while paused. Emits `WorkItemApproved`. |
+| `approve_scheduled_work_item(work_item_id, attester, work_type, region_class)` | Approves a work item priced from the on-chain payout schedule. Requires approver auth. Records the schedule version used. |
+| `propose_payout_rate(work_type, region_class, amount)` / `apply_payout_rate(work_type, region_class)` | Timelocked (`SCHEDULE_TIMELOCK_SECS`, 2 days) payout-schedule change. Propose requires admin auth; apply is permissionless after the timelock. Emit `PayoutRateProposed` / `PayoutRateApplied`. |
+| `can_receive(address)` | Preflight: whether `address` holds an authorized trustline for the pool token. |
+| `approve_work_item(work_item_id, attester, payout_amount)` | Override path: approves a work item for an explicit amount. Requires approver **and** admin auth. Verifies attester is allowlisted, enforces per-claim cap. Blocked while paused. Emits `WorkItemApproved`. |
 | `claim(work_item_id)` | Claims payout for an approved work item. Requires the approved attester's auth. Enforces replay protection, per-attester cap, and pool balance. Transfers tokens on success. Blocked while paused. Emits `PayoutClaimed`. |
 | `pause()` | Blocks `fund`, `withdraw`, `approve_work_item`, and `claim`. Requires admin auth. Emits `Paused`. |
 | `unpause()` | Resumes normal operation. Requires admin auth. Emits `Unpaused`. |
@@ -333,17 +379,31 @@ contracts/
     └── src/
         ├── lib.rs           # initialize, fund, withdraw, approve_work_item, claim, pause/unpause
         └── test.rs
+crates/
+├── lafiya-indexer/          # chain indexer (workspace member)
+│   ├── Cargo.toml
+│   └── src/
+└── lafiya-qr/               # QR encode/decode library (workspace member)
+    ├── Cargo.toml
+    └── src/
 docs/
 └── adr/                      # architecture decisions, index, and template
-Cargo.toml                   # workspace + release profile
+Cargo.toml                   # workspace + release profile + [workspace.dependencies]
 Cargo.lock                    # committed for reproducible builds
 CHANGELOG.md                  # release notes incl. schema-impact statements
 rust-toolchain.toml           # pins stable + wasm32v1-none
-Makefile                      # build/test/fmt/clippy/wasm/bindings/check
-.github/workflows/ci.yml      # runs the same checks on push/PR
+Makefile                      # build/test/fmt/clippy/wasm/bindings/check (aggregates all workspace crates)
+xtask/                        # repo automation; aggregate targets cover every workspace member
+.github/workflows/ci.yml      # runs the same checks on push/PR, incl. lafiya-indexer and lafiya-qr
 LICENSE                       # MIT
 CONTRIBUTING.md               # local dev workflow
 ```
+
+All crates under `contracts/` and `crates/` are first-class workspace members: they share
+dependency versions via `[workspace.dependencies]` and are built, linted (`clippy -D warnings`),
+tested, and audited (`cargo deny`) on every PR. The `lafiya-indexer` end-to-end tests run
+against a Postgres service in CI. See [docs/ci.md](docs/ci.md) for the full job list and the
+required status checks.
 
 ## TypeScript Client Bindings
 

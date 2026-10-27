@@ -168,6 +168,33 @@ scripts/upgrade.sh \
 
 The manual equivalent, and what the script does under the hood:
 
+### 4.0 Rehearse: snapshot state before the upgrade
+
+Prove the upgrade changes only what is intended. **Do not run §4.4 until the
+post-upgrade diff is clean.**
+
+```sh
+# Before: dump instance + persistent entries
+lafiya-cli --network testnet rehearsal snapshot "$CONTRACT_ID" --out before.json
+# ... run §4.4 (and §5 if the schema changed) ...
+lafiya-cli --network testnet rehearsal snapshot "$CONTRACT_ID" --out after.json
+# Compare against the changes the release notes promise
+lafiya-cli rehearsal diff before.json after.json --allow allow.json
+```
+
+`allow.json` lists expected changes by `DataKey` variant name, e.g. a
+schema-bumping release:
+
+```json
+{"allow":[{"kind":"SchemaVersion","change":"modified"}]}
+```
+
+`diff` exits non-zero and prints `UNEXPECTED` for any added, removed or
+modified entry not covered. Rehearse first against a seeded testnet/sandbox
+deployment; a non-clean diff blocks the production upgrade. Snapshots wrap
+`stellar contract read --output json` (stellar-cli must be installed, or pass
+`--from-file` with its saved output).
+
 ### 4.1 Build from the clean release tag
 
 ```bash
@@ -302,6 +329,31 @@ the normal versioning track.
    notes for the operator.
 
 ---
+
+### 5.5 Chunked migration for large state
+
+When the data to rewrite cannot fit one transaction's footprint, use the
+cursor-based framework in `lafiya_contract_common::migration` instead of a
+single `migrate()` call.
+
+1. **Begin** (admin-authorized): record `total` items; phase `Idle → Running`
+   (`Complete` immediately if `total == 0`). Beginning while `Running` is
+   rejected.
+2. **Pause writes.** While `Running`, `is_paused_for_writes()` is true: the
+   contract rejects state changes other than migration steps.
+3. **Step** (permissionless, anyone can call, repeatedly): each call migrates
+   at most `MAX_STEP_ITEMS` (25) items from the cursor, regardless of the
+   requested size, then advances the cursor. The last step moves the phase to
+   `Complete`.
+4. **Reads during migration (dual-read).** Item `i` is read from the new layout
+   iff `i < cursor`, otherwise from the old layout (`layout(i)`), so verdicts
+   stay consistent at every cursor position. Any write that must be allowed
+   mid-migration uses the same routing, which prevents loss or duplication.
+5. **Interrupted runs** resume from the stored cursor; no operator state is
+   needed. Verify with the rehearsal diff (§4.0) after `Complete`.
+
+The property test `migration::tests::resumed_equals_one_shot` checks that
+interleaved writes and arbitrary step sizes always yield the one-shot result.
 
 ## 6. Rollback
 

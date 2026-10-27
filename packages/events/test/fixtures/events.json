@@ -238,5 +238,371 @@
     "expected": {
       "newWasmHash": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
     }
+  },
+  {
+    "kind": "PoolInitialized",
+    "raw": {
+      "id": "0000004350801870848-0000000000",
+      "ledger": 1013,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d0d",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABFwb29sX2luaXRpYWxpemVkAAAA",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "AAAAEgAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q="
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAAVhZG1pbgAAAAAAABIAAAAAAAAAAIE5dw6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOUAAAAPAAAACmZlZV9idW5kcHMAAAAAAAPoAAAAAA=="
+    },
+    "expected": {
+      "admin": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "feeBps": 1000
+    }
+  },
+  {
+    "kind": "PoolAdminTransferred",
+    "raw": {
+      "id": "0000004355096838144-0000000000",
+      "ledger": 1014,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABZwb29sX2FkbWluX3RyYW5zZmVycmVkAAA=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w=",
+        "AAAAEgAAAAAAAAAAgTl3Dqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5Q="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "previousAdmin": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR",
+      "newAdmin": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U"
+    }
+  },
+  {
+    "kind": "PoolFeeUpdated",
+    "raw": {
+      "id": "0000004359391805440-0000000000",
+      "ledger": 1015,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f0f",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAA9wb29sX2ZlZV91cGRhdGVkAA==",
+        "AAAADQAAAAIAAAAA"
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAApvZGRfZmVlX2JwcwAAAAAAA+gAAAAPAAAACm5ld19mZWVfYnBzAAAAAAAD6AAAAAA="
+    },
+    "expected": {
+      "oldFeeBps": 1000,
+      "newFeeBps": 1000
+    }
+  },
+  {
+    "kind": "PoolPaused",
+    "raw": {
+      "id": "0000004363686772736-0000000000",
+      "ledger": 1016,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1010101010101010101010101010101010101010101010101010101010101010",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAAtwb29sX3BhdXNlZAAA",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "by": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "PoolUnpaused",
+    "raw": {
+      "id": "0000004367981740032-0000000000",
+      "ledger": 1017,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1111111111111111111111111111111111111111111111111111111111111111",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAA1wb29sX3VucGF1c2VkAAAAAA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "by": "GCFIRY65OQE7DFP5KLNS2PF2LVZMUZYJX4OZIEQ36N2IQANUB5XVYOJR"
+    }
+  },
+  {
+    "kind": "PoolUpgraded",
+    "raw": {
+      "id": "0000004372276707328-0000000000",
+      "ledger": 1018,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1212121212121212121212121212121212121212121212121212121212121212",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAA1wb29sX3VwZ3JhZGVkAAAAAA==",
+        "AAAADQAAACCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoKCgoA=="
+      ],
+      "value": "AAAAEQAAAAEAAAAA"
+    },
+    "expected": {
+      "newWasmHash": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+    }
+  },
+  {
+    "kind": "PoolDeposited",
+    "raw": {
+      "id": "0000004376571674624-0000000000",
+      "ledger": 1019,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1313131313131313131313131313131313131313131313131313131313131313",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAA9wb29sX2RlcG9zaXRlZAA=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAADAAAADwAAAAhkZXBvc2l0b3IAAAASAAAAAAAAAACBOXM6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOUAAAADwAAAAdhbW91bnQAAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAAAAAADwAAAAtzaGFyZXNfbWludGVkAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAA"
+    },
+    "expected": {
+      "depositor": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "amount": "30",
+      "sharesMinted": "30"
+    }
+  },
+  {
+    "kind": "PoolWithdrawn",
+    "raw": {
+      "id": "0000004380866641920-0000000000",
+      "ledger": 1020,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1414141414141414141414141414141414141414141414141414141414141414",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAA9wb29sX3dpdGhkcmF3bgA=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAADAAAADwAAAAZvdXRwdXQAAAAAAAPoAAAAAAAPAAAAB3dpdGhkcmF3AAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAAAAAPAAAADHNoYXJlc19idXJuZWQAAAAKAAAAAAAAAAAAAAAAAAAeAAAAAA=="
+    },
+    "expected": {
+      "output": 1000,
+      "withdraw": "30",
+      "sharesBurned": "30"
+    }
+  },
+  {
+    "kind": "PoolClaimed",
+    "raw": {
+      "id": "0000004385161609216-0000000000",
+      "ledger": 1021,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1515151515151515151515151515151515151515151515151515151515151515",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAA1wb29sX2NsYWltZWQAAAAA",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAAZjbGFpbWVyAAAAAAASAAAAAAAAAACBOXM6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOUAAAADwAAAAdhbW91bnQAAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAA"
+    },
+    "expected": {
+      "claimer": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "amount": "30"
+    }
+  },
+  {
+    "kind": "PoolRewardFunded",
+    "raw": {
+      "id": "0000004389456576512-0000000000",
+      "ledger": 1022,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1616161616161616161616161616161616161616161616161616161616161616",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABJwb29sX3Jld2FyZF9mdW5kZWQAAA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAAZmdW5kZXIAAAAAABIAAAAAAAAAAIE5czqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5QAAAADwAAAAdhbW91bnQAAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAA"
+    },
+    "expected": {
+      "funder": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "amount": "30"
+    }
+  },
+  {
+    "kind": "PoolRewardDistributed",
+    "raw": {
+      "id": "0000004393751543808-0000000000",
+      "ledger": 1023,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1717171717171717171717171717171717171717171717171717171717171717",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABdwb29sX3Jld2FyZF9kaXN0cmlidXRlZAAA",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAADAAAADwAAAAhyZWNpcGllbnQAAAASAAAAAAAAAACBOXM6ofRdfVqNUZsNMfszLjYqRtO43ol32D1uPybOUAAAADwAAAAdhbW91bnQAAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAAAAAPAAAACmVwb2NoX2luZGV4AAAAAAAD6AAAAAA="
+    },
+    "expected": {
+      "recipient": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "amount": "30",
+      "epochIndex": 1000
+    }
+  },
+  {
+    "kind": "PoolEpochAdvanced",
+    "raw": {
+      "id": "0000004398046511104-0000000000",
+      "ledger": 1024,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1818181818181818181818181818181818181818181818181818181818181818",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABRwb29sX2Vwb2NoX2FkdmFuY2Vk",
+        "AAAADQAAAAIAAAAA"
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAApvZGRfZXBvY2gAAAAAA+gAAAAPAAAACm5ld19lcG9jaAAAAAAAB9A="
+    },
+    "expected": {
+      "oldEpoch": 1000,
+      "newEpoch": 2000
+    }
+  },
+  {
+    "kind": "PoolPositionOpened",
+    "raw": {
+      "id": "0000004402341478400-0000000000",
+      "ledger": 1025,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1919191919191919191919191919191919191919191919191919191919191919",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABRwb29sX3Bvc2l0aW9uX29wZW5lZA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAAhvd25lcl9pZAAAAAQAAAAAAAAAAAAAAAcAAAAPAAAAB3Bvc2l0aW9uAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAA"
+    },
+    "expected": {
+      "ownerId": 7,
+      "position": "30"
+    }
+  },
+  {
+    "kind": "PoolPositionClosed",
+    "raw": {
+      "id": "0000004406636445696-0000000000",
+      "ledger": 1026,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABRwb29sX3Bvc2l0aW9uX2Nsb3NlZA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAAhvd25lcl9pZAAAAAQAAAAAAAAAAAAAAAcAAAAPAAAAB3Bvc2l0aW9uAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAA"
+    },
+    "expected": {
+      "ownerId": 7,
+      "position": "30"
+    }
+  },
+  {
+    "kind": "PoolPositionUpdated",
+    "raw": {
+      "id": "0000004410931412992-0000000000",
+      "ledger": 1027,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABVwb29sX3Bvc2l0aW9uX3VwZGF0ZWQAAAA=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAADAAAADwAAAAhvd25lcl9pZAAAAAQAAAAAAAAAAAAAAAcAAAAPAAAAB3Bvc2l0aW9uAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAAAAAPAAAACm5ld19wb3NpdGlvbgAAAAAACgAAAAAAAAAAAAAAAAAAHgAAAAA="
+    },
+    "expected": {
+      "ownerId": 7,
+      "position": "30",
+      "newPosition": "30"
+    }
+  },
+  {
+    "kind": "PoolLiquidityAdded",
+    "raw": {
+      "id": "0000004415226378496-0000000000",
+      "ledger": 1028,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABVwb29sX2xpcXVpZGl0eV9hZGRlZAAAAA==",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAADAAAADwAAAAhwcm92aWRlcgAAABIAAAAAAAAAAIE5czqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5QAAAADwAAAAdhbW91bnQAAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAAAAAPAAAACnNoYXJlc19taW50AAAAAAAKAAAAAAAAAAAAAAAAAAAeAAAAAA=="
+    },
+    "expected": {
+      "provider": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "amount": "30",
+      "sharesMint": "30"
+    }
+  },
+  {
+    "kind": "PoolLiquidityRemoved",
+    "raw": {
+      "id": "0000004419521345792-0000000000",
+      "ledger": 1029,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d1d",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABdwb29sX2xpcXVpZGl0eV9yZW1vdmVkAAA=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAADAAAADwAAAAhwcm92aWRlcgAAABIAAAAAAAAAAIE5czqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5QAAAADwAAAAdhbW91bnQAAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAAAAAPAAAACnNoYXJlc19idXJuAAAAAAAKAAAAAAAAAAAAAAAAAAAeAAAAAA=="
+    },
+    "expected": {
+      "provider": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "amount": "30",
+      "sharesBurn": "30"
+    }
+  },
+  {
+    "kind": "PoolSettled",
+    "raw": {
+      "id": "0000004423816313088-0000000000",
+      "ledger": 1030,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e1e",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAAAxwb29sX3NldHRsZWQ=",
+        "AAAAEgAAAAAAAAAAiojj3XQJ8ZX9UtstPLpdcspnCb8dlBIb83SIAbQPb1w="
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAAdhY2NvdW50AAAAABIAAAAAAAAAAIE5czqh9F19Wo1Rmw0x+zMuNipG07jeiXfYPW4/Js5QAAAADwAAAAdhbW91bnQAAAAAAAoAAAAAAAAAAAAAAAAAAB4AAAAA"
+    },
+    "expected": {
+      "account": "GCATS5YOVB6ROX2WUNKGNQ2MP3GMXDMKSG2O4N5CLX3A6W4PZGZZI55U",
+      "amount": "30"
+    }
+  },
+  {
+    "kind": "PoolConfigUpdated",
+    "raw": {
+      "id": "0000004428111280384-0000000000",
+      "ledger": 1031,
+      "ledgerClosedAt": "2026-09-25T00:00:00Z",
+      "txHash": "1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f1f",
+      "contractId": "CAEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQSCIJBEEQTD2L",
+      "topic": [
+        "AAAADwAAABNwb29sX2NvbmZpZ191cGRhdGVkAA==",
+        "AAAADQAAAAIAAAAA"
+      ],
+      "value": "AAAAEQAAAAEAAAACAAAADwAAAApvZGRfY29uZmlnAAAAAAAPAAAACm5ld19jb25maWcAAAAAAA8AAAAA"
+    },
+    "expected": {
+      "oldConfig": 0,
+      "newConfig": 0
+    }
   }
 ]

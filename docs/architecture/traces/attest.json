@@ -1,0 +1,26 @@
+{
+  "flow": "attest",
+  "title": "Attest a record",
+  "actors": [
+    "Attester",
+    "AttestationRegistry",
+    "AttesterRegistry"
+  ],
+  "steps": [
+    {
+      "from": "Attester",
+      "to": "AttestationRegistry",
+      "call": "attest",
+      "auth": "Attester"
+    },
+    {
+      "from": "AttestationRegistry",
+      "to": "AttesterRegistry",
+      "call": "is_attester"
+    },
+    {
+      "from": "AttestationRegistry",
+      "event": "AttestationRecorded"
+    }
+  ]
+}

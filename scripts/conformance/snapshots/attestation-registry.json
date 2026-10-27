@@ -50,6 +50,35 @@
   },
   {
     "kind": "function_v0",
+    "name": "extend_attestation_ttl",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "name": "extend_to",
+          "type": "u32"
+        }
+      ],
+      "name": "extend_attestation_ttl",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "u32"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "consent_attestation",
     "spec": {
       "inputs": [
@@ -99,6 +128,30 @@
   },
   {
     "kind": "function_v0",
+    "name": "get_attestation_ttl",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_attestation_ttl",
+      "outputs": [
+        {
+          "option": {
+            "value_type": "u32"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_attestation",
     "spec": {
       "inputs": [
@@ -118,6 +171,79 @@
             "value_type": {
               "udt": {
                 "name": "Attestation"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_quorum_policy",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_class",
+          "type": "symbol"
+        }
+      ],
+      "name": "get_quorum_policy",
+      "outputs": [
+        {
+          "option": {
+            "value_type": "u32"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "set_quorum_policy",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_class",
+          "type": "symbol"
+        },
+        {
+          "name": "required",
+          "type": "u32"
+        }
+      ],
+      "name": "set_quorum_policy",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_quorum_status",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_quorum_status",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "udt": {
+                "name": "QuorumStatus"
               }
             }
           }
@@ -165,6 +291,96 @@
             "value_type": {
               "udt": {
                 "name": "RateLimit"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "dispute_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "patient",
+          "type": "address"
+        },
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "name": "signature",
+          "type": {
+            "bytes_n": {
+              "n": 64
+            }
+          }
+        }
+      ],
+      "name": "dispute_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "clear_dispute",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "clear_dispute",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_dispute",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_dispute",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "udt": {
+                "name": "Dispute"
               }
             }
           }
@@ -526,6 +742,26 @@
         {
           "name": "InvalidRateLimit",
           "value": 11
+        },
+        {
+          "name": "TtlNotExtended",
+          "value": 12
+        },
+        {
+          "name": "TtlHorizonExceeded",
+          "value": 13
+        },
+        {
+          "name": "InvalidQuorumPolicy",
+          "value": 14
+        },
+        {
+          "name": "InvalidDisputeSignature",
+          "value": 15
+        },
+        {
+          "name": "DisputeLimitReached",
+          "value": 16
         }
       ],
       "lib": "",
@@ -586,6 +822,124 @@
       ],
       "prefix_topics": [
         "attestation_recorded"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttestationTtlExtended",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttestationTtlExtended",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "data",
+          "name": "extended_by",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "previous_ttl",
+          "type": "u32"
+        },
+        {
+          "location": "data",
+          "name": "new_ttl",
+          "type": "u32"
+        }
+      ],
+      "prefix_topics": [
+        "attestation_ttl_extended"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "QuorumPolicySet",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "QuorumPolicySet",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_class",
+          "type": "symbol"
+        },
+        {
+          "location": "data",
+          "name": "required",
+          "type": "u32"
+        }
+      ],
+      "prefix_topics": [
+        "quorum_policy_set"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttestationDisputed",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttestationDisputed",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "data",
+          "name": "patient",
+          "type": "address"
+        }
+      ],
+      "prefix_topics": [
+        "attestation_disputed"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "DisputeCleared",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "DisputeCleared",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "data",
+          "name": "cleared_by",
+          "type": "address"
+        }
+      ],
+      "prefix_topics": [
+        "dispute_cleared"
       ]
     }
   },
@@ -791,6 +1145,46 @@
       ],
       "lib": "",
       "name": "Attestation"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "QuorumStatus",
+    "spec": {
+      "fields": [
+        {
+          "name": "distinct_attesters",
+          "type": "u32"
+        },
+        {
+          "name": "required",
+          "type": "u32"
+        },
+        {
+          "name": "satisfied",
+          "type": "bool"
+        }
+      ],
+      "lib": "",
+      "name": "QuorumStatus"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "Dispute",
+    "spec": {
+      "fields": [
+        {
+          "name": "patient",
+          "type": "address"
+        },
+        {
+          "name": "ledger",
+          "type": "u32"
+        }
+      ],
+      "lib": "",
+      "name": "Dispute"
     }
   },
   {

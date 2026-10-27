@@ -1,6 +1,7 @@
 //! Rules engine: turns events (and wasm-hash observations) into alerts.
 
 use crate::config::{Config, EventRule, RateRule};
+use crate::state::{AlertFingerprint, EngineState, StateStore};
 use crate::{Alert, Event, Severity};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -11,6 +12,11 @@ pub const INVARIANT_VIOLATION: &str = "invariant_violation";
 pub const MASS_ENROLLMENT: &str = "mass_enrollment";
 pub const WATCHDOG_LAG: &str = "watchdog_lag";
 pub const WATCHDOG_FAILING: &str = "watchdog_failing";
+/// An attestation entry's remaining TTL dropped below the configured
+/// threshold; anyone may bump it with `extend_attestation_ttl`.
+pub const ATTESTATION_EXPIRING: &str = "attestation_expiring";
+/// A patient-initiated dispute overlay was recorded on an attestation.
+pub const ATTESTATION_DISPUTED: &str = "attestation_disputed";
 
 pub struct Engine {
     rules: Vec<EventRule>,
@@ -21,6 +27,10 @@ pub struct Engine {
     /// Wasm hash each contract is expected to run, from `upgraded` events or
     /// the first observation.
     expected_wasm: BTreeMap<String, String>,
+    /// Remaining TTL (in ledgers) below which an attestation is flagged.
+    expiry_threshold_ledgers: Option<u32>,
+    /// Whether disputes should be surfaced as alerts.
+    alert_on_dispute: bool,
 }
 
 /// Default rules from the issue: privileged changes are critical, pause
@@ -50,6 +60,22 @@ pub fn default_rules() -> Vec<EventRule> {
         ),
         rule("pause_toggled", &["paused", "unpaused"], Severity::High),
         rule("bulk_revocation", &["attestation_revoked"], Severity::Info),
+        // incentive-pool: approval authority and blast-radius controls.
+        rule(
+            "approver_reconfigured",
+            &["approver_set_changed", "rate_limit_set"],
+            Severity::Critical,
+        ),
+        rule(
+            "approver_rate_limit_hit",
+            &["approver_rate_limit_hit"],
+            Severity::High,
+        ),
+        rule(
+            "work_item_endorsement",
+            &["work_item_proposed", "work_item_endorsed"],
+            Severity::Info,
+        ),
     ]
 }
 
@@ -62,7 +88,15 @@ fn matches(pattern: &str, name: &str) -> bool {
 
 impl Engine {
     pub fn new(cfg: &Config) -> Engine {
-        Engine {
+        Engine::with_store(cfg, None)
+    }
+
+    /// Build an engine backed by a durable state store. Any previously
+    /// persisted window state and alert fingerprints are restored so a
+    /// restart (including kill -9) neither re-alerts nor loses in-flight
+    /// windows.
+    pub fn with_store(cfg: &Config, store: Option<StateStore>) -> Engine {
+        let mut engine = Engine {
             rules: if cfg.rules.is_empty() {
                 default_rules()
             } else {
@@ -77,7 +111,16 @@ impl Engine {
             explorer_tx_url: cfg.explorer_tx_url.clone(),
             rate_window: VecDeque::new(),
             expected_wasm: BTreeMap::new(),
+            expiry_threshold_ledgers: cfg.attestation_expiry_threshold_ledgers,
+            alert_on_dispute: cfg.alert_on_dispute,
         }
+        fresh
+    }
+
+    /// Override the incentive-pool rule thresholds.
+    pub fn with_pool_rules(mut self, pool: PoolRules) -> Engine {
+        self.pool = pool;
+        self
     }
 
     fn alert(&self, kind: &str, severity: Severity, summary: String, e: &Event) -> Alert {
@@ -107,6 +150,13 @@ impl Engine {
 
     /// Evaluate one event. Events must be fed in ledger order.
     pub fn evaluate(&mut self, e: &Event) -> Vec<Alert> {
+        let alerts = self.evaluate_raw(e);
+        let fresh = self.dedup(alerts);
+        self.persist();
+        fresh
+    }
+
+    fn evaluate_raw(&mut self, e: &Event) -> Vec<Alert> {
         let mut alerts = Vec::new();
 
         for rule in &self.rules {
@@ -139,6 +189,15 @@ impl Engine {
             self.expected_wasm.insert(e.contract.clone(), hash);
         }
 
+        if self.alert_on_dispute && e.name == "attestation_disputed" {
+            alerts.push(self.alert(
+                ATTESTATION_DISPUTED,
+                Severity::High,
+                format!("attestation disputed on {}", e.contract),
+                e,
+            ));
+        }
+
         if let Some(rate) = &self.rate {
             if e.name == rate.event {
                 self.rate_window.push_back(e.ledger);
@@ -164,11 +223,38 @@ impl Engine {
         alerts
     }
 
+    /// Check an attestation entry's remaining TTL (in ledgers) against the
+    /// configured threshold. Returns an alert when the entry is approaching
+    /// expiry and the threshold is configured.
+    pub fn observe_ttl(
+        &self,
+        contract: &str,
+        record_hash: &str,
+        remaining_ledgers: u32,
+        ledger: u32,
+    ) -> Option<Alert> {
+        let threshold = self.expiry_threshold_ledgers?;
+        if remaining_ledgers >= threshold {
+            return None;
+        }
+        Some(Alert {
+            kind: ATTESTATION_EXPIRING.into(),
+            severity: Severity::High,
+            summary: format!(
+                "attestation {record_hash} on {contract} expires in {remaining_ledgers} ledgers (threshold {threshold}); bump with extend_attestation_ttl"
+            ),
+            ledger,
+            contract: contract.into(),
+            details: vec![format!("record_hash: {record_hash}")],
+            explorer_link: None,
+        })
+    }
+
     /// Compare a contract's on-chain wasm hash (from `getLedgerEntries`)
     /// against the hash implied by the events seen so far.
     pub fn observe_wasm(&mut self, contract: &str, hash: &str, ledger: u32) -> Option<Alert> {
         let hash = hash.to_ascii_lowercase();
-        match self.expected_wasm.get(contract) {
+        let alert = match self.expected_wasm.get(contract) {
             None => {
                 self.expected_wasm.insert(contract.into(), hash);
                 None
@@ -189,7 +275,10 @@ impl Engine {
                 self.expected_wasm.insert(contract.into(), hash);
                 Some(alert)
             }
-        }
+        };
+        let fresh = self.dedup(alert.into_iter().collect());
+        self.persist();
+        fresh.into_iter().next()
     }
 }
 
@@ -267,6 +356,23 @@ impl HealthMonitor {
     }
 }
 
+/// Parse an amount from event data, which may be a bare integer or a JSON
+/// object with an `amount` field.
+fn parse_amount(data: &str) -> Option<i128> {
+    let data = data.trim();
+    if let Ok(n) = data.parse::<i128>() {
+        return Some(n);
+    }
+    let key = "\"amount\"";
+    let idx = data.find(key)?;
+    let rest = &data[idx + key.len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+        .unwrap_or(rest.len());
+    rest[..end].parse::<i128>().ok()
+}
+
 fn self_alert(kind: &str, summary: String, ledger: u32) -> Alert {
     Alert {
         kind: kind.into(),
@@ -301,6 +407,8 @@ mod tests {
             }),
             heartbeat: Heartbeat::default(),
             sinks: vec![],
+            attestation_expiry_threshold_ledgers: Some(100),
+            alert_on_dispute: true,
         }
     }
 
@@ -332,6 +440,14 @@ mod tests {
             .as_ref()
             .unwrap()
             .ends_with(&"ab".repeat(32)));
+    }
+
+    #[test]
+    fn probation_breach_and_slash_are_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("probation_breach", 1, &["GATT"]));
+        assert_eq!(kinds(&a), vec![("probation_breach", Severity::High)]);
+        let a = Engine::new(&cfg()).evaluate(&ev("slash_executed", 1, &["1", "GATT"]));
+        assert_eq!(kinds(&a), vec![("attester_slashed", Severity::High)]);
     }
 
     #[test]
@@ -460,6 +576,43 @@ mod tests {
     fn routine_events_are_ignored() {
         assert!(Engine::new(&cfg())
             .evaluate(&ev("attestation_recorded", 1, &[]))
+            .is_empty());
+    }
+
+    #[test]
+    fn approaching_expiry_is_flagged() {
+        let e = Engine::new(&cfg());
+        assert!(e.observe_ttl("CREG", "deadbeef", 500, 1).is_none());
+        let a = e.observe_ttl("CREG", "deadbeef", 50, 2).unwrap();
+        assert_eq!(
+            (a.kind.as_str(), a.severity),
+            (ATTESTATION_EXPIRING, Severity::High)
+        );
+        assert!(a.summary.contains("deadbeef"));
+    }
+
+    #[test]
+    fn expiry_check_disabled_without_threshold() {
+        let mut c = cfg();
+        c.attestation_expiry_threshold_ledgers = None;
+        assert!(Engine::new(&c).observe_ttl("CREG", "deadbeef", 1, 1).is_none());
+    }
+
+    #[test]
+    fn dispute_is_surfaced() {
+        let a = Engine::new(&cfg()).evaluate(&ev("attestation_disputed", 1, &[]));
+        assert_eq!(
+            kinds(&a),
+            vec![(ATTESTATION_DISPUTED, Severity::High)]
+        );
+    }
+
+    #[test]
+    fn dispute_alert_can_be_disabled() {
+        let mut c = cfg();
+        c.alert_on_dispute = false;
+        assert!(Engine::new(&c)
+            .evaluate(&ev("attestation_disputed", 1, &[]))
             .is_empty());
     }
 }

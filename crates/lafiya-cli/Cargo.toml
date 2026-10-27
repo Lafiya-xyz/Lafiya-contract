@@ -5,6 +5,7 @@ edition = "2021"
 description = "Lafiya admin CLI - interacts with Soroban contracts via native RPC or stellar CLI fallback"
 license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+build = "build.rs"
 
 [[bin]]
 name = "lafiya-cli"
@@ -13,7 +14,10 @@ path = "src/main.rs"
 [dependencies]
 lafiya-config = { path = "../lafiya-config" }
 lafiya-rpc-resilience = { path = "../lafiya-rpc-resilience" }
+lafiya-qr = { path = "../lafiya-qr" }
 clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+clap_mangen = "0.2"
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
@@ -28,10 +32,20 @@ opentelemetry_sdk = { version = "0.31", optional = true }
 opentelemetry-otlp = { version = "0.31", default-features = false, features = ["trace", "http-proto", "reqwest-blocking-client"], optional = true }
 tracing-opentelemetry = { version = "0.32", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tempfile = "3.10"
 
 [features]
 # OTLP trace export for long-running deployments (see docs/observability.md).
 otel = ["dep:opentelemetry", "dep:opentelemetry_sdk", "dep:opentelemetry-otlp", "dep:tracing-opentelemetry"]
+# Emit versioned JSON schemas for every `--json` output (issue #537).
+schema = ["dep:schemars"]
+# Build-time generation of shell completions and man pages (issue #537).
+gen-artifacts = []
+
+[build-dependencies]
+clap = { version = "4.5", features = ["derive"] }
+clap_complete = "4.5"
+clap_mangen = "0.2"
 
 [dev-dependencies]
 tempfile = "3.10"
@@ -39,3 +53,5 @@ rcgen = "0.13"
 rustls = { version = "0.23", default-features = false, features = ["ring", "std"] }
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 wiremock = "0.6"
+jsonschema = "0.26"
+schemars = { version = "0.8", features = ["derive"] }

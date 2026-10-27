@@ -69,35 +69,20 @@
 └── differential-testing (release builds)
 ```
 
-## Shared Test Helpers (`lafiya-test-utils`)
+## Incentive pool property suites (#507, #508)
 
-`crates/lafiya-test-utils` is a **dev-dependency only** crate; it never links
-into contract wasm. Add it to a contract with:
-
-```toml
-[dev-dependencies]
-lafiya-test-utils = { path = "../../crates/lafiya-test-utils" }
-```
-
-| Helper | Purpose |
-|---|---|
-| `new_env()` | `Env::default()` with all auths mocked |
-| `addr(&env)` | fresh random `Address` |
-| `advance_ledgers(&env, n)` / `advance_time(&env, secs)` | time travel |
-| `register_token(&env)` / `register_funded_token(&env, &to, amount)` | mock Stellar asset token and its admin client |
-| `assert_events(&env, &contract, &[event, ..])` | all events from `contract` equal `expected`, in order |
-| `assert_last_event(&env, &contract, &event)` | the most recent event equals `event` |
-
-```rust
-use lafiya_test_utils::{advance_ledgers, assert_last_event, new_env, register_funded_token};
-
-let env = new_env();
-let (token, _) = register_funded_token(&env, &admin, 1_000);
-advance_ledgers(&env, 10);
-assert_last_event(&env, &client.address, &expected_event);
-```
-
-Contract-specific builders (e.g. wiring an attestation registry to an attester
-registry) stay in each contract's `test.rs`, because the helper crate must not
-depend on contracts. Migrated so far: `attester-registry`,
-`attestation-registry` and `incentive-pool` test setups.
+- `contracts/incentive-pool/src/stateful_test.rs` — model-based stateful
+  harness (fund/withdraw/approve/claim/pause/caps/suspension). Asserts custody
+  `balance == deposited - paid`, `total_paid <= total_deposited`, at-most-once
+  payout and per-attester cap. Failing traces print as a `Vec<Op>` that can be
+  passed to `replay(...)`.
+- `contracts/incentive-pool/src/fuzz_test.rs` — one target per mutating
+  function plus a sequence target; picked up by the CI `fuzz` job
+  (`test(fuzz_test)`, 256 cases).
+- CI time impact: default 64 cases per property adds a few seconds to the
+  `test` job; the `fuzz` job runs at 256 cases. The extended profile
+  (`PROPTEST_CASES=10000`) runs nightly in
+  `.github/workflows/incentive-pool-nightly.yml` (45 min budget) and uploads
+  `proptest-regressions/` on failure.
+- Reproduce locally:
+  `PROPTEST_CASES=10000 cargo test -p incentive-pool -- stateful_test fuzz_test --nocapture`.

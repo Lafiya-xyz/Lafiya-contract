@@ -20,8 +20,36 @@ to its `needs` list.
 | `test` (2 partitions) | after `build-tests` | Runs the archive with `--partition count:N/2`, profile `ci`, and uploads JUnit XML. |
 | `fuzz` | after `build-tests` | Proptest cases from the same archive (non-blocking). |
 | `test-report` | after `test` | Shows JUnit results on the PR (`dorny/test-reporter`). |
+| `indexer` | `rust` changed | Builds `lafiya-indexer`, runs `clippy -D warnings`, and runs its tests (including the e2e suite) against a Postgres service container. |
+| `qr` | `rust` changed | Builds `lafiya-qr`, runs `clippy -D warnings`, and runs its tests. |
+| `deny` | `rust` changed | `cargo deny check` across the whole workspace, covering `lafiya-indexer` and `lafiya-qr`. |
 
 Docs-only PRs skip the Rust jobs; `ci-success` still reports.
+
+## Workspace crates
+
+`crates/lafiya-indexer` and `crates/lafiya-qr` are first-class workspace members. They are
+built, linted, tested, and audited on every PR like the other crates:
+
+- **Build:** `cargo build -p lafiya-indexer` / `cargo build -p lafiya-qr`.
+- **Clippy:** `cargo clippy -p <crate> --all-targets --all-features -- -D warnings`.
+- **Test:** `cargo nextest run -p <crate> --all-features`. The indexer e2e tests require a
+  Postgres service; the `indexer` job provisions one and sets `DATABASE_URL` for the run.
+- **Deny:** `cargo deny check` runs over the full workspace, so both crates are covered by
+  the license, advisory, ban, and source checks.
+
+Dependency versions for both crates are declared in `[workspace.dependencies]` at the repo
+root. When adding a dependency, prefer the workspace entry over a crate-local version so
+the two crates stay in lockstep with the rest of the workspace. `cargo tree -d` must not
+show new duplicate major versions; any remaining duplicate must be justified in the PR.
+
+## Required branch-protection checks
+
+Branch protection should require **only** the `ci-success` aggregator. Because `ci-success`
+depends on `indexer`, `qr`, and `deny`, those gates are enforced transitively. Do not add
+the individual jobs to the required list; keep the single aggregator so path-filtered
+skips keep working.
+=======
 
 The previous workflow ran `cargo test --workspace` twice (default and `--all-features`).
 The workspace's only feature is `testutils`, which test builds already enable, so the

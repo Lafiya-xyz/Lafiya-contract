@@ -39,7 +39,7 @@ mod pause_policy {
         EntryPoint {
             name: "is_paused",
             is_read_only: true,
-            should_be_blocked_when_paused: false, // allowed: read-only, needed for ADR-0012
+            should_be_blocked_when_paused: false, // allowed: read-only, needed for ADR-0021
         },
         EntryPoint {
             name: "set_max_attesters",

@@ -1,0 +1,85 @@
+# Each scenario injects one fault; the probe must fail closed (exit 2) or, for
+# benign faults, finish. Add a fault: see README.md.
+
+[[scenario]]
+name = "none"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 0
+expect_output = ["synced"]
+
+[[scenario]]
+name = "latency"
+fault = "latency"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 0
+expect_output = ["synced"]
+
+[[scenario]]
+name = "truncated_body"
+fault = "truncated_body"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["rejected"]
+
+[[scenario]]
+name = "malformed_json"
+fault = "malformed_json"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["rejected"]
+
+[[scenario]]
+name = "http_500"
+fault = "http_500"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["rejected"]
+
+[[scenario]]
+name = "rate_limited"
+fault = "rate_limited"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["rejected"]
+
+[[scenario]]
+name = "connection_drop"
+fault = "connection_drop"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["rejected"]
+
+[[scenario]]
+name = "empty_result"
+fault = "empty_result"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["rejected"]
+
+[[scenario]]
+name = "stale_tip"
+fault = "stale_tip"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["stale tip"]
+
+[[scenario]]
+name = "ledger_gap"
+fault = "ledger_gap"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["ledger gap"]
+
+[[scenario]]
+name = "clock_skew"
+fault = "clock_skew"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 0
+expect_output = ["synced"]
+
+[[scenario]]
+name = "lying_rpc"
+fault = "lying_rpc"
+command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
+expect_exit = 2
+expect_output = ["rejected"]

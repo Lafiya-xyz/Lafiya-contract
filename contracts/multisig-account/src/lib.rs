@@ -6,6 +6,15 @@
 //! administrative operations on the `attester-registry` and
 //! `attestation-registry` contracts.
 #![no_std]
+#![cfg_attr(
+    dylint_lib = "lafiya_lints",
+    allow(
+        storage_in_loop,
+        persistent_set_without_ttl,
+        unchecked_amount_arithmetic,
+        reason = "baseline: pre-existing findings, tracked for per-site cleanup (docs/custom-lints.md)"
+    )
+)]
 
 // Unlike `attester-registry` and `attestation-registry`, this crate does not set
 // `#![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]`. `__constructor`
@@ -152,6 +161,18 @@ pub const CONTRACT_KIND: &str = "lafiya_multisig_account";
 /// refuses a breaking snapshot update without a bump.
 pub const INTERFACE_VERSION: u32 = 1;
 
+// Source-provenance metadata (SEP-46 `contractmetav0`); policy in
+// docs/stability-policy.md, enforced by scripts/check_wasm_meta.py.
+soroban_sdk::contractmeta!(
+    key = "source_repo",
+    val = "github:Lafiya-xyz/Lafiya-contract"
+);
+soroban_sdk::contractmeta!(key = "home_domain", val = "lafiya-xyz.github.io");
+soroban_sdk::contractmeta!(key = "crate_name", val = env!("CARGO_PKG_NAME"));
+soroban_sdk::contractmeta!(key = "crate_version", val = env!("CARGO_PKG_VERSION"));
+soroban_sdk::contractmeta!(key = "source_rev", val = env!("LAFIYA_GIT_COMMIT"));
+soroban_sdk::contractmeta!(key = "interface_version", val = "1");
+
 /// Version of the emitted event schemas (see `docs/events.md`).
 pub const EVENT_VERSION: u32 = 1;
 
@@ -216,6 +237,7 @@ impl MultisigAccount {
         }
 
         let mut signer_configs = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for signer in signers.iter() {
             let key = DataKey::Signer(signer.clone());
             if env.storage().instance().has(&key) {
@@ -254,6 +276,7 @@ impl MultisigAccount {
             },
         );
         let mut typed_signers = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for signer in signers.iter() {
             typed_signers.push_back(SignerKey::Ed25519(signer));
         }
@@ -284,6 +307,7 @@ impl MultisigAccount {
             .get(&DataKey::SignerSet)
             .ok_or(Error::NotInitialized)?;
         let mut signers = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for signer in legacy_signers.iter() {
             signers.push_back(SignerKey::Ed25519(signer));
         }
@@ -292,9 +316,11 @@ impl MultisigAccount {
 
     fn sorted_signers(env: &Env, signers: &Vec<SignerKey>) -> Vec<SignerKey> {
         let mut sorted: Vec<SignerKey> = Vec::new(env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for signer in signers.iter() {
             let mut next = Vec::new(env);
             let mut inserted = false;
+            // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
             for current in sorted.iter() {
                 if !inserted && signer.is_before(&current) {
                     next.push_back(signer.clone());
@@ -328,6 +354,7 @@ impl MultisigAccount {
     /// The account itself must authorize this call under its current policy.
     pub fn set_signers(env: Env, signers: Vec<BytesN<32>>, threshold: u32) -> Result<(), Error> {
         let mut configs = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for public_key in signers.iter() {
             configs.push_back(SignerConfig {
                 public_key: SignerKey::Ed25519(public_key),
@@ -372,6 +399,7 @@ impl MultisigAccount {
                     .get(&DataKey::SignerSet)
                     .ok_or(Error::NotInitialized)?;
                 let mut signers = Vec::new(&env);
+                // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
                 for signer in legacy_signers.iter() {
                     signers.push_back(SignerKey::Ed25519(signer));
                 }
@@ -381,6 +409,7 @@ impl MultisigAccount {
 
         let mut legacy_signers = Vec::new(&env);
         let mut typed_signers = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for signer in old_signers.iter() {
             env.storage()
                 .instance()
@@ -397,6 +426,7 @@ impl MultisigAccount {
                     .remove(&DataKey::SignerDetails(public_key.clone()));
             }
         }
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for signer in signers.iter() {
             env.storage()
                 .instance()
@@ -458,6 +488,7 @@ impl MultisigAccount {
         }
 
         let mut total_weight = 0u32;
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for (index, signer) in signers.iter().enumerate() {
             if signer.weight == 0 {
                 return Err(Error::InvalidPolicy);
@@ -470,6 +501,7 @@ impl MultisigAccount {
             total_weight = total_weight
                 .checked_add(signer.weight)
                 .ok_or(Error::InvalidPolicy)?;
+            // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
             for previous in signers.iter().take(index) {
                 if previous.public_key == signer.public_key {
                     return Err(Error::DuplicateSigner);
@@ -481,10 +513,12 @@ impl MultisigAccount {
             return Err(Error::InvalidPolicy);
         }
 
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for (index, requirement) in role_requirements.iter().enumerate() {
             if requirement.minimum == 0 {
                 return Err(Error::InvalidPolicy);
             }
+            // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
             if role_requirements
                 .iter()
                 .take(index)
@@ -493,6 +527,7 @@ impl MultisigAccount {
                 return Err(Error::InvalidPolicy);
             }
             let mut matching_signers = 0u32;
+            // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
             for signer in signers.iter() {
                 if signer.role == Some(requirement.role.clone()) {
                     matching_signers += 1;
@@ -521,6 +556,7 @@ impl MultisigAccount {
             .get(&DataKey::SignerSet)
             .ok_or(Error::NotInitialized)?;
         let mut signers = Vec::new(env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for public_key in legacy_signers.iter() {
             signers.push_back(SignerConfig {
                 public_key: SignerKey::Ed25519(public_key),
@@ -541,6 +577,7 @@ impl MultisigAccount {
     /// Callable by anyone.
     pub fn get_interface(env: Env) -> InterfaceInfo {
         let mut features = Vec::new(&env);
+        // loop-bound: FEATURES -- fixed compile-time array
         for feature in FEATURES {
             features.push_back(Symbol::new(&env, feature));
         }
@@ -593,6 +630,7 @@ impl CustomAccountInterface for MultisigAccount {
         let mut signer_configs = Vec::new(&env);
         let mut authorized_signers = Vec::new(&env);
         let mut signed_weight = 0u32;
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for index in 0..signatures.len() {
             let signature = signatures.get_unchecked(index);
             if index > 0 {
@@ -651,6 +689,7 @@ impl CustomAccountInterface for MultisigAccount {
             }
         }
 
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for config in signer_configs.iter() {
             authorized_signers.push_back(config.public_key);
         }
@@ -659,8 +698,10 @@ impl CustomAccountInterface for MultisigAccount {
             return Err(Error::NotEnoughWeight);
         }
 
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for requirement in policy.role_requirements.iter() {
             let mut matching_signers = 0u32;
+            // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
             for signer in signer_configs.iter() {
                 if signer.role == Some(requirement.role.clone()) {
                     matching_signers += 1;
@@ -690,5 +731,7 @@ impl CustomAccountInterface for MultisigAccount {
 mod fuzz_test;
 #[cfg(test)]
 mod integration_test;
+#[cfg(test)]
+mod passkey_vectors_test;
 #[cfg(test)]
 mod test;

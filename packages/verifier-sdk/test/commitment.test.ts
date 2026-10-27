@@ -31,10 +31,15 @@ function field(f: Vector["fields"][number]): FieldValue {
   }
 }
 
+// The SDK normalizes Text to NFC before encoding; vectors that deliberately
+// supply NFD strings only apply to non-normalizing implementations (same skip
+// as crates/lafiya-commitment/reference-ts/lrc1.test.ts).
+const NFD_ONLY_VECTORS = new Set(["adversarial-text-nfd-decomposed"]);
+
 describe("LRC-1 commitment", () => {
   it("has vectors", () => expect(vectors.length).toBeGreaterThan(0));
 
-  for (const v of vectors) {
+  for (const v of vectors.filter((v) => !NFD_ONLY_VECTORS.has(v.name))) {
     it(`matches the shared vector "${v.name}"`, async () => {
       const fields = v.fields.map(field);
       expect(toHex(encodePayload(fields))).toBe(v.payload_hex);

@@ -8,7 +8,8 @@ Output is a static site: index.html, and for every aggregate a CSV and JSON
 file together with the exact ledger range and query that produced it.
 
 Privacy: record counts are only published per (ISO week, state-level region)
-cell when the cell holds at least K records; see PRIVACY.md.
+cell when the cell holds at least K records, and only for completed weeks;
+see PRIVACY.md.
 """
 
 import argparse
@@ -20,7 +21,10 @@ import os
 import sys
 from collections import defaultdict
 
-K_ANONYMITY = 10
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import snapshot  # noqa: E402
+
+K_ANONYMITY = 10  # default minimum cohort; override with --k-threshold
 SUPPRESSED = None  # rendered as "<10" in HTML, empty in CSV, null in JSON
 UNKNOWN_REGION = "unknown"
 
@@ -89,6 +93,16 @@ def suppress(cells, k=K_ANONYMITY):
                 if visible:
                     out[(week, visible[0][1])][m] = SUPPRESSED
     return out
+
+
+def complete_weeks_only(events):
+    """Drop events from the newest (still open) ISO week. A week that is still
+    filling would otherwise be republished with growing counts, and the
+    difference between two snapshots exposes a count smaller than k."""
+    if not events:
+        return events
+    latest = max(week_of(e) for e in events)
+    return [e for e in events if week_of(e) != latest]
 
 
 def attester_counts(events):
@@ -172,6 +186,29 @@ def manifest_hashes(paths):
     return hashes
 
 
+def incentives(events):
+    """Per-programme funding attribution from incentive-pool events:
+    funded (`programme_funded`), refunded to donors (`programme_refunded`),
+    paid out (`payout_claimed` joined via `work_item_programme_linked`) and
+    remaining. Payouts with no programme link draw from unallocated funds."""
+    item_programme = {}
+    rows = defaultdict(lambda: {"funded": 0, "refunded": 0, "paid": 0})
+    for e in events:
+        name, topics = e["name"], e.get("topics") or []
+        if name == "work_item_programme_linked":
+            item_programme[topics[0]] = topics[1]
+        elif name in ("programme_funded", "programme_refunded"):
+            key = "funded" if name == "programme_funded" else "refunded"
+            rows[topics[1]][key] += int(e["data"])
+        elif name == "payout_claimed":
+            rows[item_programme.get(topics[0], "unallocated")]["paid"] += int(e["data"])
+    out = []
+    for programme, v in sorted(rows.items()):
+        remaining = None if programme == "unallocated" else v["funded"] - v["refunded"] - v["paid"]
+        out.append({"programme": programme, **v, "remaining": remaining})
+    return out
+
+
 def build(events, regions, manifests, provenance):
     activity = suppress(verification_activity(events, regions))
     activity_rows = [
@@ -181,7 +218,7 @@ def build(events, regions, manifests, provenance):
         "provenance": provenance,
         "verification_activity": activity_rows,
         "attesters": attester_counts(events),
-        "incentives": [],  # populated once M2 incentive contracts exist
+        "incentives": incentives(events),
         "contract_health": contract_health(events, manifest_hashes(manifests)),
     }
 
@@ -260,6 +297,7 @@ Cells with fewer than {K_ANONYMITY} records are shown as &lt;{K_ANONYMITY}
 
 
 def main(argv=None):
+    global K_ANONYMITY
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--events", required=True, help="JSONL from lafiya-watchdog export")
     p.add_argument("--attesters", required=True, help="JSON map attester -> region")
@@ -269,13 +307,19 @@ def main(argv=None):
     p.add_argument("--ledger-to", type=int, required=True)
     p.add_argument("--contracts", required=True, help="comma separated contract IDs")
     p.add_argument("--out", required=True)
+    p.add_argument("--exclude-attester", action="append", default=[],
+                   help="attester address to omit (canary attester); repeatable")
     args = p.parse_args(argv)
+    if args.k_threshold < 2:
+        p.error("--k-threshold must be at least 2")
+    K_ANONYMITY = args.k_threshold
 
     with open(args.attesters, encoding="utf-8") as f:
         regions = json.load(f)
     events = [
         e for e in load_events(args.events)
         if args.ledger_from <= e["ledger"] < args.ledger_to
+        and e.get("data", "") not in args.exclude_attester
     ]
     provenance = {
         "network": args.network,
@@ -283,6 +327,7 @@ def main(argv=None):
         "ledger_to": args.ledger_to,
         "contracts": args.contracts.split(","),
         "k_anonymity": K_ANONYMITY,
+        "open_week_published": args.include_open_week,
         "query": {
             "method": "getEvents",
             "filters": [{"type": "contract", "contractIds": args.contracts.split(",")}],
@@ -297,7 +342,8 @@ def main(argv=None):
             f"--contracts {args.contracts} --out site"
         ),
     }
-    data = build(events, regions, args.manifest, provenance)
+    data = build(events, regions, args.manifest, provenance,
+                 include_open_week=args.include_open_week)
 
     os.makedirs(os.path.join(args.out, "data"), exist_ok=True)
     for key in ("verification_activity", "attesters", "incentives", "contract_health"):
@@ -308,6 +354,7 @@ def main(argv=None):
     with open(os.path.join(args.out, "data", "provenance.json"), "w", encoding="utf-8") as f:
         json.dump(provenance, f, indent=2, sort_keys=True)
         f.write("\n")
+    snapshot.write_manifest(os.path.join(args.out, "data"), args.ledger_to, events)
     with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as f:
         f.write(render_html(data))
     return 0

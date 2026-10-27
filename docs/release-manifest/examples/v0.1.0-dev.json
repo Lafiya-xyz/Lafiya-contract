@@ -344,5 +344,87 @@
         "requirements_ref": "docs/release-manifest/examples/lafiya-web.requirements.json"
       }
     ]
+  },
+  "sboms": [
+    {
+      "artifact": "lafiya-cli",
+      "kind": "cli",
+      "path": "cli-lafiya-cli.sbom.cdx.json",
+      "format": "CycloneDX",
+      "spec_version": "1.6",
+      "sha256": "4638ef3b501b5b7e62f3aa4a0efd1dad6966f3bb66a6d21e6e43e0cc9e495f03"
+    },
+    {
+      "artifact": "attestation-registry",
+      "kind": "contract-wasm",
+      "path": "contract-attestation-registry.sbom.cdx.json",
+      "format": "CycloneDX",
+      "spec_version": "1.6",
+      "sha256": "0e264fcbba88348989e850e7e9e0146965ab3d86855b14ec5dde19a57a94990f"
+    },
+    {
+      "artifact": "attester-registry",
+      "kind": "contract-wasm",
+      "path": "contract-attester-registry.sbom.cdx.json",
+      "format": "CycloneDX",
+      "spec_version": "1.6",
+      "sha256": "1314bf43681b7175641753c4ecdfcc6ea927c8919c5d93fca84a94dcac06864e"
+    },
+    {
+      "artifact": "multisig-account",
+      "kind": "contract-wasm",
+      "path": "contract-multisig-account.sbom.cdx.json",
+      "format": "CycloneDX",
+      "spec_version": "1.6",
+      "sha256": "9f711eda93c97d5cc76b04cd54319342b9975e898dfa2868f5b5e619af503992"
+    }
+  ],
+  "vex": {
+    "path": "vex.cdx.json",
+    "format": "CycloneDX",
+    "spec_version": "1.6",
+    "sha256": "a7566c085c3189bf540b54530f8302e6c9b551408103adad100d555ec49d25de",
+    "statements": [
+      {
+        "id": "RUSTSEC-2026-0346",
+        "state": "not_affected",
+        "justification": "code_not_reachable",
+        "affects": [
+          "pkg:cargo/rustls@0.23.45"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0347",
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "affects": [
+          "pkg:cargo/rustls@0.23.45"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0348",
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "affects": [
+          "pkg:cargo/rustls@0.23.45"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2026-0349",
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "affects": [
+          "pkg:cargo/rustls@0.23.45"
+        ]
+      },
+      {
+        "id": "RUSTSEC-2024-0436",
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "affects": [
+          "pkg:cargo/paste@1.0.15"
+        ]
+      }
+    ]
   }
 }

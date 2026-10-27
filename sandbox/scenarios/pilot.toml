@@ -21,3 +21,80 @@ status = "removed"
 [[revocations]]
 record = "patient-revoked-001"
 by = ["chw-kano-3"]
+
+# ---------------------------------------------------------------------------
+# Advanced lifecycle scenario: TTL extension, quorum co-attestations, patient
+# dispute, and status-list sync for the reference verifier demo.
+# ---------------------------------------------------------------------------
+
+# Permissionless TTL bump (#544): any caller may extend an attestation's TTL
+# up to the configured maximum horizon. Extensions never shorten TTL or alter
+# record data.
+[[ttl_extensions]]
+record = "patient-genotype-001"
+extend_to = 63072000          # ~2 years of ledgers, within max horizon
+caller = "chw-oyo-9"          # unrelated caller: permissionless bump
+
+[[ttl_extensions]]
+record = "patient-genotype-001"
+extend_to = 31536000          # attempt to shorten: must be rejected
+caller = "chw-kano-3"
+expect = "error"              # cannot shorten TTL
+
+# Multi-attester quorum (#545): high-assurance record class requires N
+# distinct attesters before the verification view reports it as verified.
+[[quorum_policies]]
+record_class = "genotype"
+required = 2
+
+[[co_attestations]]
+record = "patient-genotype-001"
+attester = "chw-kano-3"
+
+[[co_attestations]]
+record = "patient-genotype-001"
+attester = "chw-oyo-9"        # distinct attester: satisfies quorum
+
+[[co_attestations]]
+record = "patient-genotype-001"
+attester = "chw-oyo-9"        # duplicate: no-op, does not inflate count
+expect = "noop"
+
+# Patient-initiated dispute (#546): patient signs over the commitment to flag
+# an attestation as disputed. Disputes cannot delete data; clearing requires
+# attester or admin action.
+[[disputes]]
+record = "patient-disputed-001"
+signer = "patient-disputed-001"
+scheme = "qr-patient-v1"
+reason = "incorrect-genotype"
+expect_state = "disputed"
+
+[[disputes]]
+record = "patient-disputed-001"
+signer = "patient-disputed-001"
+scheme = "qr-patient-v1"
+reason = "incorrect-genotype"
+expect = "noop"               # replay-safe: duplicate dispute is a no-op
+
+[[dispute_clears]]
+record = "patient-disputed-001"
+by = "admin-2"                # clearing requires attester or admin action
+expect_state = "verified"
+
+# Status-list sync (#547): reference verifier demo syncs a compact bitstring
+# status list and validates inclusion against a signed root.
+[status_list]
+enabled = true
+segment_size = 131072         # bits per segment
+version = 1
+sync_target = "verifier-sdk-reference"
+expect_root_signature = true
+
+[[status_list_checks]]
+record = "patient-revoked-001"
+expect = "revoked"            # present in bitstring
+
+[[status_list_checks]]
+record = "patient-genotype-001"
+expect = "valid"              # absent from bitstring
