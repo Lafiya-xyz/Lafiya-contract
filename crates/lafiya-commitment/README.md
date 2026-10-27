@@ -21,6 +21,13 @@ contracts only ever see the resulting opaque 32-byte commitment.
   follow; not a published package.
 - [`vectors/lrc1-test-vectors.json`](vectors/lrc1-test-vectors.json) — the
   shared fixture both implementations are tested against.
+- [`src/salt.rs`](src/salt.rs), [`reference-ts/salt.ts`](reference-ts/salt.ts),
+  [`reference-py/salt.py`](reference-py/salt.py) — deterministic salt
+  derivation (HKDF-SHA256 from a patient master secret,
+  [ADR-0018](../../docs/adr/0018-deterministic-salt-derivation.md)), checked
+  against [`vectors/salt-derivation-vectors.json`](vectors/salt-derivation-vectors.json).
+- [`src/alg.rs`](src/alg.rs) — reserved cryptographic algorithm identifiers
+  ([ADR-0019](../../docs/adr/0019-cryptographic-agility.md)).
 
 ## Running the tests
 
@@ -37,7 +44,17 @@ annotations natively):
 node crates/lafiya-commitment/reference-ts/lrc1.test.ts
 ```
 
-Both suites load `vectors/lrc1-test-vectors.json` and assert their output
+Salt derivation (TypeScript and Python; the Rust vectors run with
+`cargo test`):
+
+```sh
+node crates/lafiya-commitment/reference-ts/salt.test.ts
+python3 crates/lafiya-commitment/reference-py/salt_test.py
+```
+
+CI runs all of these in the `commitment-vectors` job.
+
+The LRC-1 suites load `vectors/lrc1-test-vectors.json` and assert their output
 matches it byte-for-byte, which is the cross-language determinism the spike
 was asked to demonstrate.
 

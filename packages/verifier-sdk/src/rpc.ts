@@ -114,6 +114,19 @@ export class BindingsChainReader implements ChainReader {
   }
 }
 
+type RecordHashArg = Parameters<AttestationClient["get_attestation"]>[0]["record_hash"];
+
+/**
+ * The bindings type `BytesN` arguments as `Buffer`, but the contract spec
+ * encoder accepts any `Uint8Array`. Passing one keeps the `buffer` polyfill
+ * out of this package's dependencies.
+ */
+function recordHashArg(hex: string): RecordHashArg {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return bytes as unknown as RecordHashArg;
+}
+
 function toAttestation(a: { attester: string; timestamp: bigint | number }): OnChainAttestation {
   return { attester: a.attester, timestamp: BigInt(a.timestamp) };
 }

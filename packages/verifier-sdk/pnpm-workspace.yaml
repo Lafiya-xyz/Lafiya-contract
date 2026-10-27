@@ -1,3 +1,6 @@
+# Dependency lifecycle scripts never run (see docs/verifier-sdk.md, "Supply
+# chain"). Every package that ships one must be listed here explicitly;
+# strictDepBuilds fails the install on any unlisted one.
 allowBuilds:
   esbuild: true
 

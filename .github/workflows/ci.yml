@@ -109,6 +109,29 @@ jobs:
       - run: cargo test --manifest-path lints/Cargo.toml
       - run: cargo dylint --path lints --all -- --workspace --all-targets
 
+  # The Rust half of these vectors runs with the workspace tests
+  # (crates/lafiya-commitment); this job checks the TypeScript and Python
+  # references against the same fixtures.
+  commitment-vectors:
+    name: Commitment vectors (TS + Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: LRC-1 (TypeScript)
+        run: node --experimental-strip-types crates/lafiya-commitment/reference-ts/lrc1.test.ts
+      - name: LRC-1 (Python)
+        run: python crates/lafiya-commitment/reference-py/lrc1_test.py --random-count 1000
+      - name: Salt derivation, ADR-0018 (TypeScript)
+        run: node --experimental-strip-types crates/lafiya-commitment/reference-ts/salt.test.ts
+      - name: Salt derivation, ADR-0018 (Python)
+        run: python crates/lafiya-commitment/reference-py/salt_test.py
+
   fmt:
     name: Format
     needs: changes

@@ -451,6 +451,9 @@ pub fn decode_payload(mut payload: &[u8]) -> Result<Vec<FieldValue>, EncodeError
     Ok(fields)
 }
 
+pub mod alg;
+pub mod salt;
+
 #[cfg(target_arch = "wasm32")]
 pub mod wasm;
 

@@ -1,0 +1,185 @@
+{
+  "description": "Deterministic LRC-1 salt derivation (ADR-0018). salt = HKDF-SHA256(salt=\"lafiya:salt-derivation:v1\", ikm=master_secret, info, 32); see info_hex for the exact info bytes. commitment_hex, where present, is commit_v1_salted(salt, fields).",
+  "hkdf_rfc5869": [
+    {
+      "name": "rfc5869-test-case-1",
+      "ikm_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "salt_hex": "000102030405060708090a0b0c",
+      "info_hex": "f0f1f2f3f4f5f6f7f8f9",
+      "length": 42,
+      "okm_hex": "3cb25f25faacd57a90434f64d0362f2a2d2d0a90cf1a5a4c5db02d56ecc4c5bf34007208d5b887185865"
+    },
+    {
+      "name": "rfc5869-test-case-3",
+      "ikm_hex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "salt_hex": "",
+      "info_hex": "",
+      "length": 42,
+      "okm_hex": "8da4e775a563c18f715f802a063c5a31b8a11f5c5ee1879ec3454e5f3c738d2d9d201395faa4b61a96c8"
+    }
+  ],
+  "vectors": [
+    {
+      "name": "record-v1",
+      "description": "Baseline: 32-byte master secret, first salt version.",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "rec-0001",
+      "salt_version": 1,
+      "info_hex": "6c61666979613a7265636f72642d73616c7401000000087265632d3030303100000001",
+      "salt_hex": "7a3551c1d3183d232a827a854c8147014b3fa51f507b2bd3c08378ea085e9bdb",
+      "fingerprint_hex": "998e7d562aaa55fd",
+      "fields": [
+        {
+          "kind": "text",
+          "value": "O+"
+        },
+        {
+          "kind": "text",
+          "value": "AA"
+        },
+        {
+          "kind": "int64",
+          "value": "1758758400"
+        }
+      ],
+      "commitment_hex": "dd5f2be389f0994b4a63266d3543c2937d78781b478064a77381f071b691507c"
+    },
+    {
+      "name": "record-v2-rotated-salt",
+      "description": "Same record after a salt rotation: unrelated salt, so the superseding commitment is unlinkable to the old one.",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "rec-0001",
+      "salt_version": 2,
+      "info_hex": "6c61666979613a7265636f72642d73616c7401000000087265632d3030303100000002",
+      "salt_hex": "06d81c98a4551d18dbeb1358baff54f08eb6ca459521b6295438dc09b07e1646",
+      "fingerprint_hex": "998e7d562aaa55fd",
+      "fields": [
+        {
+          "kind": "text",
+          "value": "O+"
+        },
+        {
+          "kind": "text",
+          "value": "AA"
+        },
+        {
+          "kind": "int64",
+          "value": "1758758400"
+        }
+      ],
+      "commitment_hex": "ce43faa3fab97fbcfd0bedbd084bf70adc1605e0493fa73ee228306351524c14"
+    },
+    {
+      "name": "other-record-same-secret",
+      "description": "A different record under the same master secret.",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "rec-0002",
+      "salt_version": 1,
+      "info_hex": "6c61666979613a7265636f72642d73616c7401000000087265632d3030303200000001",
+      "salt_hex": "6f75e95d8ec663f3f99650e8475b85567bca9c39e1e460b565ba5ee308f1fe36",
+      "fingerprint_hex": "998e7d562aaa55fd"
+    },
+    {
+      "name": "record-id-prefix",
+      "description": "Record id that is a prefix of another; the length prefix keeps their info strings distinct.",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "rec-000",
+      "salt_version": 1,
+      "info_hex": "6c61666979613a7265636f72642d73616c7401000000077265632d30303000000001",
+      "salt_hex": "74789fddb7870d8b7b76448cf1c3c6cc6f6363c75f7dc5aff0217f6e2de374b7",
+      "fingerprint_hex": "998e7d562aaa55fd"
+    },
+    {
+      "name": "max-length-secret",
+      "description": "64-byte (maximum length) master secret.",
+      "master_secret_hex": "9a3cb6d00ae9a235e488575e633ba31e05540a62ae7a06cd6c49d2d394cb72a3abdbc2b5cc2c7a519b72bf7a164c58ebf892ab0c2df6468213705cc2f0da8561",
+      "record_id": "rec-0001",
+      "salt_version": 1,
+      "info_hex": "6c61666979613a7265636f72642d73616c7401000000087265632d3030303100000001",
+      "salt_hex": "4f3297cc532634e21300e3cfdd6cf79824fa81584c75435c93793c02f31bd916",
+      "fingerprint_hex": "b445480eeb7dd5dc"
+    },
+    {
+      "name": "rotated-master-secret",
+      "description": "Same record and version under a rotated master secret.",
+      "master_secret_hex": "a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5a5",
+      "record_id": "rec-0001",
+      "salt_version": 1,
+      "info_hex": "6c61666979613a7265636f72642d73616c7401000000087265632d3030303100000001",
+      "salt_hex": "947fdcef5e36fbb9f4da83e32b350cf49dcea7160f84705b4fe67af9afbdb97f",
+      "fingerprint_hex": "a1ffae27b6721667",
+      "fields": [
+        {
+          "kind": "text",
+          "value": "O+"
+        },
+        {
+          "kind": "text",
+          "value": "AA"
+        },
+        {
+          "kind": "int64",
+          "value": "1758758400"
+        }
+      ],
+      "commitment_hex": "2737b27b96dc6f7259f576c2f888525a3b72dae60ebf87f49eb53928573b4c10"
+    },
+    {
+      "name": "unicode-record-id",
+      "description": "Non-ASCII record id, NFC UTF-8 encoded.",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "dossier-é-ü-7",
+      "salt_version": 1,
+      "info_hex": "6c61666979613a7265636f72642d73616c74010000000f646f73736965722dc3a92dc3bc2d3700000001",
+      "salt_hex": "f7ca7cfedf6ce92da0eab24ccea148acfe5cfc4592212c3f5c2ae2514606aa2f",
+      "fingerprint_hex": "998e7d562aaa55fd"
+    },
+    {
+      "name": "max-record-id",
+      "description": "256-byte record id and the largest salt version.",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "salt_version": 4294967295,
+      "info_hex": "6c61666979613a7265636f72642d73616c74010000010072727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272727272ffffffff",
+      "salt_hex": "53308292bd15695e6839d0232e42ea9b3b3b4d2e9520487c3a4efd64ec61baf4",
+      "fingerprint_hex": "998e7d562aaa55fd"
+    }
+  ],
+  "invalid": [
+    {
+      "name": "short-master-secret",
+      "master_secret_hex": "00000000000000000000000000000000000000000000000000000000000000",
+      "record_id": "rec-0001",
+      "salt_version": 1,
+      "error": "master_secret_length"
+    },
+    {
+      "name": "long-master-secret",
+      "master_secret_hex": "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+      "record_id": "rec-0001",
+      "salt_version": 1,
+      "error": "master_secret_length"
+    },
+    {
+      "name": "empty-record-id",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "",
+      "salt_version": 1,
+      "error": "record_id_length"
+    },
+    {
+      "name": "long-record-id",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "rrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrrr",
+      "salt_version": 1,
+      "error": "record_id_length"
+    },
+    {
+      "name": "zero-salt-version",
+      "master_secret_hex": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+      "record_id": "rec-0001",
+      "salt_version": 0,
+      "error": "salt_version"
+    }
+  ]
+}
