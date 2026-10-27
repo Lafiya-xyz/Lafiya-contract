@@ -122,3 +122,74 @@ approach above, with a Postgres store rather than Supabase, and adds:
 
 Supabase profile updates and webhooks, described above, can consume the
 indexer's API or tables. See the [deployment guide](../indexer.md).
+
+## History Archive Backfill
+
+Soroban RPC `getEvents` only retains roughly the last 7 days of events. A cold
+start after longer downtime, or a brand-new deployment, therefore cannot
+rebuild state from RPC alone. The indexer models every event producer behind an
+`EventSource` trait (`crates/lafiya-indexer/src/rpc.rs`), with two
+implementations:
+
+- `RpcEventSource` — live `getEvents` polling against a Soroban RPC node.
+- `ArchiveEventSource` — reads a history archive or ledger metadata export
+  (per-ledger event batches plus ledger headers) from local disk or object
+  storage.
+
+### Checkpoint-hash verification
+
+Archive data is only trusted when it can be tied to the network's history.
+Each archive batch carries the ledger header, and the source verifies:
+
+1. the header's hash matches the ledger sequence it claims;
+2. the header's `previous_ledger_hash` chains to the preceding verified header;
+3. the header hash is anchored in a published checkpoint (or a quorum of
+   archive mirrors agree on it).
+
+If any check fails, or the archive does not provide headers at all, the source
+is refused with an error and no events from it are applied. Unverifiable
+archives are never used to advance the checkpoint.
+
+### Verified archive-to-live handoff
+
+Backfill proceeds from the deployment's genesis ledger up to a **handoff
+boundary**: the highest ledger that is both present in the archive and still
+within RPC retention. At the boundary the indexer:
+
+1. verifies the archive header for the boundary ledger;
+2. fetches the same ledger range from RPC and confirms the event sets match;
+3. only then switches to `RpcEventSource` for subsequent ledgers.
+
+If the comparison fails, the handoff is aborted and the checkpoint is not
+advanced past the last verified ledger. Backfill is resumable (the checkpoint
+records the last applied ledger) and parallelizable by disjoint ledger ranges,
+with a final sequential pass to stitch ranges together in order.
+
+The acceptance test for this path is a golden comparison: a fresh database
+backfilled from genesis must equal one built purely from live ingestion.
+
+## Single-Writer Coordination
+
+Checkpoints are keyed by name and upserted, so multiple replicas would fight
+over them. High-availability deployments therefore elect a single active
+ingester:
+
+- **Leadership** is held via a Postgres advisory lock (or a lease table with a
+  TTL) acquired by the ingester at startup and renewed while it runs.
+- **Fencing tokens**: every checkpoint update carries the leader's monotonically
+  increasing fencing token; the store rejects updates from a token older than
+  the last accepted one, so a paused or partitioned former leader cannot
+  overwrite newer state.
+- **Followers** do not ingest; they serve reads from the same database and
+  report themselves as followers.
+- **Health endpoint** distinguishes `leader` from `follower` and reports
+  ingestion lag (latest ledger minus checkpointed ledger) so operators can
+  observe failover.
+
+On leader failure the advisory lock is released (or the lease expires) and a
+follower acquires leadership with a higher fencing token, resuming from the
+last committed checkpoint. Because each page is applied transactionally with
+its checkpoint, a leader killed mid-page leaves no partial effect and the new
+leader re-processes that page exactly once. Failover time is bounded by the
+lease TTL and is measured and documented in the deployment guide, which also
+includes a Kubernetes example (leader-elected Deployment plus read replicas).

@@ -5,11 +5,31 @@
 //! it ingests contract events from Soroban RPC, evaluates configurable rules
 //! ([`rules`]), and fans alerts out to sinks ([`sinks`]). It alerts on its
 //! own lag or failure too, so silence always means "nothing happened".
+//!
+//! Reliability features for an on-call rotation:
+//! - [`state`] persists rule window state and last-alert fingerprints across
+//!   restarts, so a crash never re-alerts or loses an in-flight window.
+//! - [`heartbeat`] emits a periodic dead-man's-switch ping to an external
+//!   monitor; absence of the ping pages the operator.
+//! - [`proposal`] builds unsigned pause proposals on critical alerts for
+//!   guardian multisig signing. The watchdog never holds keys and never
+//!   executes a pause itself.
 
 pub mod config;
+pub mod heartbeat;
+pub mod proposal;
 pub mod rpc;
 pub mod rules;
 pub mod sinks;
+pub mod state;
+
+pub use heartbeat::{Heartbeat, HeartbeatConfig};
+pub use proposal::{PauseProposal, ProposalPolicy};
+pub use state::{AlertFingerprint, PersistentState, RuleWindowState, StateStore};
+
+pub use rules::{
+    ApprovalBurstRule, ClaimByReaddedAttesterRule, LargeWithdrawalRule, PoolPausedRule,
+};
 
 use serde::{Deserialize, Serialize};
 

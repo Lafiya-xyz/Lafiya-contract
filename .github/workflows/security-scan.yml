@@ -11,6 +11,15 @@ permissions:
   contents: read
 
 jobs:
+  secrets-inventory:
+    name: CI secrets inventory
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: python3 scripts/ci/check_secrets_inventory.py
+
   codeql:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
@@ -81,3 +90,206 @@ jobs:
         with:
           sarif_file: gitleaks.sarif
           category: gitleaks
+
+  indexer-image:
+    name: Indexer image (build, SBOM, sign, scan, verify)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+      packages: write
+      security-events: write
+      attestations: write
+    env:
+      IMAGE: ghcr.io/${{ github.repository }}/lafiya-indexer
+      DOCKERFILE: crates/lafiya-indexer/Dockerfile
+      TRIVY_VERSION: 0.58.1
+      GRYPE_VERSION: 0.87.0
+      SYFT_VERSION: 1.18.1
+      COSIGN_VERSION: 2.4.1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Validate scan exceptions file
+        run: |
+          test -f .github/trivy-exceptions.yaml || { echo "::error::.github/trivy-exceptions.yaml is required"; exit 1; }
+          python3 - <<'PY'
+          import sys, yaml
+          data = yaml.safe_load(open(".github/trivy-exceptions.yaml")) or {}
+          entries = data.get("exceptions") or []
+          bad = [e for e in entries if not str(e.get("justification", "")).strip()]
+          if bad:
+              print(f"::error::{len(bad)} exception(s) missing a justification")
+              sys.exit(1)
+          print(f"Validated {len(entries)} exception(s), all justified")
+          PY
+
+      - uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Build image (locked deps, no push)
+        uses: docker/build-push-action@263435318d21b8e681c14492fe198d362a7d2c83 # v6.18.0
+        with:
+          context: .
+          file: ${{ env.DOCKERFILE }}
+          load: true
+          tags: ${{ env.IMAGE }}:${{ github.sha }}
+          build-args: |
+            CARGO_NET_OFFLINE=false
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Report image size
+        run: |
+          SIZE=$(docker image inspect "$IMAGE:${{ github.sha }}" --format '{{.Size}}')
+          MIB=$(awk -v s="$SIZE" 'BEGIN { printf "%.2f", s/1048576 }')
+          echo "Image size: ${MIB} MiB (${SIZE} bytes)" | tee -a "$GITHUB_STEP_SUMMARY"
+
+      - name: Install syft (pinned + checksum)
+        env:
+          SYFT_URL: https://github.com/anchore/syft/releases/download/v1.18.1/syft_1.18.1_linux_amd64.tar.gz
+          SYFT_SHA256: 6a03a1a7d1b6b0f1b1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+        run: |
+          curl -fsSL "$SYFT_URL" -o syft.tar.gz
+          echo "$SYFT_SHA256  syft.tar.gz" | sha256sum -c -
+          tar -xzf syft.tar.gz syft
+          sudo install -m 0755 syft /usr/local/bin/syft
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          syft scan "docker:$IMAGE:${{ github.sha }}" -o cyclonedx-json=indexer.cdx.json
+          syft scan "docker:$IMAGE:${{ github.sha }}" -o spdx-json=indexer.spdx.json
+
+      - name: Install Trivy (pinned + checksum)
+        env:
+          TRIVY_URL: https://github.com/aquasecurity/trivy/releases/download/v0.58.1/trivy_0.58.1_Linux-64bit.tar.gz
+          TRIVY_SHA256: 8a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+        run: |
+          curl -fsSL "$TRIVY_URL" -o trivy.tar.gz
+          echo "$TRIVY_SHA256  trivy.tar.gz" | sha256sum -c -
+          tar -xzf trivy.tar.gz trivy
+          sudo install -m 0755 trivy /usr/local/bin/trivy
+
+      - name: Trivy scan (gate)
+        run: |
+          trivy image --scanners vuln --severity HIGH,CRITICAL \
+            --ignorefile .github/trivy-exceptions.yaml \
+            --format sarif --output trivy.sarif \
+            --exit-code 1 "$IMAGE:${{ github.sha }}"
+          trivy image --scanners vuln --severity HIGH,CRITICAL \
+            --ignorefile .github/trivy-exceptions.yaml \
+            --format json --output trivy.json "$IMAGE:${{ github.sha }}" || true
+
+      - name: Install Grype (pinned + checksum)
+        env:
+          GRYPE_URL: https://github.com/anchore/grype/releases/download/v0.87.0/grype_0.87.0_linux_amd64.tar.gz
+          GRYPE_SHA256: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+        run: |
+          curl -fsSL "$GRYPE_URL" -o grype.tar.gz
+          echo "$GRYPE_SHA256  grype.tar.gz" | sha256sum -c -
+          tar -xzf grype.tar.gz grype
+          sudo install -m 0755 grype /usr/local/bin/grype
+
+      - name: Grype scan (gate)
+        run: |
+          grype "sbom:indexer.cdx.json" --fail-on high --output sarif > grype.sarif
+          grype "sbom:indexer.cdx.json" --output json > grype.json || true
+
+      - name: Report CVE counts
+        run: |
+          python3 - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
+          import json
+          def count(path, key):
+              try:
+                  data = json.load(open(path))
+              except Exception:
+                  return "n/a"
+              if key == "trivy":
+                  return sum(len(r.get("Vulnerabilities") or []) for r in data.get("Results") or [])
+              return len(data.get("matches") or [])
+          print("| Scanner | HIGH/CRITICAL findings |")
+          print("| --- | --- |")
+          print(f"| Trivy | {count('trivy.json', 'trivy')} |")
+          print(f"| Grype | {count('grype.json', 'grype')} |")
+          PY
+
+      - if: always()
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: trivy.sarif
+          category: trivy-indexer
+
+      - if: always()
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: grype.sarif
+          category: grype-indexer
+
+      - name: Log in to GHCR
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: docker/login-action@74a5d1423972bd0816fc3e1a84f2245e0f4b6f6f # v3.4.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Push image
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          docker tag "$IMAGE:${{ github.sha }}" "$IMAGE:sha-${{ github.sha }}"
+          docker push "$IMAGE:sha-${{ github.sha }}"
+          DIGEST=$(docker image inspect "$IMAGE:sha-${{ github.sha }}" --format '{{index .RepoDigests 0}}' | cut -d@ -f2)
+          echo "IMAGE_DIGEST=$DIGEST" >> "$GITHUB_ENV"
+          echo "IMAGE_REF=$IMAGE@$DIGEST" >> "$GITHUB_ENV"
+
+      - name: Install cosign (pinned + checksum)
+        env:
+          COSIGN_URL: https://github.com/sigstore/cosign/releases/download/v2.4.1/cosign-linux-amd64
+          COSIGN_SHA256: 1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1
+        run: |
+          curl -fsSL "$COSIGN_URL" -o cosign
+          echo "$COSIGN_SHA256  cosign" | sha256sum -c -
+          sudo install -m 0755 cosign /usr/local/bin/cosign
+
+      - name: Sign image (cosign keyless)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        run: |
+          cosign sign --yes "$IMAGE_REF"
+          cosign attest --yes --type cyclonedx --predicate indexer.cdx.json "$IMAGE_REF"
+          cosign attest --yes --type spdxjson --predicate indexer.spdx.json "$IMAGE_REF"
+
+      - name: SLSA provenance (build provenance attestation)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        uses: actions/attest-build-provenance@e8998f949152b193b063cb0ec769d69d929409be # v2.4.0
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ env.IMAGE_DIGEST }}
+          push-to-registry: true
+
+      - name: Upload SBOM and scan artifacts
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: indexer-sbom-and-scans
+          path: |
+            indexer.cdx.json
+            indexer.spdx.json
+            trivy.json
+            grype.json
+          if-no-files-found: error
+
+      - name: Verify published image (signature + attestations)
+        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+        env:
+          CERT_IDENTITY: https://github.com/${{ github.repository }}/.github/workflows/security-scan.yml@${{ github.ref }}
+          CERT_OIDC_ISSUER: https://token.actions.githubusercontent.com
+        run: |
+          cosign verify \
+            --certificate-identity "$CERT_IDENTITY" \
+            --certificate-oidc-issuer "$CERT_OIDC_ISSUER" \
+            "$IMAGE_REF"
+          cosign verify-attestation --type cyclonedx \
+            --certificate-identity "$CERT_IDENTITY" \
+            --certificate-oidc-issuer "$CERT_OIDC_ISSUER" \
+            "$IMAGE_REF"
+          gh attestation verify "oci://$IMAGE_REF" --repo "${{ github.repository }}"

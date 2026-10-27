@@ -27,6 +27,8 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `14` | `RegionalQuotaExceeded` | The registrar's concurrent enrollment quota has been reached. |
 | `15` | `RegionalAttestersRemain` | The registrar's region cannot change while its attesters remain enrolled. |
 | `16` | `InvalidRegion` | The region is not a valid ISO 3166-2 style code such as `NG-LA`. |
+| `17` | `UnknownIssuer` | The credential issuer is not in the issuer registry, or was revoked. |
+| `18` | `InvalidCredential` | The credential is expired, not yet valid, or issued to another subject. |
 
 ## `attestation-registry`
 
@@ -56,6 +58,15 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `22` | `InvalidRecordVersion` | The supplied previous hash or version relationship is invalid. |
 | `23` | `BatchTooLarge` | The batch contains more requests than the supported maximum. |
 | `24` | `InvalidCommitmentVersion` | The commitment scheme version does not fit in one byte. |
+| `25` | `InvalidTtlExtension` | `extend_attestation_ttl` was called with an `extend_to` that is not strictly greater than the attestation's current expiry, or that exceeds the maximum TTL horizon. TTL can only be extended, never shortened. |
+| `26` | `QuorumPolicyNotFound` | No quorum policy is configured for the record class of the referenced attestation. |
+| `27` | `InvalidQuorumPolicy` | The quorum policy is invalid (e.g. required attester count is zero or exceeds the supported maximum). |
+| `28` | `DuplicateAttester` | The same attester attempted to co-attest the same record twice; distinct attesters are required to satisfy a quorum. |
+| `29` | `DisputeAlreadyExists` | A dispute is already recorded for this record hash and signer; the existing dispute must be cleared by an attester or admin before a new one can be filed. |
+| `30` | `InvalidDisputeSignature` | The patient dispute signature failed verification against the commitment, or the signature domain separator is invalid (replay protection). |
+| `31` | `DisputeLimitExceeded` | The per-record dispute spam bound has been reached; further disputes are rejected until existing ones are cleared. |
+| `32` | `InvalidStatusListProof` | The supplied status-list inclusion proof does not validate against the signed segment root. |
+| `33` | `StatusListSegmentNotFound` | No status-list segment exists for the requested version or index. |
 
 ## `multisig-account`
 
@@ -91,3 +102,11 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `13` | `PayoutCapExceeded` | The payout would exceed the per-claim cap. |
 | `14` | `TransferFailed` | The token transfer call returned an error. |
 | `15` | `NonPositiveAmount` | A non-positive amount was provided where a positive amount is required. |
+| `16` | `ArithmeticOverflow` | A cumulative counter update would overflow or underflow `i128`. |
+| `17` | `WorkItemExpired` | The work item's approval has expired; it can only be swept. |
+| `18` | `WorkItemNotExpired` | `sweep_expired` was called on a work item that has not expired yet. |
+| `19` | `WorkItemCancelled` | The work item was cancelled; it cannot be claimed or re-approved. |
+| `20` | `InvalidApprovalTtl` | The requested approval TTL is zero or exceeds the configured maximum. |
+| `21` | `Unauthorized` | The caller is neither the approver nor the admin. |
+| `22` | `ReconciliationRequired` | The pool's token balance diverged from internal accounting; `claim` is blocked until the admin calls `resolve_drift`. |
+| `23` | `TokenBalanceMismatch` | A token transfer moved a different amount than requested. |

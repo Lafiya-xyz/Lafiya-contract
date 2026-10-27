@@ -1,0 +1,11 @@
+[package]
+name = "lafiya-verification-model"
+version = "0.1.0"
+edition = "2021"
+description = "Rust implementation of the normative verification-result model (docs/specs/verification-model.md)"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

@@ -16,12 +16,20 @@ const accounts = [1, 2, 3].map((i) =>
 function sample(type, i) {
   if (type === "address") return [accounts[i % 3], (v) => Address.fromString(v).toScVal()];
   if (type === "u64") return ["1765900800", (v) => nativeToScVal(BigInt(v), { type: "u64" })];
+  if (type === "i128") return ["1000000000", (v) => nativeToScVal(BigInt(v), { type: "i128" })];
+  if (type === "u32") return [7, (v) => nativeToScVal(v, { type: "u32" })];
+  if (type === "bool") return [true, (v) => xdr.ScVal.scvBool(v)];
   if (typeof type === "object" && "bytes_n" in type) {
     const hex = Buffer.alloc(type.bytes_n.n, 0xa0 + i).toString("hex");
     return [hex, (v) => xdr.ScVal.scvBytes(Buffer.from(v, "hex"))];
   }
   throw new Error(`no sample for ${JSON.stringify(type)}`);
 }
+
+// Events emitted by the incentive-pool contract. They live in the same spec
+// (and therefore the same generated decoder) as the registry events, so they
+// must be covered by fixtures too.
+const POOL_CONTRACT = StrKey.encodeContract(Buffer.alloc(32, 7));
 
 const fixtures = Object.entries(EVENT_SPECS).map(([kind, [spec]], n) => {
   const expected = {};
@@ -41,7 +49,7 @@ const fixtures = Object.entries(EVENT_SPECS).map(([kind, [spec]], n) => {
       ledger,
       ledgerClosedAt: "2026-09-25T00:00:00Z",
       txHash: Buffer.alloc(32, n).toString("hex"),
-      contractId: CONTRACT,
+      contractId: spec.contract === "incentive-pool" ? POOL_CONTRACT : CONTRACT,
       topic: topic.map((t) => t.toXDR("base64")),
       value: xdr.ScVal.scvMap(data).toXDR("base64"),
     },

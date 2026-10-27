@@ -2,7 +2,7 @@
 
 This directory contains the W3C Verifiable Credentials 2.0 artefacts for
 Lafiya's `LafiyaEmergencyRecordAttestation` credential type. See
-[ADR-0012](../adr/0012-w3c-vc-export-format.md) for the decision record.
+[ADR-0022](../adr/0022-w3c-vc-export-format.md) for the decision record.
 
 ## Files
 

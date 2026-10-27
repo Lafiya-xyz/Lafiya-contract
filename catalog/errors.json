@@ -123,6 +123,94 @@
       "deprecated": null
     },
     {
+      "contract": "attestation-registry",
+      "code": 12,
+      "name": "TtlExtensionOutOfRange",
+      "doc": "`extend_attestation_ttl` was called with an `extend_to` ledger that is not strictly greater than the entry's current live-until ledger, or that exceeds the maximum TTL horizon. TTL can only be extended, never shortened.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.ttl_extension_out_of_range",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 13,
+      "name": "QuorumPolicyNotConfigured",
+      "doc": "The record class has no quorum policy configured, so a co-attestation cannot be recorded against it. Configure a policy via `set_quorum_policy` first.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attestation.quorum_policy_not_configured",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 14,
+      "name": "DuplicateCoAttester",
+      "doc": "The attester has already co-attested this record. Quorum counts distinct attesters only; a repeated co-attestation from the same address is rejected as a no-op.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.duplicate_co_attester",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 15,
+      "name": "InvalidQuorumPolicy",
+      "doc": "The supplied quorum policy is invalid (for example a required count of `0` or greater than the configured maximum).",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.invalid_quorum_policy",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 16,
+      "name": "InvalidDisputeSignature",
+      "doc": "The patient dispute signature did not verify against the record commitment and the domain-separated dispute payload. Signatures are replay-safe via a per-record nonce and domain tag.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.invalid_dispute_signature",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 17,
+      "name": "DisputeLimitReached",
+      "doc": "The per-record dispute cap has been reached. Disputes are rate-limited to bound spam; an attester or admin must clear existing disputes before new ones can be filed.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.dispute_limit_reached",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 18,
+      "name": "DisputeNotFound",
+      "doc": "No dispute overlay exists for the given record hash and signer, so it cannot be cleared.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.dispute_not_found",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attestation-registry",
+      "code": 19,
+      "name": "UnauthorizedDisputeClear",
+      "doc": "Only an allowlisted attester or the contract admin may clear a dispute flag.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attestation.unauthorized_dispute_clear",
+      "since": "0.2.0",
+      "deprecated": null
+    },
+    {
       "contract": "attester-registry",
       "code": 1,
       "name": "NotInitialized",

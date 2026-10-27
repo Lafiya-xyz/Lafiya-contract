@@ -2,19 +2,22 @@ name: Release PR
 
 # Maintains the "chore(main): release X.Y.Z" PR from Conventional Commits
 # (release-please-config.json). Merging it tags the release and runs the tag
-# pipeline in release-manifest.yml. See docs/releasing.md.
+# pipeline in release-manifest.yml. See docs/releasing.md and PUBLISHING.md.
 
 on:
   push:
     branches: [main]
 
+# Least privilege at the workflow level; jobs opt in to only what they need.
 permissions:
-  contents: write
-  pull-requests: write
+  contents: read
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.release.outputs.release_created }}
       tag_name: ${{ steps.release.outputs.tag_name }}
@@ -25,14 +28,197 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
-  publish:
+  # Build signed prebuilt lafiya-cli binaries for every supported target.
+  # Static linking is used where possible (musl on Linux, static CRT on
+  # Windows) so operators can install without a Rust toolchain.
+  build-binaries:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
     permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+            archive: tar.gz
+            static: false
+          - target: x86_64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            static: true
+          - target: aarch64-unknown-linux-musl
+            os: ubuntu-latest
+            archive: tar.gz
+            static: true
+          - target: x86_64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+            static: false
+          - target: aarch64-apple-darwin
+            os: macos-latest
+            archive: tar.gz
+            static: false
+          - target: x86_64-pc-windows-msvc
+            os: windows-latest
+            archive: zip
+            static: true
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl tools
+        if: contains(matrix.target, 'linux-musl')
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+          if [ "${{ matrix.target }}" = "aarch64-unknown-linux-musl" ]; then
+            sudo apt-get install -y gcc-aarch64-linux-gnu
+            echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_MUSL_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+            echo "CC_aarch64_unknown_linux_musl=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
+          fi
+
+      - name: Configure static linking
+        shell: bash
+        run: |
+          if [ "${{ matrix.static }}" = "true" ]; then
+            case "${{ matrix.target }}" in
+              *linux-musl)
+                echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+                ;;
+              *windows-msvc)
+                echo "RUSTFLAGS=-C target-feature=+crt-static" >> "$GITHUB_ENV"
+                ;;
+            esac
+          fi
+
+      - name: Build lafiya-cli
+        run: cargo build --release --locked --target ${{ matrix.target }} -p lafiya-cli
+
+      - name: Package binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIN="lafiya-cli"
+          if [ "${{ matrix.archive }}" = "zip" ]; then BIN="lafiya-cli.exe"; fi
+          SRC="target/${{ matrix.target }}/release/${BIN}"
+          STAGE="lafiya-cli-${{ needs.release-please.outputs.tag_name }}-${{ matrix.target }}"
+          mkdir -p "$STAGE"
+          cp "$SRC" "$STAGE/"
+          if [ "${{ matrix.archive }}" = "zip" ]; then
+            (cd "$STAGE" && 7z a "../${STAGE}.zip" .)
+            echo "ASSET=${STAGE}.zip" >> "$GITHUB_ENV"
+          else
+            tar -C "$STAGE" -czf "${STAGE}.tar.gz" .
+            echo "ASSET=${STAGE}.tar.gz" >> "$GITHUB_ENV"
+          fi
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: lafiya-cli-${{ matrix.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+          retention-days: 7
+
+  # Reproducibility check: rebuild the Linux target independently and confirm
+  # the resulting binary matches the checksum of the primary build.
+  reproducibility:
+    needs: [release-please, build-binaries]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Download primary build
+        uses: actions/download-artifact@v4
+        with:
+          name: lafiya-cli-x86_64-unknown-linux-musl
+          path: primary
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+
+      - name: Install musl tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y musl-tools
+
+      - name: Independent rebuild
+        env:
+          RUSTFLAGS: -C target-feature=+crt-static
+          SOURCE_DATE_EPOCH: "0"
+        run: cargo build --release --locked --target x86_64-unknown-linux-musl -p lafiya-cli
+
+      - name: Compare checksums
+        run: |
+          set -euo pipefail
+          PRIMARY_ARCHIVE=$(ls primary/*.tar.gz)
+          mkdir -p primary-extract
+          tar -C primary-extract -xzf "$PRIMARY_ARCHIVE"
+          PRIMARY_SUM=$(sha256sum primary-extract/lafiya-cli | awk '{print $1}')
+          REBUILD_SUM=$(sha256sum target/x86_64-unknown-linux-musl/release/lafiya-cli | awk '{print $1}')
+          echo "primary=$PRIMARY_SUM"
+          echo "rebuild=$REBUILD_SUM"
+          if [ "$PRIMARY_SUM" != "$REBUILD_SUM" ]; then
+            echo "::error::Reproducibility check failed: checksums differ"
+            exit 1
+          fi
+
+  # Publish assets, checksums, cosign signatures, and SLSA provenance.
+  publish:
+    needs: [release-please, build-binaries, reproducibility]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
       contents: write
-      pull-requests: write
       id-token: write
       attestations: write
     uses: ./.github/workflows/release-manifest.yml
     with:
       tag: ${{ needs.release-please.outputs.tag_name }}
+
+  # Verify the install script instructions in CI before the release is final.
+  verify-install:
+    needs: [release-please, build-binaries]
+    if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      contents: read
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.release-please.outputs.tag_name }}
+
+      - name: Download Linux build
+        uses: actions/download-artifact@v4
+        with:
+          name: lafiya-cli-x86_64-unknown-linux-musl
+          path: dist
+
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Verify install script syntax
+        run: bash -n scripts/install.sh
+
+      - name: Dry-run install script against local artifact
+        env:
+          LAFIYA_CLI_LOCAL_ARTIFACT: dist
+          LAFIYA_CLI_SKIP_SIGNATURE: "1"
+        run: |
+          set -euo pipefail
+          bash scripts/install.sh --dry-run --version "${{ needs.release-please.outputs.tag_name }}"

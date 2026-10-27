@@ -72,6 +72,9 @@ pub struct ScoringConfig {
     pub collusion_shared_record_threshold: u32,
     pub high_severity_score: f64,
     pub medium_severity_score: f64,
+    /// Attesters whose events are ignored entirely (e.g. the canary attester,
+    /// see docs/runbooks/canary-attestations.md).
+    pub excluded_attesters: Vec<String>,
 }
 
 impl Default for ScoringConfig {
@@ -86,6 +89,7 @@ impl Default for ScoringConfig {
             collusion_shared_record_threshold: 5,
             high_severity_score: 3.0,
             medium_severity_score: 1.0,
+            excluded_attesters: Vec::new(),
         }
     }
 }
@@ -97,15 +101,56 @@ pub enum Severity {
     High,
 }
 
+/// The individual heuristic signals that can contribute to a score. Each
+/// contributes a fixed weight (see [`SignalBreakdown::weight`]) when it
+/// fires, so a reviewer can see exactly which signals drove a flag.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Signal {
+    Velocity,
+    BurstTiming,
+    ReAttestationChurn,
+    RegionMismatch,
+    RevocationRatio,
+}
+
+impl Signal {
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            Signal::Velocity => "velocity",
+            Signal::BurstTiming => "burst_timing",
+            Signal::ReAttestationChurn => "re_attestation_churn",
+            Signal::RegionMismatch => "region_mismatch",
+            Signal::RevocationRatio => "revocation_ratio",
+        }
+    }
+}
+
+/// Structured, per-signal explainability record (issue #530). Every signal
+/// that fires contributes one of these to a [`RiskReport`], carrying the
+/// weight it added, the observed value that tripped it, and the baseline /
+/// threshold it was compared against. This is what an appeal or a suspension
+/// reason code cites.
+#[derive(Debug, Clone, PartialEq)]
+pub struct SignalBreakdown {
+    pub signal: Signal,
+    pub weight: f64,
+    /// Human-readable observed value (e.g. "80 attestations in one hour").
+    pub observed: String,
+    /// Human-readable baseline / threshold the observed value exceeded.
+    pub baseline: String,
+}
+
 /// Per-attester scoring output. `reasons` is the explainability requirement
 /// from the issue: every point added to `score` has a matching human-
 /// readable reason, so a reviewer never has to reverse-engineer why an
-/// attester was flagged.
+/// attester was flagged. `breakdown` is the structured form of the same
+/// information (issue #530).
 #[derive(Debug, Clone)]
 pub struct RiskReport {
     pub attester: String,
     pub score: f64,
     pub reasons: Vec<String>,
+    pub breakdown: Vec<SignalBreakdown>,
     pub severity: Severity,
 }
 
@@ -155,6 +200,9 @@ pub fn score_attesters(
 
     let mut by_attester: HashMap<&str, Vec<&AttestationEvent>> = HashMap::new();
     for event in events {
+        if config.excluded_attesters.contains(&event.attester) {
+            continue;
+        }
         by_attester.entry(&event.attester).or_default().push(event);
     }
 
@@ -175,6 +223,7 @@ pub fn score_attesters(
     for (attester, evs) in &by_attester {
         let mut score = 0.0;
         let mut reasons = Vec::new();
+        let mut breakdown = Vec::new();
 
         // Velocity: busiest 1-hour bucket.
         let mut hourly_counts: HashMap<u64, u32> = HashMap::new();
@@ -188,6 +237,15 @@ pub fn score_attesters(
                     "velocity: {max_hourly} attestations in one hour (implausibility threshold {})",
                     config.max_plausible_hourly_attestations
                 ));
+                breakdown.push(SignalBreakdown {
+                    signal: Signal::Velocity,
+                    weight: 1.0,
+                    observed: format!("{max_hourly} attestations in one hour"),
+                    baseline: format!(
+                        "max plausible {} per hour",
+                        config.max_plausible_hourly_attestations
+                    ),
+                });
             }
         }
 
@@ -200,6 +258,15 @@ pub fn score_attesters(
                 "burst timing: {run} attestations within {} ledgers of each other (threshold {})",
                 config.burst_max_ledger_gap, config.burst_min_run_length
             ));
+            breakdown.push(SignalBreakdown {
+                signal: Signal::BurstTiming,
+                weight: 1.0,
+                observed: format!(
+                    "{run} attestations within {} ledgers",
+                    config.burst_max_ledger_gap
+                ),
+                baseline: format!("min run length {}", config.burst_min_run_length),
+            });
         }
 
         // Re-attestation churn: same record hash attested repeatedly.
@@ -214,6 +281,12 @@ pub fn score_attesters(
                 "re-attestation churn: one record hash attested {max_repeats} times (threshold {})",
                 config.churn_max_repeats
             ));
+            breakdown.push(SignalBreakdown {
+                signal: Signal::ReAttestationChurn,
+                weight: 1.0,
+                observed: format!("one record hash attested {max_repeats} times"),
+                baseline: format!("max repeats {}", config.churn_max_repeats),
+            });
         }
 
         // Region mismatch.
@@ -227,6 +300,15 @@ pub fn score_attesters(
                     fraction * 100.0,
                     config.region_mismatch_fraction_threshold * 100.0
                 ));
+                breakdown.push(SignalBreakdown {
+                    signal: Signal::RegionMismatch,
+                    weight: 1.0,
+                    observed: format!("{:.0}% out-of-region", fraction * 100.0),
+                    baseline: format!(
+                        "max {:.0}% out-of-region",
+                        config.region_mismatch_fraction_threshold * 100.0
+                    ),
+                });
             }
         }
 
@@ -243,6 +325,16 @@ pub fn score_attesters(
                 population_mean_revocation_rate * 100.0,
                 config.revocation_ratio_peer_multiplier
             ));
+            breakdown.push(SignalBreakdown {
+                signal: Signal::RevocationRatio,
+                weight: 1.0,
+                observed: format!("{:.0}% revoked", revocation_rate * 100.0),
+                baseline: format!(
+                    "{:.0}% population mean x{}",
+                    population_mean_revocation_rate * 100.0,
+                    config.revocation_ratio_peer_multiplier
+                ),
+            });
         }
 
         reports.push(RiskReport {
@@ -250,6 +342,7 @@ pub fn score_attesters(
             score,
             severity: severity_for(score, config),
             reasons,
+            breakdown,
         });
     }
 

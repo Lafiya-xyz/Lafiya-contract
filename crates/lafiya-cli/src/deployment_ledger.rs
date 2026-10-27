@@ -142,6 +142,147 @@ impl VerifyReport {
     }
 }
 
+/// Severity of a single doctor check, ordered so the worst wins when
+/// aggregating several findings into one status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Severity {
+    Ok,
+    Info,
+    Warning,
+    Blocking,
+}
+
+impl fmt::Display for Severity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let s = match self {
+            Severity::Ok => "ok",
+            Severity::Info => "info",
+            Severity::Warning => "warning",
+            Severity::Blocking => "blocking",
+        };
+        f.write_str(s)
+    }
+}
+
+/// One machine-readable finding from a doctor check: what was checked, how
+/// bad it is, and what the operator should do about it.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DoctorFinding {
+    pub check: String,
+    pub severity: Severity,
+    pub message: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
+}
+
+impl DoctorFinding {
+    pub fn new(check: impl Into<String>, severity: Severity, message: impl Into<String>) -> Self {
+        Self {
+            check: check.into(),
+            severity,
+            message: message.into(),
+            remediation: None,
+        }
+    }
+
+    pub fn with_remediation(mut self, hint: impl Into<String>) -> Self {
+        self.remediation = Some(hint.into());
+        self
+    }
+
+    pub fn is_blocking(&self) -> bool {
+        self.severity == Severity::Blocking
+    }
+}
+
+/// The tip (most recent record) of a network's ledger, if any.
+fn ledger_tip(deployments_dir: &Path, network: &str) -> Result<Option<DeploymentRecord>, String> {
+    let path = ledger_path(deployments_dir, network);
+    let lines = read_lines(&path)?;
+    match lines.last() {
+        Some(line) => serde_json::from_str(line)
+            .map(Some)
+            .map_err(|e| format!("corrupt last record in {path:?}: {e}")),
+        None => Ok(None),
+    }
+}
+
+/// Doctor check: does the configured contract ID / wasm hash still match the
+/// deployment ledger's tip for this network?
+///
+/// A testnet reset (or a manual repoint) leaves `config/networks.toml`
+/// pointing at a contract that the ledger says was superseded, or at a
+/// contract whose recorded wasm hash no longer matches the build being
+/// deployed. Both are blocking: a mutating action against a stale contract ID
+/// either fails late or, worse, targets the wrong instance.
+///
+/// `configured_contract_id` and `configured_wasm_sha256` come from the
+/// resolved network config; `configured_wasm_sha256` is optional because a
+/// config may only pin the contract ID.
+pub fn check_contract_drift(
+    deployments_dir: &Path,
+    network: &str,
+    configured_contract_id: &str,
+    configured_wasm_sha256: Option<&str>,
+) -> Result<DoctorFinding, String> {
+    let check = "deployment_ledger.contract_drift";
+    let tip = match ledger_tip(deployments_dir, network)? {
+        Some(tip) => tip,
+        None => {
+            return Ok(DoctorFinding::new(
+                check,
+                Severity::Warning,
+                format!("no deployment ledger records for network '{network}'"),
+            )
+            .with_remediation(format!(
+                "run `lafiya deploy --network {network}` to record the first deployment in deployments/{network}.jsonl"
+            )));
+        }
+    };
+
+    if tip.contract_id != configured_contract_id {
+        return Ok(DoctorFinding::new(
+            check,
+            Severity::Blocking,
+            format!(
+                "configured contract id {configured_contract_id} does not match ledger tip {} (last {} at ledger {:?}) -- likely a stale config after a network reset or repoint",
+                tip.contract_id, tip.event, tip.ledger
+            ),
+        )
+        .with_remediation(format!(
+            "re-run `lafiya deploy --network {network}` (or `lafiya repoint`) and update config/networks.toml to the new contract id"
+        )));
+    }
+
+    if let (Some(configured), Some(recorded)) =
+        (configured_wasm_sha256, tip.wasm_sha256.as_deref())
+    {
+        if configured != recorded {
+            return Ok(DoctorFinding::new(
+                check,
+                Severity::Blocking,
+                format!(
+                    "configured wasm hash {configured} does not match ledger tip wasm hash {recorded} for {}",
+                    tip.contract_id
+                ),
+            )
+            .with_remediation(format!(
+                "confirm the build matches the deployed artifact, or record the new deployment with `lafiya deploy --network {network}`"
+            )));
+        }
+    }
+
+    Ok(DoctorFinding::new(
+        check,
+        Severity::Ok,
+        format!(
+            "configured contract {} matches ledger tip (last {} at ledger {:?})",
+            tip.contract_id, tip.event, tip.ledger
+        ),
+    ))
+}
+
 /// Structural (offline) verification of a network's ledger file:
 /// - the hash chain is intact (each record's `prev_record_sha256` matches
 ///   the previous line's hash);
@@ -293,5 +434,74 @@ mod tests {
         let report = verify(dir.path(), "testnet").unwrap();
         assert!(report.is_ok());
         assert_eq!(report.records_checked, 0);
+    }
+
+    #[test]
+    fn drift_check_passes_when_config_matches_tip() {
+        let dir = tempdir().unwrap();
+        let record = sample("alice");
+        let wasm = record.wasm_sha256.clone().unwrap();
+        append(dir.path(), "testnet", record).unwrap();
+
+        let finding =
+            check_contract_drift(dir.path(), "testnet", "CTESTCONTRACT", Some(&wasm)).unwrap();
+        assert_eq!(finding.severity, Severity::Ok);
+        assert!(!finding.is_blocking());
+        assert!(finding.remediation.is_none());
+    }
+
+    #[test]
+    fn drift_check_blocks_on_stale_contract_id() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), "testnet", sample("alice")).unwrap();
+
+        let finding =
+            check_contract_drift(dir.path(), "testnet", "CNEWCONTRACT", None).unwrap();
+        assert_eq!(finding.severity, Severity::Blocking);
+        assert!(finding.is_blocking());
+        assert!(finding.message.contains("stale config"));
+        assert!(finding.remediation.is_some());
+    }
+
+    #[test]
+    fn drift_check_blocks_on_wasm_hash_mismatch() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), "testnet", sample("alice")).unwrap();
+
+        let finding = check_contract_drift(
+            dir.path(),
+            "testnet",
+            "CTESTCONTRACT",
+            Some(&"b".repeat(64)),
+        )
+        .unwrap();
+        assert_eq!(finding.severity, Severity::Blocking);
+        assert!(finding.message.contains("wasm hash"));
+        assert!(finding.remediation.is_some());
+    }
+
+    #[test]
+    fn drift_check_warns_when_ledger_missing() {
+        let dir = tempdir().unwrap();
+        let finding =
+            check_contract_drift(dir.path(), "testnet", "CTESTCONTRACT", None).unwrap();
+        assert_eq!(finding.severity, Severity::Warning);
+        assert!(!finding.is_blocking());
+        assert!(finding.remediation.is_some());
+    }
+
+    #[test]
+    fn drift_check_uses_ledger_tip_not_first_record() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), "testnet", sample("alice")).unwrap();
+        let mut second = sample("bob");
+        second.event = DeployEvent::Repoint;
+        second.contract_id = "CREPOINTED".into();
+        append(dir.path(), "testnet", second).unwrap();
+
+        let finding =
+            check_contract_drift(dir.path(), "testnet", "CTESTCONTRACT", None).unwrap();
+        assert_eq!(finding.severity, Severity::Blocking);
+        assert!(finding.message.contains("CREPOINTED"));
     }
 }

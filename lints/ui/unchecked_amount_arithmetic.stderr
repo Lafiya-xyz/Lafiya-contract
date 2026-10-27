@@ -1,0 +1,10 @@
+warning: use checked_add/checked_sub/checked_mul on amounts
+  --> $DIR/unchecked_amount_arithmetic.rs:2:5
+   |
+LL |     a + b //~ unchecked_amount_arithmetic
+   |     ^^^^^
+   |
+   = note: `#[warn(unchecked_amount_arithmetic)]` on by default
+
+warning: 1 warning emitted
+

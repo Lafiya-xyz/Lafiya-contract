@@ -42,10 +42,70 @@ max_count = 10
 window_ledgers = 100
 severity = "high"
 
+# Persistent state: rule windows and last-alert fingerprints survive restarts,
+# so a kill -9 does not re-alert or lose in-flight windows.
+[state]
+path = "./watchdog-state.json"
+# How long a deduplicated alert fingerprint is remembered.
+dedup_ttl_secs = 3600
+
+# Group alerts by rule kind and escalate by severity when unacknowledged.
+[escalation]
+# Alerts at or above this severity page immediately.
+page_min_severity = "critical"
+# Escalate to the next tier if not acknowledged within this window.
+ack_timeout_secs = 900
+# Escalation ladder, lowest tier first.
+tiers = ["slack", "pagerduty", "opsgenie"]
+
 [heartbeat]
 max_lag_ledgers = 60
 max_consecutive_failures = 5
+# Periodic heartbeat to an external dead-man's-switch monitor. Absence of the
+# ping pages the operator. Healthchecks.io example (see runbook for details):
 # ping_url = "https://hc-ping.com/<uuid>"
+# ping_interval_secs = 60
+# fail_ping_url = "https://hc-ping.com/<uuid>/fail"
+
+# Guarded auto-response: on critical rules, build an unsigned pause proposal
+# and attach it to the alert. The watchdog never holds keys and never executes
+# the pause; guardians must sign via the multisig tooling.
+[auto_response]
+enabled = false
+# Only rules at or above this severity produce proposals.
+min_severity = "critical"
+# Paths excluded from pausing by policy (see docs/PAUSE-POLICY.md).
+policy_matrix_path = "../../docs/PAUSE-POLICY.md"
+# Rate limit on proposals to bound spoofed-alert DoS.
+max_proposals_per_hour = 3
+# Public key used to verify signed alerts; unsigned alerts never induce pauses.
+alert_signing_pubkey = "REPLACE_ME"
+# Where ready-to-sign proposals are written for the multisig tooling.
+proposal_dir = "./watchdog-proposals"
+
+# Expiry watchdog for attestation-registry entries (see docs/storage-cost.md).
+# Warns when an attestation's TTL horizon falls below the threshold so that
+# anyone can permissionlessly bump it via `extend_attestation_ttl`.
+[expiry_watch]
+# Ledgers remaining before an entry is considered "approaching expiry".
+warn_ledgers_remaining = 17280
+# Escalate to critical when this close to archival.
+critical_ledgers_remaining = 4320
+# How often to scan attestation entries, in seconds.
+scan_interval_secs = 3600
+severity = "high"
+
+# Dispute monitoring for patient-initiated dispute flags (#546).
+# Disputes are an overlay; they never delete data and require attester/admin
+# action to clear. Alert on new disputes so responders can review them.
+[dispute_watch]
+# Emit an alert whenever a new dispute is recorded.
+alert_on_new_dispute = true
+# Alert if a single signer opens more than this many disputes within the window.
+max_disputes_per_signer = 5
+window_ledgers = 1000
+severity = "high"
+=======
 
 [[sinks]]
 type = "webhook"

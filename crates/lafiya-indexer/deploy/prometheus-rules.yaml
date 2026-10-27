@@ -1,0 +1,505 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: lafiya-indexer-slo
+  namespace: lafiya
+  labels:
+    app.kubernetes.io/name: lafiya-indexer
+    app.kubernetes.io/component: observability
+    prometheus: kube-prometheus
+    role: alert-rules
+spec:
+  groups:
+    - name: lafiya-indexer.sli.recording
+      interval: 30s
+      rules:
+        # Ingestion lag in ledgers: head ledger of the chain minus the last
+        # ledger the indexer has fully processed.
+        - record: lafiya:indexer_ingestion_lag_ledgers:max
+          expr: |
+            max(lafiya_indexer_chain_head_ledger)
+              - max(lafiya_indexer_last_processed_ledger)
+        # Ingestion lag in seconds: wall-clock time since the last ledger was
+        # successfully ingested.
+        - record: lafiya:indexer_ingestion_lag_seconds:max
+          expr: |
+            max(time() - lafiya_indexer_last_ingested_timestamp_seconds)
+        # API error ratio over a 5m window (5xx + 4xx / total).
+        - record: lafiya:indexer_api_error_ratio:5m
+          expr: |
+            sum(rate(lafiya_indexer_http_requests_total{status=~"5.."}[5m]))
+              /
+            sum(rate(lafiya_indexer_http_requests_total[5m]))
+        # API error ratio over a 30m window for slower-burn alerts.
+        - record: lafiya:indexer_api_error_ratio:30m
+          expr: |
+            sum(rate(lafiya_indexer_http_requests_total{status=~"5.."}[30m]))
+              /
+            sum(rate(lafiya_indexer_http_requests_total[30m]))
+        # p99 API latency over a 5m window.
+        - record: lafiya:indexer_api_latency_p99_seconds:5m
+          expr: |
+            histogram_quantile(
+              0.99,
+              sum by (le) (rate(lafiya_indexer_http_request_duration_seconds_bucket[5m]))
+            )
+        # Checkpoint age in seconds: time since the last successful checkpoint.
+        - record: lafiya:indexer_checkpoint_age_seconds:max
+          expr: |
+            max(time() - lafiya_indexer_last_checkpoint_timestamp_seconds)
+
+    - name: lafiya-indexer.slo.alerts
+      interval: 30s
+      rules:
+        # --- Ingestion lag (ledgers) ---
+        - alert: LafiyaIndexerIngestionLagLedgersWarning
+          expr: lafiya:indexer_ingestion_lag_ledgers:max > 50
+          for: 5m
+          labels:
+            severity: warning
+            service: lafiya-indexer
+            sli: ingestion_lag_ledgers
+          annotations:
+            summary: "Indexer ingestion lag exceeds 50 ledgers"
+            description: >-
+              The indexer is {{ $value | printf "%.0f" }} ledgers behind the
+              chain head (threshold 50). Investigate ingestion throughput.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-ledgers"
+
+        - alert: LafiyaIndexerIngestionLagLedgersCritical
+          expr: lafiya:indexer_ingestion_lag_ledgers:max > 500
+          for: 5m
+          labels:
+            severity: critical
+            service: lafiya-indexer
+            sli: ingestion_lag_ledgers
+          annotations:
+            summary: "Indexer ingestion lag exceeds 500 ledgers"
+            description: >-
+              The indexer is {{ $value | printf "%.0f" }} ledgers behind the
+              chain head (threshold 500). Page on-call; ingestion is degraded.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-ledgers"
+
+        # --- Ingestion lag (seconds) ---
+        - alert: LafiyaIndexerIngestionLagSecondsWarning
+          expr: lafiya:indexer_ingestion_lag_seconds:max > 60
+          for: 5m
+          labels:
+            severity: warning
+            service: lafiya-indexer
+            sli: ingestion_lag_seconds
+          annotations:
+            summary: "Indexer has not ingested a ledger in over 60s"
+            description: >-
+              No ledger has been ingested for {{ $value | printf "%.0f" }}s
+              (threshold 60s). Check upstream RPC connectivity.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-seconds"
+
+        - alert: LafiyaIndexerIngestionLagSecondsCritical
+          expr: lafiya:indexer_ingestion_lag_seconds:max > 300
+          for: 5m
+          labels:
+            severity: critical
+            service: lafiya-indexer
+            sli: ingestion_lag_seconds
+          annotations:
+            summary: "Indexer has not ingested a ledger in over 300s"
+            description: >-
+              No ledger has been ingested for {{ $value | printf "%.0f" }}s
+              (threshold 300s). Ingestion is stalled; page on-call.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-seconds"
+
+        # --- API error ratio ---
+        - alert: LafiyaIndexerApiErrorRatioWarning
+          expr: lafiya:indexer_api_error_ratio:5m > 0.01
+          for: 10m
+          labels:
+            severity: warning
+            service: lafiya-indexer
+            sli: api_error_ratio
+          annotations:
+            summary: "Indexer API 5xx error ratio above 1%"
+            description: >-
+              The 5m API error ratio is {{ $value | humanizePercentage }}
+              (threshold 1%). Investigate upstream dependencies.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-error-ratio"
+
+        - alert: LafiyaIndexerApiErrorRatioCritical
+          expr: lafiya:indexer_api_error_ratio:5m > 0.05
+          for: 5m
+          labels:
+            severity: critical
+            service: lafiya-indexer
+            sli: api_error_ratio
+          annotations:
+            summary: "Indexer API 5xx error ratio above 5%"
+            description: >-
+              The 5m API error ratio is {{ $value | humanizePercentage }}
+              (threshold 5%). Error budget is burning fast; page on-call.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-error-ratio"
+
+        - alert: LafiyaIndexerApiErrorRatioSlowBurn
+          expr: lafiya:indexer_api_error_ratio:30m > 0.02
+          for: 30m
+          labels:
+            severity: warning
+            service: lafiya-indexer
+            sli: api_error_ratio
+          annotations:
+            summary: "Indexer API 5xx error ratio sustained above 2%"
+            description: >-
+              The 30m API error ratio is {{ $value | humanizePercentage }}
+              (threshold 2%). Slow burn; review error budget consumption.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-error-ratio"
+
+        # --- p99 latency ---
+        - alert: LafiyaIndexerApiLatencyP99Warning
+          expr: lafiya:indexer_api_latency_p99_seconds:5m > 0.5
+          for: 10m
+          labels:
+            severity: warning
+            service: lafiya-indexer
+            sli: api_latency_p99
+          annotations:
+            summary: "Indexer API p99 latency above 500ms"
+            description: >-
+              The 5m p99 API latency is {{ $value | printf "%.3f" }}s
+              (threshold 0.5s). Check database and upstream latency.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-latency-p99"
+
+        - alert: LafiyaIndexerApiLatencyP99Critical
+          expr: lafiya:indexer_api_latency_p99_seconds:5m > 2
+          for: 5m
+          labels:
+            severity: critical
+            service: lafiya-indexer
+            sli: api_latency_p99
+          annotations:
+            summary: "Indexer API p99 latency above 2s"
+            description: >-
+              The 5m p99 API latency is {{ $value | printf "%.3f" }}s
+              (threshold 2s). API is severely degraded; page on-call.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-latency-p99"
+
+        # --- Checkpoint age ---
+        - alert: LafiyaIndexerCheckpointAgeWarning
+          expr: lafiya:indexer_checkpoint_age_seconds:max > 300
+          for: 5m
+          labels:
+            severity: warning
+            service: lafiya-indexer
+            sli: checkpoint_age
+          annotations:
+            summary: "Indexer checkpoint is older than 5m"
+            description: >-
+              The last successful checkpoint was {{ $value | printf "%.0f" }}s
+              ago (threshold 300s). Check checkpoint writer health.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#checkpoint-age"
+
+        - alert: LafiyaIndexerCheckpointAgeCritical
+          expr: lafiya:indexer_checkpoint_age_seconds:max > 900
+          for: 5m
+          labels:
+            severity: critical
+            service: lafiya-indexer
+            sli: checkpoint_age
+          annotations:
+            summary: "Indexer checkpoint is older than 15m"
+            description: >-
+              The last successful checkpoint was {{ $value | printf "%.0f" }}s
+              ago (threshold 900s). Recovery risk is high; page on-call.
+            runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#checkpoint-age"
+```
+
+```yaml
+# promtool unit tests for lafiya-indexer PrometheusRule.
+# Run with: promtool test rules crates/lafiya-indexer/deploy/prometheus-rules.test.yaml
+rule_files:
+  - prometheus-rules.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # --- Ingestion lag in ledgers ---
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_chain_head_ledger'
+        values: '1000+0x20'
+      - series: 'lafiya_indexer_last_processed_ledger'
+        values: '1000+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LafiyaIndexerIngestionLagLedgersWarning
+        exp_alerts: []
+      - eval_time: 10m
+        alertname: LafiyaIndexerIngestionLagLedgersCritical
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_chain_head_ledger'
+        values: '1000+0x20'
+      - series: 'lafiya_indexer_last_processed_ledger'
+        values: '900+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LafiyaIndexerIngestionLagLedgersWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: lafiya-indexer
+              sli: ingestion_lag_ledgers
+            exp_annotations:
+              summary: "Indexer ingestion lag exceeds 50 ledgers"
+              description: >-
+                The indexer is 100 ledgers behind the
+                chain head (threshold 50). Investigate ingestion throughput.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-ledgers"
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_chain_head_ledger'
+        values: '1000+0x20'
+      - series: 'lafiya_indexer_last_processed_ledger'
+        values: '400+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LafiyaIndexerIngestionLagLedgersCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: lafiya-indexer
+              sli: ingestion_lag_ledgers
+            exp_annotations:
+              summary: "Indexer ingestion lag exceeds 500 ledgers"
+              description: >-
+                The indexer is 600 ledgers behind the
+                chain head (threshold 500). Page on-call; ingestion is degraded.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-ledgers"
+
+  # --- Ingestion lag in seconds ---
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_last_ingested_timestamp_seconds'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LafiyaIndexerIngestionLagSecondsWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: lafiya-indexer
+              sli: ingestion_lag_seconds
+            exp_annotations:
+              summary: "Indexer has not ingested a ledger in over 60s"
+              description: >-
+                No ledger has been ingested for 600s
+                (threshold 60s). Check upstream RPC connectivity.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-seconds"
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_last_ingested_timestamp_seconds'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LafiyaIndexerIngestionLagSecondsCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: lafiya-indexer
+              sli: ingestion_lag_seconds
+            exp_annotations:
+              summary: "Indexer has not ingested a ledger in over 300s"
+              description: >-
+                No ledger has been ingested for 600s
+                (threshold 300s). Ingestion is stalled; page on-call.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#ingestion-lag-seconds"
+
+  # --- API error ratio ---
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_http_requests_total{status="200"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_requests_total{status="500"}'
+        values: '0+0x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiErrorRatioWarning
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiErrorRatioCritical
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_http_requests_total{status="200"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_requests_total{status="500"}'
+        values: '0+12x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiErrorRatioWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: lafiya-indexer
+              sli: api_error_ratio
+            exp_annotations:
+              summary: "Indexer API 5xx error ratio above 1%"
+              description: >-
+                The 5m API error ratio is 1.961%
+                (threshold 1%). Investigate upstream dependencies.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-error-ratio"
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_http_requests_total{status="200"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_requests_total{status="500"}'
+        values: '0+60x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiErrorRatioCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: lafiya-indexer
+              sli: api_error_ratio
+            exp_annotations:
+              summary: "Indexer API 5xx error ratio above 5%"
+              description: >-
+                The 5m API error ratio is 9.091%
+                (threshold 5%). Error budget is burning fast; page on-call.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-error-ratio"
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_http_requests_total{status="200"}'
+        values: '0+600x60'
+      - series: 'lafiya_indexer_http_requests_total{status="500"}'
+        values: '0+24x60'
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: LafiyaIndexerApiErrorRatioSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: lafiya-indexer
+              sli: api_error_ratio
+            exp_annotations:
+              summary: "Indexer API 5xx error ratio sustained above 2%"
+              description: >-
+                The 30m API error ratio is 3.846%
+                (threshold 2%). Slow burn; review error budget consumption.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-error-ratio"
+
+  # --- p99 latency ---
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="0.1"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="0.5"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="1"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="+Inf"}'
+        values: '0+600x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiLatencyP99Warning
+        exp_alerts: []
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiLatencyP99Critical
+        exp_alerts: []
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="0.1"}'
+        values: '0+300x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="0.5"}'
+        values: '0+300x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="1"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="+Inf"}'
+        values: '0+600x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiLatencyP99Warning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: lafiya-indexer
+              sli: api_latency_p99
+            exp_annotations:
+              summary: "Indexer API p99 latency above 500ms"
+              description: >-
+                The 5m p99 API latency is 0.990s
+                (threshold 0.5s). Check database and upstream latency.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-latency-p99"
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="0.1"}'
+        values: '0+100x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="0.5"}'
+        values: '0+100x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="1"}'
+        values: '0+100x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="5"}'
+        values: '0+600x40'
+      - series: 'lafiya_indexer_http_request_duration_seconds_bucket{le="+Inf"}'
+        values: '0+600x40'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LafiyaIndexerApiLatencyP99Critical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: lafiya-indexer
+              sli: api_latency_p99
+            exp_annotations:
+              summary: "Indexer API p99 latency above 2s"
+              description: >-
+                The 5m p99 API latency is 4.950s
+                (threshold 2s). API is severely degraded; page on-call.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#api-latency-p99"
+
+  # --- Checkpoint age ---
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_last_checkpoint_timestamp_seconds'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: LafiyaIndexerCheckpointAgeWarning
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              service: lafiya-indexer
+              sli: checkpoint_age
+            exp_annotations:
+              summary: "Indexer checkpoint is older than 5m"
+              description: >-
+                The last successful checkpoint was 600s
+                ago (threshold 300s). Check checkpoint writer health.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#checkpoint-age"
+
+  - interval: 1m
+    input_series:
+      - series: 'lafiya_indexer_last_checkpoint_timestamp_seconds'
+        values: '0+0x20'
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LafiyaIndexerCheckpointAgeCritical
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              service: lafiya-indexer
+              sli: checkpoint_age
+            exp_annotations:
+              summary: "Indexer checkpoint is older than 15m"
+              description: >-
+                The last successful checkpoint was 1200s
+                ago (threshold 900s). Recovery risk is high; page on-call.
+              runbook_url: "https://github.com/lafiya/lafiya/blob/main/docs/runbooks/indexer.md#checkpoint-age"

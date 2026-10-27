@@ -1,0 +1,26 @@
+{
+  "flow": "upgrade",
+  "title": "Upgrade a contract",
+  "actors": [
+    "Admin",
+    "Contract"
+  ],
+  "steps": [
+    {
+      "from": "Admin",
+      "to": "Contract",
+      "call": "upgrade",
+      "auth": "Admin"
+    },
+    {
+      "from": "Admin",
+      "to": "Contract",
+      "call": "migrate",
+      "auth": "Admin"
+    },
+    {
+      "from": "Contract",
+      "event": "Upgraded"
+    }
+  ]
+}

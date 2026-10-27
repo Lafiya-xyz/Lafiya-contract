@@ -1,0 +1,38 @@
+name: Differential verification (nightly sweep)
+
+# Random-seed sweep of the Rust vs TypeScript vs reference verification-model
+# comparison (the per-PR run in ci.yml uses a fixed seed set). The seed is
+# printed and written to the job summary; rerun locally with
+#   python3 scripts/differential_verification.py --seeds <seed> --samples 20000
+
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  sweep:
+    name: Random sweep
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22.12.0"
+          cache: pnpm
+          cache-dependency-path: packages/verifier-sdk/pnpm-lock.yaml
+      - name: Build the TypeScript SDK
+        working-directory: packages/verifier-sdk
+        run: pnpm install --frozen-lockfile && pnpm build
+      - name: Build the Rust model
+        run: cargo build --locked -p lafiya-verification-model
+      - name: Diff verdicts (random seed)
+        run: python3 scripts/differential_verification.py --random --samples 20000

@@ -58,6 +58,9 @@ const TRUTH_TABLE: Record<Verdict, () => ReturnType<typeof verify>> = {
       { history: [{ attester: CHW, timestamp: NOW_S - 400n * DAY }] },
       qr({ attested: (NOW_S - 400n * DAY).toString() }),
     ),
+  quorum_not_met: () =>
+    verify({ history: [fresh], quorum: { required: 2, distinctAttesters: 1 } }),
+  disputed: () => verify({ history: [fresh], disputed: true }),
   verified: () => verify({ history: [fresh] }),
 };
 
@@ -120,5 +123,82 @@ describe("LafiyaVerifier", () => {
     chain.bundle.attestations = {};
     chain.bundle.revoked = [RECORD];
     expect((await verifier.verifyCard(qr())).verdict).toBe("revoked");
+  });
+});
+
+describe("quorum", () => {
+  const SECOND = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF";
+
+  it("aggregates co-attestations by distinct attester", async () => {
+    const result = await verify({
+      history: [fresh, { attester: SECOND, timestamp: fresh.timestamp + 1n }],
+      quorum: { required: 2, distinctAttesters: 2 },
+    });
+    expect(result.verdict).toBe("verified");
+    expect(result.quorum).toEqual({ required: 2, distinctAttesters: 2, satisfied: true });
+  });
+
+  it("counts the same attester twice only once", async () => {
+    const result = await verify({
+      history: [fresh, { attester: CHW, timestamp: fresh.timestamp + 1n }],
+      quorum: { required: 2, distinctAttesters: 1 },
+    });
+    expect(result.verdict).toBe("quorum_not_met");
+    expect(result.quorum?.distinctAttesters).toBe(1);
+  });
+
+  it("does not leak attester identities beyond the public count", async () => {
+    const result = await verify({
+      history: [fresh, { attester: SECOND, timestamp: fresh.timestamp + 1n }],
+      quorum: { required: 2, distinctAttesters: 2 },
+    });
+    expect(JSON.stringify(result.quorum)).not.toContain(SECOND);
+  });
+
+  it("is monotone under revocation: revoking a co-attestation never raises the count", async () => {
+    const base: FakeState = {
+      history: [fresh, { attester: SECOND, timestamp: fresh.timestamp + 1n }],
+      quorum: { required: 2, distinctAttesters: 2 },
+    };
+    const before = await verify(base);
+    const after = await verify({ ...base, revoked: true });
+    expect(before.quorum!.distinctAttesters).toBeGreaterThanOrEqual(
+      after.quorum?.distinctAttesters ?? 0,
+    );
+    expect(after.verdict).not.toBe("verified");
+  });
+});
+
+describe("disputed overlay", () => {
+  it("surfaces a dedicated disputed state", async () => {
+    const result = await verify({ history: [fresh], disputed: true });
+    expect(result.verdict).toBe("disputed");
+    expect(result.reasons[0].code).toBe("disputed");
+  });
+
+  it("takes precedence over verified but not over revocation", async () => {
+    const disputed = await verify({ history: [fresh], disputed: true });
+    expect(disputed.verdict).toBe("disputed");
+    const revoked = await verify({ history: [fresh], disputed: true, revoked: true });
+    expect(revoked.verdict).toBe("revoked");
+  });
+});
+
+describe("status list inclusion", () => {
+  it("validates inclusion against a signed root", async () => {
+    const result = await verify({
+      history: [fresh],
+      statusList: { index: 42, included: true, rootValid: true },
+    });
+    expect(result.verdict).toBe("verified");
+    expect(result.statusList).toEqual({ index: 42, included: true, rootValid: true });
+  });
+
+  it("rejects a status list whose root does not validate", async () => {
+    const result = await verify({
+      history: [fresh],
+      statusList: { index: 42, included: true, rootValid: false },
+    });
+    expect(result.verdict).toBe("unavailable");
   });
 });

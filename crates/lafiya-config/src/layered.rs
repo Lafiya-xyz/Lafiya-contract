@@ -20,7 +20,109 @@ use std::{
     collections::BTreeMap,
     fmt, fs,
     path::{Path, PathBuf},
+    sync::Arc,
 };
+
+/// Prefix marking a value as a reference into a secret store.
+pub const SECRET_SCHEME: &str = "secret://";
+
+/// A pluggable secret store.
+///
+/// Providers are looked up by scheme (the part of a `secret://<scheme>/<path>`
+/// reference before the first `/`). Implementations must never log or
+/// serialize resolved values.
+pub trait SecretProvider: fmt::Debug + Send + Sync {
+    /// Scheme this provider answers to, e.g. `env` or `file`.
+    fn scheme(&self) -> &str;
+
+    /// Resolve `path` (the part after `secret://<scheme>/`) to its secret value.
+    fn resolve(&self, path: &str) -> Result<String, ConfigError>;
+}
+
+/// Registry of [`SecretProvider`]s used to resolve `secret://` references.
+///
+/// Unknown schemes fail closed: resolution returns
+/// [`ConfigError::UnknownSecretProvider`] rather than passing the reference
+/// through as a literal value.
+#[derive(Debug, Clone, Default)]
+pub struct SecretResolver {
+    providers: BTreeMap<String, Arc<dyn SecretProvider>>,
+}
+
+impl SecretResolver {
+    /// An empty resolver; every `secret://` reference fails closed.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The default resolver: `env` and `file` providers.
+    pub fn with_defaults() -> Self {
+        Self::new()
+            .with_provider(Arc::new(EnvSecretProvider))
+            .with_provider(Arc::new(FileSecretProvider))
+    }
+
+    /// Register `provider`, replacing any provider with the same scheme.
+    pub fn with_provider(mut self, provider: Arc<dyn SecretProvider>) -> Self {
+        self.providers
+            .insert(provider.scheme().to_string(), provider);
+        self
+    }
+
+    /// Resolve `value` if it is a `secret://` reference, otherwise return it unchanged.
+    pub fn resolve(&self, value: &str) -> Result<String, ConfigError> {
+        let Some(reference) = value.strip_prefix(SECRET_SCHEME) else {
+            return Ok(value.to_string());
+        };
+        let (scheme, path) = reference.split_once('/').ok_or_else(|| {
+            ConfigError::MalformedSecretReference {
+                reference: value.to_string(),
+            }
+        })?;
+        let provider = self
+            .providers
+            .get(scheme)
+            .ok_or_else(|| ConfigError::UnknownSecretProvider {
+                scheme: scheme.to_string(),
+                reference: value.to_string(),
+            })?;
+        provider.resolve(path)
+    }
+}
+
+/// Reads secrets from environment variables: `secret://env/VAR_NAME`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EnvSecretProvider;
+
+impl SecretProvider for EnvSecretProvider {
+    fn scheme(&self) -> &str {
+        "env"
+    }
+
+    fn resolve(&self, path: &str) -> Result<String, ConfigError> {
+        std::env::var(path).map_err(|_| ConfigError::SecretNotFound {
+            reference: format!("{SECRET_SCHEME}env/{path}"),
+        })
+    }
+}
+
+/// Reads secrets from files: `secret://file/path/to/secret`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct FileSecretProvider;
+
+impl SecretProvider for FileSecretProvider {
+    fn scheme(&self) -> &str {
+        "file"
+    }
+
+    fn resolve(&self, path: &str) -> Result<String, ConfigError> {
+        let content = fs::read_to_string(path).map_err(|source| ConfigError::ReadError {
+            path: PathBuf::from(path),
+            source,
+        })?;
+        Ok(content.trim_end_matches(['\n', '\r']).to_string())
+    }
+}
 
 /// Keys allowed in a `[<network>]` table.
 pub const NETWORK_KEYS: &[&str] = &["rpc_url", "rpc_urls", "network_passphrase", "contracts"];
@@ -70,12 +172,42 @@ impl fmt::Display for Source {
 }
 
 /// A network profile after all override layers were applied.
+///
+/// `config` holds resolved values and must never be serialized directly when
+/// any layer used a `secret://` reference; use [`ResolvedNetwork::redacted`]
+/// for anything that leaves the process.
 #[derive(Debug, Clone)]
 pub struct ResolvedNetwork {
     pub config_path: PathBuf,
     pub config: NetworkConfig,
     /// Source of every key in [`OVERRIDE_KEYS`], plus `rpc_urls`.
     pub sources: BTreeMap<&'static str, Source>,
+    /// Keys whose value came from a `secret://` reference.
+    pub secret_keys: Vec<&'static str>,
+}
+
+impl ResolvedNetwork {
+    /// A copy of the config with every secret-derived value replaced by
+    /// `secret://<redacted>`, safe to serialize or print.
+    pub fn redacted(&self) -> NetworkConfig {
+        let mut config = self.config.clone();
+        for key in &self.secret_keys {
+            match *key {
+                "rpc_url" => config.rpc_url = format!("{SECRET_SCHEME}<redacted>"),
+                "network_passphrase" => {
+                    config.network_passphrase = format!("{SECRET_SCHEME}<redacted>")
+                }
+                "contracts.attester_registry" => {
+                    config.contracts.attester_registry = format!("{SECRET_SCHEME}<redacted>")
+                }
+                "contracts.attestation_registry" => {
+                    config.contracts.attestation_registry = format!("{SECRET_SCHEME}<redacted>")
+                }
+                _ => {}
+            }
+        }
+        config
+    }
 }
 
 /// Closest candidate within Levenshtein distance 2, if any.
@@ -181,11 +313,15 @@ fn lookup<'a>(table: &'a toml::Table, dotted: &str) -> Option<&'a toml::Value> {
 ///
 /// `env` looks up an environment variable (pass `|k| std::env::var(k).ok()`);
 /// `flags` are `(key, value)` pairs from `--set`, applied in order.
+///
+/// Any value (from any layer) of the form `secret://<scheme>/<path>` is
+/// resolved through `secrets`. Unknown schemes fail closed.
 pub fn resolve_network(
     network: &str,
     config_path: Option<&Path>,
     env: impl Fn(&str) -> Option<String>,
     flags: &[(String, String)],
+    secrets: &SecretResolver,
 ) -> Result<ResolvedNetwork, ConfigError> {
     let config_path = config_path
         .map(Path::to_path_buf)
@@ -197,6 +333,7 @@ pub fn resolve_network(
         .chain(["rpc_urls"].iter())
         .map(|k| (*k, Source::File(config_path.clone())))
         .collect();
+    let mut secret_keys: Vec<&'static str> = Vec::new();
 
     let local = local_override_path(&config_path);
     if local.exists() {
@@ -232,7 +369,11 @@ pub fn resolve_network(
                             location: location.clone(),
                             key: format!("{network}.{key}"),
                         })?;
-                    set(&mut config, key, value.to_string());
+                    let resolved = secrets.resolve(value)?;
+                    if value.starts_with(SECRET_SCHEME) {
+                        secret_keys.push(key);
+                    }
+                    set(&mut config, key, resolved);
                     sources.insert(key, Source::LocalFile(local.clone()));
                 }
             }
@@ -242,7 +383,11 @@ pub fn resolve_network(
     for key in OVERRIDE_KEYS {
         let var = env_var_name(network, key);
         if let Some(value) = env(&var) {
-            set(&mut config, key, value);
+            let resolved = secrets.resolve(&value)?;
+            if value.starts_with(SECRET_SCHEME) {
+                secret_keys.push(key);
+            }
+            set(&mut config, key, resolved);
             sources.insert(key, Source::Env(var));
         }
     }
@@ -252,7 +397,11 @@ pub fn resolve_network(
             .iter()
             .find(|k| **k == key)
             .ok_or_else(|| unknown_key("--set", key.clone(), key, OVERRIDE_KEYS))?;
-        set(&mut config, key, value.clone());
+        let resolved = secrets.resolve(value)?;
+        if value.starts_with(SECRET_SCHEME) {
+            secret_keys.push(key);
+        }
+        set(&mut config, key, resolved);
         sources.insert(key, Source::Flag);
     }
 
@@ -261,10 +410,14 @@ pub fn resolve_network(
         sources.insert("rpc_urls", sources["rpc_url"].clone());
     }
 
+    secret_keys.sort_unstable();
+    secret_keys.dedup();
+
     Ok(ResolvedNetwork {
         config_path,
         config,
         sources,
+        secret_keys,
     })
 }
 
@@ -309,6 +462,7 @@ attestation_registry = ""
             Some(&dir.path().join("networks.toml")),
             |k| env.get(k).cloned(),
             &flags,
+            &SecretResolver::with_defaults(),
         )
     }
 
@@ -435,5 +589,54 @@ attestation_registry = ""
         );
         assert_eq!(suggest("contract", NETWORK_KEYS), Some("contracts"));
         assert_eq!(suggest("private_key", NETWORK_KEYS), None);
+    }
+
+    #[test]
+    fn secret_reference_resolved_and_redacted() {
+        let dir = setup(Some(
+            "[testnet]\nrpc_url = \"secret://env/MY_RPC\"\n",
+        ));
+        let env = [("MY_RPC", "https://secret.example")];
+        let r = resolve(&dir, &env, &[]).unwrap();
+        assert_eq!(r.config.rpc_url, "https://secret.example");
+        assert_eq!(r.secret_keys, vec!["rpc_url"]);
+        let redacted = r.redacted();
+        assert_eq!(redacted.rpc_url, "secret://<redacted>");
+        assert!(!format!("{redacted:?}").contains("secret.example"));
+    }
+
+    #[test]
+    fn secret_reference_in_env_layer() {
+        let dir = setup(None);
+        let r = resolve(
+            &dir,
+            &[("LAFIYA_TESTNET_RPC_URL", "secret://env/MY_RPC"), ("MY_RPC", "https://s.example")],
+            &[],
+        )
+        .unwrap();
+        assert_eq!(r.config.rpc_url, "https://s.example");
+        assert_eq!(r.secret_keys, vec!["rpc_url"]);
+    }
+
+    #[test]
+    fn unknown_secret_scheme_fails_closed() {
+        let dir = setup(Some(
+            "[testnet]\nrpc_url = \"secret://vault/foo\"\n",
+        ));
+        let err = resolve(&dir, &[], &[]).unwrap_err().to_string();
+        assert!(err.contains("vault"), "{err}");
+    }
+
+    #[test]
+    fn malformed_secret_reference_fails_closed() {
+        let dir = setup(Some("[testnet]\nrpc_url = \"secret://env\"\n"));
+        let err = resolve(&dir, &[], &[]).unwrap_err().to_string();
+        assert!(err.contains("secret://env"), "{err}");
+    }
+
+    #[test]
+    fn plain_values_pass_through_resolver() {
+        let resolver = SecretResolver::with_defaults();
+        assert_eq!(resolver.resolve("https://x.example").unwrap(), "https://x.example");
     }
 }

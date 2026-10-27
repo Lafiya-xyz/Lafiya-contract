@@ -1,4 +1,5 @@
-# ADR-0012: Coordinated Emergency Stop across Registries
+<!-- adr-redirect: 0021-coordinated-emergency-stop.md -->
+# Moved: ADR-0021
 
 - **Status:** Proposed
 - **Date:** 2026-09-26
@@ -65,6 +66,22 @@ Document in the incident runbook that both registries must be paused, with a CLI
 - Attestation-registry now depends on attester-registry availability; a network issue affecting attester-registry could prevent attestations even if the attestation registry itself is healthy
 - Off-chain systems monitoring pause state must now query two contracts to determine if attestations are accepting
 - Cross-contract call introduces a small latency increase per attest (typically <5ms on live networks)
+
+## Guarded auto-response (watchdog proposals)
+
+Issue #533 adds an off-chain watchdog (`crates/lafiya-watchdog`) that reduces time-to-containment on critical alerts. To avoid turning the alerting path into an attack surface, the watchdog is strictly a **proposer**:
+
+- On critical rules it builds the **unsigned** pause transaction and authorization entries and attaches them to the alert. It never holds guardian keys and never submits a pause itself.
+- Guardians review and sign the proposal through the existing multisig tooling (see ADR-0007); the pause only takes effect once the required quorum signs.
+- Proposals respect the pause-policy matrix in `docs/PAUSE-POLICY.md`; paths excluded by policy are never proposed for pausing.
+
+Spoofing and replay protections:
+
+- **Signed alerts:** alerts must carry a valid signature from a trusted alert source; unsigned or invalidly signed alerts are discarded and never produce a proposal.
+- **Nonce / replay protection:** each alert carries a monotonic nonce (or equivalent unique identifier); replayed or stale alerts are rejected.
+- **Rate limit:** proposal generation is rate limited so a flood of (even validly signed) alerts cannot induce a denial-of-service pause or exhaust responder attention.
+
+Because execution requires guardian signatures, a spoofed alert can at worst produce a proposal that guardians decline — it cannot silently pause the system.
 
 ## Follow-up
 

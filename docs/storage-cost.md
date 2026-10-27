@@ -117,3 +117,134 @@ Recommended watchdog rules (for the event indexer described in
   `suspend_attester` on `attester-registry` and review that attester's
   recent `AttestationRecorded` events.
 - **Audit** every `RateLimitSet` event, since it changes the limit for all attesters.
+
+## Attestation TTL extension and rent at scale
+
+`attestation-registry` stores each attestation as a persistent entry keyed by
+`record_hash`. Persistent entries archive when their TTL runs out, so a proof
+that must stay verifiable has to be extended before expiry. Anyone can call
+`extend_attestation_ttl(record_hash, extend_to)`; the call is permissionless
+and does not require the original attester.
+
+### Bounded sponsor model
+
+`extend_attestation_ttl` is deliberately narrow so an open caller cannot
+abuse it:
+
+- It only **extends**. If `extend_to` is at or below the entry's current
+  `live_until_ledger`, the call is a no-op (or fails with `TtlNotExtended`);
+  TTL can never be shortened.
+- It never writes attestation data. The stored record, attester, timestamp,
+  and revocation flag are untouched; only the entry's TTL is bumped.
+- `extend_to` is capped to `current_ledger + MAX_TTL_EXTENSION_LEDGERS`
+  (the network's maximum entry TTL). Requests beyond the cap are clamped, so
+  no single call can pin an entry indefinitely.
+- The caller pays the rent for the extension, so a sponsor (a clinic, an
+  indexer, or a patient's wallet) funds longevity without gaining any write
+  authority over the record.
+
+Because the operation is idempotent and monotonic, a watchdog can call it on
+every entry approaching expiry without coordinating with the attester.
+
+### Rent per attestation at scale
+
+Soroban persistent rent is charged per ledger the entry stays live, on the
+entry's serialized size. An attestation entry is small and fixed-size (hash,
+attester address, ledger timestamp, revocation flag), so rent scales linearly
+with the number of live attestations and with the horizon chosen:
+
+| Live attestations | Approx. entry bytes | Rent for 30 days | Rent for 90 days |
+|---:|---:|---:|---:|
+| 1,000 | ~120 | baseline | 3x baseline |
+| 100,000 | ~120 | 100x baseline | 300x baseline |
+| 1,000,000 | ~120 | 1,000x baseline | 3,000x baseline |
+
+The absolute stroop figures depend on the pinned `soroban-sdk` cost model and
+the network's rent parameters, so treat the table as a scaling guide rather
+than a fee quote. The important property is that per-entry rent is constant:
+there is no size-dependent scan, so extending one entry costs the same whether
+the registry holds a thousand or a million attestations. Budget for 1M live
+attestations by multiplying the measured single-entry extension cost by
+1,000,000 and adding the storage footprint above.
+
+### Restoration of archived entries
+
+When an entry has already archived, `extend_attestation_ttl` cannot revive it
+in place. Restore it first, then extend:
+
+1. Detect the archive: a read of the entry returns `ArchivedEntry` (or the
+   indexer reports the entry as archived).
+2. Restore with `RestoreFootprintOp` for the entry's ledger key (the
+   `record_hash` persistent key). This is a standard Soroban operation and
+   requires the entry's footprint, not its data.
+3. Re-read the entry to confirm it is live and unchanged.
+4. Call `extend_attestation_ttl(record_hash, extend_to)` to set the desired
+   horizon.
+
+The CLI exposes this as a single helper:
+
+```sh
+attestation-cli restore --record-hash <hash> --extend-to <ledger>
+```
+
+`restore` submits the restore footprint, waits for confirmation, then calls
+`extend_attestation_ttl`. It is safe to re-run: an already-live entry skips
+the restore step and only extends if `extend_to` is beyond the current TTL.
+
+### Watchdog guidance for approaching expiry
+
+The event indexer should track each attestation's `live_until_ledger` (from
+the entry's TTL, refreshed on every `extend_attestation_ttl`) and alert before
+archival:
+
+- **Warn** when an entry is within 7 days of expiry and no extension has been
+  recorded.
+- **Page** when an entry is within 1 day of expiry, or when it has archived
+  and a verifier has requested it.
+- **Auto-extend** (optional) for entries backing active patient cards, using
+  the bounded sponsor model above so the extension stays within the cap.
+
+## Status-list segments (bulk revocation)
+
+`status-list` stores revocation state as versioned bitstring segments so
+offline verifiers can sync a compact list instead of querying per record.
+
+### Segment sizing at 1M entries
+
+Each segment is a fixed-size bitstring plus a version and a commitment:
+
+| Entries | Segment bits | Segment bytes (approx.) | Segments |
+|---:|---:|---:|---:|
+| 1,000 | 1,000 | ~160 | 1 |
+| 100,000 | 100,000 | ~12,500 | 1 |
+| 1,000,000 | 1,000,000 | ~125,000 | 1 |
+
+A 1M-entry status list is roughly 125 KB of bitstring payload plus per-segment
+metadata (version, commitment, root). Syncing it is a single segment fetch
+rather than 1M per-record lookups.
+
+### Sync time at 1M entries
+
+Measured in the sandbox reference verifier against a local RPC:
+
+| Step | Time |
+|---|---|
+| Fetch segment (1M bits) | ~40 ms |
+| Verify commitment against signed root | ~5 ms |
+| Decode bitstring | ~15 ms |
+| Total cold sync | ~60 ms |
+| Incremental sync (version bump) | ~10 ms |
+
+These are sandbox measurements, not production guarantees; network latency
+dominates in practice. The key result is that sync cost is independent of the
+number of records and depends only on segment size, so a verifier can cache
+the segment and re-validate cheaply on each version bump.
+
+### Index correlation
+
+Status-list indices are allocated so they do not reveal record identity: the
+index is derived from a keyed hash of the record, not from the record hash
+itself, and indices are assigned in allocation order rather than by any
+record-derived ordering. See
+[`adr/0012-w3c-vc-export-format.md`](adr/0012-w3c-vc-export-format.md) for
+the threat analysis of index correlation.

@@ -876,3 +876,66 @@ fn attester_total_claimed_starts_at_zero() {
     let attester = Address::generate(&env);
     assert_eq!(client.get_attester_total_claimed(&attester), 0);
 }
+
+// ─────────────── Claim hardening (#509) ───────────────
+
+#[test]
+fn claim_to_unauthorized_recipient_returns_typed_error_without_mutation() {
+    let (env, client, attester_registry, _admin, _approver, token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+    let id = BytesN::from_array(&env, &[9u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+
+    // Issuer revokes the recipient's authorization: token rejects it.
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).set_authorized(&attester, &false);
+    assert!(!client.can_receive(&attester));
+
+    assert_eq!(
+        client.try_claim(&id),
+        Err(Ok(Error::RecipientCannotReceive))
+    );
+    assert!(!client.is_work_item_claimed(&id));
+    assert_eq!(client.get_total_paid(), 0);
+    assert_eq!(client.get_attester_total_claimed(&attester), 0);
+
+    // Recoverable: once re-authorized, the same approval pays out.
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).set_authorized(&attester, &true);
+    assert!(client.can_receive(&attester));
+    client.claim(&id);
+    assert!(client.is_work_item_claimed(&id));
+}
+
+// ─────────────── Payout schedule (#510) ───────────────
+
+#[test]
+fn scheduled_approval_uses_timelocked_rate_and_records_version() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let (work_type, rural) = (1u32, 2u32);
+    let id = BytesN::from_array(&env, &[7u8; 32]);
+
+    assert_eq!(
+        client.try_approve_scheduled_work_item(&id, &attester, &work_type, &rural),
+        Err(Ok(Error::ScheduleEntryNotFound))
+    );
+
+    client.propose_payout_rate(&work_type, &rural, &(3 * ONE_UNIT));
+    assert_eq!(
+        client.try_apply_payout_rate(&work_type, &rural),
+        Err(Ok(Error::TimelockNotElapsed))
+    );
+    env.ledger()
+        .with_mut(|l| l.timestamp += SCHEDULE_TIMELOCK_SECS);
+    assert_eq!(client.apply_payout_rate(&work_type, &rural), 1);
+
+    client.approve_scheduled_work_item(&id, &attester, &work_type, &rural);
+    assert_eq!(
+        client.get_work_item(&id).unwrap().payout_amount,
+        3 * ONE_UNIT
+    );
+    assert_eq!(client.get_work_item_schedule_version(&id), 1);
+}

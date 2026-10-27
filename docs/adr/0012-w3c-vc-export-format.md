@@ -1,4 +1,5 @@
-# ADR-0012: W3C Verifiable Credentials 2.0 export for Lafiya attestations
+<!-- adr-redirect: 0022-w3c-vc-export-format.md -->
+# Moved: ADR-0022
 
 | Field | Value |
 |---|---|
@@ -71,11 +72,71 @@ Only the record commitment and its schema version are included — no health dat
 
 ### `credentialStatus`
 
-A `StatusList2021Entry` pointing at a status-list endpoint that is derived from
+A `BitstringStatusListEntry` (W3C Bitstring Status List, successor to
+`StatusList2021Entry`) pointing at a status-list endpoint that is derived from
 on-chain revocation state (checked via `attestation-registry::get_attestation`).
 Pre-alpha: the status-list is generated on demand by the `lafiya-cli attestation
 export-vc` command from the current chain state; a persistent status-list endpoint
-is deferred to M2.
+is deferred to M2. The status-list contract, index allocation scheme, and
+verifier sync protocol are specified in ADR-0014; this section only defines how
+exported credentials bind to it.
+
+#### Index allocation and binding
+
+Each exported credential carries a status-list entry of the form:
+
+```json
+{
+  "id": "<status-list URL>#<index>",
+  "type": "BitstringStatusListEntry",
+  "statusPurpose": "revocation",
+  "statusListIndex": "<decimal index as string>",
+  "statusListCredential": "<status-list URL>"
+}
+```
+
+- `statusListIndex` is the position of the record's bit in the status list
+  bitstring. It is **not** derived from the record hash or any on-chain
+  identifier: the index is assigned by the status-list contract from a
+  monotonically increasing counter and stored in a per-record slot that is
+  itself keyed by a salted commitment (see ADR-0014, "Index correlation").
+  The export command reads the assigned index from the contract; it never
+  computes it locally.
+- `statusPurpose` is `revocation` for emergency-record attestations. A record
+  that is revoked on-chain has its bit set to `1`; `0` means "not revoked".
+  (Bitstring Status List also defines a `suspension` purpose; Lafiya does not
+  use it — revocation is final.)
+- `statusListCredential` identifies the status-list VC whose `credentialSubject`
+  contains the `encodedList` (a GZIP-compressed, base64url-encoded bitstring)
+  and whose `proof` is the signed root. The URL is versioned
+  (`.../status-list/<version>`); a new version is published whenever the
+  bitstring changes, and the credential's `validFrom`/`validUntil` bound the
+  window in which that version is authoritative.
+
+#### Verifier validation against the signed root
+
+A verifier that holds an exported credential validates status as follows:
+
+1. Resolve `statusListCredential` and verify its `DataIntegrityProof`
+   (`eddsa-jcs-2022`) against the status-list issuer's DID — the same proof
+   suite and DID resolution rules used for the attestation VC itself. Reject
+   the list if the proof is invalid or the issuer is not trusted.
+2. Check that the status-list credential's `credentialSubject.type` is
+   `BitstringStatusList` and that its `statusPurpose` matches the entry's
+   `statusPurpose`.
+3. Decode `encodedList` (base64url → GZIP → bitstring) and read the bit at
+   `statusListIndex`. Out-of-range indices are treated as an error, not as
+   "not revoked".
+4. If the bit is `1`, the credential is revoked. If `0`, the credential is
+   valid *as of that list version*; the verifier records the list version and
+   `validUntil` so it can detect staleness on its next sync.
+
+Because the bitstring is signed as a whole, a verifier can cache one status-list
+credential and answer revocation checks for every credential that references it
+without per-record RPC. The verifier SDK (`packages/verifier-sdk`) exposes
+`syncStatusList(url)` and `checkStatus(credential)` implementing steps 1–4;
+the sync demo and measured size/sync-time figures for 1M entries are recorded
+in ADR-0014.
 
 ### `evidence`
 

@@ -16,6 +16,12 @@ export type EventKind =
   | "AttesterSuspended"
   | "Initialized"
   | "Paused"
+  | "PoolCreated"
+  | "PoolDeposited"
+  | "PoolRewardClaimed"
+  | "PoolRewardFunded"
+  | "PoolStatusChanged"
+  | "PoolWithdrawn"
   | "Unpaused"
   | "Upgraded";
 
@@ -67,6 +73,41 @@ export interface PausedPayload {
   by: string;
 }
 
+export interface PoolCreatedPayload {
+  poolId: bigint;
+  creator: string;
+  token: string;
+}
+
+export interface PoolDepositedPayload {
+  poolId: bigint;
+  depositor: string;
+  amount: bigint;
+}
+
+export interface PoolRewardClaimedPayload {
+  poolId: bigint;
+  claimant: string;
+  amount: bigint;
+}
+
+export interface PoolRewardFundedPayload {
+  poolId: bigint;
+  funder: string;
+  amount: bigint;
+}
+
+export interface PoolStatusChangedPayload {
+  poolId: bigint;
+  status: string;
+}
+
+export interface PoolWithdrawnPayload {
+  poolId: bigint;
+  withdrawer: string;
+  amount: bigint;
+}
+
 export interface UnpausedPayload {
   by: string;
 }
@@ -88,6 +129,12 @@ export interface EventPayloads {
   AttesterSuspended: AttesterSuspendedPayload;
   Initialized: InitializedPayload;
   Paused: PausedPayload;
+  PoolCreated: PoolCreatedPayload;
+  PoolDeposited: PoolDepositedPayload;
+  PoolRewardClaimed: PoolRewardClaimedPayload;
+  PoolRewardFunded: PoolRewardFundedPayload;
+  PoolStatusChanged: PoolStatusChangedPayload;
+  PoolWithdrawn: PoolWithdrawnPayload;
   Unpaused: UnpausedPayload;
   Upgraded: UpgradedPayload;
 }
@@ -109,6 +156,12 @@ export const EVENT_SPECS: Record<EventKind, readonly EventSpec[]> = {
   AttesterSuspended: [{"dataFormat": "map", "fields": [{"key": "attester", "location": "topic", "name": "attester", "type": "address"}], "prefixTopics": ["attester_suspended"]}],
   Initialized: [{"dataFormat": "map", "fields": [{"key": "admin", "location": "topic", "name": "admin", "type": "address"}], "prefixTopics": ["initialized"]}],
   Paused: [{"dataFormat": "map", "fields": [{"key": "by", "location": "topic", "name": "by", "type": "address"}], "prefixTopics": ["paused"]}],
+  PoolCreated: [{"dataFormat": "map", "fields": [{"key": "poolId", "location": "topic", "name": "pool_id", "type": "u64"}, {"key": "creator", "location": "topic", "name": "creator", "type": "address"}, {"key": "token", "location": "topic", "name": "token", "type": "address"}], "prefixTopics": ["pool_created"]}],
+  PoolDeposited: [{"dataFormat": "map", "fields": [{"key": "poolId", "location": "topic", "name": "pool_id", "type": "u64"}, {"key": "depositor", "location": "topic", "name": "depositor", "type": "address"}, {"key": "amount", "location": "data", "name": "amount", "type": "i128"}], "prefixTopics": ["pool_deposited"]}],
+  PoolRewardClaimed: [{"dataFormat": "map", "fields": [{"key": "poolId", "location": "topic", "name": "pool_id", "type": "u64"}, {"key": "claimant", "location": "topic", "name": "claimant", "type": "address"}, {"key": "amount", "location": "data", "name": "amount", "type": "i128"}], "prefixTopics": ["pool_reward_claimed"]}],
+  PoolRewardFunded: [{"dataFormat": "map", "fields": [{"key": "poolId", "location": "topic", "name": "pool_id", "type": "u64"}, {"key": "funder", "location": "topic", "name": "funder", "type": "address"}, {"key": "amount", "location": "data", "name": "amount", "type": "i128"}], "prefixTopics": ["pool_reward_funded"]}],
+  PoolStatusChanged: [{"dataFormat": "map", "fields": [{"key": "poolId", "location": "topic", "name": "pool_id", "type": "u64"}, {"key": "status", "location": "data", "name": "status", "type": "symbol"}], "prefixTopics": ["pool_status_changed"]}],
+  PoolWithdrawn: [{"dataFormat": "map", "fields": [{"key": "poolId", "location": "topic", "name": "pool_id", "type": "u64"}, {"key": "withdrawer", "location": "topic", "name": "withdrawer", "type": "address"}, {"key": "amount", "location": "data", "name": "amount", "type": "i128"}], "prefixTopics": ["pool_withdrawn"]}],
   Unpaused: [{"dataFormat": "map", "fields": [{"key": "by", "location": "topic", "name": "by", "type": "address"}], "prefixTopics": ["unpaused"]}],
   Upgraded: [{"dataFormat": "map", "fields": [{"key": "newWasmHash", "location": "topic", "name": "new_wasm_hash", "type": {"bytes_n": {"n": 32}}}], "prefixTopics": ["upgraded"]}],
 };
@@ -125,7 +178,13 @@ export const EVENT_CONTRACTS: Record<EventKind, readonly string[]> = {
   AttesterRemoved: ["attester-registry"],
   AttesterSuspended: ["attester-registry"],
   Initialized: ["attester-registry"],
-  Paused: ["attestation-registry", "attester-registry"],
-  Unpaused: ["attestation-registry", "attester-registry"],
-  Upgraded: ["attester-registry"],
+  Paused: ["attestation-registry", "attester-registry", "incentive-pool"],
+  PoolCreated: ["incentive-pool"],
+  PoolDeposited: ["incentive-pool"],
+  PoolRewardClaimed: ["incentive-pool"],
+  PoolRewardFunded: ["incentive-pool"],
+  PoolStatusChanged: ["incentive-pool"],
+  PoolWithdrawn: ["incentive-pool"],
+  Unpaused: ["attestation-registry", "attester-registry", "incentive-pool"],
+  Upgraded: ["attester-registry", "incentive-pool"],
 };

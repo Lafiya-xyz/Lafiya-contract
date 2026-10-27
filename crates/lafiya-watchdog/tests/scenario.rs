@@ -139,6 +139,72 @@ fn every_critical_rule_reaches_the_webhook() {
     assert!(rx.try_recv().is_err());
 }
 
+/// Pool activity (approvals, claims, withdrawals) must raise the new
+/// incentive-pool alerts, and a critical pool pause must reach the webhook.
+#[test]
+fn incentive_pool_scenario_reaches_the_webhook() {
+    let (url, rx) = mock_webhook();
+    let mut cfg = config(url);
+    cfg.contracts = vec!["CPOOL".into(), "CREG".into()];
+    cfg.rules = vec![
+        RateRule {
+            event: "pool_approved".into(),
+            max_count: 3,
+            window_ledgers: 10,
+            severity: Severity::High,
+        },
+        RateRule {
+            event: "pool_withdrawn".into(),
+            max_count: 1,
+            window_ledgers: 10,
+            severity: Severity::High,
+        },
+    ];
+    let mut engine = Engine::new(&cfg);
+
+    let attester = "GA".to_string();
+    let scenario = [
+        // Attester is added, then removed and re-added shortly after.
+        ev("CREG", "attester_added", 10, &["GA"]),
+        ev("CREG", "attester_removed", 11, &["GA"]),
+        ev("CREG", "attester_added", 12, &["GA"]),
+        // A burst of approvals in the same window.
+        ev("CPOOL", "pool_approved", 13, &[&attester, "1000"]),
+        ev("CPOOL", "pool_approved", 14, &[&attester, "1000"]),
+        ev("CPOOL", "pool_approved", 15, &[&attester, "1000"]),
+        ev("CPOOL", "pool_approved", 16, &[&attester, "1000"]),
+        // A claim by the recently re-added attester.
+        ev("CPOOL", "pool_claimed", 17, &[&attester, "1000"]),
+        // A large withdrawal.
+        ev("CPOOL", "pool_withdrawn", 18, &["1000000"]),
+        // The pool is paused.
+        ev("CPOOL", "pool_paused", 19, &["GADMIN"]),
+    ];
+    let alerts: Vec<_> = scenario.iter().flat_map(|e| engine.evaluate(e)).collect();
+
+    for alert in &alerts {
+        assert!(sinks::dispatch(&cfg.sinks, alert).is_empty());
+    }
+
+    let kinds: Vec<String> = alerts.iter().map(|a| a.kind.clone()).collect();
+    for kind in [
+        rules::POOL_APPROVAL_BURST,
+        rules::POOL_LARGE_WITHDRAWAL,
+        rules::POOL_CLAIM_BY_READDED_ATTESTER,
+        rules::POOL_PAUSED,
+    ] {
+        assert!(
+            kinds.iter().any(|k| k == kind),
+            "missing {kind} in {kinds:?}"
+        );
+    }
+
+    // Only the critical pool pause is forwarded to the webhook.
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(body["kind"].as_str().unwrap(), rules::POOL_PAUSED);
+    assert!(rx.try_recv().is_err());
+}
+
 /// Requires a running quickstart (`stellar container start local`) with the
 /// Lafiya contracts deployed and the scenario in docs/runbooks/watchdog.md
 /// executed. Set `LAFIYA_WATCHDOG_RPC` and `LAFIYA_WATCHDOG_CONTRACTS`

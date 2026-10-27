@@ -360,6 +360,33 @@ fn attest_accepts_attester_authorization_entry_for_sponsored_submission() {
 }
 
 #[test]
+fn attester_auth_for_hash_a_cannot_authorize_hash_b() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let hash_a = hash(&env, 41);
+    let hash_b = hash(&env, 42);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &hash_a, &expires_at);
+    client.consent_attestation(&patient, &attester, &hash_b, &expires_at);
+
+    // The attester signs only for hash A.
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &attester,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "attest",
+            args: (attester.clone(), patient.clone(), hash_a.clone()).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    assert!(client.try_attest(&attester, &patient, &hash_b).is_err());
+    assert_eq!(client.get_attestation(&hash_b), None);
+    assert!(client.try_attest(&attester, &patient, &hash_a).is_ok());
+}
+
+#[test]
 fn attest_before_initialize_fails() {
     // A contract registered without constructor arguments has no configuration.
     let env = Env::default();
@@ -1490,4 +1517,252 @@ fn set_attestation_rate_limit_requires_admin_auth() {
     let (env, client, _attester_registry, _admin) = setup();
     env.mock_auths(&[]);
     assert!(client.try_set_attestation_rate_limit(&1, &100).is_err());
+}
+
+// ───────────────────────── TTL extension ─────────────────────────
+
+#[test]
+fn extend_attestation_ttl_is_permissionless_and_monotonic() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 80);
+    let attestation = attest_with_consent(&env, &client, &attester, &record_hash);
+    let original_expiry = client.get_attestation_status(&record_hash).unwrap().expires_at;
+
+    // Any caller (not the attester, not the patient) may extend.
+    let sponsor = Address::generate(&env);
+    let extend_to = env.ledger().timestamp() + 20_000;
+    client.extend_attestation_ttl(&sponsor, &record_hash, &extend_to);
+
+    let status = client.get_attestation_status(&record_hash).unwrap();
+    assert_eq!(status.expires_at, Some(extend_to));
+    // Data is untouched.
+    assert_eq!(client.get_attestation(&record_hash), Some(attestation));
+
+    // Extending again to a larger horizon is allowed and monotonic.
+    let further = extend_to + 5_000;
+    client.extend_attestation_ttl(&sponsor, &record_hash, &further);
+    assert_eq!(
+        client.get_attestation_status(&record_hash).unwrap().expires_at,
+        Some(further)
+    );
+    assert!(further > original_expiry.unwrap_or(0));
+}
+
+#[test]
+fn extend_attestation_ttl_rejects_shortening_and_noop() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 81);
+    attest_with_consent(&env, &client, &attester, &record_hash);
+    let current = client.get_attestation_status(&record_hash).unwrap().expires_at.unwrap();
+
+    let sponsor = Address::generate(&env);
+    assert_eq!(
+        client.try_extend_attestation_ttl(&sponsor, &record_hash, &(current - 1)),
+        Err(Ok(Error::InvalidAttestationExpiry))
+    );
+    assert_eq!(
+        client.try_extend_attestation_ttl(&sponsor, &record_hash, &current),
+        Err(Ok(Error::InvalidAttestationExpiry))
+    );
+    assert_eq!(
+        client.get_attestation_status(&record_hash).unwrap().expires_at,
+        Some(current)
+    );
+}
+
+#[test]
+fn extend_attestation_ttl_enforces_max_horizon() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 82);
+    attest_with_consent(&env, &client, &attester, &record_hash);
+
+    let sponsor = Address::generate(&env);
+    let too_far = env.ledger().timestamp() + MAX_TTL_HORIZON_SECONDS + 1;
+    assert_eq!(
+        client.try_extend_attestation_ttl(&sponsor, &record_hash, &too_far),
+        Err(Ok(Error::InvalidAttestationExpiry))
+    );
+
+    let at_cap = env.ledger().timestamp() + MAX_TTL_HORIZON_SECONDS;
+    client.extend_attestation_ttl(&sponsor, &record_hash, &at_cap);
+    assert_eq!(
+        client.get_attestation_status(&record_hash).unwrap().expires_at,
+        Some(at_cap)
+    );
+}
+
+#[test]
+fn extend_attestation_ttl_for_unknown_hash_fails() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let sponsor = Address::generate(&env);
+    assert_eq!(
+        client.try_extend_attestation_ttl(
+            &sponsor,
+            &hash(&env, 83),
+            &(env.ledger().timestamp() + 1_000)
+        ),
+        Err(Ok(Error::AttestationNotFound))
+    );
+}
+
+// ───────────────────────── Quorum ─────────────────────────
+
+#[test]
+fn quorum_policy_satisfied_by_distinct_attesters() {
+    let (env, client, attester_registry, admin) = setup();
+    let a = enroll(&env, &attester_registry, &admin);
+    let b = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 90);
+
+    client.set_quorum_policy(&admin, &record_hash, &2);
+    attest_with_consent(&env, &client, &a, &record_hash);
+    let view = client.get_quorum_status(&record_hash);
+    assert_eq!(view.count, 1);
+    assert_eq!(view.required, 2);
+    assert!(!view.satisfied);
+
+    attest_with_consent(&env, &client, &b, &record_hash);
+    let view = client.get_quorum_status(&record_hash);
+    assert_eq!(view.count, 2);
+    assert!(view.satisfied);
+}
+
+#[test]
+fn quorum_duplicate_attester_does_not_increase_count() {
+    let (env, client, attester_registry, admin) = setup();
+    let a = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 91);
+
+    client.set_quorum_policy(&admin, &record_hash, &2);
+    attest_with_consent(&env, &client, &a, &record_hash);
+    attest_with_consent(&env, &client, &a, &record_hash);
+
+    let view = client.get_quorum_status(&record_hash);
+    assert_eq!(view.count, 1);
+    assert!(!view.satisfied);
+}
+
+#[test]
+fn quorum_count_is_monotonic_under_revocation() {
+    let (env, client, attester_registry, admin) = setup();
+    let a = enroll(&env, &attester_registry, &admin);
+    let b = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 92);
+
+    client.set_quorum_policy(&admin, &record_hash, &2);
+    attest_with_consent(&env, &client, &a, &record_hash);
+    attest_with_consent(&env, &client, &b, &record_hash);
+    assert!(client.get_quorum_status(&record_hash).satisfied);
+
+    client.revoke_attestation(&admin, &record_hash, &Symbol::new(&env, "audit"));
+    let view = client.get_quorum_status(&record_hash);
+    assert_eq!(view.count, 0);
+    assert!(!view.satisfied);
+}
+
+#[test]
+fn quorum_policy_requires_admin() {
+    let (env, client, _attester_registry, _admin) = setup();
+    let outsider = Address::generate(&env);
+    assert_eq!(
+        client.try_set_quorum_policy(&outsider, &hash(&env, 93), &2),
+        Err(Ok(Error::RoleNotGranted))
+    );
+}
+
+// ───────────────────────── Disputes ─────────────────────────
+
+#[test]
+fn dispute_requires_patient_signature_and_marks_state() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 100);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    client.attest(&attester, &patient, &record_hash);
+
+    let signature = BytesN::from_array(&env, &[9u8; 64]);
+    client.dispute_attestation(&patient, &record_hash, &signature);
+
+    let status = client.get_attestation_status(&record_hash).unwrap();
+    assert!(status.disputed);
+    assert!(!client.is_verified(&record_hash));
+}
+
+#[test]
+fn dispute_rejects_replayed_signature() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 101);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    client.attest(&attester, &patient, &record_hash);
+
+    let signature = BytesN::from_array(&env, &[7u8; 64]);
+    client.dispute_attestation(&patient, &record_hash, &signature);
+    assert_eq!(
+        client.try_dispute_attestation(&patient, &record_hash, &signature),
+        Err(Ok(Error::DisputeAlreadyRaised))
+    );
+}
+
+#[test]
+fn dispute_is_bounded_per_record() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 102);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    let patient = Address::generate(&env);
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    client.attest(&attester, &patient, &record_hash);
+
+    let signature = BytesN::from_array(&env, &[1u8; 64]);
+    client.dispute_attestation(&patient, &record_hash, &signature);
+    assert_eq!(
+        client.try_dispute_attestation(&patient, &record_hash, &signature),
+        Err(Ok(Error::DisputeAlreadyRaised))
+    );
+}
+
+#[test]
+fn dispute_clearing_requires_attester_or_admin() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 103);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    client.attest(&attester, &patient, &record_hash);
+
+    let signature = BytesN::from_array(&env, &[3u8; 64]);
+    client.dispute_attestation(&patient, &record_hash, &signature);
+
+    let outsider = Address::generate(&env);
+    assert_eq!(
+        client.try_clear_dispute(&outsider, &record_hash),
+        Err(Ok(Error::RoleNotGranted))
+    );
+
+    client.clear_dispute(&attester, &record_hash);
+    assert!(!client.get_attestation_status(&record_hash).unwrap().disputed);
+}
+
+// ───────────────────────── Status list ─────────────────────────
+
+#[test]
+fn status_list_segment_and_root_accessors() {
+    let (env, client, _attester_registry, admin) = setup();
+    let root = hash(&env, 110);
+    client.publish_status_list_root(&admin, &root, &1);
+
+    assert_eq!(client.get_status_list_root(), Some(root.clone()));
+    assert_eq!(client.get_status_list_version(), 1);
+
+    let segment = client.get_status_list_segment(&0);
+    assert!(segment.is_some());
 }

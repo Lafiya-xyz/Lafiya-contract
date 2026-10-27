@@ -1,0 +1,26 @@
+{
+  "flow": "claim",
+  "title": "Claim an incentive payout",
+  "actors": [
+    "Attester",
+    "IncentivePool",
+    "AttestationRegistry"
+  ],
+  "steps": [
+    {
+      "from": "Attester",
+      "to": "IncentivePool",
+      "call": "claim",
+      "auth": "Attester"
+    },
+    {
+      "from": "IncentivePool",
+      "to": "AttestationRegistry",
+      "call": "get_attestation"
+    },
+    {
+      "from": "IncentivePool",
+      "event": "PayoutClaimed"
+    }
+  ]
+}

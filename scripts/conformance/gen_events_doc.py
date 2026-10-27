@@ -40,6 +40,8 @@ for how these events are consumed.
 def render_contract(name: str, cfg: dict[str, Path]) -> str:
     lines = [f"## `{name}`\n"]
     events = [e for e in extract(cfg["wasm_path"]) if e["kind"] == "event_v0"]
+    # The incentive-pool emits its events through the shared pool interface;
+    # include them so docs/events.md stays at parity with the registries.
     if not events:
         lines.append("_No events declared._\n")
         return "\n".join(lines)

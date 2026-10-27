@@ -24,22 +24,37 @@
   ],
   "sideEffects": false,
   "engines": {
-    "node": ">=20.19"
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
   },
   "scripts": {
     "build": "tsc -p tsconfig.json && tsc -p tsconfig.cjs.json && node scripts/mark-cjs.mjs",
+    "build:wasm": "node scripts/build-wasm.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "vitest run",
-    "size": "node scripts/check-size.mjs"
+    "size": "node scripts/check-size.mjs",
+    "size:wasm": "node scripts/check-wasm-size.mjs",
+    "size:report": "node scripts/check-size.mjs --report && node scripts/check-wasm-size.mjs --report",
+    "ci:size": "node scripts/check-size.mjs --report && node scripts/check-wasm-size.mjs --report"
   },
   "dependencies": {
     "@lafiya/attestation-registry": "file:../../bindings/attestation-registry",
     "@lafiya/attester-registry": "file:../../bindings/attester-registry",
+    "@lafiya/qr-wasm": "file:../../bindings/qr-wasm",
     "buffer": "6.0.3"
   },
   "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.5",
+    "@edge-runtime/vm": "^5.0.0",
     "@stellar/stellar-sdk": "^14.5.0",
+    "esbuild": "^0.24.2",
+    "eslint": "^9.17.0",
+    "publint": "^0.3.25",
     "typescript": "^5.6.2",
+    "typescript-eslint": "^8.18.2",
     "vitest": "^2.1.9"
   }
 }

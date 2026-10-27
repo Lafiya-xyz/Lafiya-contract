@@ -12,6 +12,12 @@ on:
       - "scripts/conformance/snapshots/**"
       - ".github/scripts/**"
       - "docs/release-manifest/**"
+      - "security/wasm-policy.json"
+      - "security/threats.yaml"
+      - "docs/security/**"
+      - "budgets/trend.json"
+      - "crates/**"
+      - "packages/verifier-sdk/**"
       - "pyproject.toml"
       - "requirements-dev.lock"
       - ".github/workflows/python-tooling.yml"
@@ -42,6 +48,11 @@ jobs:
 
       - name: Type-check (mypy --strict)
         run: mypy
+
+      # Every off-chain threat must point at code and tests that exist
+      # (docs/security/threat-model-offchain.md).
+      - name: Threat traceability
+        run: python3 scripts/check_threat_traceability.py
 
       - name: Test with coverage (>= 80%)
         run: pytest --cov-report=xml

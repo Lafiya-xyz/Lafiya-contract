@@ -16,6 +16,10 @@ soroban-sdk = { workspace = true }
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
 proptest = "1.11"
+ed25519-dalek = "3.0.0"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(dylint_lib, values(any()))'] }

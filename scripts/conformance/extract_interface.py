@@ -30,6 +30,18 @@ KIND_ORDER = {
     "udt_enum_v0": 5,
 }
 
+# Contracts whose interface snapshots feed the generated TypeScript bindings
+# and the `packages/events` decoder spec. Kept in sync with the drift gate in
+# CI so a new contract can't be added to one without the other.
+BINDING_CONTRACTS = (
+    "registry",
+    "multisig",
+    "incentive-pool",
+)
+
+# Event kinds that the `packages/events` generator knows how to decode.
+EVENT_KINDS = ("event_v0",)
+
 
 def _strip_docs(node: Any) -> Any:
     """Recursively drop `doc` fields so wording-only edits don't diff."""
@@ -44,6 +56,40 @@ def _entry_name(kind: str, body: dict[str, Any]) -> str:
     if kind == "function_v0":
         return str(body["name"])
     return str(body.get("name", ""))
+
+
+def _normalize_type_keys(node: Any) -> Any:
+    """Recursively normalize type references so snapshots are stable.
+
+    `stellar contract info interface` emits type references as either a bare
+    string or a single-key object depending on the CLI version; collapse both
+    shapes to a canonical `{"type": ...}` form so the drift gate doesn't fire
+    on tooling upgrades.
+    """
+    if isinstance(node, dict):
+        if len(node) == 1:
+            ((key, value),) = node.items()
+            if key in ("type", "udt", "option", "result", "vec", "map", "tuple"):
+                return {key: _normalize_type_keys(value)}
+        return {k: _normalize_type_keys(v) for k, v in node.items()}
+    if isinstance(node, list):
+        return [_normalize_type_keys(v) for v in node]
+    return node
+
+
+def extract_events(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter an interface snapshot down to its event entries.
+
+    This is the handoff point to `packages/events`: the generator consumes
+    exactly this list, so every pool event that appears in the built wasm
+    must survive this filter or the decoder tests will silently miss it.
+    """
+    return [entry for entry in snapshot if entry["kind"] in EVENT_KINDS]
+
+
+def extract_views(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter an interface snapshot down to its callable view functions."""
+    return [entry for entry in snapshot if entry["kind"] == "function_v0"]
 
 
 def require_stellar_cli() -> None:
@@ -95,10 +141,19 @@ def extract(wasm_path: Path) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    if len(sys.argv) != 2:
-        sys.exit(f"usage: {sys.argv[0]} <path-to-wasm>")
+    if len(sys.argv) not in (2, 3):
+        sys.exit(f"usage: {sys.argv[0]} <path-to-wasm> [events|views]")
 
     snapshot = extract(Path(sys.argv[1]))
+    if len(sys.argv) == 3:
+        section = sys.argv[2]
+        if section == "events":
+            snapshot = extract_events(snapshot)
+        elif section == "views":
+            snapshot = extract_views(snapshot)
+        else:
+            sys.exit(f"error: unknown section {section!r} (expected 'events' or 'views')")
+
     json.dump(snapshot, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")
 

@@ -142,3 +142,63 @@ Within two weeks of publishing a Critical or High advisory:
   that now checks it.
 - Open (public, post-disclosure) issues for any process or tooling gaps
   found during triage.
+
+## 9. Indexer image CVE and signature alerts
+
+**Audience:** whoever is on call when the indexer security alerts fire.
+These alerts are defined as code in the indexer `PrometheusRule`
+(`deploy/observability/indexer-rules.yaml`) and are documented alongside
+the SLOs in [`docs/observability.md`](../observability.md). Each alert's
+`runbook_url` annotation points at this section.
+
+Alert names and what they mean:
+
+| Alert | Meaning |
+|---|---|
+| `LafiyaIndexerImageScanFailed` | The image scan gate (Trivy/Grype) failed or did not produce a report for the currently deployed indexer image. |
+| `LafiyaIndexerImageCriticalCVE` | The deployed indexer image contains a Critical or High CVE that is not covered by an approved exception. |
+| `LafiyaIndexerImageSignatureInvalid` | `cosign verify` failed for the deployed indexer image: missing signature, wrong key/identity, or digest mismatch. |
+| `LafiyaIndexerScanExceptionStale` | An entry in the scan exception file is past its expiry or no longer matches a finding. |
+
+### 9.1 Signature verification failure
+
+Treat a signature failure as a supply-chain incident until proven
+otherwise. Do **not** restart or roll the deployment to "clear" it.
+
+1. Identify the running image digest:
+   `kubectl -n lafiya get deploy lafiya-indexer -o jsonpath='{.spec.template.spec.containers[0].image}'`.
+2. Re-run verification locally against the pinned public key/identity:
+   `cosign verify --key cosign.pub <image>@<digest>`.
+3. If verification fails, confirm the digest matches the release manifest
+   and the CI build that produced it. A digest that does not match any
+   signed build is a compromise signal: follow
+   [security-triage.md](security-triage.md) (private advisory, no public
+   discussion) and roll back to the last verified digest.
+4. If verification passes locally but the alert persists, the alert's
+   key/identity configuration is stale; fix the rule and note it in the
+   alert's issue.
+
+### 9.2 Scan gate failure or unapproved Critical/High CVE
+
+1. Pull the scan report for the deployed digest from the CI artifact or
+   re-run the scanner: `trivy image <image>@<digest>`.
+2. If the CVE has a fixed base image or dependency version, bump it and
+   ship through the normal release process.
+3. If no fix is available, either accept the risk through the exception
+   file (see 9.3) or roll back to the last image without the finding.
+4. A scan gate that failed to *produce* a report is a tooling failure:
+   re-run the gate, and if it keeps failing, open an issue and treat the
+   image as unscanned (do not promote it).
+
+### 9.3 Exception-file review
+
+Exceptions live in `deploy/observability/scan-exceptions.yaml`. Every entry
+must have an `id` (CVE or finding), an `owner`, a `justification`, and an
+`expires` date no more than 90 days out.
+
+1. When `LafiyaIndexerScanExceptionStale` fires, open the exception file
+   and remove or renew the entry.
+2. Renew only with a written justification and a named owner; never renew
+   silently.
+3. Review the whole file at least monthly and after every Critical/High
+   advisory, and record the review date in the file header.

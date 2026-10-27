@@ -6,10 +6,16 @@ description = "Lafiya QR payload v1 encoder/decoder — compact, versioned, netw
 license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
 
+[features]
+default = []
+# Enables the physical robustness harness (synthetic degradation pipeline).
+# Kept optional so the core encoder/decoder stays dependency-light.
+robustness = ["dep:rqrr", "dep:rand", "dep:rand_chacha", "dep:image", "dep:jpeg-decoder"]
+
 [dependencies]
-sha2 = "0.10"
+sha2 = { workspace = true }
 
 [dev-dependencies]
-hex = "0.4"
-serde = { version = "1.0", features = ["derive"] }
-serde_json = "1.0"
+hex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }

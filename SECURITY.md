@@ -37,6 +37,12 @@ Include, where possible:
 > store only non-reversible hashes by design — keep reports the same
 > way. See the privacy note in [README.md](README.md).
 
+## CI secrets
+
+Secret inventory (names only), rotation cadence, the OIDC / `GITHUB_TOKEN`-first
+policy, and the leak-drill runbook live in
+[docs/security/ci-secrets.md](docs/security/ci-secrets.md).
+
 ## What to expect
 
 - **Acknowledgement** of your report within 3 business days.

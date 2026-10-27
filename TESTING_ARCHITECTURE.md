@@ -68,3 +68,21 @@
 ├── mutation-testing (PR, critical-files)
 └── differential-testing (release builds)
 ```
+
+## Incentive pool property suites (#507, #508)
+
+- `contracts/incentive-pool/src/stateful_test.rs` — model-based stateful
+  harness (fund/withdraw/approve/claim/pause/caps/suspension). Asserts custody
+  `balance == deposited - paid`, `total_paid <= total_deposited`, at-most-once
+  payout and per-attester cap. Failing traces print as a `Vec<Op>` that can be
+  passed to `replay(...)`.
+- `contracts/incentive-pool/src/fuzz_test.rs` — one target per mutating
+  function plus a sequence target; picked up by the CI `fuzz` job
+  (`test(fuzz_test)`, 256 cases).
+- CI time impact: default 64 cases per property adds a few seconds to the
+  `test` job; the `fuzz` job runs at 256 cases. The extended profile
+  (`PROPTEST_CASES=10000`) runs nightly in
+  `.github/workflows/incentive-pool-nightly.yml` (45 min budget) and uploads
+  `proptest-regressions/` on failure.
+- Reproduce locally:
+  `PROPTEST_CASES=10000 cargo test -p incentive-pool -- stateful_test fuzz_test --nocapture`.

@@ -40,6 +40,8 @@ pytest==9.1.1
     #   pytest-cov
 pytest-cov==7.1.0
     # via lafiya-tooling (pyproject.toml)
+pyyaml==6.0.3
+    # via lafiya-tooling (pyproject.toml)
 referencing==0.37.0
     # via
     #   jsonschema
@@ -52,6 +54,8 @@ rpds-py==2026.6.3
 ruff==0.16.9
     # via lafiya-tooling (pyproject.toml)
 types-jsonschema==4.26.0.20260518
+    # via lafiya-tooling (pyproject.toml)
+types-pyyaml==6.0.12.20260906
     # via lafiya-tooling (pyproject.toml)
 typing-extensions==4.16.0
     # via mypy
