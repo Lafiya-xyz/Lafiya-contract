@@ -936,6 +936,7 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
+        probation::begin(&env, &attester);
         if !already_present && regional_scope.is_some() {
             Self::record_regional_attester(&env, &registrar, &attester);
         }
@@ -1020,6 +1021,7 @@ impl AttesterRegistry {
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
+        probation::begin(&env, &attester);
         Self::set_validity(&env, &attester, valid_from, valid_until);
         if !already_present && regional_scope.is_some() {
             Self::record_regional_attester(&env, &registrar, &attester);
@@ -1143,6 +1145,7 @@ impl AttesterRegistry {
                 };
                 env.storage().persistent().set(&key, &info);
                 Self::record_status_change(&env, &attester, true);
+                probation::begin(&env, &attester);
                 Self::set_validity(&env, &attester, None, None);
                 if regional_scope.is_some() {
                     Self::record_regional_attester(&env, &registrar, &attester);
@@ -1348,6 +1351,7 @@ impl AttesterRegistry {
             .set(&DataKey::Attester(attester.clone()), &info);
         Self::clear_attester_sessions(&env, &attester);
         Self::record_status_change(&env, &attester, false);
+        probation::flag_if_active(&env, &attester, &reason);
         AttesterSuspended {
             attester,
             reason,
@@ -2023,3 +2027,7 @@ mod large_test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod governance_test;

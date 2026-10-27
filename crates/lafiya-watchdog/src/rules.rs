@@ -416,6 +416,14 @@ mod tests {
     }
 
     #[test]
+    fn probation_breach_and_slash_are_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("probation_breach", 1, &["GATT"]));
+        assert_eq!(kinds(&a), vec![("probation_breach", Severity::High)]);
+        let a = Engine::new(&cfg()).evaluate(&ev("slash_executed", 1, &["1", "GATT"]));
+        assert_eq!(kinds(&a), vec![("attester_slashed", Severity::High)]);
+    }
+
+    #[test]
     fn registry_repoint_is_critical() {
         let a = Engine::new(&cfg()).evaluate(&ev("attester_registry_repointed", 1, &[]));
         assert_eq!(

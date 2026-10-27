@@ -27,6 +27,7 @@ use soroban_sdk::{
 #[contractclient(name = "AttesterRegistryClient")]
 pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
+    fn is_payout_eligible(env: Env, attester: Address) -> bool;
 }
 
 /// Per-attester verification status as reported by `attestation-registry`.
@@ -1457,6 +1458,10 @@ impl IncentivePool {
         let registry = AttesterRegistryClient::new(&env, &registry_id);
         if !registry.is_attester(&attester) {
             return Err(Error::AttesterNotAllowlisted);
+        }
+        // A registry without probation support leaves payouts open.
+        if let Ok(Ok(false)) = registry.try_is_payout_eligible(&attester) {
+            return Err(Error::PayoutNotEligible);
         }
 
         // Enforce per-attester cumulative cap.

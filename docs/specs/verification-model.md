@@ -1,7 +1,7 @@
 # Verification-result model
 
 - **Status:** Normative
-- **Model version:** 1.0.0
+- **Model version:** 1.1.0
 - **Truth table:** [`verification-model.json`](verification-model.json)
 - **Reference implementation:** [`scripts/verification_model.py`](../../scripts/verification_model.py)
 
@@ -58,6 +58,26 @@ A `Verified` result whose quorum policy is not satisfied is not permitted; such 
 An offline evaluation (from a signed bundle rather than a live read) **MUST** return the
 same verdict as the online evaluation of the bundle's state, with the qualifier
 `as_of_bundle`, and **MUST** show the bundle date to the user.
+
+### 2.1 Annotations
+
+Verifiers **MUST** display, and **MUST NOT** use to change the verdict, the following
+annotations. They describe *who* attested and under what authority; every verdict-changing
+condition is already covered by the attester status inputs above. The truth table lists them
+in `annotations` and includes cases proving they leave the verdict unchanged.
+
+| Annotation | Source | Display |
+|---|---|---|
+| `attester_tier` | `attester-registry.get_attester_tier` | `CHW`, `Nurse` or `Physician`. Unassigned attesters show `CHW`. |
+| `attestation_class` | `attestation-registry.get_attestation_scope` | The class the attester attested under, if any. |
+| `attester_on_probation` | `attester-registry.get_probation_state` | Show a "new attester" notice while `Probation` or `Flagged`. |
+| `facility_id` | `attestation-registry.get_attestation_scope` | The facility named at attestation time, if any. |
+| `facility_affiliated_at_attestation` | `facility-registry.was_affiliated_at` | Evaluated at the attestation timestamp, so later disaffiliation does not hide it. |
+| `facility_active` | `facility-registry.is_facility_active` | Show a warning when a named facility is deactivated. |
+
+Tier and class are enforced when the attestation is made (`attest_with_scope`), so a
+later capability-matrix change does not invalidate existing attestations; verifiers show
+the attester's *current* tier and never re-derive class eligibility.
 
 ## 3. Precedence
 

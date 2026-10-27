@@ -98,7 +98,7 @@ pub const INTERFACE_VERSION: u32 = 2;
 pub const EVENT_VERSION: u32 = 2;
 
 /// Optional features this build supports, reported by `get_interface`.
-pub const FEATURES: [&str; 10] = [
+pub const FEATURES: [&str; 11] = [
     "pause",
     "history",
     "revocation",
@@ -109,6 +109,7 @@ pub const FEATURES: [&str; 10] = [
     "batch",
     "merkle_anchor",
     "rate_limit",
+    "scope",
 ];
 
 /// Interface and capability metadata returned by `get_interface`, so
@@ -1030,7 +1031,7 @@ impl AttestationRegistry {
         attester.require_auth();
         Self::require_not_paused(&env)?;
         Self::require_allowlisted_attester(&env, &attester)?;
-        Self::record_attestation(&env, attester, patient, record_hash, 0, None)
+        Self::record_attestation(&env, attester, patient, record_hash, 0, None, None)
     }
 
     /// Record an attestation authorized by a delegated session key.
@@ -1082,6 +1083,7 @@ impl AttestationRegistry {
             record_hash,
             commitment_version,
             None,
+            None,
         )
     }
 
@@ -1104,7 +1106,91 @@ impl AttestationRegistry {
             record_hash,
             0,
             Some(previous_record_hash),
+            None,
         )
+    }
+
+    /// Record an attestation under an optional class and facility.
+    ///
+    /// When `class` is given, the attester's tier must satisfy the capability
+    /// matrix in `attester-registry`. When `facility_id` is given, the
+    /// attester must be affiliated with that facility in the configured
+    /// `facility-registry`. Both are checked at attestation time only; later
+    /// affiliation changes do not rewrite the stored scope (see ADR-0019).
+    pub fn attest_with_scope(
+        env: Env,
+        attester: Address,
+        patient: Address,
+        record_hash: BytesN<32>,
+        class: Option<Symbol>,
+        facility_id: Option<u64>,
+    ) -> Result<Attestation, Error> {
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_allowlisted_attester(&env, &attester)?;
+        if let Some(class) = class.clone() {
+            let registry_id = Self::attester_registry(&env)?;
+            match AttesterRegistryClient::new(&env, &registry_id)
+                .try_is_class_allowed(&attester, &class)
+            {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => return Err(Error::AttesterTierInsufficient),
+                _ => return Err(Error::AttesterRegistryUnavailable),
+            }
+        }
+        if let Some(facility_id) = facility_id {
+            let facility_registry: Address = env
+                .storage()
+                .instance()
+                .get(&DataKey::FacilityRegistry)
+                .ok_or(Error::FacilityRegistryNotSet)?;
+            match FacilityRegistryClient::new(&env, &facility_registry)
+                .try_is_affiliated(&facility_id, &attester)
+            {
+                Ok(Ok(true)) => {}
+                Ok(Ok(false)) => return Err(Error::FacilityNotAffiliated),
+                _ => return Err(Error::FacilityNotAffiliated),
+            }
+        }
+        Self::record_attestation(
+            &env,
+            attester,
+            patient,
+            record_hash,
+            0,
+            None,
+            Some(AttestationScope { class, facility_id }),
+        )
+    }
+
+    /// The class and facility the latest active attestation for `record_hash`
+    /// was made under, if it was made through `attest_with_scope`. Verifiers
+    /// pair this with `attester-registry`'s `get_attester_tier` to display the
+    /// attester's tier, and with `facility-registry`'s `was_affiliated_at` /
+    /// `is_facility_active` to judge the facility at verification time.
+    pub fn get_attestation_scope(env: Env, record_hash: BytesN<32>) -> Option<AttestationScope> {
+        let (sequence, _) = Self::latest_active(&env, &record_hash)?;
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttestationScope(record_hash, sequence))
+    }
+
+    /// Point facility-scoped attestations at a `facility-registry`. Requires
+    /// the admin.
+    pub fn set_facility_registry(env: Env, facility_registry: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::FacilityRegistry, &facility_registry);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// The configured `facility-registry`, if any.
+    pub fn get_facility_registry(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::FacilityRegistry)
     }
 
     /// Record up to `BATCH_LIMIT` attestations in one transaction. Each
@@ -1137,6 +1223,7 @@ impl AttestationRegistry {
                 request.record_hash,
                 0,
                 request.previous_record_hash,
+                None,
             )?;
             results.push_back(attestation);
         }
@@ -2041,6 +2128,50 @@ impl AttestationRegistry {
         Ok(())
     }
 
+    /// Enforce the rate cap an attester is under while on probation. A
+    /// registry that predates probation (or fails the call) imposes no cap.
+    fn consume_probation_cap(env: &Env, attester: &Address) -> Result<(), Error> {
+        let Ok(registry_id) = Self::attester_registry(env) else {
+            return Ok(());
+        };
+        let Ok(Ok(Some(limits))) =
+            AttesterRegistryClient::new(env, &registry_id).try_get_probation_limits(attester)
+        else {
+            return Ok(());
+        };
+        if limits.rate_cap == 0 {
+            return Ok(());
+        }
+        let now = env.ledger().sequence();
+        let key = DataKey::ProbationWindow(attester.clone());
+        let mut window = env
+            .storage()
+            .temporary()
+            .get::<_, RateWindow>(&key)
+            .filter(|window| {
+                now < window
+                    .window_start_ledger
+                    .saturating_add(limits.rate_window_ledgers)
+            })
+            .unwrap_or(RateWindow {
+                window_start_ledger: now,
+                count: 0,
+            });
+        if window.count >= limits.rate_cap {
+            return Err(Error::ProbationRateLimited);
+        }
+        window.count += 1;
+        let remaining = window
+            .window_start_ledger
+            .saturating_add(limits.rate_window_ledgers)
+            - now;
+        env.storage().temporary().set(&key, &window);
+        env.storage()
+            .temporary()
+            .extend_ttl(&key, remaining, remaining);
+        Ok(())
+    }
+
     fn admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()
@@ -2401,9 +2532,11 @@ impl AttestationRegistry {
         record_hash: BytesN<32>,
         commitment_version: u32,
         previous_record_hash: Option<BytesN<32>>,
+        scope: Option<AttestationScope>,
     ) -> Result<Attestation, Error> {
         let new_previous_link = Self::check_version_link(env, &record_hash, previous_record_hash)?;
         Self::consume_rate_limit(env, &attester)?;
+        Self::consume_probation_cap(env, &attester)?;
         let attestation_expires_at = Self::consume_consent(env, &attester, patient, &record_hash)?;
 
         let attestation = Attestation {
@@ -2467,6 +2600,12 @@ impl AttestationRegistry {
                             record_hash.clone(),
                             oldest_sequence,
                         ));
+                    env.storage()
+                        .persistent()
+                        .remove(&DataKey::AttestationScope(
+                            record_hash.clone(),
+                            oldest_sequence,
+                        ));
                     evicted_sequence = Some(oldest_sequence);
                 }
                 new_sequence
@@ -2481,6 +2620,18 @@ impl AttestationRegistry {
             &DataKey::AttestationExpiry(record_hash.clone(), stored_sequence),
             &attestation_expires_at,
         );
+        let scope_key = DataKey::AttestationScope(record_hash.clone(), stored_sequence);
+        match scope {
+            Some(scope) => {
+                env.storage().persistent().set(&scope_key, &scope);
+                env.storage().persistent().extend_ttl(
+                    &scope_key,
+                    INSTANCE_LIFETIME_THRESHOLD,
+                    INSTANCE_BUMP_AMOUNT,
+                );
+            }
+            None => env.storage().persistent().remove(&scope_key),
+        }
         env.storage()
             .persistent()
             .remove(&DataKey::RecordRevoked(record_hash.clone()));
@@ -2589,3 +2740,7 @@ mod fuzz_test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod scope_test;
