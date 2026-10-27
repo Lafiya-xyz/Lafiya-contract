@@ -14,9 +14,6 @@ env:
   # interface` JSON shape must match scripts/conformance/snapshots/.
   STELLAR_CLI_VERSION: "25.2.0"
 
-permissions:
-  contents: read
-
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -27,6 +24,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       rust: ${{ steps.filter.outputs.rust }}
+      indexer: ${{ steps.filter.outputs.indexer }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
@@ -42,6 +40,15 @@ jobs:
               - 'rust-toolchain.toml'
               - '.config/nextest.toml'
               - '.github/workflows/ci.yml'
+            indexer:
+              - 'crates/lafiya-indexer/**'
+              - 'deploy/observability/**'
+              - 'docs/compliance/**'
+              - 'docs/observability.md'
+              - 'docs/runbooks/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - '.github/workflows/ci.yml'
 
   shell-lint:
     name: Shell lint (smoke-test.sh)
@@ -53,9 +60,19 @@ jobs:
           bash -n scripts/smoke-test.sh
           bash -n scripts/smoke-test.test.sh
       - name: ShellCheck
-        run: shellcheck scripts/smoke-test.sh scripts/smoke-test.test.sh
+        run: shellcheck scripts/smoke-test.sh scripts/smoke-test.test.sh scripts/canary.sh scripts/check_lint_allows.sh
       - name: Run smoke-test.sh regression test
         run: bash scripts/smoke-test.test.sh
+
+  loop-bounds:
+    name: Loop bounds
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Require annotated bounds and a current report
+        run: python3 scripts/check_loop_bounds.py
+      - name: Capacity model tests
+        run: python3 -m unittest discover -s scripts -p 'test_capacity_model.py'
 
   dashboard:
     name: Dashboard generator + reproducibility
@@ -69,6 +86,51 @@ jobs:
       # pinned synthetic ledger range and compares it with the committed output.
       - run: python -m unittest discover -s dashboard -v
       - run: git diff --exit-code dashboard/fixtures
+      - run: python -m unittest discover -s dashboard/governance -v
+      - run: python -m unittest discover -s scripts -p "test_status_page.py" -v
+
+  dylint:
+    name: Custom Dylint lints
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - run: bash scripts/check_lint_allows.sh
+      # Toolchain comes from lints/rust-toolchain; expect a few extra minutes
+      # (first run builds the lint crate; the cargo cache absorbs repeats).
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/bin
+            ~/.dylint_drivers
+            lints/target
+          key: dylint-${{ hashFiles('lints/Cargo.lock', 'lints/rust-toolchain') }}
+      - run: cargo install cargo-dylint dylint-link --locked
+      - run: cargo test --manifest-path lints/Cargo.toml
+      - run: cargo dylint --path lints --all -- --workspace --all-targets
+
+  # The Rust half of these vectors runs with the workspace tests
+  # (crates/lafiya-commitment); this job checks the TypeScript and Python
+  # references against the same fixtures.
+  commitment-vectors:
+    name: Commitment vectors (TS + Python)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: LRC-1 (TypeScript)
+        run: node --experimental-strip-types crates/lafiya-commitment/reference-ts/lrc1.test.ts
+      - name: LRC-1 (Python)
+        run: python crates/lafiya-commitment/reference-py/lrc1_test.py --random-count 1000
+      - name: Salt derivation, ADR-0018 (TypeScript)
+        run: node --experimental-strip-types crates/lafiya-commitment/reference-ts/salt.test.ts
+      - name: Salt derivation, ADR-0018 (Python)
+        run: python crates/lafiya-commitment/reference-py/salt_test.py
 
   fmt:
     name: Format
@@ -183,6 +245,95 @@ jobs:
           path: junit/**/junit.xml
           reporter: java-junit
 
+  # First-class workspace members: lafiya-indexer and lafiya-qr are built,
+  # linted, and tested on every PR so they cannot rot or drift from shared
+  # dependency versions.
+  crates-build:
+    name: Crates build (indexer, qr)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --locked -p lafiya-indexer -p lafiya-qr
+
+  crates-clippy:
+    name: Crates clippy (indexer, qr)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --locked -p lafiya-indexer -p lafiya-qr --all-targets -- -D warnings
+
+  crates-test:
+    name: Crates test (indexer e2e, qr)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: lafiya
+          POSTGRES_PASSWORD: lafiya
+          POSTGRES_DB: lafiya_indexer_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U lafiya"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      DATABASE_URL: postgres://lafiya:lafiya@localhost:5432/lafiya_indexer_test
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Test lafiya-qr
+        run: cargo test --locked -p lafiya-qr
+      - name: Test lafiya-indexer (includes Postgres e2e)
+        run: cargo test --locked -p lafiya-indexer --all-targets
+
+  crates-deny:
+    name: Cargo deny
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: taiki-e/install-action@cargo-deny
+      - run: cargo deny check
+
+  # Drift gate for the incentive-pool bindings: regenerate from the contract
+  # interface and fail if the committed bindings differ.
+  bindings-drift:
+    name: Bindings drift (incentive-pool)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install stellar-cli
+        run: |
+          curl -sSL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
+            | tar -xz -C /usr/local/bin stellar
+          stellar --version
+      - name: Regenerate bindings
+        run: bash scripts/generate_bindings.sh
+      - name: Fail on drift
+        run: git diff --exit-code bindings/
+
   build-wasm:
     name: Build (wasm32v1-none)
     needs: changes
@@ -199,6 +350,14 @@ jobs:
       # std binaries/libs that can't build for this no_std-only target.
       - name: Build contract crates
         run: cargo build --release --locked --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
+      # Host-function allowlist, start/float/instruction rules and size
+      # limits (docs/security/wasm-policy.md). The import diff goes to the
+      # job summary so reviewers see any widened host surface in the PR.
+      - name: Wasm policy (imports, instructions, size)
+        run: |
+          env_json=$(find ~/.cargo/registry/src -path '*soroban-env-common-*' -name env.json | sort -V | tail -1)
+          python3 scripts/check_wasm_policy.py ${env_json:+--env-json "$env_json"} \
+            --markdown "$GITHUB_STEP_SUMMARY" target/wasm32v1-none/release/*.wasm
       # Reused by downstream integration/differential/budget jobs instead of
       # rebuilding the contracts.
       - uses: actions/upload-artifact@v4
@@ -206,6 +365,55 @@ jobs:
           name: release-wasm
           path: target/wasm32v1-none/release/*.wasm
           retention-days: 7
+
+  # Builds the shared QR codec for the browser verifier and enforces the
+  # bundle size budget. The budget lives in the SDK package so PRs that
+  # regress it fail here.
+  build-qr-wasm:
+    name: Build (lafiya-qr wasm32-unknown-unknown)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32-unknown-unknown
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Build lafiya-qr for wasm32-unknown-unknown
+        run: cargo build --release --locked --target wasm32-unknown-unknown -p lafiya-qr
+      - name: Report bundle size and enforce budget
+        run: python3 packages/verifier-sdk/scripts/check_wasm_budget.py \
+          --wasm target/wasm32-unknown-unknown/release/lafiya_qr.wasm \
+          --budget packages/verifier-sdk/wasm-size-budget.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: lafiya-qr-wasm
+          path: target/wasm32-unknown-unknown/release/lafiya_qr.wasm
+          retention-days: 7
+
+  # Runs the shared vector suite against both the Rust codec (via the WASM
+  # artifact) and the TypeScript codec until the latter is retired.
+  qr-vector-parity:
+    name: QR vector parity (Rust vs TypeScript)
+    needs: [changes, build-qr-wasm]
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      - uses: actions/download-artifact@v4
+        with:
+          name: lafiya-qr-wasm
+          path: target/wasm32-unknown-unknown/release
+      - name: Install SDK dependencies
+        working-directory: packages/verifier-sdk
+        run: npm ci
+      - name: Run shared vector suite against both codecs
+        working-directory: packages/verifier-sdk
+        run: npm run test:qr-vectors
 
   docs-checks:
     name: Docs & catalog checks
@@ -218,15 +426,68 @@ jobs:
         run: python .github/scripts/check_readme_versions.py
       - name: Check error/event catalogs are regenerated
         run: python3 scripts/conformance/gen_catalog.py --check
+      - name: Check ADR numbering
+        run: python3 scripts/check_adr_numbering.py
+      - name: Mainnet readiness gate
+        run: |
+          python3 scripts/check_mainnet_readiness.py
+          python3 -m pip install -q pytest && python3 -m pytest -q -o addopts="" scripts/tests/test_check_mainnet_readiness.py scripts/tests/test_resource_headroom.py scripts/tests/test_ttl_keeper.py
       - name: Run the verification-model truth table
         run: python3 scripts/verification_model.py
+
+  # Fraud-scoring calibration gate. Runs the seeded simulator on the reduced
+  # dataset and fails if recall at the fixed FPR operating point drops below
+  # the floor documented in docs/runbooks/attester-fraud-response.md.
+  fraud-scoring-eval:
+    name: Fraud scoring evaluation (reduced, seeded)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Run seeded evaluation on reduced dataset
+        run: >-
+          cargo run --locked -p lafiya-fraud-scoring --bin fraud-scoring-eval --
+          --dataset reduced
+          --seed 0
+          --fixed-fpr 0.05
+          --min-recall 0.80
+          --report target/fraud-scoring/report.json
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: fraud-scoring-report
+          path: target/fraud-scoring/report.json
+          retention-days: 7
+
+  # QR physical-robustness harness. Regenerates the seeded degradation corpus
+  # and fails if the committed data under docs/specs/ is stale.
+  qr-robustness:
+    name: QR robustness harness (seeded)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Regenerate seeded degradation corpus
+        run: >-
+          cargo run --locked -p lafiya-qr --bin qr-robustness --
+          --seed 0
+          --out docs/specs/qr-robustness-data.json
+      - name: Verify committed data is reproducible
+        run: git diff --exit-code docs/specs/qr-robustness-data.json
 
   # Single required check for branch protection. Jobs skipped by the path
   # filter count as success; any failure or cancellation fails this job.
   ci-success:
     name: ci-success
     if: always()
-    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, build-wasm, docs-checks]
+    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, crates-build, crates-clippy, crates-test, crates-deny, bindings-drift, build-wasm, docs-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate results

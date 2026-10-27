@@ -51,17 +51,31 @@ Each contract has a scenario script that:
 
 ### Attestation Registry Scenario
 
+> **Storage layout change (history ring buffer):** the attestation-registry
+> history layout changed from a `Vec` (rewritten in full on every attestation)
+> to a versioned fixed-size ring buffer with a head index. The layout version is
+> stored alongside the data; `migrate()` converts old `Vec`-layout entries to the
+> ring-buffer layout lazily (on first access or during migration), and
+> `get_attestation_history(hash)` preserves the exact ordering semantics
+> (oldest-to-newest by sequence) across both layouts. Fixtures from previous
+> releases therefore store history in the `Vec` layout and must be exercised
+> through `migrate()` to validate the upgrade path.
+
 Representative data to write:
 - 3+ attesters (mix of active, suspended, revoked)
 - Attesters with and without metadata
-- Attestations with full history (MAX_HISTORY entries)
+- Attestations with full history (`MAX_HISTORY` entries) — required to exercise
+  the `Vec` → ring-buffer migration, including the boundary at `MAX_HISTORY`
+  and wraparound of the head index after migration
+- Attestations with partial history (fewer than `MAX_HISTORY` entries)
 - Revocations with counter resets
 - Pending admin proposals
 - Paused state toggles
 
 Expected reads:
 - `get_attestation(hash, attester)` — full history
-- `get_attestation_history(hash)` — ordered by sequence
+- `get_attestation_history(hash)` — ordered by sequence (identical before and
+  after migration, including full `MAX_HISTORY` windows)
 - `get_attesters()` — active list
 - `get_attester(address)` — metadata
 - Error cases: suspended, revoked, allowlist gated
@@ -120,3 +134,4 @@ RUST_LOG=debug cargo test --test upgrade_compatibility --release -- --nocapture
 - **Lazy migration:** if a data migration is deferred, the scenario must run `migrate()` explicitly after `upgrade()`
 - **Event schema changes:** the scenario must parse events from both old and new schemas if the event type changes
 - **New storage keys:** if new keys are added without migration, the scenario should verify they're initialized to defaults
+- **History layout migration (ring buffer):** previous-release fixtures store attestation history as a `Vec`; after `upgrade()` the scenario must call `migrate()` and then verify `get_attestation_history(hash)` returns the same ordered history as before, with full `MAX_HISTORY` histories included to cover the migration boundary

@@ -41,4 +41,37 @@ describe.skipIf(!enabled)("quickstart integration", () => {
   it("reports an unknown record as not_found", async () => {
     expect((await verifier.verifyCard(card("00".repeat(32)))).verdict).toBe("not_found");
   });
+
+  it("syncs status-list segments, validates the signed root, and checks revocation offline", async () => {
+    const statusListId = env.LAFIYA_IT_STATUS_LIST_ID;
+    if (!statusListId) {
+      // Status-list contract not deployed in this environment; nothing to sync.
+      return;
+    }
+
+    const sync = await verifier.syncStatusList({
+      network: "local",
+      statusListId,
+      // Sync only the segments covering the record under test.
+      recordHashes: [env.LAFIYA_IT_RECORD_HASH!],
+    });
+
+    // The signed root must validate against the configured trust anchor.
+    expect(sync.rootValid).toBe(true);
+    expect(sync.segments.length).toBeGreaterThan(0);
+
+    // Inclusion of the record's index must be provable against the signed root.
+    for (const segment of sync.segments) {
+      expect(verifier.validateStatusListInclusion(segment, sync.root)).toBe(true);
+    }
+
+    // Offline revocation check: no further RPC calls, uses the cached segments.
+    const offline = await verifier.checkRevocationOffline({
+      network: "local",
+      statusListId,
+      recordHash: env.LAFIYA_IT_RECORD_HASH!,
+      cache: sync,
+    });
+    expect(["revoked", "not_revoked"]).toContain(offline.status);
+  });
 });

@@ -39,6 +39,27 @@ pub mod mock;
 /// decisions (issue #408). See the module doc in `fees.rs`.
 pub mod fees;
 
+/// Rolling per-provider health scoring (latency percentiles, error rate,
+/// staleness vs. the network tip) used to order providers by observed
+/// health rather than static configuration (issue #540).
+pub mod health;
+
+/// Half-open circuit breaker with jittered recovery timers (issue #540).
+pub mod breaker;
+
+/// Observability hooks: counters, gauges, and histograms emitted by the
+/// resilience layer (issue #540).
+pub mod metrics;
+
+/// Hedged reads after a latency percentile, gated to idempotent calls only
+/// (issue #540).
+pub mod hedge;
+
+pub use breaker::{BreakerConfig, BreakerState, CircuitBreaker};
+pub use health::{HealthConfig, HealthScore, HealthTracker, ProviderHealth};
+pub use hedge::{HedgeConfig, HedgeOutcome};
+pub use metrics::{Metrics, NoopMetrics, SharedMetrics};
+
 /// Applying ledger bounds to real transaction envelopes.
 pub mod xdr;
 

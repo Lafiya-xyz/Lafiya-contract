@@ -5,3 +5,8 @@
 /crates/    @Coredevjay
 /scripts/   @Coredevjay
 /docs/      @Coredevjay
+
+# Mainnet enablement requires owner sign-off (see docs/runbooks/mainnet-readiness.md).
+/config/networks.toml          @Coredevjay
+/config/mainnet-readiness.json @Coredevjay
+/audit/                        @Coredevjay

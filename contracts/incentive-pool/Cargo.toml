@@ -14,9 +14,13 @@ doctest = false
 soroban-sdk = { workspace = true }
 
 [dev-dependencies]
+lafiya-test-utils = { path = "../../crates/lafiya-test-utils" }
 soroban-sdk = { workspace = true, features = ["testutils"] }
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 proptest = "1"
 
 [features]
 testutils = ["soroban-sdk/testutils"]
+
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(dylint_lib, values(any()))'] }

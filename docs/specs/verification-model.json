@@ -1,5 +1,5 @@
 {
-  "model_version": "1.0.0",
+  "model_version": "1.1.0",
   "verdicts": [
     "WrongNetwork",
     "Indeterminate",
@@ -10,7 +10,25 @@
     "Expired",
     "AttesterSuspended",
     "Superseded",
+    "Disputed",
+    "QuorumNotMet",
     "Verified"
+  ],
+  "quorum_states": [
+    "NotRequired",
+    "Pending",
+    "Satisfied"
+  ],
+  "dispute_states": [
+    "None",
+    "Disputed"
+  ],
+  "status_list_states": [
+    "NotChecked",
+    "Valid",
+    "Invalid",
+    "Stale",
+    "Unavailable"
   ],
   "default_input": {
     "network_matches": true,
@@ -22,7 +40,28 @@
     "attested_in_compromise_window": false,
     "age_exceeds_policy": false,
     "superseded": false,
-    "offline": false
+    "offline": false,
+    "quorum_required": 1,
+    "distinct_attesters": 1,
+    "disputed": false,
+    "status_list_state": "Valid"
+  },
+  "result_fields": {
+    "quorum": {
+      "required": "quorum_required",
+      "count": "distinct_attesters",
+      "state": "quorum_states",
+      "rule": "count >= required; duplicate attesters are not counted"
+    },
+    "dispute": {
+      "state": "dispute_states",
+      "public_only": true,
+      "clearing": "attester_or_admin_only"
+    },
+    "status_list": {
+      "state": "status_list_states",
+      "offline_qualifier": "as_of_bundle"
+    }
   },
   "cases": [
     { "id": "clean", "input": {}, "verdict": "Verified" },
@@ -41,7 +80,18 @@
     { "id": "suspended", "input": { "attester_status": "suspended" }, "verdict": "AttesterSuspended" },
     { "id": "suspended-beats-superseded", "input": { "attester_status": "suspended", "superseded": true }, "verdict": "AttesterSuspended" },
     { "id": "superseded", "input": { "superseded": true }, "verdict": "Superseded" },
+    { "id": "disputed", "input": { "disputed": true }, "verdict": "Disputed" },
+    { "id": "disputed-beats-quorum", "input": { "disputed": true, "quorum_required": 2, "distinct_attesters": 1 }, "verdict": "Disputed" },
+    { "id": "revoked-beats-disputed", "input": { "revoked": true, "disputed": true }, "verdict": "Revoked" },
+    { "id": "quorum-not-met", "input": { "quorum_required": 2, "distinct_attesters": 1 }, "verdict": "QuorumNotMet" },
+    { "id": "quorum-met", "input": { "quorum_required": 2, "distinct_attesters": 2 }, "verdict": "Verified" },
+    { "id": "quorum-met-exceeds", "input": { "quorum_required": 2, "distinct_attesters": 3 }, "verdict": "Verified" },
+    { "id": "quorum-not-met-beats-expired", "input": { "quorum_required": 2, "distinct_attesters": 1, "age_exceeds_policy": true }, "verdict": "Expired" },
+    { "id": "status-list-invalid", "input": { "status_list_state": "Invalid" }, "verdict": "Revoked" },
+    { "id": "status-list-stale", "input": { "status_list_state": "Stale" }, "verdict": "Indeterminate" },
+    { "id": "status-list-unavailable", "input": { "status_list_state": "Unavailable" }, "verdict": "Indeterminate" },
     { "id": "offline-clean", "input": { "offline": true }, "verdict": "Verified", "qualifier": "as_of_bundle" },
-    { "id": "offline-revoked", "input": { "offline": true, "revoked": true }, "verdict": "Revoked", "qualifier": "as_of_bundle" }
+    { "id": "offline-revoked", "input": { "offline": true, "revoked": true }, "verdict": "Revoked", "qualifier": "as_of_bundle" },
+    { "id": "offline-status-list-stale", "input": { "offline": true, "status_list_state": "Stale" }, "verdict": "Indeterminate", "qualifier": "as_of_bundle" }
   ]
 }

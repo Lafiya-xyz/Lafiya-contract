@@ -1,0 +1,101 @@
+name: Benchmark history
+
+# Records contract resource usage for every commit on main to the
+# `bench-history` data branch, renders the trend page, and keeps one
+# `bench-drift` issue open while a metric has drifted (docs/benchmarks.md).
+# The first run (empty branch) backfills the last 50 first-parent commits;
+# later runs measure only commits missing from the history.
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      backfill:
+        description: "First-parent commits of main to measure if missing from the history"
+        default: "50"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: bench-history
+  cancel-in-progress: false
+
+env:
+  CARGO_TERM_COLOR: always
+  HISTORY_BRANCH: bench-history
+
+jobs:
+  record:
+    name: Record, render, alert
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      # Dev profile: the harness needs panic unwinding (see bench_measure.sh).
+      - name: Build the harness (once, from this commit)
+        run: cargo build --locked -p lafiya-bench
+
+      - name: Check out the history branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin "$HISTORY_BRANCH"; then
+            git worktree add -B "$HISTORY_BRANCH" history "origin/$HISTORY_BRANCH"
+          else
+            git worktree add --orphan -b "$HISTORY_BRANCH" history
+          fi
+
+      - name: Measure missing commits
+        run: python3 scripts/bench_history.py backfill --history history --count "${{ inputs.backfill || '50' }}" --ref "$GITHUB_SHA"
+
+      - name: Evaluate drift and render the trend page
+        run: |
+          python3 scripts/bench_history.py alerts --history history --json alerts.json --markdown alerts.md
+          python3 scripts/bench_history.py render --history history --out history/index.html
+          cat alerts.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push the history branch
+        working-directory: history
+        run: |
+          git add -A
+          git diff --cached --quiet || git commit -q -m "bench: record ${GITHUB_SHA::12}"
+          git push origin "HEAD:$HISTORY_BRANCH"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: bench-trend
+          path: history/index.html
+
+      # Hysteresis lives in the alert evaluation, so the issue only opens
+      # and closes when the alert state changes.
+      - name: Sync the drift issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create bench-drift --color d03b3b --description "Sustained benchmark drift on main" --force
+          open=$(gh issue list --label bench-drift --state open --json number -q '.[0].number')
+          if jq -e '.active | length > 0' alerts.json >/dev/null; then
+            printf '\n\nTrend page: artifact `bench-trend` of %s/%s/actions/runs/%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> alerts.md
+            if [ -n "$open" ]; then
+              gh issue edit "$open" --body-file alerts.md
+            else
+              gh issue create --title "Benchmark drift on main" --label bench-drift --body-file alerts.md
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "Drift cleared as of ${GITHUB_SHA::12}."
+          fi

@@ -1,0 +1,234 @@
+asyncapi: 3.0.0
+info:
+  title: Lafiya Indexer Push Delivery API
+  version: 1.0.0
+  description: |
+    Push delivery for the Lafiya indexer. Integrators can subscribe to
+    attestation and attester changes instead of polling paginated endpoints.
+
+    Two delivery mechanisms are provided:
+
+    * **Server-Sent Events (SSE)** — a resumable, ordered stream. Clients may
+      reconnect with the standard `Last-Event-ID` header (or `lastEventId`
+      query parameter) to resume from the last event they processed. The event
+      id is a monotonically increasing ledger/event index, so resumption is
+      exact and replays are idempotent when de-duplicated by event id.
+    * **Signed webhooks** — HTTP POST deliveries signed with HMAC-SHA256.
+      Deliveries are retried with exponential backoff and, once retries are
+      exhausted, moved to a dead-letter table for inspection and replay.
+
+    ## Delivery semantics
+
+    Delivery is **at-least-once**. Consumers MUST de-duplicate by the event
+    `id` field (also sent as the `X-Lafiya-Event-Id` header and as the SSE
+    `id:` field). Replays after a resume or a webhook retry carry the same
+    `id`, so processing is idempotent.
+
+    ## Subscription filters
+
+    Subscriptions may be filtered by:
+
+    * `contract` — contract id(s) to receive events for.
+    * `eventType` — event type(s), e.g. `attestation.created`,
+      `attestation.revoked`, `attester.updated`.
+    * `attester` — attester address(es) whose events should be delivered.
+
+    Filters are conjunctive across fields and disjunctive within a field
+    (a list matches any of its values). An omitted filter matches everything.
+
+servers:
+  production:
+    host: indexer.lafiya.example
+    protocol: https
+    description: Production indexer push delivery endpoint.
+
+channels:
+  sseStream:
+    address: /v1/events/stream
+    title: Server-Sent Events stream
+    description: |
+      Resumable SSE stream of indexer events. Each message is emitted with an
+      SSE `id:` field set to the event id (ledger/event index) and an `event:`
+      field set to the event type. On reconnect, send `Last-Event-ID` with the
+      id of the last successfully processed event; the server replays all
+      events with a greater id. If `Last-Event-ID` is absent, the stream
+      starts from the current head (no replay).
+
+      Filtering is applied via query parameters (`contract`, `eventType`,
+      `attester`), each repeatable.
+    messages:
+      event:
+        $ref: '#/components/messages/IndexerEvent'
+    bindings:
+      http:
+        type: response
+        method: GET
+        query:
+          type: object
+          properties:
+            contract:
+              type: array
+              items:
+                type: string
+              description: Contract id filter (repeatable).
+            eventType:
+              type: array
+              items:
+                type: string
+              description: Event type filter (repeatable).
+            attester:
+              type: array
+              items:
+                type: string
+              description: Attester address filter (repeatable).
+            lastEventId:
+              type: string
+              description: |
+                Fallback for the `Last-Event-ID` header when the client cannot
+                set headers (e.g. browser EventSource). The header takes
+                precedence when both are present.
+
+  webhookDelivery:
+    address: '{webhookUrl}'
+    title: Signed webhook delivery
+    description: |
+      HTTP POST delivery of a single event to a subscriber-registered URL.
+      Each request carries an HMAC-SHA256 signature over the raw request body
+      in the `X-Lafiya-Signature` header (format `sha256=<hex>`), the event id
+      in `X-Lafiya-Event-Id`, the delivery attempt number in
+      `X-Lafiya-Delivery-Attempt`, and a stable delivery id in
+      `X-Lafiya-Delivery-Id` (identical across retries of the same event).
+
+      A subscriber SHOULD respond with a 2xx status to acknowledge delivery.
+      Any non-2xx response, timeout, or connection error triggers a retry.
+
+      ### Retry and backoff
+
+      Failed deliveries are retried with exponential backoff (base delay and
+      max attempts are configurable per subscription; defaults are documented
+      in the indexer configuration). The `X-Lafiya-Delivery-Attempt` header is
+      incremented on each attempt.
+
+      ### Dead-letter
+
+      When retries are exhausted the delivery is written to the indexer's
+      dead-letter table with the event id, subscription id, last error, and
+      attempt count. Dead-lettered deliveries can be inspected and replayed;
+      replays preserve the original event id so consumers remain idempotent.
+    messages:
+      event:
+        $ref: '#/components/messages/IndexerEvent'
+    bindings:
+      http:
+        type: request
+        method: POST
+
+operations:
+  receiveSseEvents:
+    action: receive
+    channel:
+      $ref: '#/channels/sseStream'
+    summary: Receive indexer events over SSE with Last-Event-ID resume.
+    messages:
+      - $ref: '#/channels/sseStream/messages/event'
+
+  receiveWebhook:
+    action: receive
+    channel:
+      $ref: '#/channels/webhookDelivery'
+    summary: Receive a signed webhook delivery for a single event.
+    messages:
+      - $ref: '#/channels/webhookDelivery/messages/event'
+
+components:
+  messages:
+    IndexerEvent:
+      name: IndexerEvent
+      title: Indexer event envelope
+      summary: A single attestation or attester change event.
+      contentType: application/json
+      headers:
+        type: object
+        properties:
+          X-Lafiya-Signature:
+            type: string
+            description: |
+              HMAC-SHA256 signature of the raw request body, formatted as
+              `sha256=<hex>`. Webhook deliveries only.
+          X-Lafiya-Event-Id:
+            type: string
+            description: Event id (ledger/event index). Matches the body `id`.
+          X-Lafiya-Delivery-Id:
+            type: string
+            description: Stable delivery id, identical across retries. Webhook only.
+          X-Lafiya-Delivery-Attempt:
+            type: integer
+            minimum: 1
+            description: 1-based delivery attempt number. Webhook only.
+      payload:
+        $ref: '#/components/schemas/IndexerEvent'
+
+  schemas:
+    IndexerEvent:
+      type: object
+      required:
+        - id
+        - eventType
+        - contract
+        - ledger
+        - occurredAt
+        - data
+      properties:
+        id:
+          type: string
+          description: |
+            Monotonically increasing event id (ledger/event index). Used for
+            SSE `Last-Event-ID` resume and for idempotent de-duplication of
+            replays and webhook retries.
+        eventType:
+          type: string
+          description: Event type.
+          examples:
+            - attestation.created
+            - attestation.revoked
+            - attester.updated
+        contract:
+          type: string
+          description: Contract id the event originated from.
+        attester:
+          type: string
+          nullable: true
+          description: Attester address associated with the event, if any.
+        ledger:
+          type: integer
+          description: Ledger sequence number containing the event.
+        occurredAt:
+          type: string
+          format: date-time
+          description: Timestamp the event was observed by the indexer.
+        data:
+          type: object
+          additionalProperties: true
+          description: Event-type-specific payload.
+
+    SubscriptionFilter:
+      type: object
+      description: |
+        Filters applied to a subscription. Fields are conjunctive; values
+        within a field are disjunctive. Omitted fields match everything.
+      properties:
+        contract:
+          type: array
+          items:
+            type: string
+          description: Contract ids to receive events for.
+        eventType:
+          type: array
+          items:
+            type: string
+          description: Event types to receive.
+        attester:
+          type: array
+          items:
+            type: string
+          description: Attester addresses to receive events for.

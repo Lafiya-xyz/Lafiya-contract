@@ -69,3 +69,5 @@ export declare function addSignatureToCeremony(ceremony: CeremonyFile, publicKey
 /** Rebuild the signed `SorobanAuthorizationEntry` from a ceremony's
  * collected signatures, sorted and encoded via `attachSignatures`. */
 export declare function finalizeCeremony(ceremony: CeremonyFile): xdr.SorobanAuthorizationEntry;
+export * from "./passkey.js";
+export * from "./intent.js";

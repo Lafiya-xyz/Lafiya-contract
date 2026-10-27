@@ -120,6 +120,142 @@
     },
     {
       "contract": "attestation-registry",
+      "name": "AttestationTtlExtended",
+      "prefix_topics": [
+        "attestation_ttl_extended"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "extended_by",
+          "type": "address",
+          "location": "data"
+        },
+        {
+          "name": "previous_expiry_ledger",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "new_expiry_ledger",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "QuorumPolicySet",
+      "prefix_topics": [
+        "quorum_policy_set"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_class",
+          "type": "symbol",
+          "location": "topic_list"
+        },
+        {
+          "name": "required_attesters",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "QuorumReached",
+      "prefix_topics": [
+        "quorum_reached"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "distinct_attesters",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "required_attesters",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "AttestationDisputed",
+      "prefix_topics": [
+        "attestation_disputed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "patient",
+          "type": "address",
+          "location": "data"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "DisputeCleared",
+      "prefix_topics": [
+        "dispute_cleared"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "cleared_by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
       "name": "AttesterRegistryRepointed",
       "prefix_topics": [
         "attester_registry_repointed"
@@ -205,6 +341,84 @@
           "name": "by",
           "type": "address",
           "location": "topic_list"
+        }
+      ]
+    },
+    {
+      "contract": "status-list",
+      "name": "StatusListInitialized",
+      "prefix_topics": [
+        "status_list_initialized"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "admin",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "segment_size",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "status-list",
+      "name": "StatusListSegmentUpdated",
+      "prefix_topics": [
+        "status_list_segment_updated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "segment_index",
+          "type": "u32",
+          "location": "topic_list"
+        },
+        {
+          "name": "version",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "root",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "status-list",
+      "name": "StatusListRootPublished",
+      "prefix_topics": [
+        "status_list_root_published"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "root",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "version",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "published_at",
+          "type": "u64",
+          "location": "data"
         }
       ]
     },

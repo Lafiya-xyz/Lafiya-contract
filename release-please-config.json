@@ -9,7 +9,7 @@
       "changelog-path": "CHANGELOG.md",
       "extra-files": [
         { "type": "toml", "path": "Cargo.toml", "jsonpath": "$.workspace.package.version" },
-        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='multisig-account' || @.name=='attester-registry' || @.name=='attestation-registry' || @.name=='lafiya-config' || @.name=='lafiya-cli' || @.name=='lafiya-commitment' || @.name=='lafiya-rpc-resilience' || @.name=='xtask')].version" },
+        { "type": "toml", "path": "Cargo.lock", "jsonpath": "$.package[?(@.name=='multisig-account' || @.name=='attester-registry' || @.name=='attestation-registry' || @.name=='lafiya-config' || @.name=='lafiya-cli' || @.name=='lafiya-rpc-resilience' || @.name=='xtask')].version" },
         { "type": "json", "path": "bindings/attester-registry/package.json", "jsonpath": "$.version" },
         { "type": "json", "path": "bindings/attestation-registry/package.json", "jsonpath": "$.version" }
       ]

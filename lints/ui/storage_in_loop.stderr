@@ -1,0 +1,10 @@
+warning: storage access inside a loop; hoist or batch it
+  --> $DIR/storage_in_loop.rs:7:29
+   |
+LL |     for i in 0..3 { let _ = e.storage().persistent().get(i); } //~ storage_in_loop
+   |                             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(storage_in_loop)]` on by default
+
+warning: 1 warning emitted
+

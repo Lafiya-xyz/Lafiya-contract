@@ -40,7 +40,16 @@ jobs:
             pinned) ;;
             latest-patch) cargo update -p soroban-sdk ;;
             main)
-              sed -i 's|^soroban-sdk = .*|soroban-sdk = { git = "https://github.com/stellar/rs-soroban-sdk", branch = "main" }|' Cargo.toml
+              # Match the soroban-sdk dependency line regardless of its exact
+              # format (plain version, inline table, or workspace = true), and
+              # fail loudly if it can't be found so the override never silently
+              # no-ops when Cargo.toml changes.
+              if ! grep -qE '^soroban-sdk[[:space:]]*=' Cargo.toml; then
+                echo "::error::Could not find a soroban-sdk dependency line in Cargo.toml"
+                exit 1
+              fi
+              sed -i -E 's|^soroban-sdk[[:space:]]*=.*|soroban-sdk = { git = "https://github.com/stellar/rs-soroban-sdk", branch = "main" }|' Cargo.toml
+              grep -E '^soroban-sdk[[:space:]]*=' Cargo.toml
               cargo update -p soroban-sdk
               ;;
           esac
@@ -48,7 +57,7 @@ jobs:
       - name: Test
         run: cargo test --workspace
       - name: Build contract crates
-        run: cargo build --release --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry
+        run: cargo build --release --target wasm32v1-none -p multisig-account -p attester-registry -p attestation-registry -p incentive-pool
 
   protocol:
     name: Protocol (quickstart:${{ matrix.image }})
@@ -72,9 +81,25 @@ jobs:
           sudo mv stellar /usr/local/bin/
           stellar --version
       - name: Start quickstart
-        run: docker run -d -p 8000:8000 --name stellar "stellar/quickstart:${{ matrix.image }}" --local
+        run: |
+          docker run -d -p 8000:8000 --name stellar "stellar/quickstart:${{ matrix.image }}" --local
+          # Wait for the local network to be ready before running tests.
+          for i in $(seq 1 60); do
+            if curl -sSf http://localhost:8000/soroban/rpc -o /dev/null 2>/dev/null \
+              || curl -sSf http://localhost:8000/ -o /dev/null 2>/dev/null; then
+              echo "quickstart is up"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "::error::quickstart:${{ matrix.image }} did not become ready"
+          docker logs stellar
+          exit 1
       - name: Integration tests
         run: make test-integration
+      - name: Dump quickstart logs on failure
+        if: failure()
+        run: docker logs stellar || true
 
   report:
     name: Open issue on failure
@@ -98,3 +123,16 @@ jobs:
           else
             gh issue create --title "$title" --body "$body"
           fi
+        # Surface the tracking issue in the run summary for quick triage.
+      - name: Summarize failure
+        if: always()
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          {
+            echo "## Compatibility matrix failed"
+            echo ""
+            echo "Run: $RUN_URL"
+            echo ""
+            echo "Triage per docs/runbooks/sdk-protocol-upgrade.md."
+          } >> "$GITHUB_STEP_SUMMARY"

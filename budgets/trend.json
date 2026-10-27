@@ -1,0 +1,18 @@
+{
+  "$comment": "Drift alerting for the benchmark history (docs/benchmarks.md). A metric alerts once it stays more than `tolerance` above the median of its previous `lookback` points for `sustain` consecutive commits, and clears only after `sustain` consecutive commits back within `clear_tolerance` of the reference it alerted against. `acknowledged` rebaselines a metric from a commit onward (an accepted, intentional increase).",
+  "tolerance": 0.05,
+  "clear_tolerance": 0.02,
+  "sustain": 3,
+  "lookback": 20,
+  "metrics": [
+    "cpu_instructions",
+    "memory_bytes",
+    "ledger_read_entries",
+    "ledger_read_bytes",
+    "ledger_write_entries",
+    "ledger_write_bytes",
+    "events_size_bytes",
+    "size_bytes"
+  ],
+  "acknowledged": {}
+}

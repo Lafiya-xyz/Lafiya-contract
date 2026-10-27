@@ -142,6 +142,109 @@ attempts. Defaults (`RetryPolicy::default()`) are conservative: 3 submit rounds,
 rounds, 250ms base backoff capped at 8s — tuned for a low-frequency, high-consequence admin
 CLI, not a high-throughput service.
 
+### Latency-aware provider scoring (issue #540)
+
+Static ordering is not enough: a slow-but-alive provider keeps being chosen because it never
+fails outright. `ProviderHealth` (`src/lib.rs`) keeps a rolling score per provider, updated
+from every observed call, combining three signals:
+
+- **Latency** — an exponentially weighted moving average of observed round-trip latency,
+  compared against the best provider's EWMA so a provider that is 10x slower than its peers
+  is deprioritized even while it keeps answering.
+- **Error budget** — a rolling error rate over a fixed window; providers that exceed the
+  budget are demoted before they fail hard.
+- **Staleness** — the gap between the latest ledger a provider reports and the network tip
+  observed across all providers. A provider that is behind the tip cannot be trusted to
+  answer `getTransaction` authoritatively, so it is scored down for reads and excluded from
+  reconciliation until it catches up.
+
+Selection (`FailoverClient::select_provider`) orders providers by score, with the configured
+order as a deterministic tie-break so behavior is reproducible in tests. The score is
+advisory, not a hard gate: a provider is only skipped outright when its circuit breaker is
+open (below).
+
+### Hedged reads (issue #540)
+
+For **idempotent reads** (`getTransaction`, `getLatestLedger`, simulation), the client may
+issue a second request to the next-best provider once the first has not answered within a
+latency percentile of its rolling distribution (default: p95 of the primary's EWMA, floored
+by `RetryPolicy::hedge_after`). The first response wins; the loser is cancelled and its
+latency still feeds the health score.
+
+Hedging is **never** applied to transaction submission. `submit` remains single-flight: one
+provider, one signed envelope, one hash. The hedge path is structurally separate from the
+submit path in `FailoverClient`, and `tests/failure_injection.rs` asserts that no scenario
+produces more than one `sendTransaction` for a given hash.
+
+### Half-open circuit breaker with jittered recovery (issue #540)
+
+Each provider has a breaker with `Closed → Open → HalfOpen → Closed` states. A provider trips
+to `Open` when its rolling error rate exceeds the budget or it reports a stale ledger for
+too long; while open it is skipped by selection. After a cooldown it moves to `HalfOpen`,
+which admits a single probe request. Success closes the breaker and restores the provider to
+the scoring pool; failure re-opens it with a doubled cooldown.
+
+Cooldowns are **jittered** (full jitter over the capped exponential backoff) so that a shared
+provider outage does not cause every client to probe in lockstep the moment it recovers. This
+is the one place jitter is applied in this prototype; the submit/poll backoff schedule
+remains deterministic (see Trade-offs).
+
+### Metrics hooks (issue #540)
+
+Observability is exported through a small `MetricsSink` trait (`src/lib.rs`) rather than a
+hard dependency on a specific metrics library, so the CLI can wire it to whatever the
+operations stack uses and tests can assert on emitted events. The client emits:
+
+- `provider_selected{provider, score}` and `provider_skipped{provider, reason}` (breaker
+  open, stale, over error budget).
+- `provider_latency{provider, millis}` for every completed call, including hedge losers.
+- `hedge_issued{provider, primary}` and `hedge_won{provider}`.
+- `breaker_state{provider, state}` on every transition.
+- `submit_attempt{provider, hash}` and `reconcile_result{hash, state}`.
+
+The default sink is a no-op, so existing callers are unaffected.
+
+### Persisted submission intents and reconciliation (issue #541)
+
+A timeout after `sendTransaction` leaves the CLI uncertain whether the transaction will land.
+To resolve that without double submission, the client persists a **submission intent**
+before sending: the transaction hash, the expiry ledger (`maxLedger` from the ledger bounds
+above), the source account sequence number, and the command that produced it. The intent is
+written with an atomic write (write to a temporary file in the same directory, `fsync`, then
+`rename` over the target) so a crash mid-write leaves either the old file or the new one,
+never a truncated record.
+
+On startup, and after any ambiguous outcome, the client reconciles each outstanding intent by
+polling `getTransaction` until it reaches a precise final state:
+
+| Final state | Meaning | Operator action |
+| --- | --- | --- |
+| `Accepted{ledger}` | Included in `ledger`. | None; the intent is cleared. |
+| `Rejected{reason}` | Included but failed on-chain. | Inspect `reason`; a new attempt needs a freshly built transaction. |
+| `Expired` | A ledger above `maxLedger` closed and the hash was never seen. | Safe to rebuild and resubmit (new sequence, new bounds). |
+| `SequenceConsumed{hash}` | The source sequence was consumed by a different transaction. | Do **not** rebuild blindly; the consuming transaction may have made the same change. |
+| `Unknown` | Poll budget exhausted with no provider reporting the latest ledger. | Escalate; re-run reconciliation once a provider is healthy. |
+
+Idempotency guidance: re-simulate and rebuild only after `Expired` is proven. `Unknown` and
+`SequenceConsumed` are not proof of non-inclusion and must not trigger a rebuild. The
+fault-injection tests cover drop-before-send (nothing persisted past the intent, resolves to
+`Expired`), drop-after-send (intent persisted, resolves to `Accepted` or `Rejected`), and
+slow-ingest (provider lags the tip; the stale provider is scored down and reconciliation
+waits for a fresh one rather than concluding `Expired` early).
+
+### Operator-facing ambiguous states and secret rotation
+
+The runbook (`docs/runbooks/rpc-outage-recovery.md`) documents each ambiguous state above in
+operator terms: what the CLI prints, what it means, and the single safe next action. In
+particular, `Unknown` and `SequenceConsumed` are called out as states where re-running the
+original command is the wrong move.
+
+Secret rotation: the RPC provider credentials (API keys embedded in `rpc_urls`) are read from
+the environment, never from the persisted intent file. Rotating a provider key is a
+config/env change followed by a restart; outstanding intents reference only the transaction
+hash and ledger bounds, so a rotation does not invalidate in-flight reconciliation. The
+runbook documents the rotation procedure and the fact that intents survive it.
+
 ### Provider comparison matrix (at least two approaches evaluated)
 
 | Approach | Description | Reliability | Latency | Cost | Operational complexity | Duplicate-submission risk |
@@ -206,7 +309,12 @@ nothing, since it actively creates duplicate on-chain records instead of just bl
   than one working RPC URL, instead of trusting the one SDF default.
 - `backoff_schedule` has no jitter (documented in `src/lib.rs`); if the CLI is ever run by
   many concurrent automated callers against the same provider set, add jitter first to avoid
-  a synchronized retry stampede after a shared provider's outage.
+  a synchronized retry stampede after a shared provider's outage. Circuit-breaker cooldowns
+  are already jittered (see Half-open circuit breaker), which covers the probe stampede; the
+  submit/poll backoff remains deterministic for reproducible tests.
+- Latency-aware scoring and hedging add state (rolling EWMAs, breaker state) that must be
+  reset or persisted deliberately across CLI invocations; the prototype keeps it in memory
+  per process, so a fresh process starts with neutral scores.
 - The prototype's retry/poll budgets are static per-call constants; they are not informed by
   a provider's advertised transaction-retention window, so `max_poll_rounds` could in theory
   be exhausted before a slow-to-index provider would have answered. Follow-up work should
@@ -233,9 +341,10 @@ nothing, since it actively creates duplicate on-chain records instead of just bl
 - Persist an in-flight transaction's hash and intent (which command, which network, which
   contract call) to local disk before submitting, so a crashed or interrupted CLI invocation
   can be resumed with `tx status` instead of leaving the operator to reconstruct what was in
-  flight from memory.
-- Tune `RetryPolicy` defaults, and add jitter to `backoff_schedule`, against observed
-  behavior of the specific providers configured for `testnet`/`futurenet`/`mainnet`.
+  flight from memory. (Prototyped in issue #541; see Persisted submission intents.)
+- Tune `RetryPolicy` defaults, the latency percentile used for hedging, and the scoring
+  weights against observed behavior of the specific providers configured for
+  `testnet`/`futurenet`/`mainnet`.
 - Revisit Approach B (dedicated gateway) if `lafiya-web` or a verifier client needs the same
   failover behavior outside this repository's CLI/scripts.
 - Operator alerting (e.g. paging when a recovery run reaches
@@ -246,6 +355,10 @@ nothing, since it actively creates duplicate on-chain records instead of just bl
 
 - [Issue #132](https://github.com/Lafiya-xyz/Lafiya-contract/issues/132) — the spike this
   ADR resolves.
+- [Issue #540](https://github.com/Lafiya-xyz/Lafiya-contract/issues/540) — latency-aware
+  provider scoring, hedged reads, half-open circuit breaker, and metrics hooks.
+- [Issue #541](https://github.com/Lafiya-xyz/Lafiya-contract/issues/541) — persisted
+  submission intents and reconciliation to precise final states.
 - [`crates/lafiya-rpc-resilience`](../../crates/lafiya-rpc-resilience) — failure-injection
   prototype, transaction-state model, and retry-classification implementation.
 - [`docs/runbooks/rpc-outage-recovery.md`](../runbooks/rpc-outage-recovery.md) — the

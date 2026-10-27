@@ -5,7 +5,7 @@
 | **Status** | Proposed |
 | **Date** | 2026-09-26 |
 | **Deciders** | Lafiya core team |
-| **Relates to** | ADR-0012 (W3C VC export), ADR-0001 (hash-only on-chain footprint) |
+| **Relates to** | ADR-0022 (W3C VC export), ADR-0001 (hash-only on-chain footprint) |
 
 ## Context
 
@@ -17,7 +17,7 @@ address (`G...`). A verifier outside the Lafiya app cannot:
 2. Find which health facility or license authority backs the attester.
 3. Detect that an attester has been suspended or removed from the allowlist.
 
-For W3C VC interoperability (ADR-0012) the credential's `issuer` must be a DID
+For W3C VC interoperability (ADR-0022) the credential's `issuer` must be a DID
 whose document can be resolved by any standards-compliant verifier to find the
 attester's `verificationMethod` (public key). The DID must also reflect the
 attester's current operational status — suspended or removed attesters must not

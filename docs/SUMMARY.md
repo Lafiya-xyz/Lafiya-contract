@@ -8,6 +8,7 @@
 - [Event indexing and data flow](architecture/event-indexing.md)
 - [Storage versioning](architecture/storage-versioning.md)
 - [Storage cost](storage-cost.md)
+- [Capacity forecast](capacity-forecast.md)
 
 # Contracts
 
@@ -30,7 +31,10 @@
 # Operate
 
 - [Runbook: contract upgrade](runbooks/contract-upgrade.md)
+- [Runbook: incentive-pool balance drift](runbooks/incentive-pool-drift.md)
 - [Runbook: RPC outage recovery](runbooks/rpc-outage-recovery.md)
+- [Runbook: key-generation ceremony](runbooks/key-ceremony.md)
+- [Runbook: admin and guardian key rotation](runbooks/admin-key-rotation.md)
 - [CLI reference: lafiya-cli](reference/cli/lafiya-cli.md)
 - [CLI reference: cargo xtask](reference/cli/xtask.md)
 - [Network configuration](imported/config.md)
@@ -40,6 +44,8 @@
 
 # Decisions
 
+- [Mainnet readiness gate](runbooks/mainnet-readiness.md)
+- [Runbook: TTL keeper](runbooks/ttl-keeper.md)
 - [ADR index](adr/README.md)
   - [ADR-0001: Hash-only on-chain footprint](adr/0001-hash-only-on-chain-footprint.md)
   - [ADR-0002: contractclient boundary](adr/0002-contractclient-boundary.md)
@@ -51,13 +57,18 @@
   - [ADR-0010: Release manifest and compatibility](adr/0010-release-manifest-and-compatibility.md)
   - [ADR-0011: RPC failover and transaction recovery](adr/0011-rpc-provider-failover-and-transaction-recovery.md)
   - [ADR-0012: Multi-jurisdiction deployment topology](adr/0012-multi-jurisdiction-deployment-topology.md)
+  - [ADR-0018: Incentive pool approver quorum](adr/0018-incentive-pool-approver-quorum.md)
   - [ADR template](adr/0000-template.md)
 - [Spike: contract interface conformance](spikes/0137-contract-interface-conformance.md)
+- [Responder verdict UX guidelines](integration/verdict-ux-guidelines.md)
+- [Spike: ZK selective disclosure](spikes/0608-zk-selective-disclosure.md)
 
 # Security
 
 - [Disclosure policy](imported/security.md)
 - [Formal verification (TLA+)](imported/formal-verification.md)
+- [Wasm artifact policy](security/wasm-policy.md)
+- [Off-chain threat model](security/threat-model-offchain.md)
 
 # Reference
 

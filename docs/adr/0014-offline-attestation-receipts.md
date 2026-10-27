@@ -1,4 +1,5 @@
-# ADR-0014: Offline-verifiable attestation receipts for responders without connectivity
+<!-- adr-redirect: 0025-offline-attestation-receipts.md -->
+# Moved: ADR-0025
 
 - **Status:** Proposed
 - **Date:** 2026-09-27
@@ -185,6 +186,74 @@ A signed receipt is valid for the specific `(network_id, attestation_registry, r
 attester, attested_at, ledger_seq)` tuple. Replaying the same receipt for a different context
 (different card, different network, different registry) is prevented by the canonical encoding
 including all six fields.
+
+### Freshness fields (`issued_at` / `valid_until`) and unreliable clocks
+
+The QR payload (ADR-0013) carries optional `issued_at` and `valid_until` fields so that a
+photographed card can be distinguished from a current one. The receipt's `attested_at` and
+`ledger_seq` remain the authoritative on-chain anchor; the freshness fields are a verifier-side
+policy input layered on top of the receipt.
+
+**Canonical encoding.** When present, both fields are encoded as big-endian `u64` Unix epoch
+seconds and are covered by the attester signature. They are appended to the receipt pre-image
+after `ledger_seq_BE[8]`, guarded by a presence bitmap so that a payload with neither field
+produces a byte-identical canonical form to the v1 receipt:
+
+```
+canonical = SHA-256(
+    "lafiya:receipt:v1\0"
+    || network_id[4]
+    || attestation_registry[32]
+    || record_hash[32]
+    || attester[32]
+    || attested_at_BE[8]
+    || ledger_seq_BE[8]
+    || freshness_flags[1]        // bit 0 = issued_at present, bit 1 = valid_until present
+    || issued_at_BE[8]?          // only if bit 0 set
+    || valid_until_BE[8]?        // only if bit 1 set
+)
+```
+
+Because the flags byte is always present, a v1 receipt (no freshness fields) hashes with
+`freshness_flags = 0x00`. This is an additive extension under the payload versioning rules in
+ADR-0013: the payload version is not bumped, and verifiers that predate this extension ignore
+the unknown fields but still validate the signature over the extended pre-image only if they
+understand the flags byte. To keep old verifiers working, the extension is gated behind a
+payload minor-version marker (see ADR-0013 §versioning); a verifier that does not recognize the
+marker MUST treat the payload as unverifiable rather than silently ignoring the fields.
+
+**Verifier policy.** Staleness handling is configurable per deployment with three levels:
+
+| Policy | Behaviour when `now > valid_until` (or `now < issued_at`) | Recommended use |
+|--------|-----------------------------------------------------------|-----------------|
+| `warn` | Accept, but surface a "stale card" warning and the field values | Low-risk triage, training |
+| `soft-fail` | Accept only after explicit responder confirmation; default UI is "unverified" | Field responders (default) |
+| `hard-fail` | Reject; treat as `STALE_PAYLOAD` | High-value settings, hospitals |
+
+The default for responder deployments is `soft-fail`. Missing fields are not an error: a payload
+without `issued_at`/`valid_until` is treated as "freshness unknown" and follows the same policy
+as a stale payload (`warn` → warn, `soft-fail` → confirm, `hard-fail` → reject), so that
+stripping the fields cannot downgrade enforcement.
+
+**Unreliable clocks.** Offline verifiers may have no trustworthy wall clock (device clock drift,
+no NTP, factory-reset devices). The verifier MUST NOT trust its own clock as the sole source of
+truth for staleness:
+
+1. If the device clock is known to be unreliable (no recent network sync, or the clock is
+   outside the trust bundle's `[created_at, expires_at]` window), the verifier downgrades
+   `hard-fail` to `soft-fail` and displays "freshness unverified (clock unreliable)".
+2. The trust bundle's `expires_at` is the primary freshness anchor: a receipt is never accepted
+   past `trust_bundle.expires_at` regardless of `valid_until`, so an unreliable clock cannot
+   extend acceptance beyond the bundle window.
+3. When the device clock is behind the bundle's `created_at`, the verifier uses
+   `trust_bundle.created_at` as a floor for "now" so that a rolled-back clock cannot make an
+   expired payload appear current.
+4. Once connectivity returns, the online reconciliation step re-evaluates freshness against the
+   authoritative chain time and upgrades or downgrades the status accordingly.
+
+This means the freshness fields tighten the offline window but never widen it: the effective
+acceptance window is `min(valid_until, trust_bundle.expires_at)` measured against a clock that
+is clamped to the bundle's validity range.
 
 ### Cross-network confusion
 

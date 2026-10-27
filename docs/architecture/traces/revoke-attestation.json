@@ -1,0 +1,20 @@
+{
+  "flow": "revoke-attestation",
+  "title": "Revoke an attestation",
+  "actors": [
+    "Attester",
+    "AttestationRegistry"
+  ],
+  "steps": [
+    {
+      "from": "Attester",
+      "to": "AttestationRegistry",
+      "call": "revoke_attestation",
+      "auth": "Attester"
+    },
+    {
+      "from": "AttestationRegistry",
+      "event": "AttestationRevoked"
+    }
+  ]
+}

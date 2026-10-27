@@ -26,6 +26,88 @@ currently allowlisted in the configured `attester-registry`.
 Stores the attestation with an incrementing sequence number,
 maintaining a bounded history (MAX_HISTORY entries per hash).
 
+When the record class has a quorum policy configured, the attestation
+is also recorded as a co-attestation in the per-hash quorum tally.
+Co-attestations are aggregated by **distinct** attester: a second
+`attest` from an attester who already has a live co-attestation for
+the same hash is a no-op (no new tally entry, no new sequence number).
+Revoking an attestation removes that attester's co-attestation from
+the tally, so quorum satisfaction is monotonic under revocation:
+it can only decrease when a co-attestation is revoked, and only
+increase when a new distinct attester co-attests.
+
+### `dispute_attestation`
+
+```rust
+fn dispute_attestation(patient: Address, record_hash: BytesN<32>, signature: BytesN<64>) -> Result<(), Error>
+```
+
+Flag the attestation for `record_hash` as disputed. The caller must
+supply a patient signature over the domain-separated commitment
+`(DOMAIN_DISPUTE, contract_id, record_hash, ledger_sequence_window)`
+using the patient signature scheme from the QR spec. The signature is
+replay-safe: the domain tag and contract id prevent cross-contract and
+cross-purpose reuse, and the ledger-sequence window bounds validity.
+
+A dispute is an overlay keyed by `(record_hash, patient)`; it never
+deletes or alters the underlying attestation. Disputes are bounded per
+hash (`MAX_DISPUTES_PER_HASH`) to limit spam. Clearing a dispute
+requires `revoke_attestation` (admin) or an attester action; the
+patient cannot clear their own dispute.
+
+### `extend_attestation_ttl`
+
+```rust
+fn extend_attestation_ttl(record_hash: BytesN<32>, extend_to: u32) -> Result<(), Error>
+```
+
+Extend the Soroban storage TTL of the attestation entry for
+`record_hash` so verifiable proofs outlive the original submitter's
+attention. Open to any caller; no authorization required. The new TTL
+is capped to `MAX_TTL_HORIZON` ledgers from the current ledger. The
+call cannot shorten the TTL (a request below the current TTL is a
+no-op) and cannot alter attestation data. Emits `AttestationTtlExtended`.
+
+### `get_quorum_policy`
+
+```rust
+fn get_quorum_policy(record_class: u32) -> Option<QuorumPolicy>
+```
+
+Return the quorum policy configured for `record_class`, if any.
+Callable by anyone.
+
+### `set_quorum_policy`
+
+```rust
+fn set_quorum_policy(record_class: u32, policy: QuorumPolicy) -> Result<(), Error>
+```
+
+Configure the quorum policy (required distinct attesters) for a record
+class. Requires the admin's authorization. Emits `QuorumPolicySet`.
+
+### `get_verification`
+
+```rust
+fn get_verification(record_hash: BytesN<32>) -> VerificationResult
+```
+
+Return the aggregated verification view for `record_hash`: the number
+of distinct live co-attestations, whether the applicable quorum policy
+is satisfied, and whether the record is disputed. Only public data is
+returned; no underlying health data is exposed. Callable by anyone.
+
+### `get_status_list_segment`
+
+```rust
+fn get_status_list_segment(segment_index: u32) -> Option<StatusListSegment>
+```
+
+Return a versioned status-list segment (bitstring) for compact bulk
+revocation checks by offline verifiers. Each segment carries a version
+and a commitment; verifiers validate inclusion against a signed root
+published out of band. Callable by anyone.
+
 ### `get_admin`
 
 ```rust
@@ -113,6 +195,9 @@ fn revoke_attestation(record_hash: BytesN<32>) -> Result<(), Error>
 ```
 
 Revoke all attestations for `record_hash`. Gated by admin authorization.
+Removes the hash's co-attestations from the quorum tally, clears any
+dispute overlay for the hash, and flips the corresponding status-list
+bit in the affected segment (bumping the segment version).
 
 ### `set_attester_registry`
 
@@ -145,6 +230,34 @@ underlying health data.
 | `attester` | `Address` | The allowlisted attester that verified the record. |
 | `timestamp` | `u64` | Ledger timestamp at which the attestation was recorded. |
 
+### `QuorumPolicy`
+
+Per-record-class policy requiring N distinct attesters.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `required` | `u32` | Number of distinct attesters required to satisfy the policy. |
+
+### `VerificationResult`
+
+Aggregated, public-only verification view for a record hash.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `attester_count` | `u32` | Number of distinct live co-attestations. |
+| `quorum_satisfied` | `bool` | Whether the applicable quorum policy is satisfied. |
+| `disputed` | `bool` | Whether a patient dispute overlay is present. |
+
+### `StatusListSegment`
+
+Versioned bitstring segment for compact bulk revocation checks.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `version` | `u32` | Monotonic version, bumped on any bit change. |
+| `bits` | `Bytes` | Packed bitstring; set bit means revoked. |
+| `commitment` | `BytesN<32>` | Commitment over `(version, bits)` for inclusion proofs. |
+
 ## Errors (`Error`)
 
 | Code | Name | Description |
@@ -156,6 +269,10 @@ underlying health data.
 | 5 | `InvalidRegistryWiring` | The configured `attester-registry` address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration. |
 | 6 | `AttestationNotFound` | No attestation exists for the given record hash / sequence. |
 | 7 | `ContractPaused` | The requested operation is blocked while the contract is paused. |
+| 8 | `InvalidSignature` | The patient dispute signature failed verification or was replayed outside its ledger window. |
+| 9 | `DisputeLimitReached` | The per-hash dispute bound (`MAX_DISPUTES_PER_HASH`) has been reached. |
+| 10 | `InvalidQuorumPolicy` | The requested quorum policy is invalid (e.g. `required` is zero or exceeds the attester count bound). |
+| 11 | `TtlHorizonExceeded` | The requested TTL exceeds `MAX_TTL_HORIZON` ledgers from the current ledger. |
 
 ## Events
 
@@ -164,6 +281,10 @@ underlying health data.
 | `AdminTransferred` | `"admin_transferred"`, `previous_admin: Address`, `new_admin: Address` |  | Emitted when admin ownership finishes transferring to a new address. |
 | `AttestationRecorded` | `"attestation_recorded"`, `record_hash: BytesN<32>` | `attester: Address`, `timestamp: u64` | Emitted when a new attestation is recorded for a record hash. |
 | `AttestationRevoked` | `"attestation_revoked"`, `record_hash: BytesN<32>` |  | Emitted when an attestation is revoked. |
+| `AttestationTtlExtended` | `"attestation_ttl_extended"`, `record_hash: BytesN<32>` | `extend_to: u32` | Emitted when an attestation entry's TTL is extended. |
+| `AttestationDisputed` | `"attestation_disputed"`, `record_hash: BytesN<32>` | `patient: Address` | Emitted when a patient flags an attestation as disputed. |
+| `QuorumPolicySet` | `"quorum_policy_set"`, `record_class: u32` | `required: u32` | Emitted when a record class's quorum policy is configured. |
+| `StatusListUpdated` | `"status_list_updated"`, `segment_index: u32` | `version: u32` | Emitted when a status-list segment's bits or version change. |
 | `AttesterRegistryRepointed` | `"attester_registry_repointed"`, `previous: Address`, `new: Address` |  | Emitted when the `attester-registry` contract this registry consults is repointed. |
 | `Paused` | `"paused"`, `by: Address` |  | Emitted when state-changing operations are paused. |
 | `Unpaused` | `"unpaused"`, `by: Address` |  | Emitted when state-changing operations are unpaused. |

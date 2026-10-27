@@ -1,0 +1,95 @@
+name: Native crates (Miri + sanitizers)
+
+# Undefined-behaviour checks for the pure-Rust crates that are consumed
+# outside the contracts (lafiya-commitment, lafiya-config,
+# lafiya-fraud-scoring). These need a nightly toolchain, so they run on a
+# schedule instead of gating PRs. A failure opens (or comments on) a single
+# tracking issue; known exceptions are listed in CONTRIBUTING.md.
+
+on:
+  schedule:
+    - cron: "41 2 * * *" # nightly, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  # Pinned so a nightly regression in Miri itself doesn't turn the job red.
+  # Bump deliberately, like rust-toolchain.toml.
+  NIGHTLY: nightly-2026-10-01
+
+jobs:
+  miri:
+    name: Miri (${{ matrix.crate }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # lafiya-qr is excluded until it joins the workspace and its test
+        # suite compiles (tracked exception, see CONTRIBUTING.md).
+        crate: [lafiya-commitment, lafiya-config, lafiya-fraud-scoring]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+          components: miri, rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: miri-${{ matrix.crate }}
+      - run: cargo +${{ env.NIGHTLY }} miri setup
+      # Isolation is disabled because the suites read their shared test
+      # vectors (and lafiya-config its temp files) from disk.
+      - run: cargo +${{ env.NIGHTLY }} miri test -p ${{ matrix.crate }} --locked
+        env:
+          MIRIFLAGS: -Zmiri-disable-isolation -Zmiri-strict-provenance
+
+  sanitizers:
+    name: ${{ matrix.sanitizer }} sanitizer
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        sanitizer: [address, leak]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: ${{ env.NIGHTLY }}
+          components: rust-src
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: sanitizer-${{ matrix.sanitizer }}
+      # -Zbuild-std instruments std too, so leaks/overflows inside
+      # collections used by the crates are caught.
+      - run: >-
+          cargo +${{ env.NIGHTLY }} test --locked
+          -Zbuild-std --target x86_64-unknown-linux-gnu
+          -p lafiya-commitment -p lafiya-config -p lafiya-fraud-scoring
+        env:
+          RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+          RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
+
+  report:
+    name: Report failures
+    needs: [miri, sanitizers]
+    if: failure() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Open or update tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          title="Nightly Miri/sanitizer run failed"
+          body="Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body "$body"
+          else
+            gh issue create --title "$title" --body "$body"
+          fi

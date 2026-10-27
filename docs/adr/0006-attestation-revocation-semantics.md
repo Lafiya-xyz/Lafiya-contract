@@ -88,6 +88,28 @@ semantics, and its gas impact (see Consequences below).
   population this is negligible; it should be re-evaluated if the attester set
   grows significantly.
 
+## Related ADRs
+
+The following ADRs extend the revocation and trust model defined here and must
+be read together with this document:
+
+- **ADR-0013 — Quorum attestations.** Defines per-record-class quorum policies,
+  the distinct-attester rule, and how quorum satisfaction interacts with the
+  revocation and supersession semantics above (e.g. a revoked hash never
+  satisfies quorum; superseded attestations do not count toward a quorum).
+- **ADR-0014 — Patient-initiated dispute overlay.** Defines a `Disputed`
+  overlay keyed by record hash and signer, using domain-separated patient
+  signatures from the QR spec, with replay protection, anti-spam bounds, and
+  clearing restricted to attester or admin action. Disputes are an overlay and
+  never delete or mutate historical attestations.
+- **ADR-0015 — Status-list contract (bitstring).** Defines a compact,
+  cacheable bulk revocation mechanism using HMAC-derived, privacy-preserving
+  status-list indices, versioned signed roots, and alignment with W3C Bitstring
+  Status List semantics, including index-correlation threat analysis.
+
+Where these ADRs conflict with the cutoff rule above, the more specific ADR
+governs and this document must be amended.
+
 ## Follow-up
 
 - `lafiya-web` must be updated to display current attester status (active /

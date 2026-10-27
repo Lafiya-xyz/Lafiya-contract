@@ -1,0 +1,75 @@
+{
+  "bomFormat": "CycloneDX",
+  "specVersion": "1.6",
+  "serialNumber": "urn:uuid:5f0b6d2e-3c1a-4b8e-9a57-6c2f1d0e8b41",
+  "version": 1,
+  "metadata": {
+    "timestamp": "2026-10-18T00:00:00Z",
+    "component": {
+      "type": "application",
+      "bom-ref": "lafiya-contract",
+      "name": "lafiya-contract"
+    }
+  },
+  "vulnerabilities": [
+    {
+      "id": "RUSTSEC-2026-0346",
+      "source": { "name": "RustSec", "url": "https://rustsec.org/advisories/RUSTSEC-2026-0346.html" },
+      "references": [{ "id": "GHSA-c8m5-c952-6cm4", "source": { "name": "GitHub" } }],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_reachable",
+        "detail": "Only custom ClientSessionStore implementations that format Tls12ClientSessionValue/Tls13ClientSessionValue with Debug leak secrets. lafiya-cli reaches rustls only through ureq (via lafiya-rpc-resilience), which uses rustls's built-in session cache whose Debug output is redacted; no code in the CLI implements or formats a ClientSessionStore. Contract wasm, npm packages and the indexer image do not contain rustls 0.23.45.",
+        "response": ["update"]
+      },
+      "affects": [{ "ref": "pkg:cargo/rustls@0.23.45" }]
+    },
+    {
+      "id": "RUSTSEC-2026-0347",
+      "source": { "name": "RustSec", "url": "https://rustsec.org/advisories/RUSTSEC-2026-0347.html" },
+      "references": [{ "id": "GHSA-vp88-798v-h67f", "source": { "name": "GitHub" } }],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "The leak happens only after a server rejects Encrypted Client Hello. ECH must be enabled explicitly with an EchMode in the rustls ClientConfig; ureq builds its ClientConfig without ECH and lafiya-cli does not supply its own TLS config, so the ECH code path is never entered.",
+        "response": ["update"]
+      },
+      "affects": [{ "ref": "pkg:cargo/rustls@0.23.45" }]
+    },
+    {
+      "id": "RUSTSEC-2026-0348",
+      "source": { "name": "RustSec", "url": "https://rustsec.org/advisories/RUSTSEC-2026-0348.html" },
+      "references": [{ "id": "GHSA-h2v8-394m-p7vv", "source": { "name": "GitHub" } }],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "The vulnerable Brotli certificate decompressor is behind the non-default rustls `brotli` feature. The resolved feature set for lafiya-cli is std, tls12, ring, log/logging (`cargo tree -p lafiya-cli -e features -i rustls`), so the decompressor is not compiled in.",
+        "response": ["update"]
+      },
+      "affects": [{ "ref": "pkg:cargo/rustls@0.23.45" }]
+    },
+    {
+      "id": "RUSTSEC-2026-0349",
+      "source": { "name": "RustSec", "url": "https://rustsec.org/advisories/RUSTSEC-2026-0349.html" },
+      "references": [{ "id": "GHSA-w44r-93j7-qv28", "source": { "name": "GitHub" } }],
+      "analysis": {
+        "state": "not_affected",
+        "justification": "requires_configuration",
+        "detail": "The attack downgrades a client that prefers the X25519MLKEM768 post-quantum hybrid group to classical X25519. lafiya-cli uses the rustls `ring` crypto provider (no aws-lc-rs feature), which offers only classical key-exchange groups, so there is no hybrid preference to downgrade. Re-assess if the CLI ever switches to the aws-lc-rs provider.",
+        "response": ["update"]
+      },
+      "affects": [{ "ref": "pkg:cargo/rustls@0.23.45" }]
+    },
+    {
+      "id": "RUSTSEC-2024-0436",
+      "source": { "name": "RustSec", "url": "https://rustsec.org/advisories/RUSTSEC-2024-0436.html" },
+      "analysis": {
+        "state": "not_affected",
+        "justification": "code_not_present",
+        "detail": "Unmaintained-crate notice, not a vulnerability. paste is a proc-macro used by ark-ff under soroban-env-host, which is only pulled in by the soroban-sdk `testutils` feature. Proc-macros run at compile time and never ship: paste is absent from every release SBOM, including the contract wasm.",
+        "response": ["will_not_fix"]
+      },
+      "affects": [{ "ref": "pkg:cargo/paste@1.0.15" }]
+    }
+  ]
+}

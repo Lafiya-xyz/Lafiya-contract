@@ -36,13 +36,28 @@ pub fn encode(data: &[u8]) -> String {
     String::from_utf8(out).expect("base45 alphabet is ASCII")
 }
 
+/// Maximum number of input characters accepted by [`decode`].
+///
+/// This bounds the allocation performed by the decoder so that a malicious
+/// (attacker-controlled) input cannot force unbounded memory use. The limit
+/// is far above any legitimate QR payload.
+pub const MAX_ENCODED_LEN: usize = 1 << 20; // 1 MiB of base45 characters
+
 /// Decode base45 to bytes.
 ///
 /// Returns an error string if the input contains characters outside the
-/// base45 alphabet or if the encoded length is invalid.
+/// base45 alphabet, if the encoded length is invalid, if the input exceeds
+/// [`MAX_ENCODED_LEN`], or if a triplet/pair encodes an out-of-range value.
 pub fn decode(input: &str) -> Result<Vec<u8>, String> {
-    let chars: Vec<u8> = input.as_bytes().to_vec();
+    let chars = input.as_bytes();
     let len = chars.len();
+
+    // Bound the input size before doing any allocation.
+    if len > MAX_ENCODED_LEN {
+        return Err(format!(
+            "base45 input too long: {len} > {MAX_ENCODED_LEN} characters"
+        ));
+    }
 
     // Length must not be ≡ 1 (mod 3): each pair of bytes needs 3 chars,
     // each single byte needs 2 chars, so valid lengths satisfy len % 3 != 1.
@@ -58,7 +73,9 @@ pub fn decode(input: &str) -> Result<Vec<u8>, String> {
         rev[c as usize] = i as u8;
     }
 
-    let mut out = Vec::new();
+    // Exact output size: every 3 chars → 2 bytes, every trailing 2 chars → 1.
+    let out_len = (len / 3) * 2 + (len % 3) / 2;
+    let mut out = Vec::with_capacity(out_len);
     let mut i = 0;
     while i < len {
         if i + 2 < len {
@@ -89,6 +106,7 @@ pub fn decode(input: &str) -> Result<Vec<u8>, String> {
             i += 2;
         }
     }
+    debug_assert_eq!(out.len(), out_len);
     Ok(out)
 }
 
@@ -165,5 +183,74 @@ mod tests {
         // A length of 1 is ≡ 1 (mod 3) and must be rejected.
         let err = decode("A").unwrap_err();
         assert!(err.contains("invalid base45 length"), "{err}");
+    }
+
+    #[test]
+    fn rejects_triplet_over_65535() {
+        // ":::" = 44*45*45 + 44*45 + 44 = 91124 > 65535.
+        let err = decode(":::").unwrap_err();
+        assert!(err.contains("> 65535"), "{err}");
+    }
+
+    #[test]
+    fn rejects_pair_over_255() {
+        // "::" = 44*45 + 44 = 2024 > 255.
+        let err = decode("::").unwrap_err();
+        assert!(err.contains("> 255"), "{err}");
+    }
+
+    #[test]
+    fn rejects_oversized_input() {
+        let input = "0".repeat(MAX_ENCODED_LEN + 1);
+        let err = decode(&input).unwrap_err();
+        assert!(err.contains("too long"), "{err}");
+    }
+
+    #[test]
+    fn round_trip_lengths() {
+        // Exercise every length up to a few hundred bytes, including the
+        // odd/even boundary handled by the trailing single-byte case.
+        for len in 0..300usize {
+            let data: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+            let encoded = encode(&data);
+            assert_eq!(decode(&encoded).unwrap(), data, "len {len}");
+        }
+    }
+
+    #[test]
+    fn malformed_inputs_never_panic() {
+        // Deterministic corpus of malformed inputs; mirrors the fuzz target.
+        let cases = [
+            "",
+            "A",
+            "::",
+            ":::",
+            "!!!!",
+            "ZZZ",
+            "  ",
+            "0",
+            "00",
+            "000",
+            "0000",
+            "00000",
+            "000000",
+            "0000000",
+            "\u{0}",
+            "\u{7f}",
+            "é",
+        ];
+        for case in cases {
+            // Must return Ok or Err, never panic.
+            let _ = decode(case);
+        }
+    }
+
+    #[test]
+    fn decode_encode_round_trip_stability() {
+        // Decoding then re-encoding a valid encoding must be stable.
+        let data = b"the quick brown fox jumps over the lazy dog";
+        let encoded = encode(data);
+        let decoded = decode(&encoded).unwrap();
+        assert_eq!(encode(&decoded), encoded);
     }
 }

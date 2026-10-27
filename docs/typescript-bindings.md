@@ -16,6 +16,7 @@ This runs:
    - `bindings/attester-registry`
    - `bindings/attestation-registry`
    - `bindings/multisig-account`
+   - `bindings/incentive-pool`
 
 `bindings/multisig-account` covers the contract's data types (`Signature`,
 `Errors`) but, being an account contract, has no state-changing methods of
@@ -23,8 +24,14 @@ its own to call. Building and submitting a `__check_auth`-authorized call is
 covered instead by [`@lafiya/multisig-auth`](../packages/multisig-auth), a
 hand-maintained helper package (not generated) for computing the signature
 payload and encoding N-of-M signatures in the shape the contract expects.
-`scripts/conformance/check_bindings_drift.py` covers `multisig-account`'s
-bindings the same way it does the other two contracts.
+`bindings/incentive-pool` covers the pool's views (e.g. pool state, balances,
+and reward accounting) and its events, so `lafiya-web` can both read pool state
+and decode pool events emitted on-chain.
+
+`scripts/conformance/check_bindings_drift.py` covers `multisig-account`'s and
+`incentive-pool`'s bindings the same way it does the other two contracts. The
+drift gate runs in CI and fails when a contract's interface changes without the
+corresponding `bindings/` being regenerated and committed.
 
 ## Publishing & Consumption Strategy
 

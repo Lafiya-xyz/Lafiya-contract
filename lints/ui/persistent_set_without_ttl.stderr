@@ -1,0 +1,10 @@
+warning: persistent set without extend_ttl in the same function
+  --> $DIR/persistent_set_without_ttl.rs:7:5
+   |
+LL |     e.storage().persistent().set(1, 2); //~ persistent_set_without_ttl
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+   |
+   = note: `#[warn(persistent_set_without_ttl)]` on by default
+
+warning: 1 warning emitted
+

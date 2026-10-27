@@ -17,6 +17,10 @@ Status labels used on every leaf:
 - **accepted (ADR …)**: a deliberate, documented trade-off.
 - **open (#…)**: a known gap with a tracking issue.
 
+Off-chain components (indexer, watchdog, CLI, verifier SDK, QR flow, build
+and distribution) are modelled in the
+[off-chain threat model](threat-model-offchain.md).
+
 Issue links point to [Lafiya-xyz/Lafiya-contract](https://github.com/Lafiya-xyz/Lafiya-contract/issues).
 There is no security traceability registry yet. [#380](https://github.com/Lafiya-xyz/Lafiya-contract/issues/380)
 will map each leaf below to a regression test.
@@ -32,6 +36,7 @@ will map each leaf below to a regression test.
 | A5 | **Upgrade authority** | `attester-registry::upgrade` replaces the code outright. It is the most powerful admin action. |
 | A6 | **Patient privacy**: commitment unlinkability and hiding | Record hashes are public. They must reveal nothing about the record (e.g. genotype) and must not link one patient's records across time or sites. |
 | A7 | **CHW privacy** | Attester addresses, activity, and `AttesterInfo` (`license_hash`, `region`) are public and can profile or target individual health workers. |
+| A8 | **Incentive-pool funds** (`incentive-pool`) | Escrowed USDC paid per approved work item. Theft or mis-direction of payouts harms donors and CHWs. |
 
 ## 2. Actors and trust levels
 
@@ -110,6 +115,9 @@ Everything else relies on off-chain controls.
 | D | Instance or entry TTL expiry makes `is_attester` fail | mitigated (by TTL extension on writes, [`contract-upgrade.md`](../runbooks/contract-upgrade.md)) |
 | D | Batch operations exceed per-transaction limits | open ([#321](https://github.com/Lafiya-xyz/Lafiya-contract/issues/321)) |
 | E | Malicious `upgrade()` replaces the code | accepted (ADR-0003/0007: admin is fully trusted); open ([#368](https://github.com/Lafiya-xyz/Lafiya-contract/issues/368), [#369](https://github.com/Lafiya-xyz/Lafiya-contract/issues/369)) |
+| S | Forged licence credential enrols an attester | mitigated (`enroll_with_credential` verifies the issuer's ed25519 signature over the credential XDR, subject, and validity window; issuer must be in the admin-managed issuer registry) |
+| E | Issuer key compromise lets an attacker enrol arbitrary attesters | mitigated by `revoke_credential_issuer`: every attester enrolled through that issuer immediately fails `is_attester` (cascade), and re-enrolment through the issuer is refused; the admin then re-enrols legitimate attesters via another issuer or `add_attester_with_info`. Residual: attesters enrolled before the compromise is noticed were trusted in the interim. |
+| I | Credential envelope leaks licensing data | mitigated (only the SHA-256 digest and issuer id are stored; the envelope is supplied per call and never persisted) |
 
 ### `attestation-registry`
 
@@ -124,6 +132,8 @@ Everything else relies on off-chain controls.
 | R | Revocation leaves no on-chain trace, so "revoked" looks like "never attested" | open ([#343](https://github.com/Lafiya-xyz/Lafiya-contract/issues/343)) |
 | I | Record-hash activity links a patient across attestations | open ([#433](https://github.com/Lafiya-xyz/Lafiya-contract/issues/433)) |
 | D | Attestation flood causes rent growth and revocation burden | mitigated (by per-attester rate limit, [`storage-cost.md`](../storage-cost.md#attestation-rate-limiting)) |
+| S/T | Sybil evasion: colluders split activity across many allowlisted keys so no single key trips the per-attester rate limit | open ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)); partially mitigated (by cross-key collusion scoring in `lafiya-fraud-scoring`, see §7) |
+| T | Low-and-slow evasion: jittered timing and round-robin record sharing keep per-key volume under thresholds | open ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)); partially mitigated (by temporal and sharing-graph features, see §7) |
 | D | Registry wiring failure makes `attest` trap instead of returning an error | open ([#352](https://github.com/Lafiya-xyz/Lafiya-contract/issues/352)) |
 | D | Admin `pause()` or wide `revoke_attestation` | accepted (ADR-0003: admin trusted); open ([#365](https://github.com/Lafiya-xyz/Lafiya-contract/issues/365), [#364](https://github.com/Lafiya-xyz/Lafiya-contract/issues/364)) |
 | E | Admin transfer to a mistyped address, or a stale pending admin | open ([#330](https://github.com/Lafiya-xyz/Lafiya-contract/issues/330)) |
@@ -137,6 +147,30 @@ Everything else relies on off-chain controls.
 | R | No record of which signers approved what | open ([#360](https://github.com/Lafiya-xyz/Lafiya-contract/issues/360)) |
 | D | Quorum lost (keys lost), so admin is frozen forever | open ([#358](https://github.com/Lafiya-xyz/Lafiya-contract/issues/358), [#355](https://github.com/Lafiya-xyz/Lafiya-contract/issues/355)) |
 | I | Signer set not introspectable, which hides misconfiguration | open ([#359](https://github.com/Lafiya-xyz/Lafiya-contract/issues/359)) |
+
+### `incentive-pool`
+
+Asset flow (A8): donor → `fund` → pool → `claim` → **bound payout address**
+(`set_payout_address`, default: the attester key itself).
+
+- **Spoofing / tampering**: approvals require an active attestation in
+  `attestation-registry` by the same attester; the work-item id is
+  `sha256("LAFIYA-WORK-ITEM-v1" || record_hash || attester.to_xdr())`, so an
+  attestation can back at most one payout. Revoked/withdrawn attestations
+  are rejected (`AttestationNotActive`).
+- **Elevation (approver compromise)**: total approvals per epoch are bounded
+  by `epoch_budget`; changes to it are timelocked (`EPOCH_CONFIG_DELAY`).
+  Batch approvals are capped at `MAX_BATCH_APPROVALS` and charged against
+  the same budget.
+- **Device-key theft (CHW)**: payouts go to a custody address designated by
+  the attester. Changes are delayed by `PAYOUT_ADDRESS_DELAY` (48h) and
+  evented (`PayoutAddressScheduled`) so a takeover can be noticed and the
+  attester suspended. Suspended attesters can neither redirect funds nor
+  claim. Trustline/authorization failures on the recipient return
+  `TransferFailed` instead of trapping.
+- **Residual**: an attacker holding the device key for longer than the delay
+  can redirect future payouts; monitoring of `PayoutAddressScheduled` is
+  required (see [`chw-key-custody.md`](chw-key-custody.md)).
 
 ### CLI, scripts, and config
 
@@ -181,6 +215,7 @@ Children are OR unless marked **AND**.
   - 1.1.4 Admin repoints `AttesterRegistry` to a permissive contract: **open** ([#349](https://github.com/Lafiya-xyz/Lafiya-contract/issues/349), [#414](https://github.com/Lafiya-xyz/Lafiya-contract/issues/414)).
   - 1.1.5 Front-run `initialize` with an attacker registry: **open** ([#361](https://github.com/Lafiya-xyz/Lafiya-contract/issues/361)).
   - 1.1.6 Attester acts outside their region: **open** ([#327](https://github.com/Lafiya-xyz/Lafiya-contract/issues/327)).
+  - 1.1.7 Colluders evade detection by key splitting, jittered timing, or round-robin record sharing: **partially mitigated** (by collusion scoring, §6); **open** ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)).
 - **1.2 Keep a no-longer-valid attestation looking verified**
   - 1.2.1 Rely on an attestation made before the CHW was removed or compromised: **accepted** ([ADR-0006](../adr/0006-attestation-revocation-semantics.md)); **open** ([#337](https://github.com/Lafiya-xyz/Lafiya-contract/issues/337), [#400](https://github.com/Lafiya-xyz/Lafiya-contract/issues/400)).
   - 1.2.2 Present an outdated card after the record changed: **open** ([#345](https://github.com/Lafiya-xyz/Lafiya-contract/issues/345), [#340](https://github.com/Lafiya-xyz/Lafiya-contract/issues/340)).
@@ -231,13 +266,41 @@ Children are OR unless marked **AND**.
   - 4.3.2 Admin cannot verify the wasm hash they sign: **mitigated (by the expected-hash step in [`contract-upgrade.md`](../runbooks/contract-upgrade.md))**; **open** ([#418](https://github.com/Lafiya-xyz/Lafiya-contract/issues/418), [#419](https://github.com/Lafiya-xyz/Lafiya-contract/issues/419)).
 - **4.4 Privileged action goes unnoticed**: **open** ([#414](https://github.com/Lafiya-xyz/Lafiya-contract/issues/414), [#369](https://github.com/Lafiya-xyz/Lafiya-contract/issues/369)).
 
-## 6. Residual risk by gate
+## 6. Adversarial evaluation of collusion detection (#531)
+
+The collusion detector in `crates/lafiya-fraud-scoring` was red-teamed with
+adaptive adversaries in the simulator. Each strategy was run against the
+baseline detector and against the hardened detector (cross-key sharing graph
+plus temporal dispersion features). Detection rate is the fraction of
+adversarial campaigns flagged; cost-to-evade is the attacker spend (fees,
+rent, and stake-equivalent) needed to keep detection below 50%, expressed as a
+multiple of the per-attestation incentive amount.
+
+| # | Strategy | Detection rate (baseline → hardened) | Cost-to-evade (× incentive) | Status |
+|---|---|---|---|---|
+| E1 | **Key splitting**: spread attestations over N allowlisted keys | 12% → 71% | ~9× | partially mitigated (by sharing-graph scoring); residual open ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)) |
+| E2 | **Jittered timing**: randomize inter-attestation delays to defeat burst rules | 24% → 63% | ~6× | partially mitigated (by temporal dispersion feature); residual open ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)) |
+| E3 | **Round-robin record sharing**: rotate record hashes across colluding keys | 18% → 68% | ~7× | partially mitigated (by sharing-graph scoring); residual open ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)) |
+| E4 | **Combined Sybil + low-and-slow** (E1+E2+E3) | 8% → 54% | ~14× | open ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)); cost-to-evade exceeds incentive, so evasion is not free |
+| E5 | **Key churn**: rotate through freshly allowlisted keys to reset per-key history | 15% → 41% | ~11× | open ([#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531)); needs contract-side stake or enrolment quota |
+
+Findings: detection alone is insufficient against E4 and E5. Where the
+hardened detector still misses, the cost-to-evade is dominated by the number
+of allowlisted keys an attacker must hold, which is a contract-layer lever
+(allowlist quota, stake, and per-region rate limits) rather than a scoring
+lever. Contract-side mitigations are tracked as follow-up issues:
+[#531](https://github.com/Lafiya-xyz/Lafiya-contract/issues/531) (evaluation and
+detector hardening), plus follow-ups for attester stake and enrolment quota
+filed from that issue. Until those land, E4 and E5 remain **open** and are
+listed as residual risk at the mainnet gate below.
+
+## 7. Residual risk by gate
 
 | Gate | Must be closed before the gate | Residual risk accepted at the gate |
 |---|---|---|
 | **Pre-alpha** (now: local and unit-tested) | nothing | Everything marked open. Single admin (ADR-0003), unscoped multisig (ADR-0007), immutable attestations (ADR-0006). No real patient data may be used. |
 | **Testnet** (pilot with synthetic data) | #361 (initialize front-running), #339 (history eviction), #352 (trap on wiring failure), #396 (CLI injection), rate limits configured (#444) | Unscoped multisig (ADR-0007), no compromise window (#337), RPC integrity (1.3.1), no watchdog (#414). Mitigated by synthetic data and testnet resets. |
-| **Mainnet** (real patients) | All of the testnet list, plus multisig admin with hardware keys (#399, #398), watchdog (#414), salt enforcement (#383), linkability analysis (#433, #432), reproducible builds (#418), supply-chain hardening (#421), compromise handling (#337 or #400), verification-result model (#441), external audit (#434) | ADR-0007 only if #406 gives signers a human-readable review. RPC integrity through multi-provider cross-checks. Colluding CHWs (1.1.2) handled by human process. |
+| **Mainnet** (real patients) | All of the testnet list, plus multisig admin with hardware keys (#399, #398), watchdog (#414), salt enforcement (#383), linkability analysis (#433, #432), reproducible builds (#418), supply-chain hardening (#421), compromise handling (#337 or #400), verification-result model (#441), external audit (#434), contract-side mitigations for Sybil/low-and-slow evasion (#531, §6) | ADR-0007 only if #406 gives signers a human-readable review. RPC integrity through multi-provider cross-checks. Colluding CHWs (1.1.2) handled by human process. Residual Sybil/low-and-slow evasion (E4, E5 in §6) accepted only while cost-to-evade stays above the incentive amount; re-evaluate each milestone. |
 
 ## Maintenance
 

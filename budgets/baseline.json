@@ -43,19 +43,52 @@
       "events_size_bytes": 0,
       "estimated_fee_stroops": 10000,
       "worst_case_scenario": "cache miss"
+    },
+    "delegate_session_key": {
+      "cpu_instructions": 110000,
+      "memory_bytes": 7168,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 384,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 320,
+      "events_size_bytes": 160,
+      "estimated_fee_stroops": 40000,
+      "worst_case_scenario": "max sessions per attester, full scope allowlist, signature verification"
+    },
+    "is_session_valid": {
+      "cpu_instructions": 32000,
+      "memory_bytes": 1536,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 192,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 12000,
+      "worst_case_scenario": "session lookup with expiry and scope check at boundary"
     }
   },
   "attestation-registry": {
     "attest": {
-      "cpu_instructions": 180000,
-      "memory_bytes": 16384,
+      "cpu_instructions": 142000,
+      "memory_bytes": 12288,
       "ledger_read_entries": 5,
-      "ledger_read_bytes": 1024,
+      "ledger_read_bytes": 896,
       "ledger_write_entries": 3,
-      "ledger_write_bytes": 512,
+      "ledger_write_bytes": 384,
       "events_size_bytes": 256,
-      "estimated_fee_stroops": 65000,
-      "worst_case_scenario": "max history, full signature verification"
+      "estimated_fee_stroops": 52000,
+      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, full signature verification"
+    },
+    "attest_with_session": {
+      "cpu_instructions": 168000,
+      "memory_bytes": 14336,
+      "ledger_read_entries": 6,
+      "ledger_read_bytes": 1088,
+      "ledger_write_entries": 3,
+      "ledger_write_bytes": 384,
+      "events_size_bytes": 256,
+      "estimated_fee_stroops": 60000,
+      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, session verification with one cross-contract read to attester-registry"
     },
     "revoke_attestation": {
       "cpu_instructions": 95000,
@@ -78,6 +111,107 @@
       "events_size_bytes": 0,
       "estimated_fee_stroops": 15000,
       "worst_case_scenario": "latest in max history"
+    },
+    "extend_attestation_ttl": {
+      "cpu_instructions": 42000,
+      "memory_bytes": 4096,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 384,
+      "ledger_write_entries": 1,
+      "ledger_write_bytes": 128,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 18000,
+      "worst_case_scenario": "extend_to at max horizon, archived entry restored"
+    },
+    "add_co_attestation": {
+      "cpu_instructions": 165000,
+      "memory_bytes": 14336,
+      "ledger_read_entries": 5,
+      "ledger_read_bytes": 1024,
+      "ledger_write_entries": 3,
+      "ledger_write_bytes": 512,
+      "events_size_bytes": 256,
+      "estimated_fee_stroops": 60000,
+      "worst_case_scenario": "max quorum policy, full signature verification"
+    },
+    "get_verification_status": {
+      "cpu_instructions": 48000,
+      "memory_bytes": 6144,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 768,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 20000,
+      "worst_case_scenario": "max quorum, dispute overlay present"
+    },
+    "dispute_attestation": {
+      "cpu_instructions": 88000,
+      "memory_bytes": 8192,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 512,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 256,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 36000,
+      "worst_case_scenario": "patient signature verification, dispute overlay write"
+    },
+    "clear_dispute": {
+      "cpu_instructions": 72000,
+      "memory_bytes": 6144,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 384,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 192,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 30000,
+      "worst_case_scenario": "attester or admin authorization"
+    }
+  },
+  "status-list": {
+    "publish_segment": {
+      "cpu_instructions": 210000,
+      "memory_bytes": 20480,
+      "ledger_read_entries": 4,
+      "ledger_read_bytes": 1536,
+      "ledger_write_entries": 3,
+      "ledger_write_bytes": 1024,
+      "events_size_bytes": 256,
+      "estimated_fee_stroops": 75000,
+      "worst_case_scenario": "full segment rewrite, signed root update"
+    },
+    "set_status": {
+      "cpu_instructions": 68000,
+      "memory_bytes": 6144,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 512,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 256,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 28000,
+      "worst_case_scenario": "bit flip in max-size segment"
+    },
+    "get_segment": {
+      "cpu_instructions": 30000,
+      "memory_bytes": 4096,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 1024,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 12000,
+      "worst_case_scenario": "max-size segment read"
+    },
+    "get_root": {
+      "cpu_instructions": 18000,
+      "memory_bytes": 2048,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 128,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 8000,
+      "worst_case_scenario": "cache miss"
     }
   },
   "multisig-account": {
@@ -91,6 +225,19 @@
       "events_size_bytes": 0,
       "estimated_fee_stroops": 55000,
       "worst_case_scenario": "5-of-5 multisig signature verification"
+    }
+  },
+  "incentive-pool": {
+    "approve_work_items": {
+      "cpu_instructions": 4200000,
+      "memory_bytes": 262144,
+      "ledger_read_entries": 84,
+      "ledger_read_bytes": 24576,
+      "ledger_write_entries": 18,
+      "ledger_write_bytes": 4096,
+      "events_size_bytes": 2560,
+      "estimated_fee_stroops": 900000,
+      "worst_case_scenario": "MAX_BATCH_APPROVALS (16) items, distinct attesters, full attestation history window, epoch budget enabled"
     }
   }
 }

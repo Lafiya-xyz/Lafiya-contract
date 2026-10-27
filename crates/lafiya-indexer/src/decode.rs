@@ -53,6 +53,31 @@ pub enum LafiyaEvent {
     AttestationRevoked {
         record_hash: String,
     },
+    /// An approval of a work item by an attester.
+    WorkItemApproved {
+        work_item_id: u64,
+        attester: String,
+        amount: i128,
+    },
+    /// A claim (payout) against an approved work item.
+    WorkItemClaimed {
+        work_item_id: u64,
+        attester: String,
+        amount: i128,
+    },
+    /// A withdrawal of funds from the incentive pool.
+    PoolWithdrawn {
+        recipient: String,
+        amount: i128,
+    },
+    /// The incentive pool was paused.
+    PoolPaused {
+        by: String,
+    },
+    /// The incentive pool was unpaused.
+    PoolUnpaused {
+        by: String,
+    },
     /// Administration events, with their topic fields rendered as strings.
     Admin {
         name: String,
@@ -74,6 +99,11 @@ impl LafiyaEvent {
             Self::AttesterInfoUpdated { .. } => "attester_info_updated",
             Self::AttestationRecorded { .. } => "attestation_recorded",
             Self::AttestationRevoked { .. } => "attestation_revoked",
+            Self::WorkItemApproved { .. } => "work_item_approved",
+            Self::WorkItemClaimed { .. } => "work_item_claimed",
+            Self::PoolWithdrawn { .. } => "pool_withdrawn",
+            Self::PoolPaused { .. } => "pool_paused",
+            Self::PoolUnpaused { .. } => "pool_unpaused",
             Self::Admin { name, .. } | Self::Unknown { name } => name,
         }
     }
@@ -120,6 +150,12 @@ pub fn decode(raw: &RawEvent) -> Result<LafiyaEvent, DecodeError> {
         |i| topic(i).and_then(|v| address(v).ok_or_else(|| err("expected address".into())));
     let hash_topic =
         |i| topic(i).and_then(|v| bytes_hex(v).ok_or_else(|| err("expected bytes".into())));
+    let u64_topic = |i| {
+        topic(i).and_then(|v| match v {
+            ScVal::U64(n) => Ok(*n),
+            _ => Err(err("expected u64".into())),
+        })
+    };
 
     Ok(match name.as_str() {
         "attester_added" => LafiyaEvent::AttesterAdded {
@@ -153,6 +189,38 @@ pub fn decode(raw: &RawEvent) -> Result<LafiyaEvent, DecodeError> {
                 },
             }
         }
+        "work_item_approved" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::WorkItemApproved {
+                work_item_id: u64_topic(1)?,
+                attester: address_topic(2)?,
+                amount: map_i128(&data, "amount")
+                    .ok_or_else(|| err("data.amount missing".into()))?,
+            }
+        }
+        "work_item_claimed" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::WorkItemClaimed {
+                work_item_id: u64_topic(1)?,
+                attester: address_topic(2)?,
+                amount: map_i128(&data, "amount")
+                    .ok_or_else(|| err("data.amount missing".into()))?,
+            }
+        }
+        "pool_withdrawn" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::PoolWithdrawn {
+                recipient: address_topic(1)?,
+                amount: map_i128(&data, "amount")
+                    .ok_or_else(|| err("data.amount missing".into()))?,
+            }
+        }
+        "pool_paused" => LafiyaEvent::PoolPaused {
+            by: address_topic(1)?,
+        },
+        "pool_unpaused" => LafiyaEvent::PoolUnpaused {
+            by: address_topic(1)?,
+        },
         other => match ADMIN_EVENTS.iter().find(|(n, _)| *n == other) {
             Some((_, field_names)) => {
                 let mut fields = Map::new();
@@ -190,6 +258,23 @@ pub fn address(v: &ScVal) -> Option<String> {
 pub fn bytes_hex(v: &ScVal) -> Option<String> {
     match v {
         ScVal::Bytes(b) => Some(hex::encode(b.as_slice())),
+        _ => None,
+    }
+}
+
+/// Look up an `i128`-valued symbol-keyed field of a contract struct encoded as
+/// an `ScMap`.
+pub fn map_i128(v: &ScVal, key: &str) -> Option<i128> {
+    match map_field(v, key) {
+        Some(ScVal::I128(p)) => Some(i128::from_le_bytes(
+            p.0.to_le_bytes()
+                .iter()
+                .chain(p.1.to_le_bytes().iter())
+                .copied()
+                .collect::<Vec<_>>()
+                .try_into()
+                .ok()?,
+        )),
         _ => None,
     }
 }
@@ -302,6 +387,75 @@ mod tests {
     #[test]
     fn rejects_malformed_known_event() {
         assert!(decode(&raw(vec![sym("attester_added")], ScVal::Void)).is_err());
+    }
+
+    fn amount_map(amount: i128) -> ScVal {
+        let (hi, lo) = ((amount >> 64) as u64, amount as u64);
+        ScVal::Map(Some(ScMap(
+            vec![ScMapEntry {
+                key: sym("amount"),
+                val: ScVal::I128(stellar_xdr::Int128Parts { hi, lo }),
+            }]
+            .try_into()
+            .unwrap(),
+        )))
+    }
+
+    #[test]
+    fn decodes_pool_events() {
+        let (addr, addr_str) = addr();
+        let ev = decode(&raw(
+            vec![sym("work_item_approved"), ScVal::U64(7), addr.clone()],
+            amount_map(1_000),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::WorkItemApproved {
+                work_item_id: 7,
+                attester: addr_str.clone(),
+                amount: 1_000,
+            }
+        );
+        let ev = decode(&raw(
+            vec![sym("work_item_claimed"), ScVal::U64(7), addr.clone()],
+            amount_map(500),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::WorkItemClaimed {
+                work_item_id: 7,
+                attester: addr_str.clone(),
+                amount: 500,
+            }
+        );
+        let ev = decode(&raw(
+            vec![sym("pool_withdrawn"), addr.clone()],
+            amount_map(250),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::PoolWithdrawn {
+                recipient: addr_str.clone(),
+                amount: 250,
+            }
+        );
+        let ev = decode(&raw(vec![sym("pool_paused"), addr.clone()], ScVal::Void)).unwrap();
+        assert_eq!(ev, LafiyaEvent::PoolPaused { by: addr_str.clone() });
+        let ev = decode(&raw(vec![sym("pool_unpaused"), addr], ScVal::Void)).unwrap();
+        assert_eq!(ev, LafiyaEvent::PoolUnpaused { by: addr_str });
+    }
+
+    #[test]
+    fn rejects_malformed_pool_event() {
+        assert!(decode(&raw(vec![sym("work_item_approved")], ScVal::Void)).is_err());
+        assert!(decode(&raw(
+            vec![sym("pool_withdrawn"), ScVal::U64(1)],
+            amount_map(1)
+        ))
+        .is_err());
     }
 
     #[test]

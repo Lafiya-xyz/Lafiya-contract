@@ -138,6 +138,10 @@ The values depend only on the commit, so reproducibility holds. CI and the tag
 pipeline assert them with `scripts/check_wasm_meta.py --commit <sha>`; locally,
 `stellar contract info meta --wasm <file>` shows them.
 
+The same pipeline then runs `scripts/check_wasm_policy.py`, which checks each
+wasm's host imports, instructions and size against
+[`security/wasm-policy.json`](security/wasm-policy.md).
+
 ### Signed build provenance
 
 Tag builds attach signed [SLSA](https://slsa.dev/) provenance for every `.wasm`
@@ -173,6 +177,37 @@ cargo xtask release-manifest
 `.github/workflows/release-manifest.yml` is a prototype CI workflow that does this on
 every `v*.*.*` tag; see ADR-0010 "Follow-up" for what remains before it is load-bearing.
 
+## SBOMs and VEX
+
+Every release ships a CycloneDX 1.6 SBOM per artifact, plus one VEX document,
+as release assets listed in the manifest's `sboms` and `vex` fields:
+
+| Asset | Artifact | Produced by |
+| --- | --- | --- |
+| `contract-<name>.sbom.cdx.json` | each contract wasm | `scripts/generate_sboms.py` (`cargo tree` for `wasm32v1-none`, normal deps only, proc-macros excluded) |
+| `cli-lafiya-cli.sbom.cdx.json` | `lafiya-cli` binary | `scripts/generate_sboms.py` (host target) |
+| `npm-<package>.sbom.cdx.json` | each `packages/*` npm package | syft |
+| `image-lafiya-indexer.sbom.cdx.json` | indexer container image | syft |
+| `vex.cdx.json` | all of the above | hand-maintained in [`security/vex/vex.cdx.json`](../security/vex/vex.cdx.json) |
+
+`cargo audit` reports every advisory in `Cargo.lock`, including ones in crates
+that never ship (dev-only, proc-macros, host-only tooling). The VEX document
+says, per advisory id, whether a shipped artifact is affected and why. The
+`SBOM + VEX` job in `security-scan.yml` validates every SBOM and the VEX
+document against the vendored CycloneDX schema
+(`docs/release-manifest/cyclonedx/`) and fails if:
+
+- `cargo audit` reports an advisory with no VEX statement;
+- a statement lacks an advisory id (`RUSTSEC-`, `GHSA-`, `CVE-`), a state, or,
+  for `not_affected`, a justification and a written reachability `detail`;
+- a statement's `affects` purl is not in any SBOM (unless its justification
+  is `code_not_present`), i.e. the dependency changed and the statement is stale.
+
+When a new advisory appears, check reachability against the artifact's SBOM
+and code, then add a statement: `not_affected` with a justification, or
+`exploitable` / `in_triage` plus a fix. Remove statements once the
+dependency is upgraded past the patched version.
+
 ## Interface Version and Runtime Negotiation
 
 Every contract exposes `get_interface() -> InterfaceInfo` with its `contract_kind`,
@@ -207,3 +242,9 @@ For details on the redeployment, initialization, and upgrade state migration pro
 - [Contract Upgrade Runbook](runbooks/contract-upgrade.md)
 
 Always follow the instructions in the runbook when performing redeployments to ensure that downstream services are not interrupted.
+
+## Mainnet Enablement Gate
+
+Filling in any `[mainnet.contracts]` id in `config/networks.toml` is blocked by CI unless
+`config/mainnet-readiness.json` records valid audit, ceremony, game-day and monitoring evidence
+and owner sign-off. See [Mainnet readiness gate](runbooks/mainnet-readiness.md).

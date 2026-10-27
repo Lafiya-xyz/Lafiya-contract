@@ -2,4 +2,133 @@
 
 # `lafiya-cli`
 
-> **Not generated:** `lafiya-cli` did not build when this page was generated. Fix the build and rerun `cargo xtask docs`.
+`lafiya-cli` is the command-line interface for the Lafiya contracts. It provides
+typed subcommands for registry and incentive-pool operations, shell completions,
+man pages, and a versioned machine-readable JSON output contract.
+
+## Installation
+
+```sh
+cargo install --path crates/lafiya-cli
+```
+
+## Global options
+
+| Option | Description |
+| --- | --- |
+| `--json` | Emit machine-readable JSON on stdout. The output conforms to the versioned schemas described below. |
+| `--network <NETWORK>` | Target network (`testnet`, `mainnet`, or a custom RPC URL). |
+| `--rpc-url <URL>` | Override the RPC endpoint. |
+| `--help` | Print help for the command or subcommand. |
+
+## JSON output contract
+
+Every `--json` output is validated against a versioned JSON Schema. Schemas are
+published in the repository under
+[`crates/lafiya-cli/schemas/`](../../../crates/lafiya-cli/schemas/) and are
+referenced by the contract tests in `crates/lafiya-cli/tests`.
+
+- Each schema file is named `<command>.v<MAJOR>.schema.json` (for example
+  `pool-caps.v1.schema.json`).
+- The schema version is emitted in every JSON document under the `schemaVersion`
+  field.
+- Additive changes that remain backward compatible keep the same major version.
+- Any breaking or additive-breaking change requires a major version bump and a
+  new schema file. CI diffs the schemas against the previous release and fails
+  the build when a breaking change is made without a version bump.
+
+Consumers should pin to a schema major version and ignore unknown fields.
+
+## Shell completions
+
+Completions for bash, zsh, and fish are generated at build time. Generate and
+install them with:
+
+```sh
+# bash
+lafiya-cli completions bash > /etc/bash_completion.d/lafiya-cli
+
+# zsh (ensure the directory is on your $fpath)
+lafiya-cli completions zsh > "${fpath[1]}/_lafiya-cli"
+
+# fish
+lafiya-cli completions fish > ~/.config/fish/completions/lafiya-cli.fish
+```
+
+Completions cover contract-specific arguments, including pool subcommands and
+amount units.
+
+## Man pages
+
+Man pages are generated at build time and can be installed with:
+
+```sh
+lafiya-cli man --out-dir /usr/local/share/man/man1
+```
+
+## Registry subcommands
+
+Registry subcommands operate on the attester registry. Run
+`lafiya-cli registry --help` for the full list.
+
+## `pool` subcommands
+
+The `pool` subcommands drive every entry point of the incentive pool with
+decimal-aware amounts and client-side pre-checks that mirror contract errors.
+
+| Subcommand | Description |
+| --- | --- |
+| `pool fund <AMOUNT>` | Deposit `AMOUNT` into the pool. |
+| `pool approve <AMOUNT>` | Approve `AMOUNT` for spending by the pool. |
+| `pool claim [--attester <ADDRESS>]` | Claim accrued rewards. |
+| `pool withdraw <AMOUNT>` | Withdraw `AMOUNT` from the pool. |
+| `pool caps` | Read the pool caps. |
+| `pool pause` | Pause the pool (authorized callers only). |
+
+### Amounts and units
+
+Amounts are decimal-aware and accept an optional unit suffix. Supported units
+are the token's base unit and common decimal denominations. Examples:
+
+```sh
+lafiya-cli pool fund 100
+lafiya-cli pool fund 1.5
+lafiya-cli pool withdraw 0.25
+```
+
+Invalid or over-precision amounts are rejected before any transaction is sent.
+
+### Read commands
+
+Read commands render caps, balances, liabilities, and per-attester totals:
+
+```sh
+lafiya-cli pool caps
+lafiya-cli pool caps --json
+```
+
+### Preview flags
+
+Mutating `pool` subcommands support `--preview` to run client-side pre-checks
+and print the resolved amounts and expected state changes without submitting a
+transaction:
+
+```sh
+lafiya-cli pool fund 100 --preview
+```
+
+Pre-checks mirror contract errors (for example cap exceeded, insufficient
+balance, or paused pool) and report a clear message before submission.
+
+## Examples
+
+```sh
+# Fund the pool and preview the effect first
+lafiya-cli pool fund 100 --preview
+lafiya-cli pool fund 100
+
+# Inspect caps as JSON
+lafiya-cli pool caps --json
+
+# Claim rewards for a specific attester
+lafiya-cli pool claim --attester 0xabc... --json

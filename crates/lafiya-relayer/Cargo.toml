@@ -1,0 +1,10 @@
+[package]
+name = "lafiya-relayer"
+version = "0.1.0"
+edition = "2021"
+description = "Reference core for sponsored attestations: quotas, spend caps, idempotency, and an auditable spend ledger (issue #611)"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+
+[dependencies]
+lafiya-rpc-resilience = { path = "../lafiya-rpc-resilience" }
