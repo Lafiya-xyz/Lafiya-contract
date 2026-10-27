@@ -8,7 +8,8 @@ Output is a static site: index.html, and for every aggregate a CSV and JSON
 file together with the exact ledger range and query that produced it.
 
 Privacy: record counts are only published per (ISO week, state-level region)
-cell when the cell holds at least K records; see PRIVACY.md.
+cell when the cell holds at least K records, and only for completed weeks;
+see PRIVACY.md.
 """
 
 import argparse
@@ -20,7 +21,10 @@ import os
 import sys
 from collections import defaultdict
 
-K_ANONYMITY = 10
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import snapshot  # noqa: E402
+
+K_ANONYMITY = 10  # default minimum cohort; override with --k-threshold
 SUPPRESSED = None  # rendered as "<10" in HTML, empty in CSV, null in JSON
 UNKNOWN_REGION = "unknown"
 
@@ -89,6 +93,16 @@ def suppress(cells, k=K_ANONYMITY):
                 if visible:
                     out[(week, visible[0][1])][m] = SUPPRESSED
     return out
+
+
+def complete_weeks_only(events):
+    """Drop events from the newest (still open) ISO week. A week that is still
+    filling would otherwise be republished with growing counts, and the
+    difference between two snapshots exposes a count smaller than k."""
+    if not events:
+        return events
+    latest = max(week_of(e) for e in events)
+    return [e for e in events if week_of(e) != latest]
 
 
 def attester_counts(events):
@@ -283,6 +297,7 @@ Cells with fewer than {K_ANONYMITY} records are shown as &lt;{K_ANONYMITY}
 
 
 def main(argv=None):
+    global K_ANONYMITY
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--events", required=True, help="JSONL from lafiya-watchdog export")
     p.add_argument("--attesters", required=True, help="JSON map attester -> region")
@@ -295,6 +310,9 @@ def main(argv=None):
     p.add_argument("--exclude-attester", action="append", default=[],
                    help="attester address to omit (canary attester); repeatable")
     args = p.parse_args(argv)
+    if args.k_threshold < 2:
+        p.error("--k-threshold must be at least 2")
+    K_ANONYMITY = args.k_threshold
 
     with open(args.attesters, encoding="utf-8") as f:
         regions = json.load(f)
@@ -309,6 +327,7 @@ def main(argv=None):
         "ledger_to": args.ledger_to,
         "contracts": args.contracts.split(","),
         "k_anonymity": K_ANONYMITY,
+        "open_week_published": args.include_open_week,
         "query": {
             "method": "getEvents",
             "filters": [{"type": "contract", "contractIds": args.contracts.split(",")}],
@@ -323,7 +342,8 @@ def main(argv=None):
             f"--contracts {args.contracts} --out site"
         ),
     }
-    data = build(events, regions, args.manifest, provenance)
+    data = build(events, regions, args.manifest, provenance,
+                 include_open_week=args.include_open_week)
 
     os.makedirs(os.path.join(args.out, "data"), exist_ok=True)
     for key in ("verification_activity", "attesters", "incentives", "contract_health"):
@@ -334,6 +354,7 @@ def main(argv=None):
     with open(os.path.join(args.out, "data", "provenance.json"), "w", encoding="utf-8") as f:
         json.dump(provenance, f, indent=2, sort_keys=True)
         f.write("\n")
+    snapshot.write_manifest(os.path.join(args.out, "data"), args.ledger_to, events)
     with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as f:
         f.write(render_html(data))
     return 0
