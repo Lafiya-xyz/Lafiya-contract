@@ -215,6 +215,116 @@ fn exhausting_submit_rounds_escalates_to_the_operator_as_not_submitted() {
 }
 
 #[test]
+fn drop_before_send_is_reconciled_as_not_submitted_without_resubmission() {
+    // The request never reaches the node: the intent is persisted, but the
+    // hash is unknown to the chain. Reconciliation must prove the transaction
+    // never landed and surface a precise NotSubmitted state.
+    let node = Shared::new(
+        ScriptedProvider::new("solo")
+            .then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_poll(Ok(TxState::NotSubmitted)),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+    let mut log = RecoveryLog::new();
+
+    let result = client.submit_with_recovery(&SignedTx::new("tx-drop-before-send", ""), &mut log);
+
+    assert_eq!(
+        result,
+        RecoveryResult::ExhaustedNeedsOperator {
+            last_known: TxState::NotSubmitted,
+        }
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        1,
+        "a dropped-before-send intent must not be blindly resubmitted"
+    );
+    assert_eq!(
+        handle.borrow().poll_calls,
+        1,
+        "reconciliation must query getTransaction for the persisted intent"
+    );
+}
+
+#[test]
+fn drop_after_send_is_reconciled_to_accepted_without_duplicate_submission() {
+    // The node ingested the transaction but the ack was lost. The persisted
+    // intent's hash must be reconciled via getTransaction to a final state.
+    let node = Shared::new(
+        ScriptedProvider::new("solo")
+            .then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_poll(Ok(TxState::Unknown))
+            .then_poll(Ok(TxState::Accepted { ledger: 4242 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+    let mut log = RecoveryLog::new();
+
+    let result = client.submit_with_recovery(&SignedTx::new("tx-drop-after-send", ""), &mut log);
+
+    assert_eq!(
+        result,
+        RecoveryResult::Accepted {
+            ledger: 4242,
+            provider: "solo".to_string(),
+            submit_attempts: 2,
+        }
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        1,
+        "the transaction already landed; resubmitting would duplicate it"
+    );
+    assert_eq!(
+        handle.borrow().poll_calls,
+        2,
+        "reconciliation must keep polling until a final state is observed"
+    );
+}
+
+#[test]
+fn slow_ingest_is_reconciled_to_accepted_without_duplicate_submission() {
+    // The node is slow to ingest: several polls return Unknown before the
+    // transaction becomes visible. The client must wait it out, not resubmit.
+    let node = Shared::new(
+        ScriptedProvider::new("solo")
+            .then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_poll(Ok(TxState::Unknown))
+            .then_poll(Ok(TxState::Unknown))
+            .then_poll(Ok(TxState::Accepted { ledger: 77 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+    let mut log = RecoveryLog::new();
+
+    let result = client.submit_with_recovery(&SignedTx::new("tx-slow-ingest", ""), &mut log);
+
+    assert_eq!(
+        result,
+        RecoveryResult::Accepted {
+            ledger: 77,
+            provider: "solo".to_string(),
+            submit_attempts: 2,
+        }
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        1,
+        "slow ingest must never trigger a duplicate submission"
+    );
+    assert_eq!(
+        handle.borrow().poll_calls,
+        3,
+        "reconciliation must poll through the slow-ingest window"
+    );
+}
+
+#[test]
 fn exhausting_poll_rounds_escalates_to_the_operator_as_unknown() {
     let node = Shared::new(
         ScriptedProvider::new("solo").then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout)),

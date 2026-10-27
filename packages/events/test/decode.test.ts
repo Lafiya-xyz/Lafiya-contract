@@ -55,6 +55,27 @@ describe("generated decoders", () => {
     expect(event?.kind === "AttestationRecorded" && typeof event.timestamp).toBe("bigint");
   });
 
+  it("covers every incentive-pool event", () => {
+    const poolKinds = Object.keys(EVENT_SPECS).filter((k) => k.startsWith("Pool"));
+    expect(poolKinds.length).toBeGreaterThan(0);
+    const fixtureKinds = new Set(fixtures.map((f) => f.kind));
+    for (const kind of poolKinds) {
+      expect(fixtureKinds.has(kind as EventKind), `missing fixture for ${kind}`).toBe(true);
+    }
+  });
+
+  for (const fixture of fixtures.filter((f) => f.kind.startsWith("Pool"))) {
+    it(`decode ${fixture.kind} with pool contract id`, () => {
+      const event = decodeEvent(toRaw(fixture));
+      expect(event?.kind).toBe(fixture.kind);
+      expect(event?.contractId).toBe(fixture.raw.contractId);
+      const payload = Object.fromEntries(
+        Object.keys(fixture.expected).map((k) => [k, (event as any)[k]]),
+      );
+      expect(plain(payload)).toEqual(fixture.expected);
+    });
+  }
+
   it("ignores events that are not Lafiya events", () => {
     const raw = toRaw(fixtures[0]);
     raw.topic = [xdr.ScVal.scvSymbol("transfer")];

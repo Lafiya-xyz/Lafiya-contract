@@ -1,0 +1,10 @@
+{
+  "_comment": "Snapshot of per-transaction Soroban network limits. Refresh from the network settings (see docs/runbooks/sdk-protocol-upgrade.md) and review any diff.",
+  "cpu_instructions": 100000000,
+  "memory_bytes": 41943040,
+  "ledger_read_entries": 100,
+  "ledger_read_bytes": 200000,
+  "ledger_write_entries": 50,
+  "ledger_write_bytes": 132096,
+  "events_size_bytes": 16384
+}

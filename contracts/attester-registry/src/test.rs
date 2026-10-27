@@ -26,7 +26,9 @@ fn get_schema_version_succeeds() {
     // `needs_migration`/`migrate` in lib.rs), and not an accidental side
     // effect of an unrelated change.
     let (_, client, _admin) = setup();
-    assert_eq!(client.get_schema_version(), 5);
+    // Bumped from 5 to 6 to introduce scoped device session keys; the bump is
+    // paired with the migration path in `migrate`/`needs_migration`.
+    assert_eq!(client.get_schema_version(), 6);
 }
 
 #[test]
@@ -1148,4 +1150,242 @@ fn get_interface_reports_kind_versions_and_features() {
 fn get_interface_works_before_initialize() {
     let (_, client, _) = setup();
     assert_eq!(client.get_interface().interface_version, INTERFACE_VERSION);
+}
+
+#[test]
+fn delegate_session_key_succeeds_and_emits_event() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let expires_at = env.ledger().timestamp() + 1_000;
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(&attester, &session_pk, &expires_at, &scope);
+
+    let expected_event = SessionKeyDelegated {
+        attester: attester.clone(),
+        session_pk: session_pk.clone(),
+        expires_at,
+        scope: scope.clone(),
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Ok(())
+    );
+}
+
+#[test]
+fn delegate_session_key_for_non_allowlisted_attester_fails() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let expires_at = env.ledger().timestamp() + 1_000;
+    let scope = Symbol::new(&env, "attest");
+
+    assert_eq!(
+        client.try_delegate_session_key(&attester, &session_pk, &expires_at, &scope),
+        Err(Ok(Error::AttesterNotFound))
+    );
+}
+
+#[test]
+fn delegate_session_key_for_suspended_attester_fails() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.suspend_attester(&admin, &attester);
+
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let expires_at = env.ledger().timestamp() + 1_000;
+    let scope = Symbol::new(&env, "attest");
+
+    assert_eq!(
+        client.try_delegate_session_key(&attester, &session_pk, &expires_at, &scope),
+        Err(Ok(Error::AttesterSuspended))
+    );
+}
+
+#[test]
+fn is_session_valid_reports_expiry() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let expires_at = env.ledger().timestamp() + 10;
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(&attester, &session_pk, &expires_at, &scope);
+
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Ok(())
+    );
+
+    env.ledger().set_timestamp(expires_at + 1);
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionExpired))
+    );
+}
+
+#[test]
+fn is_session_valid_reports_scope_mismatch() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let expires_at = env.ledger().timestamp() + 1_000;
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &expires_at,
+        &Symbol::new(&env, "attest"),
+    );
+
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &Symbol::new(&env, "revoke")),
+        Err(Ok(Error::SessionScopeMismatch))
+    );
+}
+
+#[test]
+fn remove_attester_clears_session_keys() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &(env.ledger().timestamp() + 1_000),
+        &scope,
+    );
+
+    client.remove_attester(&admin, &attester);
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+}
+
+#[test]
+fn revoke_attester_clears_session_keys() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &(env.ledger().timestamp() + 1_000),
+        &scope,
+    );
+
+    client.revoke_attester(&attester);
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+}
+
+#[test]
+fn suspend_attester_clears_session_keys() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &(env.ledger().timestamp() + 1_000),
+        &scope,
+    );
+
+    client.suspend_attester(&admin, &attester);
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+}
+
+#[test]
+fn rotate_attester_clears_session_keys() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &(env.ledger().timestamp() + 1_000),
+        &scope,
+    );
+
+    let new_attester = Address::generate(&env);
+    client.rotate_attester(&admin, &attester, &new_attester);
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+}
+
+#[test]
+fn revoke_session_key_is_idempotent() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &(env.ledger().timestamp() + 1_000),
+        &scope,
+    );
+
+    client.revoke_session_key(&attester, &session_pk);
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+
+    // Revoking an already-revoked (or never-delegated) key is a no-op.
+    client.revoke_session_key(&attester, &session_pk);
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
 }

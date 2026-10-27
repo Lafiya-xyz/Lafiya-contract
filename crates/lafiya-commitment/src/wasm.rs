@@ -5,8 +5,14 @@
 
 use crate::{commit_v1_salted, decode_payload, encode_payload, EncodeError, FieldValue, Salt};
 use wasm_bindgen::prelude::*;
+use zeroize::Zeroize;
 
 /// High-level WASM interface for commitment operations
+///
+/// The salt lives in WASM linear memory and is zeroized when the encoder is
+/// freed (`encoder.free()` on the JS side, or when the `FinalizationRegistry`
+/// collects it). Callers should call `free()` explicitly as soon as they are
+/// done: finalization timing is up to the JS engine.
 #[wasm_bindgen]
 pub struct CommitmentEncoder {
     salt: Option<Salt>,
@@ -17,13 +23,19 @@ impl CommitmentEncoder {
     /// Create a new encoder with an optional salt for dictionary-attack resistance
     #[wasm_bindgen(constructor)]
     pub fn new(salt_bytes: Option<Vec<u8>>) -> Result<CommitmentEncoder, JsValue> {
-        let salt = if let Some(bytes) = salt_bytes {
+        let salt = if let Some(mut bytes) = salt_bytes {
             if bytes.len() != 32 {
+                bytes.zeroize();
                 return Err(JsValue::from_str("salt must be exactly 32 bytes"));
             }
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&bytes);
-            Some(Salt::from_bytes(arr))
+            // `wasm_bindgen` copied the JS `Uint8Array` into this Vec; wipe
+            // it and the stack copy so only the `Salt` holds the secret.
+            bytes.zeroize();
+            let salt = Salt::from_bytes(arr);
+            arr.zeroize();
+            Some(salt)
         } else {
             None
         };

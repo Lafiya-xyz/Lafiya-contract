@@ -1,0 +1,13 @@
+{
+  "title": "Lafiya resource headroom",
+  "uid": "lafiya-resource-headroom",
+  "schemaVersion": 39,
+  "panels": [
+    {"id": 1, "type": "timeseries", "title": "Headroom ratio by call and resource", "gridPos": {"x": 0, "y": 0, "w": 16, "h": 9},
+     "targets": [{"expr": "lafiya_resource_headroom_ratio", "legendFormat": "{{contract}}.{{function}} {{resource}}"}]},
+    {"id": 2, "type": "stat", "title": "Active headroom alerts", "gridPos": {"x": 16, "y": 0, "w": 8, "h": 9},
+     "targets": [{"expr": "lafiya_headroom_alerts"}]},
+    {"id": 3, "type": "timeseries", "title": "Network limits", "gridPos": {"x": 0, "y": 9, "w": 24, "h": 8},
+     "targets": [{"expr": "lafiya_network_limit", "legendFormat": "{{resource}}"}]}
+  ]
+}

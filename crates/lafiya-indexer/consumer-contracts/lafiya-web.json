@@ -1,0 +1,35 @@
+{
+  "consumer": "lafiya-web",
+  "provider": "lafiya-indexer",
+  "version": "1.0.0",
+  "interactions": [
+    {
+      "description": "list attesters with pagination",
+      "path": "/attesters",
+      "query": ["region", "status", "limit", "cursor"],
+      "status": "200",
+      "requiredResponseFields": ["items", "next_cursor"],
+      "pagination": { "cursorField": "next_cursor", "nullableAtEnd": true },
+      "itemSchema": "Attester",
+      "requiredItemFields": ["address"]
+    },
+    {
+      "description": "list attestations for a record, in chain order",
+      "path": "/attestations",
+      "query": ["attester", "record_hash", "limit", "cursor"],
+      "status": "200",
+      "requiredResponseFields": ["items", "next_cursor"],
+      "pagination": { "cursorField": "next_cursor", "nullableAtEnd": true },
+      "itemSchema": "Attestation",
+      "requiredItemFields": ["record_hash"]
+    },
+    {
+      "description": "record history exists",
+      "path": "/records/{hash}/history",
+      "query": [],
+      "status": "200",
+      "requiredResponseFields": [],
+      "requiredItemFields": []
+    }
+  ]
+}

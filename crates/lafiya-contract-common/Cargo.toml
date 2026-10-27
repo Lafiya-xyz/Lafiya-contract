@@ -8,3 +8,6 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 
 [lib]
 crate-type = ["rlib"]
+
+[dev-dependencies]
+proptest = "1.11"

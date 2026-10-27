@@ -1,15 +1,133 @@
 openapi: 3.0.3
 info:
   title: Lafiya indexer API
-  version: 0.1.0
+  version: 0.2.0
   description: >
     Read-only view of Lafiya contract state and history derived from contract
     events. List endpoints are keyset-paginated: pass `next_cursor` from a
     response as `cursor` to fetch the next page; it is null on the last page.
+
+
+    Push delivery is available instead of polling: `GET /events/stream` is a
+    server-sent events (SSE) stream, and subscriptions deliver signed webhooks.
+    Delivery is **at-least-once**: consumers must deduplicate on the event id
+    (`event_id`, also sent as the SSE `id:` field and the webhook `X-Lafiya-Event-Id`
+    header). The event id format is `<ledger>-<event_index>`, where `ledger` is the
+    ledger sequence number and `event_index` is the zero-based index of the event
+    within that ledger; it is monotonically increasing and can be used as a resume
+    cursor. See `asyncapi.yaml` (AsyncAPI 2.6.0) for the channel and message
+    definitions.
 paths:
+  /events/stream:
+    get:
+      summary: Server-sent events stream of contract events
+      description: >
+        Streams events as `text/event-stream`. Each event carries `id:` set to the
+        event id (`<ledger>-<event_index>`), `event:` set to the event type, and a
+        JSON `data:` payload matching `Event`. To resume after a disconnect, send
+        `Last-Event-ID` with the last event id received; the server replays all
+        events after that id (inclusive of later events only) before continuing
+        live. If `Last-Event-ID` is absent, the stream starts at the current head.
+        Replays are idempotent by event id. A `: keepalive` comment is sent
+        periodically to keep idle connections open.
+      parameters:
+        - name: Last-Event-ID
+          in: header
+          required: false
+          schema: { type: string, example: "1234-0" }
+          description: Resume cursor; the last event id the client processed.
+        - { name: contract, in: query, schema: { type: string } }
+        - name: event_type
+          in: query
+          schema: { type: string, enum: [attested, revoked, attester_registered, attester_updated, attester_removed] }
+        - { name: attester, in: query, schema: { type: string } }
+      responses:
+        "200":
+          description: Event stream
+          content:
+            text/event-stream:
+              schema: { type: string }
+        "400": { $ref: "#/components/responses/Error" }
+  /subscriptions:
+    get:
+      summary: List webhook subscriptions
+      parameters:
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of subscriptions
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Subscription" } }
+                  next_cursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+    post:
+      summary: Create a webhook subscription
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/SubscriptionInput" }
+      responses:
+        "201":
+          description: Created
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Subscription" }
+        "400": { $ref: "#/components/responses/Error" }
+  /subscriptions/{id}:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: Get a subscription
+      responses:
+        "200":
+          description: The subscription
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Subscription" }
+        "404": { $ref: "#/components/responses/Error" }
+    delete:
+      summary: Delete a subscription
+      responses:
+        "204": { description: Deleted }
+        "404": { $ref: "#/components/responses/Error" }
+  /subscriptions/{id}/deliveries:
+    parameters:
+      - { name: id, in: path, required: true, schema: { type: string } }
+    get:
+      summary: List delivery attempts, including dead-lettered ones
+      parameters:
+        - name: state
+          in: query
+          schema: { type: string, enum: [pending, delivered, dead_letter] }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of delivery attempts
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Delivery" } }
+                  next_cursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+        "404": { $ref: "#/components/responses/Error" }
   /health:
     get:
       summary: Liveness and ingestion progress
+      description: >
+        Operational endpoint. Must not be exposed publicly; restrict to the
+        internal network or the reverse proxy.
+      security: []
       responses:
         "200":
           description: Healthy
@@ -25,6 +143,10 @@ paths:
   /metrics:
     get:
       summary: Prometheus metrics
+      description: >
+        Operational endpoint. Must not be exposed publicly; restrict to the
+        internal network or the reverse proxy.
+      security: []
       responses:
         "200":
           description: Prometheus text format
@@ -33,6 +155,9 @@ paths:
   /attesters:
     get:
       summary: List attesters
+      security:
+        - ApiKeyAuth: []
+        - {}
       parameters:
         - { name: region, in: query, schema: { type: string } }
         - name: status
@@ -52,9 +177,14 @@ paths:
                   items: { type: array, items: { $ref: "#/components/schemas/Attester" } }
                   next_cursor: { type: string, nullable: true }
         "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /attestations:
     get:
       summary: List attestations
+      security:
+        - ApiKeyAuth: []
+        - {}
       parameters:
         - { name: attester, in: query, schema: { type: string } }
         - { name: record_hash, in: query, schema: { $ref: "#/components/schemas/Hash" } }
@@ -72,9 +202,19 @@ paths:
                   items: { type: array, items: { $ref: "#/components/schemas/Attestation" } }
                   next_cursor: { type: string, nullable: true }
         "400": { $ref: "#/components/responses/Error" }
+        "401": { $ref: "#/components/responses/Error" }
+        "429": { $ref: "#/components/responses/RateLimited" }
   /records/{hash}/history:
     get:
       summary: Attestation and revocation history of one record
+      description: >
+        Returns the history of a single record. This endpoint can act as a
+        probing oracle for linkability, so it is subject to the strictest rate
+        limit tier and bounded page size. Responses have a constant shape
+        whether or not the record exists. See `docs/security/linkability.md`.
+      security:
+        - ApiKeyAuth: []
+        - {}
       parameters:
         - { name: hash, in: path, required: true, schema: { $ref: "#/components/schemas/Hash" } }
         - $ref: "#/components/parameters/limit"
@@ -91,11 +231,64 @@ paths:
                   items: { type: array, items: { $ref: "#/components/schemas/HistoryEntry" } }
                   next_cursor: { type: string, nullable: true }
         "400": { $ref: "#/components/responses/Error" }
+  /work-items:
+    get:
+      summary: List incentive-pool work items
+      parameters:
+        - { name: attester, in: query, schema: { type: string } }
+        - name: status
+          in: query
+          schema: { type: string, enum: [approved, claimed, withdrawn] }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of work items, in chain order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/WorkItem" } }
+                  next_cursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
+  /payouts:
+    get:
+      summary: List incentive-pool payouts
+      parameters:
+        - { name: attester, in: query, schema: { type: string } }
+        - { name: work_item_id, in: query, schema: { type: string } }
+        - $ref: "#/components/parameters/limit"
+        - $ref: "#/components/parameters/cursor"
+      responses:
+        "200":
+          description: A page of payouts, in chain order
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [items, next_cursor]
+                properties:
+                  items: { type: array, items: { $ref: "#/components/schemas/Payout" } }
+                  next_cursor: { type: string, nullable: true }
+        "400": { $ref: "#/components/responses/Error" }
 components:
+  securitySchemes:
+    ApiKeyAuth:
+      type: apiKey
+      in: header
+      name: X-API-Key
+      description: >
+        Optional API key. When keys are required, requests without a valid key
+        are rejected with 401. Keys are never accepted in query strings.
   parameters:
     limit:
       name: limit
       in: query
+      description: >
+        Page size. Clamped by the server to the configured maximum (default 50,
+        hard cap 500) to bound enumeration signal.
       schema: { type: integer, minimum: 1, maximum: 500, default: 50 }
     cursor:
       name: cursor
@@ -110,6 +303,16 @@ components:
             type: object
             properties:
               error: { type: string }
+  securitySchemes: {}
+  headers:
+    XLafiyaSignature:
+      description: >
+        `sha256=<hex>` HMAC-SHA256 of the raw request body keyed by the
+        subscription secret. Verify before processing.
+      schema: { type: string, example: "sha256=9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08" }
+    XLafiyaEventId:
+      description: Event id (`<ledger>-<event_index>`); use to deduplicate retries.
+      schema: { type: string, example: "1234-0" }
   schemas:
     Hash:
       type: string
@@ -123,6 +326,27 @@ components:
         license_hash: { type: string, nullable: true }
         first_seen_ledger: { type: integer }
         updated_ledger: { type: integer }
+    WorkItem:
+      type: object
+      properties:
+        work_item_id: { type: string }
+        attester: { type: string }
+        status: { type: string, enum: [approved, claimed, withdrawn] }
+        amount: { type: string, description: Token amount as a decimal string }
+        approved_ledger: { type: integer, nullable: true }
+        claimed_ledger: { type: integer, nullable: true }
+        finalized_ledger: { type: integer, description: Last ledger considered final for this row }
+    Payout:
+      type: object
+      properties:
+        event_id: { type: string }
+        work_item_id: { type: string }
+        attester: { type: string }
+        amount: { type: string, description: Token amount as a decimal string }
+        timestamp: { type: integer, description: Ledger close time (Unix seconds) }
+        ledger: { type: integer }
+        tx_hash: { type: string }
+        finalized_ledger: { type: integer, description: Last ledger considered final for this row }
     Attestation:
       type: object
       properties:
@@ -133,6 +357,7 @@ components:
         ledger: { type: integer }
         tx_hash: { type: string }
         revoked: { type: boolean }
+        finalized_ledger: { type: integer, description: Last ledger considered final for this row }
     HistoryEntry:
       type: object
       properties:
@@ -142,3 +367,4 @@ components:
         timestamp: { type: integer, nullable: true }
         ledger: { type: integer }
         tx_hash: { type: string }
+        finalized_ledger: { type: integer, description: Last ledger considered final for this row }

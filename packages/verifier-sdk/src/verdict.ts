@@ -15,12 +15,17 @@ export const VERDICTS = [
   "attester_removed",
   "attester_suspended",
   "expired",
+  "disputed",
+  "quorum_not_met",
   "verified",
 ] as const;
 
 export type Verdict = (typeof VERDICTS)[number];
 
-/** One-line meaning of each verdict, suitable for a UI. */
+/**
+ * One-line technical meaning of each verdict. For responder-facing,
+ * localized, plain-language text use `localizeVerdict` (./i18n.ts).
+ */
 export const VERDICT_DESCRIPTIONS: Record<Verdict, string> = {
   invalid_payload: "The QR code is not a valid Lafiya card payload.",
   untrusted_contract:
@@ -33,6 +38,10 @@ export const VERDICT_DESCRIPTIONS: Record<Verdict, string> = {
   attester_removed: "The attesting health worker is no longer on the allowlist.",
   attester_suspended: "The attesting health worker is currently suspended.",
   expired: "The attestation is older than the maximum accepted age.",
+  disputed:
+    "The patient has flagged this attestation as disputed; treat the data as contested.",
+  quorum_not_met:
+    "The record requires more independent attesters than have co-attested so far.",
   verified: "Attested by a currently trusted health worker.",
 };
 

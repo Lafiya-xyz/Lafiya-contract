@@ -7,7 +7,9 @@
 pub mod record;
 
 pub mod layered;
+pub mod secrets;
 pub mod validation;
+pub mod verify;
 
 use schemars::JsonSchema;
 use serde::Deserialize;
@@ -18,10 +20,18 @@ pub use layered::{
     check_unknown_keys, env_var_name, local_override_path, resolve_network, suggest,
     ResolvedNetwork, Source, OVERRIDE_KEYS,
 };
+pub use secrets::{
+    resolve_secret_ref, resolve_secret_refs, EnvSecretProvider, SecretError, SecretProvider,
+    SecretRef, SecretRegistry, SecretValue,
+};
 pub use validation::{
     validate_account_address, validate_address, validate_contract_id, validate_network_name,
     validate_passphrase, validate_record_hash, validate_rpc_url, validate_source_account,
     AddressKind, ValidationError,
+};
+pub use verify::{
+    verify_against_chain, ChainSnapshot, ConfigDiff, DiffEntry, DiffKind, VerifyError,
+    VerifyReport,
 };
 
 #[derive(Debug, Error)]
@@ -63,6 +73,10 @@ pub enum ConfigError {
     },
     #[error("{location}: `{key}` must be a string")]
     OverrideNotString { location: String, key: String },
+    #[error(transparent)]
+    Secret(#[from] SecretError),
+    #[error(transparent)]
+    Verify(#[from] VerifyError),
 }
 
 /// Deployed contract ids of a network. An empty string means "not deployed".
@@ -203,6 +217,38 @@ impl NetworkConfig {
         }
 
         Ok(())
+    }
+
+    /// Resolve every `secret://` reference in this profile through `registry`.
+    ///
+    /// Resolved values are returned separately and are never written back into
+    /// the config struct, so they cannot be serialized by accident. Unknown
+    /// provider schemes fail closed.
+    pub fn resolve_secrets(
+        &self,
+        registry: &SecretRegistry,
+    ) -> Result<BTreeMap<String, SecretValue>, ConfigError> {
+        let mut refs = BTreeMap::new();
+        for (field, value) in [
+            ("rpc_url", self.rpc_url.as_str()),
+            ("network_passphrase", self.network_passphrase.as_str()),
+            ("contracts.attester_registry", self.contracts.attester_registry.as_str()),
+            (
+                "contracts.attestation_registry",
+                self.contracts.attestation_registry.as_str(),
+            ),
+            ("contracts.incentive_pool", self.contracts.incentive_pool.as_str()),
+        ] {
+            if let Some(r) = SecretRef::parse(value)? {
+                refs.insert(field.to_string(), r);
+            }
+        }
+        for (i, url) in self.rpc_urls.iter().enumerate() {
+            if let Some(r) = SecretRef::parse(url)? {
+                refs.insert(format!("rpc_urls[{i}]"), r);
+            }
+        }
+        Ok(registry.resolve_all(&refs)?)
     }
 
     /// Resolve a contract id for a command that needs it, reporting partial
@@ -646,6 +692,34 @@ incentive_pool = ""
             committed == expected,
             "config/networks.schema.json is stale; regenerate with `make config-schema`"
         );
+    }
+
+    #[test]
+    fn secret_refs_resolve_out_of_band_and_never_serialize() {
+        let mut cfg = network("", "");
+        cfg.rpc_url = "secret://env/SOROBAN_RPC_URL".to_string();
+        cfg.contracts.attester_registry = "secret://env/ATTESTER_ID".to_string();
+
+        // The raw config still carries only the reference, never the value.
+        let debug = format!("{:?}", cfg);
+        assert!(debug.contains("secret://env/SOROBAN_RPC_URL"), "{debug}");
+
+        let mut registry = SecretRegistry::new();
+        registry.register(EnvSecretProvider::new());
+        let resolved = cfg.resolve_secrets(&registry).unwrap();
+        assert_eq!(resolved.len(), 2);
+        assert!(resolved.contains_key("rpc_url"));
+        assert!(resolved.contains_key("contracts.attester_registry"));
+    }
+
+    #[test]
+    fn unknown_secret_scheme_fails_closed() {
+        let mut cfg = network("", "");
+        cfg.rpc_url = "secret://vault/foo".to_string();
+        let mut registry = SecretRegistry::new();
+        registry.register(EnvSecretProvider::new());
+        let err = cfg.resolve_secrets(&registry).unwrap_err();
+        assert!(matches!(err, ConfigError::Secret(_)), "{err}");
     }
 
     #[test]

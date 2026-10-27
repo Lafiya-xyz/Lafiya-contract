@@ -9,6 +9,7 @@ use stellar_xdr::{ScAddress, ScVal};
 use crate::decode::{address, bytes_hex, map_field, symbol};
 use crate::metrics::Metrics;
 use crate::rpc::{RpcClient, RpcError};
+use crate::store::Store;
 
 /// `get_attester_status` result (`None` when not allowlisted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -66,6 +67,22 @@ pub fn attester_matches(derived: &DerivedAttester, chain: Option<&ChainAttester>
     }
 }
 
+/// Outcome of a reorg check against the store's recorded ledger hashes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ReorgOutcome {
+    /// The tip is continuous with the recorded history; nothing to do.
+    Continuous,
+    /// A divergence was found at `divergent_ledger`; the common ancestor is
+    /// `ancestor_ledger` (0 when no recorded ledger is shared). Derived state
+    /// was rolled back to the ancestor and must be re-ingested from
+    /// `ancestor_ledger + 1`.
+    RolledBack {
+        ancestor_ledger: u32,
+        divergent_ledger: u32,
+        depth: u32,
+    },
+}
+
 pub struct Reconciler {
     pub pool: PgPool,
     pub rpc: RpcClient,
@@ -106,6 +123,134 @@ impl Reconciler {
             .read_contract(&self.attestation_registry, "get_attestation", vec![arg])
             .await?;
         Ok(parse_attestation(&v))
+    }
+
+    /// Verify that the ledger hash reported for `ledger` matches the hash we
+    /// recorded when we ingested it. Returns `Ok(true)` when it matches (or
+    /// when we have no record yet), `Ok(false)` on divergence.
+    pub async fn verify_ledger_hash(
+        &self,
+        ledger: u32,
+        expected_hash: &str,
+    ) -> anyhow::Result<bool> {
+        let recorded: Option<(String,)> =
+            sqlx::query_as("SELECT ledger_hash FROM ledger_hashes WHERE ledger = $1")
+                .bind(ledger as i64)
+                .fetch_optional(&self.pool)
+                .await?;
+        match recorded {
+            None => Ok(true),
+            Some((hash,)) => Ok(hash == expected_hash),
+        }
+    }
+
+    /// Find the highest recorded ledger whose hash still matches the chain,
+    /// walking backwards from `divergent_ledger - 1`. Returns 0 when no
+    /// recorded ledger is shared with the current chain.
+    async fn common_ancestor(
+        &self,
+        divergent_ledger: u32,
+        chain_hash_at: impl Fn(u32) -> Option<String>,
+    ) -> anyhow::Result<u32> {
+        let recorded: Vec<(i64, String)> = sqlx::query_as(
+            "SELECT ledger, ledger_hash FROM ledger_hashes
+             WHERE ledger < $1 ORDER BY ledger DESC",
+        )
+        .bind(divergent_ledger as i64)
+        .fetch_all(&self.pool)
+        .await?;
+        for (ledger, hash) in recorded {
+            let ledger = ledger as u32;
+            if chain_hash_at(ledger).as_deref() == Some(hash.as_str()) {
+                return Ok(ledger);
+            }
+        }
+        Ok(0)
+    }
+
+    /// Roll derived state back to `ancestor_ledger` atomically. All derived
+    /// tables and the ledger-hash index are truncated to the ancestor within a
+    /// single transaction, so a crash mid-rollback leaves the previous state
+    /// intact. Re-running with the same ancestor is a no-op.
+    pub async fn rollback_to(&self, ancestor_ledger: u32) -> anyhow::Result<()> {
+        let mut tx = self.pool.begin().await?;
+        let ancestor = ancestor_ledger as i64;
+
+        // Derived tables keyed by ledger: drop everything above the ancestor.
+        sqlx::query("DELETE FROM attestations WHERE ledger > $1")
+            .bind(ancestor)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM revocations WHERE ledger > $1")
+            .bind(ancestor)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM attester_events WHERE ledger > $1")
+            .bind(ancestor)
+            .execute(&mut *tx)
+            .await?;
+        sqlx::query("DELETE FROM ledger_hashes WHERE ledger > $1")
+            .bind(ancestor)
+            .execute(&mut *tx)
+            .await?;
+
+        // Reset the ingest cursor so re-ingest resumes at the ancestor + 1.
+        sqlx::query(
+            "UPDATE ingest_cursor SET last_ledger = $1, last_cursor = NULL
+             WHERE id = 1 AND last_ledger > $1",
+        )
+        .bind(ancestor)
+        .execute(&mut *tx)
+        .await?;
+
+        tx.commit().await?;
+        Ok(())
+    }
+
+    /// Detect a reorg by comparing the recorded ledger hash for `ledger`
+    /// against `expected_hash`. On mismatch, roll back to the common ancestor
+    /// and report the depth. Idempotent: re-running after a rollback finds the
+    /// tip continuous.
+    pub async fn detect_and_rollback(
+        &self,
+        ledger: u32,
+        expected_hash: &str,
+        chain_hash_at: impl Fn(u32) -> Option<String>,
+    ) -> anyhow::Result<ReorgOutcome> {
+        if self.verify_ledger_hash(ledger, expected_hash).await? {
+            return Ok(ReorgOutcome::Continuous);
+        }
+        let ancestor = self.common_ancestor(ledger, chain_hash_at).await?;
+        let depth = ledger.saturating_sub(ancestor);
+        self.rollback_to(ancestor).await?;
+        self.metrics.reorg_detected_total.inc();
+        self.metrics
+            .reorg_last_rollback_depth
+            .set(depth as i64);
+        tracing::warn!(
+            divergent_ledger = ledger,
+            ancestor_ledger = ancestor,
+            depth,
+            "ledger hash mismatch; rolled back derived state"
+        );
+        Ok(ReorgOutcome::RolledBack {
+            ancestor_ledger: ancestor,
+            divergent_ledger: ledger,
+            depth,
+        })
+    }
+
+    /// Record the hash of an ingested ledger. Called by the ingest loop after
+    /// each page; idempotent on `(ledger)`.
+    pub async fn record_ledger_hash(
+        &self,
+        store: &Store,
+        ledger: u32,
+        ledger_hash: &str,
+    ) -> anyhow::Result<()> {
+        store
+            .record_ledger_hash(ledger, ledger_hash)
+            .await
     }
 
     /// Fill in region / license hash for attesters whose info changed.
@@ -245,5 +390,18 @@ mod tests {
             ..derived(true, false)
         };
         assert!(attester_matches(&stale, Some(&moved)));
+    }
+
+    #[test]
+    fn reorg_outcome_depth() {
+        let outcome = ReorgOutcome::RolledBack {
+            ancestor_ledger: 100,
+            divergent_ledger: 105,
+            depth: 5,
+        };
+        match outcome {
+            ReorgOutcome::RolledBack { depth, .. } => assert_eq!(depth, 5),
+            ReorgOutcome::Continuous => panic!("expected rollback"),
+        }
     }
 }

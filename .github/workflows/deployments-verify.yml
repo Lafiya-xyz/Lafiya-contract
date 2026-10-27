@@ -13,6 +13,8 @@ on:
   pull_request:
     paths:
       - "deployments/**"
+      - "contracts/**"
+      - "scripts/check_wasm_meta.py"
 
 env:
   CARGO_TERM_COLOR: always
@@ -29,3 +31,20 @@ jobs:
 
       - name: deployments verify --network testnet
         run: cargo run -q -p lafiya-cli -- --network testnet deployments verify
+
+  verify-wasm-metadata:
+    name: Verify SEP-46 metadata in every wasm artifact
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build contract wasm
+        run: LAFIYA_GIT_COMMIT="$(git rev-parse HEAD)" cargo xtask wasm
+
+      - name: Assert required metadata keys and agreement with Cargo
+        run: python3 scripts/check_wasm_meta.py --require-all --commit "$(git rev-parse HEAD)" target/wasm32v1-none/release/*.wasm

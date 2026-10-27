@@ -28,6 +28,17 @@ from pathlib import Path
 
 from contracts import BINDINGS_CONTRACTS as CONTRACTS
 
+# Bindings packages that live outside the registry/multisig `bindings/`
+# tree but must be held to the same drift gate (issue #512).
+EXTRA_CONTRACTS: dict[str, dict[str, Path]] = {
+    "incentive-pool": {
+        "wasm_path": Path("target/wasm32v1-none/release/incentive_pool.wasm"),
+        "bindings_dir": Path("bindings/incentive-pool"),
+    },
+}
+
+ALL_CONTRACTS: dict[str, dict[str, Path]] = {**CONTRACTS, **EXTRA_CONTRACTS}
+
 FUNCTION_RE = re.compile(r"^\s{2}(\w+):\s*\(.*?options\?: MethodOptions\)", re.MULTILINE)
 ERROR_RE = re.compile(r"^\s*(\d+):\s*\{message:\"(\w+)\"\}", re.MULTILINE)
 
@@ -114,14 +125,14 @@ def check_one(name: str, cfg: dict[str, Path], scratch_root: Path) -> bool:
 
 
 def main() -> None:
-    names = sys.argv[1:] or list(CONTRACTS)
-    unknown = [n for n in names if n not in CONTRACTS]
+    names = sys.argv[1:] or list(ALL_CONTRACTS)
+    unknown = [n for n in names if n not in ALL_CONTRACTS]
     if unknown:
         sys.exit(f"error: unknown contract(s): {', '.join(unknown)}")
 
     with tempfile.TemporaryDirectory(prefix="lafiya-bindings-check-") as tmp:
         scratch_root = Path(tmp)
-        ok = all(check_one(name, CONTRACTS[name], scratch_root) for name in names)
+        ok = all(check_one(name, ALL_CONTRACTS[name], scratch_root) for name in names)
     sys.exit(0 if ok else 1)
 
 

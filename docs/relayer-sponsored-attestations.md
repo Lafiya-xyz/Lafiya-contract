@@ -33,3 +33,20 @@ contract, method, and arguments and must remain valid when submitted. The
 relayer should never receive the CHW's signing key or request a signature over
 the outer transaction.
 
+
+## Argument-bound authorization
+
+`attester.require_auth()` in Soroban commits the signature to the contract,
+function name, and **all** arguments of the invocation. The auth tree for a
+sponsored `attest` is a single root node with no sub-invocations:
+
+```text
+attestation-registry.attest(attester, patient, record_hash)
+```
+
+`attest_versioned`, `attest_version`, and `anchor_batch` bind their extra
+fields (`commitment_version`, `previous_record_hash`, `root`, `leaf_count`) the
+same way. A signature over hash A therefore cannot authorize hash B, and a
+relayer cannot alter any bound field. `lafiya auth decode` prints every bound
+argument by name so multisig reviewers can verify them before signing. No
+public ABI change is required.

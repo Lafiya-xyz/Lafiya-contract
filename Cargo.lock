@@ -292,6 +292,7 @@ dependencies = [
 name = "attester-registry"
 version = "0.1.0"
 dependencies = [
+ "ed25519-dalek 3.0.0",
  "proptest",
  "soroban-sdk",
 ]
@@ -1749,6 +1750,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "lafiya-bench"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "clap",
+ "serde_json",
+ "soroban-sdk",
+]
+
+[[package]]
 name = "lafiya-cli"
 version = "0.1.0"
 dependencies = [
@@ -1778,13 +1789,15 @@ dependencies = [
 
 [[package]]
 name = "lafiya-commitment"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "hex",
  "serde",
  "serde_json",
  "sha2 0.10.9",
  "soroban-sdk",
+ "subtle",
+ "zeroize",
 ]
 
 [[package]]
@@ -1804,12 +1817,20 @@ dependencies = [
 name = "lafiya-contract-common"
 version = "0.1.0"
 dependencies = [
+ "proptest",
  "soroban-sdk",
 ]
 
 [[package]]
 name = "lafiya-fraud-scoring"
 version = "0.1.0"
+
+[[package]]
+name = "lafiya-relayer"
+version = "0.1.0"
+dependencies = [
+ "lafiya-rpc-resilience",
+]
 
 [[package]]
 name = "lafiya-rpc-resilience"
@@ -1822,6 +1843,14 @@ dependencies = [
  "tracing",
  "ureq",
  "wiremock",
+]
+
+[[package]]
+name = "lafiya-verification-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1937,8 +1966,10 @@ dependencies = [
  "attestation-registry",
  "attester-registry",
  "ed25519-dalek 3.0.0",
+ "hex",
  "p256",
  "proptest",
+ "serde_json",
  "sha2 0.10.9",
  "soroban-sdk",
 ]

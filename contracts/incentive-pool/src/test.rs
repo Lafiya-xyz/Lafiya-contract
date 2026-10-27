@@ -877,42 +877,65 @@ fn attester_total_claimed_starts_at_zero() {
     assert_eq!(client.get_attester_total_claimed(&attester), 0);
 }
 
-// ─────────────────────── Probation payout gate ───────────────────────
+// ─────────────── Claim hardening (#509) ───────────────
 
 #[test]
-fn probationary_attester_cannot_be_approved_or_claim_until_promoted() {
-    let (env, client, attester_registry, admin, _approver, _token, _ta) = setup();
-    attester_registry.set_probation_config(&(7 * 24 * 60 * 60), &0, &0, &false);
+fn claim_to_unauthorized_recipient_returns_typed_error_without_mutation() {
+    let (env, client, attester_registry, _admin, _approver, token, _ta) = setup();
     let attester = Address::generate(&env);
-    attester_registry.add_attester(&admin, &attester);
-    client.fund(&ONE_UNIT);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+    let id = BytesN::from_array(&env, &[9u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
 
-    let work_item_id = BytesN::from_array(&env, &[9u8; 32]);
+    // Issuer revokes the recipient's authorization: token rejects it.
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).set_authorized(&attester, &false);
+    assert!(!client.can_receive(&attester));
+
     assert_eq!(
-        client.try_approve_work_item(&work_item_id, &attester, &ONE_UNIT),
-        Err(Ok(Error::PayoutNotEligible))
+        client.try_claim(&id),
+        Err(Ok(Error::RecipientCannotReceive))
     );
+    assert!(!client.is_work_item_claimed(&id));
+    assert_eq!(client.get_total_paid(), 0);
+    assert_eq!(client.get_attester_total_claimed(&attester), 0);
 
-    attester_registry.promote_attester(&admin, &attester);
-    client.approve_work_item(&work_item_id, &attester, &ONE_UNIT);
-    client.claim(&work_item_id);
-    assert!(client.is_work_item_claimed(&work_item_id));
+    // Recoverable: once re-authorized, the same approval pays out.
+    soroban_sdk::token::StellarAssetClient::new(&env, &token).set_authorized(&attester, &true);
+    assert!(client.can_receive(&attester));
+    client.claim(&id);
+    assert!(client.is_work_item_claimed(&id));
 }
 
-#[test]
-fn approved_item_cannot_be_claimed_if_attester_is_flagged_afterwards() {
-    let (env, client, attester_registry, admin, _approver, _token, _ta) = setup();
-    attester_registry.set_probation_config(&(7 * 24 * 60 * 60), &0, &0, &true);
-    let attester = Address::generate(&env);
-    attester_registry.add_attester(&admin, &attester);
-    client.fund(&ONE_UNIT);
-    let work_item_id = BytesN::from_array(&env, &[8u8; 32]);
-    client.approve_work_item(&work_item_id, &attester, &ONE_UNIT);
+// ─────────────── Payout schedule (#510) ───────────────
 
-    // Policy tightens before the claim.
-    attester_registry.set_probation_config(&(7 * 24 * 60 * 60), &0, &0, &false);
+#[test]
+fn scheduled_approval_uses_timelocked_rate_and_records_version() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let (work_type, rural) = (1u32, 2u32);
+    let id = BytesN::from_array(&env, &[7u8; 32]);
+
     assert_eq!(
-        client.try_claim(&work_item_id),
-        Err(Ok(Error::PayoutNotEligible))
+        client.try_approve_scheduled_work_item(&id, &attester, &work_type, &rural),
+        Err(Ok(Error::ScheduleEntryNotFound))
     );
+
+    client.propose_payout_rate(&work_type, &rural, &(3 * ONE_UNIT));
+    assert_eq!(
+        client.try_apply_payout_rate(&work_type, &rural),
+        Err(Ok(Error::TimelockNotElapsed))
+    );
+    env.ledger()
+        .with_mut(|l| l.timestamp += SCHEDULE_TIMELOCK_SECS);
+    assert_eq!(client.apply_payout_rate(&work_type, &rural), 1);
+
+    client.approve_scheduled_work_item(&id, &attester, &work_type, &rural);
+    assert_eq!(
+        client.get_work_item(&id).unwrap().payout_amount,
+        3 * ONE_UNIT
+    );
+    assert_eq!(client.get_work_item_schedule_version(&id), 1);
 }

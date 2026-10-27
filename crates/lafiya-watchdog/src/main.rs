@@ -8,6 +8,8 @@ use lafiya_watchdog::rpc::Rpc;
 use lafiya_watchdog::rules::{Engine, HealthMonitor};
 use lafiya_watchdog::{sinks, Alert, Event};
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 use std::time::Duration;
 
 #[derive(Parser)]
@@ -54,17 +56,45 @@ enum Command {
     },
 }
 
-fn emit(cfg: &Config, alert: &Alert, send: bool) {
-    tracing::warn!(kind = %alert.kind, severity = %alert.severity, "{}", alert.summary);
-    println!(
-        "{}",
-        serde_json::to_string(alert).expect("alert serializes")
-    );
-    if send {
-        for err in sinks::dispatch(&cfg.sinks, alert) {
-            tracing::error!(error = %err, "alert sink failed");
+/// Routes alerts through the dedup/grouping/escalation pipeline before
+/// emitting them. Returns the alerts that survived deduplication.
+fn emit(cfg: &Config, engine: &mut Engine, alert: &Alert, send: bool) -> Vec<Alert> {
+    let routed = engine.route_alert(alert);
+    for a in &routed {
+        tracing::warn!(kind = %a.kind, severity = %a.severity, "{}", a.summary);
+        println!("{}", serde_json::to_string(a).expect("alert serializes"));
+        if send {
+            for err in sinks::dispatch(&cfg.sinks, a) {
+                tracing::error!(error = %err, "alert sink failed");
+            }
         }
     }
+    routed
+}
+
+/// Persist engine state (rule windows, alert fingerprints, escalation state)
+/// so a restart does not re-alert or lose in-flight windows.
+fn persist(cfg: &Config, engine: &Engine) {
+    if let Err(e) = engine.save_state(&cfg.state_path) {
+        tracing::error!(error = %e, "failed to persist watchdog state");
+    }
+}
+
+/// Spawn the dead-man's-switch heartbeat task. It pings the external monitor
+/// after every healthy poll; absence of pings pages the operator.
+fn spawn_heartbeat(cfg: &Config, stop: Arc<AtomicBool>) {
+    let Some(url) = cfg.heartbeat.ping_url.clone() else {
+        return;
+    };
+    let interval = Duration::from_secs(cfg.heartbeat.ping_interval_secs.max(1));
+    std::thread::spawn(move || {
+        while !stop.load(Ordering::Relaxed) {
+            if let Err(e) = ureq::get(&url).call() {
+                tracing::warn!(error = %e, "heartbeat ping failed");
+            }
+            std::thread::sleep(interval);
+        }
+    });
 }
 
 fn main() -> anyhow::Result<()> {
@@ -77,7 +107,7 @@ fn main() -> anyhow::Result<()> {
         .init();
     let cli = Cli::parse();
     let cfg = Config::load(&cli.config)?;
-    let mut engine = Engine::new(&cfg);
+    let mut engine = Engine::load(&cfg, &cfg.state_path)?;
     let rpc = Rpc::new(&cfg.rpc_url);
 
     match cli.command {
@@ -97,8 +127,11 @@ fn main() -> anyhow::Result<()> {
             };
             for e in &events {
                 for alert in engine.evaluate(e) {
-                    emit(&cfg, &alert, send);
+                    emit(&cfg, &mut engine, &alert, send);
                 }
+            }
+            if send {
+                persist(&cfg, &engine);
             }
             tracing::info!(events = events.len(), "replay finished");
         }
@@ -110,11 +143,17 @@ fn main() -> anyhow::Result<()> {
             tracing::info!(events = events.len(), latest, "export finished");
         }
         Command::Run { start_ledger } => {
+            // Resume from persisted cursor so a kill -9 restart neither
+            // re-alerts nor loses in-flight windows.
             let mut next = match start_ledger {
                 Some(l) => l,
-                None => rpc.latest_ledger()?,
+                None => engine
+                    .resume_ledger()
+                    .unwrap_or(rpc.latest_ledger()?),
             };
             let mut health = HealthMonitor::default();
+            let stop = Arc::new(AtomicBool::new(false));
+            spawn_heartbeat(&cfg, stop.clone());
             tracing::info!(
                 ledger = next,
                 contracts = cfg.contracts.len(),
@@ -129,22 +168,22 @@ fn main() -> anyhow::Result<()> {
                         if let Some(a) =
                             health.check_lag(processed, latest, cfg.heartbeat.max_lag_ledgers)
                         {
-                            emit(&cfg, &a, true);
+                            emit(&cfg, &mut engine, &a, true);
                         }
                         next = processed + 1;
-                        if let Some(url) = &cfg.heartbeat.ping_url {
-                            if let Err(e) = ureq::get(url).call() {
-                                tracing::warn!(error = %e, "heartbeat ping failed");
-                            }
-                        }
+                        engine.set_resume_ledger(next);
+                        persist(&cfg, &engine);
                     }
                     Err(e) => {
                         tracing::error!(error = %e, "poll failed");
                         if let Some(a) = health
                             .record_failure(cfg.heartbeat.max_consecutive_failures, &e.to_string())
                         {
-                            emit(&cfg, &a, true);
+                            emit(&cfg, &mut engine, &a, true);
                         }
+                        // Persist even on failure so partial progress and
+                        // alert fingerprints survive a crash.
+                        persist(&cfg, &engine);
                     }
                 }
                 std::thread::sleep(Duration::from_secs(cfg.poll_interval_secs));
@@ -160,13 +199,17 @@ fn poll_once(cfg: &Config, rpc: &Rpc, engine: &mut Engine, start: u32) -> anyhow
     let (events, latest) = rpc.events(&cfg.contracts, start, None)?;
     for e in &events {
         for alert in engine.evaluate(e) {
-            emit(cfg, &alert, true);
+            // Critical rules attach a pre-built unsigned pause proposal;
+            // guardian signatures are required via multisig tooling.
+            let alert = engine.attach_pause_proposal(alert);
+            emit(cfg, engine, &alert, true);
         }
     }
     for contract in &cfg.contracts {
         let hash = rpc.contract_wasm_hash(contract)?;
         if let Some(alert) = engine.observe_wasm(contract, &hash, latest) {
-            emit(cfg, &alert, true);
+            let alert = engine.attach_pause_proposal(alert);
+            emit(cfg, engine, &alert, true);
         }
     }
     Ok(latest)

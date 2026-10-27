@@ -6,10 +6,13 @@
 //! has closed, stops polling as soon as the outcome is certain, and never
 //! resubmits the same envelope.
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use lafiya_rpc_resilience::mock::{ScriptedProvider, Shared};
 use lafiya_rpc_resilience::{
-    classify, FailoverClient, RecoveryLog, RecoveryResult, RetryClass, RetryPolicy, RpcError,
-    RpcProvider, SignedTx, SubmitOutcome, TxBounds, TxState,
+    classify, FailoverClient, HealthConfig, HealthTracker, RecoveryLog, RecoveryResult,
+    RetryClass, RetryPolicy, RpcError, RpcProvider, SignedTx, SubmitOutcome, TxBounds, TxState,
 };
 
 fn policy() -> RetryPolicy {
@@ -174,4 +177,163 @@ fn no_ledger_information_escalates_instead_of_polling_forever() {
         }
     );
     assert_eq!(handle.borrow().poll_calls, 2);
+}
+
+// ---------------------------------------------------------------------------
+// Latency-aware scoring, hedging and half-open circuit breaking (issue #540).
+// ---------------------------------------------------------------------------
+
+fn health_config() -> HealthConfig {
+    HealthConfig {
+        latency_percentile: 0.5,
+        hedge_after: std::time::Duration::from_millis(5),
+        error_penalty: 4.0,
+        staleness_penalty: 1.0,
+        open_threshold: 3,
+        half_open_after: std::time::Duration::from_millis(1),
+        half_open_jitter: std::time::Duration::from_millis(1),
+        ..HealthConfig::default()
+    }
+}
+
+/// A provider that reports a fixed latency on every call, so the simulation
+/// is fully deterministic (no wall-clock sleeps).
+fn latency_provider(name: &'static str, latency: std::time::Duration) -> Box<dyn RpcProvider> {
+    Box::new(ScriptedProvider::new(name).with_latency(latency))
+}
+
+#[test]
+fn latency_aware_scoring_recovers_faster_than_static_ordering() {
+    // Provider A is alive but slow; provider B is fast. Static ordering keeps
+    // picking A and pays its latency every round. Latency-aware scoring learns
+    // to prefer B and recovers in fewer simulated milliseconds.
+    let build = || -> (Vec<Box<dyn RpcProvider>>, Rc<RefCell<HealthTracker>>) {
+        let tracker = Rc::new(RefCell::new(HealthTracker::new(health_config())));
+        let providers: Vec<Box<dyn RpcProvider>> = vec![
+            latency_provider("slow", std::time::Duration::from_millis(50)),
+            latency_provider("fast", std::time::Duration::from_millis(1)),
+        ];
+        (providers, tracker)
+    };
+
+    let (providers, tracker) = build();
+    let mut baseline = FailoverClient::new(providers, policy());
+    let baseline_elapsed = baseline.simulated_elapsed();
+
+    let (providers, tracker) = build();
+    let mut scored = FailoverClient::with_health(providers, policy(), tracker.clone());
+    let scored_elapsed = scored.simulated_elapsed();
+
+    assert!(
+        scored_elapsed < baseline_elapsed,
+        "latency-aware scoring ({scored_elapsed:?}) should beat static ordering ({baseline_elapsed:?})"
+    );
+    assert!(tracker.borrow().score("fast") > tracker.borrow().score("slow"));
+}
+
+#[test]
+fn hedged_reads_use_faster_replica_but_submissions_stay_single_flight() {
+    let slow = Shared::new(
+        ScriptedProvider::new("slow")
+            .with_latency(std::time::Duration::from_millis(50))
+            .then_poll(Ok(TxState::Accepted { ledger: 1_050 })),
+    );
+    let fast = Shared::new(
+        ScriptedProvider::new("fast")
+            .with_latency(std::time::Duration::from_millis(1))
+            .then_poll(Ok(TxState::Accepted { ledger: 1_050 })),
+    );
+    let slow_handle = slow.handle();
+    let fast_handle = fast.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(slow), Box::new(fast)];
+    let tracker = Rc::new(RefCell::new(HealthTracker::new(health_config())));
+    let mut client = FailoverClient::with_health(providers, policy(), tracker);
+
+    let state = client
+        .poll_hedged(&SignedTx::new("tx-hedge", ""))
+        .expect("hedged read resolves");
+    assert_eq!(state, TxState::Accepted { ledger: 1_050 });
+    assert_eq!(
+        fast_handle.borrow().poll_calls,
+        1,
+        "the fast replica answers the hedge"
+    );
+    assert_eq!(
+        slow_handle.borrow().poll_calls,
+        1,
+        "the slow replica is still consulted once"
+    );
+    assert_eq!(
+        slow_handle.borrow().submit_calls + fast_handle.borrow().submit_calls,
+        0,
+        "hedging never submits"
+    );
+}
+
+#[test]
+fn half_open_breaker_recovers_with_jittered_probe() {
+    let node = Shared::new(
+        ScriptedProvider::new("flaky")
+            .then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 1_070 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let tracker = Rc::new(RefCell::new(HealthTracker::new(health_config())));
+    let mut client = FailoverClient::with_health(providers, policy(), tracker.clone());
+
+    // Three failures trip the breaker open.
+    for _ in 0..3 {
+        let _ = client.submit_with_bounds(
+            &SignedTx::new("tx-breaker", ""),
+            &bounds(),
+            &mut RecoveryLog::new(),
+        );
+    }
+    assert!(tracker.borrow().is_open("flaky"));
+
+    // After the half-open delay a single jittered probe is admitted and, on
+    // success, the breaker closes again.
+    client.advance_simulated(std::time::Duration::from_millis(2));
+    let result = client.submit_with_bounds(
+        &SignedTx::new("tx-breaker", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
+    assert!(matches!(
+        result,
+        RecoveryResult::Accepted { ledger: 1_070, .. }
+    ));
+    assert!(!tracker.borrow().is_open("flaky"));
+    assert_eq!(handle.borrow().submit_calls, 4);
+}
+
+#[test]
+fn submission_is_single_flight_and_idempotent_by_hash() {
+    let node = Shared::new(
+        ScriptedProvider::new("node")
+            .then_submit(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 1_050 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let tracker = Rc::new(RefCell::new(HealthTracker::new(health_config())));
+    let mut client = FailoverClient::with_health(providers, policy(), tracker);
+
+    let tx = SignedTx::new("tx-idem", "");
+    let first = client.submit_with_bounds(&tx, &bounds(), &mut RecoveryLog::new());
+    let second = client.submit_with_bounds(&tx, &bounds(), &mut RecoveryLog::new());
+
+    assert!(matches!(first, RecoveryResult::Accepted { .. }));
+    assert_eq!(
+        first, second,
+        "resubmitting the same hash is idempotent"
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        1,
+        "the envelope is submitted exactly once (single-flight)"
+    );
 }

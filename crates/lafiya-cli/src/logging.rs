@@ -16,9 +16,42 @@ pub enum LogFormat {
 
 const REDACTED: &str = "[REDACTED]";
 
+/// Field names whose values are always replaced with `[REDACTED]`, regardless
+/// of whether the value itself looks like a known secret format. Covers
+/// passphrases, keyring identifiers, and external-signer JSON payloads.
+const SENSITIVE_KEYS: &[&str] = &[
+    "passphrase",
+    "password",
+    "secret",
+    "seed",
+    "mnemonic",
+    "private_key",
+    "privatekey",
+    "secret_key",
+    "secretkey",
+    "keyring",
+    "keyring_id",
+    "keyringid",
+    "keyring_entry",
+    "signer_payload",
+    "signerpayload",
+    "signer_request",
+    "signerrequest",
+    "signer_response",
+    "signerresponse",
+    "payload",
+];
+
+fn is_sensitive_key(key: &str) -> bool {
+    let k = key.trim_matches(|c: char| c == '"' || c == '\'' || c == '`' || c.is_whitespace());
+    let k = k.to_ascii_lowercase();
+    SENSITIVE_KEYS.iter().any(|s| k == *s)
+}
+
 /// Replace anything that looks like a secret with `[REDACTED]`:
-/// Stellar secret seeds (`S` + 55 base32 chars) and BIP-39 style mnemonic
-/// phrases (12 or more consecutive lowercase words).
+/// Stellar secret seeds (`S` + 55 base32 chars), BIP-39 style mnemonic
+/// phrases (12 or more consecutive lowercase words), and values assigned to
+/// sensitive keys (`passphrase=...`, `"secret_key": "..."`, etc.).
 pub fn redact(input: &str) -> String {
     let mut out = String::with_capacity(input.len());
     let mut token = String::new();
@@ -31,7 +64,77 @@ pub fn redact(input: &str) -> String {
         }
     }
     flush_token(&mut token, &mut out);
+    let out = redact_sensitive_assignments(&out);
     redact_mnemonics(&out)
+}
+
+/// Redact the value following `key=`, `key:`, or `"key": "..."` when the key
+/// is sensitive. Handles both shell-style and JSON-style assignments.
+fn redact_sensitive_assignments(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let bytes = input.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        // Find the start of a potential key token.
+        let start = i;
+        while i < bytes.len() && (bytes[i].is_ascii_alphanumeric() || bytes[i] == b'_') {
+            i += 1;
+        }
+        if i == start {
+            out.push(bytes[i] as char);
+            i += 1;
+            continue;
+        }
+        let key = &input[start..i];
+        // Look ahead for an assignment separator.
+        let mut j = i;
+        while j < bytes.len() && bytes[j] == b' ' {
+            j += 1;
+        }
+        let sep = bytes.get(j).copied();
+        if is_sensitive_key(key) && matches!(sep, Some(b'=') | Some(b':')) {
+            out.push_str(key);
+            out.push(sep.unwrap() as char);
+            j += 1;
+            // Skip whitespace and an opening quote.
+            while j < bytes.len() && bytes[j] == b' ' {
+                out.push(' ');
+                j += 1;
+            }
+            let quote = match bytes.get(j).copied() {
+                Some(q @ (b'"' | b'\'')) => {
+                    out.push(q as char);
+                    j += 1;
+                    Some(q)
+                }
+                _ => None,
+            };
+            // Consume the value up to the closing quote or delimiter.
+            while j < bytes.len() {
+                let b = bytes[j];
+                if let Some(q) = quote {
+                    if b == q {
+                        break;
+                    }
+                } else if b == b',' || b == b' ' || b == b'\n' || b == b'\t' {
+                    break;
+                }
+                j += 1;
+            }
+            out.push_str(REDACTED);
+            if let Some(q) = quote {
+                if j < bytes.len() {
+                    out.push(q as char);
+                    j += 1;
+                }
+            }
+            i = j;
+        } else {
+            out.push_str(key);
+            i = j;
+        }
+    }
+    out
 }
 
 fn is_secret_seed(token: &str) -> bool {
@@ -256,5 +359,90 @@ mod tests {
         assert_eq!(json["fields"]["secret"], "[REDACTED]");
         assert_eq!(json["span"]["name"], "attester.add");
         assert!(!line.contains(SEED));
+    }
+
+    #[test]
+    fn redacts_passphrase_assignments() {
+        let out = redact("unlocking keyring passphrase=hunter2 now");
+        assert!(!out.contains("hunter2"));
+        assert_eq!(out, "unlocking keyring passphrase=[REDACTED] now");
+    }
+
+    #[test]
+    fn redacts_json_passphrase_and_keyring_fields() {
+        let line = r#"{"passphrase":"correct horse","keyring_id":"lafiya/signer","network":"testnet"}"#;
+        let out = redact(line);
+        assert!(!out.contains("correct horse"));
+        assert!(!out.contains("lafiya/signer"));
+        assert!(out.contains("\"network\":\"testnet\""));
+    }
+
+    #[test]
+    fn redacts_external_signer_payloads() {
+        let line = r#"signer_request={"payload":"deadbeefcafe","op":"sign"}"#;
+        let out = redact(line);
+        assert!(!out.contains("deadbeefcafe"));
+        assert!(out.contains("\"op\":\"sign\""));
+    }
+
+    #[test]
+    fn redacts_raw_key_bytes_hex() {
+        // A 32-byte key rendered as hex must not survive redaction when it
+        // appears under a sensitive key.
+        let hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
+        let out = redact(&format!("private_key={hex}"));
+        assert!(!out.contains(hex));
+        assert_eq!(out, "private_key=[REDACTED]");
+    }
+
+    #[test]
+    fn text_logs_never_leak_secret_material() {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_writer(capture.clone())
+            .finish();
+        let phrase =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(secret = SEED, "seed");
+            tracing::info!(passphrase = "hunter2", "unlock");
+            tracing::info!(mnemonic = phrase, "phrase");
+            tracing::info!("raw {} and {}", SEED, phrase);
+        });
+        let line = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(!line.contains(SEED));
+        assert!(!line.contains("hunter2"));
+        assert!(!line.contains("abandon ability"));
+    }
+
+    #[test]
+    fn json_logs_never_leak_secret_material() {
+        let capture = Capture::default();
+        let subscriber = tracing_subscriber::fmt()
+            .json()
+            .with_writer(capture.clone())
+            .finish();
+        let phrase =
+            "abandon ability able about above absent absorb abstract absurd abuse access accident";
+        tracing::subscriber::with_default(subscriber, || {
+            tracing::info!(passphrase = "hunter2", keyring_id = "lafiya/signer", "unlock");
+            tracing::info!(mnemonic = phrase, "phrase");
+        });
+        let line = String::from_utf8(capture.0.lock().unwrap().clone()).unwrap();
+        assert!(!line.contains("hunter2"));
+        assert!(!line.contains("lafiya/signer"));
+        assert!(!line.contains("abandon ability"));
+        for l in line.lines() {
+            let _: serde_json::Value = serde_json::from_str(l).unwrap();
+        }
+    }
+
+    #[test]
+    fn panic_messages_are_redacted_by_writer() {
+        // Panics are formatted by the default hook and written to stderr; the
+        // redacting writer is what protects log sinks. Here we assert the
+        // redaction function itself scrubs a panic-style message.
+        let msg = format!("assertion failed: seed == {SEED}");
+        assert!(!redact(&msg).contains(SEED));
     }
 }

@@ -60,7 +60,7 @@ micro-payments per verified registration under the incentive layer
 
 ### Federation
 
-The planned later topology ([ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md)):
+The planned later topology ([ADR-0020](adr/0020-multi-jurisdiction-deployment-topology.md)):
 a root "registry of registries" contract that lists the recognized national *attester
 registries*. Once it exists, an *attestation registry* can accept attesters from any
 recognized member *jurisdiction*.
@@ -69,7 +69,7 @@ recognized member *jurisdiction*.
 
 A country or other legal territory that runs its own Lafiya deployment: its own registry
 pair, *admin* quorum, and data-protection regime. Identified by its ISO 3166-1 alpha-2 code
-(for example `NG`, `GH`). See [ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md).
+(for example `NG`, `GH`). See [ADR-0020](adr/0020-multi-jurisdiction-deployment-topology.md).
 
 ### LRC-1 (Lafiya Record Commitment v1)
 
@@ -123,7 +123,7 @@ An *attester* that remains on the *allowlist* but is temporarily blocked from at
 A signed, versioned list that verifiers pin. It maps each *jurisdiction* code to the
 `attestation-registry` contract ID and network passphrase trusted for that jurisdiction, so
 attestations from another country can be verified. It is the off-chain precursor to the
-*federation* contract ([ADR-0012](adr/0012-multi-jurisdiction-deployment-topology.md)).
+*federation* contract ([ADR-0020](adr/0020-multi-jurisdiction-deployment-topology.md)).
 
 ### USDC incentive pool
 

@@ -1,0 +1,24 @@
+{
+  "model_version": "1.0.0",
+  "scenario": {
+    "cards": 10000000,
+    "registrations_per_day": 50000,
+    "verifications_per_day": 500000,
+    "attesters": 20000,
+    "history_window": 5,
+    "ttl_days": 90,
+    "peak_to_average": 4.0,
+    "rpc_calls_per_verification": 2
+  },
+  "assumptions": {
+    "ledger_seconds": 5,
+    "attestation_entry_bytes": 256,
+    "attester_entry_bytes": 192,
+    "entry_overhead_bytes": 64,
+    "rent_stroops_per_byte_per_ledger": 0.0001,
+    "indexer_bytes_per_attestation": 512,
+    "indexer_overhead_factor": 1.5,
+    "fee_ops_source": "budgets/baseline.json"
+  },
+  "testnet_observations": []
+}

@@ -48,6 +48,34 @@ When a relevant change is announced, the owner opens a tracking issue labelled
 If any job fails on a scheduled run, the `report` job opens an issue, or
 comments on the one that is already open.
 
+### 2.1 Triaging a failed matrix run
+
+Start from the failed run's summary and identify **which leg** failed; the
+leg determines whether this is a real compatibility problem or an
+environment/pin problem.
+
+| Failed leg | First thing to check | Reproduce locally |
+|---|---|---|
+| `SDK (pinned)` | Toolchain or environment drift (Rust version, `Cargo.lock` not committed, cache). This leg should never fail for SDK reasons. | `git checkout <sha>` then `make check` with the pinned `rust-toolchain.toml`. |
+| `SDK (latest-patch)` | A new patch release changed behaviour or the spec. | `cargo update -p soroban-sdk` on a scratch branch, then `make check` and `make conformance`. |
+| `SDK (main)` | Expected to be noisy; treat as advance notice. Only escalate if the same failure persists for two or more weeks. | `cargo update -p soroban-sdk --git https://github.com/stellar/rs-soroban-sdk --branch main`, then `make check`. |
+| `Protocol (quickstart:testing)` | The next protocol changed host behaviour, resource limits, or fees. | `QUICKSTART_IMAGE=stellar/quickstart:testing make test-integration` (same image tag the workflow uses). |
+| `Protocol (quickstart:latest)` | Usually a broken image tag or a stale local network. | `QUICKSTART_IMAGE=stellar/quickstart:latest make test-integration`. |
+
+Record the outcome on the tracking issue: the failing leg, the first failing
+job/step, the local reproduction command, and the resolution (fix, pin bump, or
+"expected, tracking upstream"). If the fix changes a pin in
+`.github/workflows/compat-matrix.yml` (e.g. `STELLAR_CLI_VERSION` or a
+quickstart image tag), note the old and new value in the issue and in the PR
+description so the next rotation knows what moved.
+
+**#634 outcome:** the scheduled run failed on the `SDK (latest-patch)` leg
+after a new `soroban-sdk` patch release; the pinned and `main` legs were
+green. Reproduced locally with `cargo update -p soroban-sdk` followed by
+`make check` and `make conformance`. No version pins in
+`.github/workflows/compat-matrix.yml` were changed for this issue; the
+`STELLAR_CLI_VERSION` and quickstart image tags remain as documented above.
+
 ## 3. Timing relative to network votes
 
 | When | Action |
@@ -92,3 +120,29 @@ description.
 - **A protocol change breaks a deployed contract:** the network cannot be
   rolled back. `pause()` the affected registries, ship a fix built with the
   new SDK through the normal upgrade process, and then `unpause()`.
+
+## 7. Resource headroom alerts
+
+`scripts/ops/resource_headroom.py` compares the measured per-call usage in `budgets/baseline.json`
+with the current network limits (JSON with the keys of `config/network-limits.json`) and with the
+last accepted snapshot. Run it on a schedule after each simulation refresh:
+
+```bash
+python3 scripts/ops/resource_headroom.py --limits current-limits.json \
+  --margin 0.2 --metrics-out /var/lib/node_exporter/lafiya_headroom.prom
+```
+
+It exits non-zero and prints `ALERT:` lines when a call's headroom falls below the margin or any
+limit differs from the snapshot. Metrics (`lafiya_resource_headroom_ratio`, `lafiya_network_limit`,
+`lafiya_headroom_alerts`) feed `observability/grafana-resource-headroom.json`.
+
+**Response:**
+
+1. Identify the limit that changed (`network limit ... changed`) and the affected calls.
+2. Re-run simulation for those calls and refresh `budgets/baseline.json` if usage moved.
+3. If headroom is exhausted, follow sections 3–4 (upgrade timing and procedure) to ship a
+   cheaper implementation before the change takes effect.
+4. Once the new limits are understood, update `config/network-limits.json` in a reviewed PR.
+
+Test: `python3 -m pytest -o addopts="" scripts/tests/test_resource_headroom.py` (includes an
+injected limit reduction that must alert).

@@ -11,15 +11,30 @@ use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
 
+/// Deterministic, scripted latency (in simulated milliseconds) for a single
+/// call. A test scripts these alongside outcomes so a simulation can model a
+/// "slow but alive" provider without real wall-clock sleeps.
+pub type LatencyMs = u64;
+
 pub struct ScriptedProvider {
     label: String,
     submit_script: VecDeque<SubmitOutcome>,
     poll_script: VecDeque<Result<TxState, RpcError>>,
     ledger_script: VecDeque<u32>,
     sequence_script: VecDeque<i64>,
+    submit_latency_script: VecDeque<LatencyMs>,
+    poll_latency_script: VecDeque<LatencyMs>,
+    ledger_latency_script: VecDeque<LatencyMs>,
     consumed_by: Option<String>,
     pub submit_calls: u32,
     pub poll_calls: u32,
+    pub ledger_calls: u32,
+    /// Total simulated latency consumed by `submit` calls.
+    pub submit_latency_total: LatencyMs,
+    /// Total simulated latency consumed by `get_transaction` calls.
+    pub poll_latency_total: LatencyMs,
+    /// Total simulated latency consumed by `latest_ledger` calls.
+    pub ledger_latency_total: LatencyMs,
 }
 
 impl ScriptedProvider {
@@ -30,10 +45,39 @@ impl ScriptedProvider {
             poll_script: VecDeque::new(),
             ledger_script: VecDeque::new(),
             sequence_script: VecDeque::new(),
+            submit_latency_script: VecDeque::new(),
+            poll_latency_script: VecDeque::new(),
+            ledger_latency_script: VecDeque::new(),
             consumed_by: None,
             submit_calls: 0,
             poll_calls: 0,
+            ledger_calls: 0,
+            submit_latency_total: 0,
+            poll_latency_total: 0,
+            ledger_latency_total: 0,
         }
+    }
+
+    /// Queue the simulated latency (ms) for the next `submit` call. The last
+    /// queued value is sticky, so a test only scripts the calls where latency
+    /// changes. With nothing queued, calls are treated as instantaneous.
+    pub fn then_submit_latency(mut self, latency_ms: LatencyMs) -> Self {
+        self.submit_latency_script.push_back(latency_ms);
+        self
+    }
+
+    /// Queue the simulated latency (ms) for the next `get_transaction` call
+    /// (sticky, like submit latency).
+    pub fn then_poll_latency(mut self, latency_ms: LatencyMs) -> Self {
+        self.poll_latency_script.push_back(latency_ms);
+        self
+    }
+
+    /// Queue the simulated latency (ms) for the next `latest_ledger` call
+    /// (sticky, like submit latency).
+    pub fn then_ledger_latency(mut self, latency_ms: LatencyMs) -> Self {
+        self.ledger_latency_script.push_back(latency_ms);
+        self
     }
 
     /// Queue the next `submit` call's outcome.
@@ -77,6 +121,12 @@ fn next_sticky<T: Copy>(script: &mut VecDeque<T>) -> Option<T> {
     }
 }
 
+/// Sticky latency lookup that defaults to `0` (instantaneous) when nothing is
+/// scripted, so latency scripting is fully opt-in and backward compatible.
+fn next_latency(script: &mut VecDeque<LatencyMs>) -> LatencyMs {
+    next_sticky(script).unwrap_or(0)
+}
+
 impl RpcProvider for ScriptedProvider {
     fn name(&self) -> &str {
         &self.label
@@ -87,6 +137,7 @@ impl RpcProvider for ScriptedProvider {
     /// on-brand failure instead of an unrelated `unwrap` panic.
     fn submit(&mut self, _tx: &SignedTx) -> SubmitOutcome {
         self.submit_calls += 1;
+        self.submit_latency_total += next_latency(&mut self.submit_latency_script);
         self.submit_script
             .pop_front()
             .unwrap_or(SubmitOutcome::Definite(RpcError::ProviderUnavailable))
@@ -94,10 +145,13 @@ impl RpcProvider for ScriptedProvider {
 
     fn get_transaction(&mut self, _tx_hash: &str) -> Result<TxState, RpcError> {
         self.poll_calls += 1;
+        self.poll_latency_total += next_latency(&mut self.poll_latency_script);
         self.poll_script.pop_front().unwrap_or(Ok(TxState::Unknown))
     }
 
     fn latest_ledger(&mut self) -> Result<u32, RpcError> {
+        self.ledger_calls += 1;
+        self.ledger_latency_total += next_latency(&mut self.ledger_latency_script);
         next_sticky(&mut self.ledger_script).ok_or(RpcError::ProviderUnavailable)
     }
 

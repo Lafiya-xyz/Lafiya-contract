@@ -48,6 +48,83 @@ pub struct SimulateResult {
     pub invocation_summary: Option<String>,
 }
 
+/// A single ledger key in the transaction footprint.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FootprintKey {
+    /// XDR-encoded `LedgerKey`.
+    pub key_xdr: String,
+    /// Best-effort human-readable rendering of the key (e.g. contract id +
+    /// storage key), or `None` when it cannot be decoded.
+    pub label: Option<String>,
+}
+
+/// The decoded ledger footprint of a simulated transaction.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct LedgerFootprint {
+    /// Keys the transaction reads.
+    pub read_only: Vec<FootprintKey>,
+    /// Keys the transaction reads and writes.
+    pub read_write: Vec<FootprintKey>,
+}
+
+/// A single ledger entry that changes as a result of the transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateChange {
+    /// XDR-encoded `LedgerKey` identifying the entry.
+    pub key_xdr: String,
+    /// Human-readable rendering of the key, when available.
+    pub label: Option<String>,
+    /// XDR-encoded entry value before the transaction, or `None` if the
+    /// entry is being created.
+    pub before_xdr: Option<String>,
+    /// XDR-encoded entry value after the transaction, or `None` if the
+    /// entry is being removed.
+    pub after_xdr: Option<String>,
+}
+
+/// A balance change for a single account or trustline.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BalanceChange {
+    /// The account (G...) or contract (C...) whose balance changes.
+    pub account: String,
+    /// Asset identifier (e.g. `native`, `CODE:ISSUER`).
+    pub asset: String,
+    /// Signed delta in stroops (or the asset's smallest unit).
+    pub delta: i128,
+}
+
+/// A contract event emitted by the simulated transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContractEvent {
+    /// The contract that emitted the event (C...).
+    pub contract_id: String,
+    /// The event topics, rendered as strings.
+    pub topics: Vec<String>,
+    /// The event body, rendered as a string.
+    pub data: String,
+}
+
+/// The full, deterministic preview of a simulated transaction.
+///
+/// This is the data the CLI renders before asking the operator to confirm a
+/// mutating submit (issue #536).  It is intentionally transport-agnostic so
+/// it can be serialised to JSON for change-control tickets.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SimulationPreview {
+    /// The decoded ledger footprint.
+    pub footprint: LedgerFootprint,
+    /// Ledger entries that change, with before/after values.
+    pub state_changes: Vec<StateChange>,
+    /// Balance changes for accounts and trustlines.
+    pub balance_changes: Vec<BalanceChange>,
+    /// Contract events emitted by the transaction.
+    pub events: Vec<ContractEvent>,
+    /// The assembled transaction XDR (footprint + resource fee applied).
+    pub assembled_xdr: String,
+    /// Minimum resource fee (in stroops) from the simulation.
+    pub min_resource_fee: u64,
+}
+
 /// The outcome of `sendTransaction`.
 #[derive(Debug, Clone)]
 pub struct SendResult {
@@ -123,6 +200,9 @@ pub enum RpcClientError {
     StellarCli { detail: String },
     /// Feature not yet implemented in this stub.
     NotImplemented { detail: String },
+    /// The transaction could not be simulated.  Callers must fail closed and
+    /// refuse to submit when this is returned (issue #536).
+    SimulationFailed { detail: String },
 }
 
 impl fmt::Display for RpcClientError {
@@ -138,6 +218,9 @@ impl fmt::Display for RpcClientError {
             RpcClientError::StellarCli { detail } => write!(f, "stellar CLI error: {detail}"),
             RpcClientError::NotImplemented { detail } => {
                 write!(f, "not yet implemented: {detail}")
+            }
+            RpcClientError::SimulationFailed { detail } => {
+                write!(f, "simulation failed: {detail}")
             }
         }
     }
@@ -169,6 +252,17 @@ pub trait RpcClient: Send + Sync {
         unsigned_xdr: &str,
     ) -> Result<SimulateResult, RpcClientError>;
 
+    /// Simulate a transaction and return the full preview (footprint, state
+    /// changes, balance changes, and events) used to render the pre-submit
+    /// diff (issue #536).
+    ///
+    /// Implementations must return [`RpcClientError::SimulationFailed`] when
+    /// the simulation cannot be completed so callers can fail closed.
+    fn simulate_preview(
+        &self,
+        unsigned_xdr: &str,
+    ) -> Result<SimulationPreview, RpcClientError>;
+
     /// Submit a signed `TransactionEnvelope` and return the transaction hash
     /// and immediate status.
     fn send(
@@ -183,6 +277,20 @@ pub trait RpcClient: Send + Sync {
         tx_hash: &str,
         max_attempts: u32,
     ) -> Result<TxResult, RpcClientError>;
+
+    /// Query `getTransaction` once for the current status of `tx_hash`.
+    ///
+    /// Unlike [`RpcClient::poll`], this never retries: it returns
+    /// [`TxStatus::NotFound`] when the node has not yet ingested the
+    /// transaction.  Reconciliation uses this to distinguish "still
+    /// in-flight" from a terminal outcome without blocking.
+    fn get_transaction(&self, tx_hash: &str) -> Result<TxResult, RpcClientError>;
+
+    /// Return the latest ledger sequence known to the RPC node.
+    ///
+    /// Reconciliation compares this against the submission intent's expiry
+    /// ledger to prove that an ambiguous transaction can no longer land.
+    fn latest_ledger(&self) -> Result<u32, RpcClientError>;
 
     /// Read ledger entries by their XDR-encoded keys.
     fn get_ledger_entries(
@@ -246,6 +354,16 @@ impl RpcClient for NativeRpcClient {
         })
     }
 
+    fn simulate_preview(
+        &self,
+        _unsigned_xdr: &str,
+    ) -> Result<SimulationPreview, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::simulate_preview — add stellar-xdr + HTTP client (issue #395)"
+                .to_string(),
+        })
+    }
+
     fn send(&self, _signed_xdr: &str) -> Result<SendResult, RpcClientError> {
         Err(RpcClientError::NotImplemented {
             detail: "NativeRpcClient::send — add stellar-xdr + HTTP client (issue #395)"
@@ -256,6 +374,20 @@ impl RpcClient for NativeRpcClient {
     fn poll(&self, _tx_hash: &str, _max_attempts: u32) -> Result<TxResult, RpcClientError> {
         Err(RpcClientError::NotImplemented {
             detail: "NativeRpcClient::poll — add stellar-xdr + HTTP client (issue #395)"
+                .to_string(),
+        })
+    }
+
+    fn get_transaction(&self, _tx_hash: &str) -> Result<TxResult, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::get_transaction — add stellar-xdr + HTTP client (issue #395)"
+                .to_string(),
+        })
+    }
+
+    fn latest_ledger(&self) -> Result<u32, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::latest_ledger — add stellar-xdr + HTTP client (issue #395)"
                 .to_string(),
         })
     }
@@ -329,6 +461,16 @@ impl RpcClient for StellarCliClient {
         })
     }
 
+    fn simulate_preview(
+        &self,
+        _unsigned_xdr: &str,
+    ) -> Result<SimulationPreview, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "simulate_preview is not available via the stellar CLI subprocess path"
+                .to_string(),
+        })
+    }
+
     fn send(&self, _signed_xdr: &str) -> Result<SendResult, RpcClientError> {
         Err(RpcClientError::StellarCli {
             detail: "send is not directly available via the stellar CLI subprocess path; \
@@ -340,6 +482,20 @@ impl RpcClient for StellarCliClient {
     fn poll(&self, _tx_hash: &str, _max_attempts: u32) -> Result<TxResult, RpcClientError> {
         Err(RpcClientError::StellarCli {
             detail: "poll is not available via the stellar CLI subprocess path".to_string(),
+        })
+    }
+
+    fn get_transaction(&self, _tx_hash: &str) -> Result<TxResult, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "get_transaction is not available via the stellar CLI subprocess path"
+                .to_string(),
+        })
+    }
+
+    fn latest_ledger(&self) -> Result<u32, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "latest_ledger is not available via the stellar CLI subprocess path"
+                .to_string(),
         })
     }
 
@@ -373,6 +529,208 @@ impl RpcClient for StellarCliClient {
                      not through the RpcClient trait"
                 .to_string(),
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Doctor checks (issue #535)
+// ---------------------------------------------------------------------------
+
+/// Severity of a doctor check result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DoctorSeverity {
+    /// Informational; never blocks.
+    Info,
+    /// Degraded but non-blocking.
+    Warning,
+    /// Blocking failure; causes a non-zero exit.
+    Error,
+}
+
+impl DoctorSeverity {
+    /// Stable machine-readable label.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            DoctorSeverity::Info => "info",
+            DoctorSeverity::Warning => "warning",
+            DoctorSeverity::Error => "error",
+        }
+    }
+
+    /// Whether a result with this severity blocks a mutating action.
+    pub fn is_blocking(&self) -> bool {
+        matches!(self, DoctorSeverity::Error)
+    }
+}
+
+/// The result of a single doctor check.
+#[derive(Debug, Clone)]
+pub struct DoctorCheck {
+    /// Stable identifier (e.g. `rpc_health`).
+    pub id: &'static str,
+    /// Severity of the outcome.
+    pub severity: DoctorSeverity,
+    /// Short human-readable summary.
+    pub message: String,
+    /// Optional remediation hint for the operator.
+    pub remediation: Option<String>,
+}
+
+impl DoctorCheck {
+    fn new(
+        id: &'static str,
+        severity: DoctorSeverity,
+        message: impl Into<String>,
+        remediation: Option<&str>,
+    ) -> Self {
+        Self {
+            id,
+            severity,
+            message: message.into(),
+            remediation: remediation.map(str::to_string),
+        }
+    }
+
+    /// Whether this check blocks a mutating action.
+    pub fn is_blocking(&self) -> bool {
+        self.severity.is_blocking()
+    }
+}
+
+/// Minimum protocol version the CLI is known to work against.
+pub const MIN_SUPPORTED_PROTOCOL_VERSION: u32 = 20;
+
+/// Default maximum ledger drift tolerated between the RPC node's latest
+/// ledger and the ledger an instance entry was last modified at.
+pub const DEFAULT_MAX_INSTANCE_LEDGER_DRIFT: u32 = 100_000;
+
+/// Check that the RPC node is reachable and reports a supported protocol
+/// version.
+///
+/// This performs a single `get_network_info` call, so it is bounded by the
+/// provider's own transport timeout.
+pub fn check_rpc_health(
+    client: &dyn RpcClient,
+    expected_passphrase: &str,
+) -> DoctorCheck {
+    match client.get_network_info() {
+        Ok(info) => {
+            if info.protocol_version < MIN_SUPPORTED_PROTOCOL_VERSION {
+                return DoctorCheck::new(
+                    "rpc_protocol_version",
+                    DoctorSeverity::Error,
+                    format!(
+                        "RPC node reports protocol version {} (minimum supported is {})",
+                        info.protocol_version, MIN_SUPPORTED_PROTOCOL_VERSION
+                    ),
+                    Some("Point --rpc-url at a node running a supported protocol version."),
+                );
+            }
+            if info.network_passphrase != expected_passphrase {
+                return DoctorCheck::new(
+                    "rpc_network_passphrase",
+                    DoctorSeverity::Error,
+                    format!(
+                        "RPC node passphrase {:?} does not match configured {:?}",
+                        info.network_passphrase, expected_passphrase
+                    ),
+                    Some("Set --network-passphrase to match the target network."),
+                );
+            }
+            DoctorCheck::new(
+                "rpc_health",
+                DoctorSeverity::Info,
+                format!(
+                    "RPC healthy at ledger {} (protocol {})",
+                    info.latest_ledger, info.protocol_version
+                ),
+                None,
+            )
+        }
+        Err(e) => DoctorCheck::new(
+            "rpc_health",
+            DoctorSeverity::Error,
+            format!("RPC node unreachable: {e}"),
+            Some("Check --rpc-url and network connectivity, then retry."),
+        ),
+    }
+}
+
+/// Check the remaining TTL of a contract instance entry.
+///
+/// `instance_key_xdr` is the XDR-encoded ledger key of the contract instance.
+/// The check reads the entry's `last_modified_ledger` and compares it against
+/// the node's latest ledger; if the drift exceeds `max_drift` the instance is
+/// considered at risk of archival.
+pub fn check_instance_ttl(
+    client: &dyn RpcClient,
+    instance_key_xdr: &str,
+    max_drift: u32,
+) -> DoctorCheck {
+    let info = match client.get_network_info() {
+        Ok(info) => info,
+        Err(e) => {
+            return DoctorCheck::new(
+                "instance_ttl",
+                DoctorSeverity::Error,
+                format!("cannot evaluate instance TTL: {e}"),
+                Some("Resolve the RPC health check first."),
+            )
+        }
+    };
+
+    let entries = match client.get_ledger_entries(&[instance_key_xdr]) {
+        Ok(entries) => entries,
+        Err(e) => {
+            return DoctorCheck::new(
+                "instance_ttl",
+                DoctorSeverity::Error,
+                format!("cannot read contract instance entry: {e}"),
+                Some("Verify the contract id and that the instance is not archived."),
+            )
+        }
+    };
+
+    let entry = match entries.into_iter().next() {
+        Some(entry) => entry,
+        None => {
+            return DoctorCheck::new(
+                "instance_ttl",
+                DoctorSeverity::Error,
+                "contract instance entry not found on-chain".to_string(),
+                Some("The contract may be archived or the contract id is stale."),
+            )
+        }
+    };
+
+    let drift = info.latest_ledger.saturating_sub(entry.last_modified_ledger);
+    if drift > max_drift {
+        DoctorCheck::new(
+            "instance_ttl",
+            DoctorSeverity::Error,
+            format!(
+                "contract instance last modified {} ledgers ago (limit {})",
+                drift, max_drift
+            ),
+            Some("Extend the instance TTL before running mutating actions."),
+        )
+    } else if drift * 2 > max_drift {
+        DoctorCheck::new(
+            "instance_ttl",
+            DoctorSeverity::Warning,
+            format!(
+                "contract instance last modified {} ledgers ago (limit {})",
+                drift, max_drift
+            ),
+            Some("Consider extending the instance TTL soon."),
+        )
+    } else {
+        DoctorCheck::new(
+            "instance_ttl",
+            DoctorSeverity::Info,
+            format!("contract instance fresh ({} ledgers since last modification)", drift),
+            None,
+        )
     }
 }
 
@@ -420,6 +778,31 @@ mod tests {
     }
 
     #[test]
+    fn native_client_simulate_preview_not_implemented() {
+        let client = NativeRpcClient::new("https://example.org", "Test Net");
+        let err = client.simulate_preview("fake_xdr").unwrap_err();
+        assert!(
+            matches!(err, RpcClientError::NotImplemented { .. }),
+            "expected NotImplemented, got: {err}"
+        );
+    }
+
+    #[test]
+    fn stellar_cli_simulate_preview_errors() {
+        let client = StellarCliClient::new("https://example.org", "Test Net");
+        let err = client.simulate_preview("fake_xdr").unwrap_err();
+        assert!(matches!(err, RpcClientError::StellarCli { .. }));
+    }
+
+    #[test]
+    fn simulation_failed_displays_distinctly() {
+        let err = RpcClientError::SimulationFailed {
+            detail: "boom".to_string(),
+        };
+        assert_eq!(err.to_string(), "simulation failed: boom");
+    }
+
+    #[test]
     fn make_rpc_client_native_path() {
         let client = make_rpc_client("https://example.org", "Test Net", false);
         // The native client returns NotImplemented, confirming the factory
@@ -436,6 +819,151 @@ mod tests {
         assert!(matches!(err, RpcClientError::StellarCli { .. }));
     }
 
+    /// Mock provider for doctor checks.
+    struct MockRpcClient {
+        network: Result<NetworkInfo, RpcClientError>,
+        entries: Result<Vec<LedgerEntry>, RpcClientError>,
+    }
+
+    impl RpcClient for MockRpcClient {
+        fn simulate(&self, _unsigned_xdr: &str) -> Result<SimulateResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn send(&self, _signed_xdr: &str) -> Result<SendResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn poll(&self, _tx_hash: &str, _max_attempts: u32) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn get_ledger_entries(
+            &self,
+            _keys_xdr: &[&str],
+        ) -> Result<Vec<LedgerEntry>, RpcClientError> {
+            match &self.entries {
+                Ok(entries) => Ok(entries.clone()),
+                Err(_) => Err(RpcClientError::Transport { detail: "mock".into() }),
+            }
+        }
+        fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError> {
+            match &self.network {
+                Ok(info) => Ok(info.clone()),
+                Err(_) => Err(RpcClientError::Transport { detail: "mock".into() }),
+            }
+        }
+        fn sign_and_submit(
+            &self,
+            _unsigned_xdr: &str,
+            _signer: &dyn Signer,
+            _poll_attempts: u32,
+        ) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+    }
+
+    fn healthy_network() -> NetworkInfo {
+        NetworkInfo {
+            network_passphrase: "Test SDF Network ; September 2015".to_string(),
+            protocol_version: MIN_SUPPORTED_PROTOCOL_VERSION,
+            latest_ledger: 1_000,
+        }
+    }
+
+    #[test]
+    fn doctor_rpc_health_ok() {
+        let client = MockRpcClient {
+            network: Ok(healthy_network()),
+            entries: Ok(vec![]),
+        };
+        let check = check_rpc_health(&client, "Test SDF Network ; September 2015");
+        assert_eq!(check.severity, DoctorSeverity::Info);
+        assert!(!check.is_blocking());
+    }
+
+    #[test]
+    fn doctor_rpc_health_unreachable_is_blocking() {
+        let client = MockRpcClient {
+            network: Err(RpcClientError::Transport { detail: "down".into() }),
+            entries: Ok(vec![]),
+        };
+        let check = check_rpc_health(&client, "Test SDF Network ; September 2015");
+        assert_eq!(check.severity, DoctorSeverity::Error);
+        assert!(check.is_blocking());
+        assert!(check.remediation.is_some());
+    }
+
+    #[test]
+    fn doctor_rpc_health_protocol_too_old_is_blocking() {
+        let mut network = healthy_network();
+        network.protocol_version = MIN_SUPPORTED_PROTOCOL_VERSION - 1;
+        let client = MockRpcClient { network: Ok(network), entries: Ok(vec![]) };
+        let check = check_rpc_health(&client, "Test SDF Network ; September 2015");
+        assert_eq!(check.severity, DoctorSeverity::Error);
+        assert_eq!(check.id, "rpc_protocol_version");
+    }
+
+    #[test]
+    fn doctor_rpc_health_passphrase_mismatch_is_blocking() {
+        let client = MockRpcClient {
+            network: Ok(healthy_network()),
+            entries: Ok(vec![]),
+        };
+        let check = check_rpc_health(&client, "Public Global Stellar Network ; September 2015");
+        assert_eq!(check.severity, DoctorSeverity::Error);
+        assert_eq!(check.id, "rpc_network_passphrase");
+    }
+
+    #[test]
+    fn doctor_instance_ttl_fresh_is_info() {
+        let client = MockRpcClient {
+            network: Ok(healthy_network()),
+            entries: Ok(vec![LedgerEntry {
+                key_xdr: "key".into(),
+                value_xdr: "value".into(),
+                last_modified_ledger: 990,
+            }]),
+        };
+        let check = check_instance_ttl(&client, "key", DEFAULT_MAX_INSTANCE_LEDGER_DRIFT);
+        assert_eq!(check.severity, DoctorSeverity::Info);
+    }
+
+    #[test]
+    fn doctor_instance_ttl_stale_is_blocking() {
+        let client = MockRpcClient {
+            network: Ok(healthy_network()),
+            entries: Ok(vec![LedgerEntry {
+                key_xdr: "key".into(),
+                value_xdr: "value".into(),
+                last_modified_ledger: 1,
+            }]),
+        };
+        let check = check_instance_ttl(&client, "key", DEFAULT_MAX_INSTANCE_LEDGER_DRIFT);
+        assert_eq!(check.severity, DoctorSeverity::Error);
+        assert!(check.is_blocking());
+    }
+
+    #[test]
+    fn doctor_instance_ttl_missing_entry_is_blocking() {
+        let client = MockRpcClient {
+            network: Ok(healthy_network()),
+            entries: Ok(vec![]),
+        };
+        let check = check_instance_ttl(&client, "key", DEFAULT_MAX_INSTANCE_LEDGER_DRIFT);
+        assert_eq!(check.severity, DoctorSeverity::Error);
+    }
+
+    #[test]
+    fn reconciliation_ops_not_available_on_stellar_cli() {
+        let client = make_rpc_client("https://example.org", "Test Net", true);
+        assert!(matches!(
+            client.get_transaction("hash").unwrap_err(),
+            RpcClientError::StellarCli { .. }
+        ));
+        assert!(matches!(
+            client.latest_ledger().unwrap_err(),
+            RpcClientError::StellarCli { .. }
+        ));
+    }
+
     #[test]
     fn poll_and_send_not_implemented_on_native() {
         let client = NativeRpcClient::new("https://example.org", "Test Net");
@@ -445,6 +973,14 @@ mod tests {
         ));
         assert!(matches!(
             client.poll("hash", 10).unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            client.get_transaction("hash").unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            client.latest_ledger().unwrap_err(),
             RpcClientError::NotImplemented { .. }
         ));
         assert!(matches!(

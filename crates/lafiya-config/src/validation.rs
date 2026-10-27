@@ -291,6 +291,67 @@ pub fn validate_rpc_url(field: &'static str, value: &str) -> Result<(), Validati
     }
 }
 
+/// Validate a hex encoded 32-byte wasm hash (64 hex characters).
+///
+/// This is the same shape as [`validate_record_hash`] but is kept as a distinct
+/// entry point so drift verification can name the offending field precisely.
+pub fn validate_wasm_hash(field: &'static str, value: &str) -> Result<(), ValidationError> {
+    validate_record_hash(field, value)
+}
+
+/// Validate a contract wiring entry: a contract id (`C...`) that must not be empty.
+pub fn validate_wiring_contract(field: &'static str, value: &str) -> Result<(), ValidationError> {
+    validate_contract_id(field, value)
+}
+
+/// The set of config fields that drift verification must compare against chain.
+///
+/// Every field listed here is validated by this module before it is ever used,
+/// so `config verify --against-chain` covers exactly the same surface that
+/// offline validation does. Keep this list in sync with the validators above.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DriftField {
+    /// A deployed contract id (`C...`), e.g. `attester_registry`.
+    ContractId,
+    /// An admin account address (`G...`).
+    Admin,
+    /// A wiring entry pointing at another contract id (`C...`).
+    Wiring,
+    /// A hex encoded 32-byte wasm hash.
+    WasmHash,
+}
+
+impl DriftField {
+    /// Human readable label used in diffs and error messages.
+    pub fn label(self) -> &'static str {
+        match self {
+            DriftField::ContractId => "contract id",
+            DriftField::Admin => "admin",
+            DriftField::Wiring => "wiring",
+            DriftField::WasmHash => "wasm hash",
+        }
+    }
+
+    /// Validate a value for this field, returning the same errors as the
+    /// dedicated validators so drift checks and offline checks agree.
+    pub fn validate(self, field: &'static str, value: &str) -> Result<(), ValidationError> {
+        match self {
+            DriftField::ContractId => validate_contract_id(field, value),
+            DriftField::Admin => validate_account_address(field, value),
+            DriftField::Wiring => validate_wiring_contract(field, value),
+            DriftField::WasmHash => validate_wasm_hash(field, value),
+        }
+    }
+}
+
+/// Every field kind that drift verification covers, in a stable order.
+pub const DRIFT_FIELDS: &[DriftField] = &[
+    DriftField::ContractId,
+    DriftField::Admin,
+    DriftField::Wiring,
+    DriftField::WasmHash,
+];
+
 fn is_base32_char(c: char) -> bool {
     c.is_ascii_uppercase() || ('2'..='7').contains(&c)
 }
@@ -529,6 +590,45 @@ mod tests {
             validate_rpc_url("rpc_url", "https://"),
             Err(ValidationError::RpcUrl { .. })
         ));
+    }
+
+    #[test]
+    fn drift_fields_cover_all_validators() {
+        // Contract ids and wiring share the contract strkey check.
+        assert!(DriftField::ContractId
+            .validate("attester_registry", VALID_CONTRACT)
+            .is_ok());
+        assert!(DriftField::Wiring
+            .validate("attestation_registry", VALID_CONTRACT_2)
+            .is_ok());
+        assert!(DriftField::Admin
+            .validate("admin", VALID_ACCOUNT)
+            .is_ok());
+        assert!(DriftField::WasmHash
+            .validate("wasm_hash", &"ab".repeat(32))
+            .is_ok());
+
+        // Mismatched kinds fail closed with the same errors as the validators.
+        assert!(matches!(
+            DriftField::Admin.validate("admin", VALID_CONTRACT),
+            Err(ValidationError::Prefix { expected: "G", .. })
+        ));
+        assert!(matches!(
+            DriftField::ContractId.validate("attester_registry", VALID_ACCOUNT),
+            Err(ValidationError::Prefix { expected: "C", .. })
+        ));
+        assert!(matches!(
+            DriftField::WasmHash.validate("wasm_hash", "not-hex"),
+            Err(ValidationError::Length { .. })
+        ));
+    }
+
+    #[test]
+    fn drift_fields_are_stable_and_labelled() {
+        assert_eq!(DRIFT_FIELDS.len(), 4);
+        for field in DRIFT_FIELDS {
+            assert!(!field.label().is_empty());
+        }
     }
 
     #[test]

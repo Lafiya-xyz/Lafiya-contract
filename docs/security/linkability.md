@@ -54,6 +54,62 @@ format and no new infrastructure. The PoC shows the attack linking 1 event inste
 Pair it with relayed submission later for channel 5, and track batch anchoring as a
 research item for channels 2 and 4.
 
+## Privacy review: dispute flags and status lists
+
+Two planned features add new on-chain signals. Both are reviewed here against the
+channels above before implementation.
+
+### Patient-initiated dispute flags (issue #546)
+
+A patient-signed `Disputed` overlay (keyed by record hash and signer) lets a patient
+flag incorrect verified data without deleting it. The dispute itself is a new
+linkable signal:
+
+- **Channel 1 (watch a hash) is re-opened for disputed records.** A dispute is
+  submitted against a specific record hash, so an observer who scanned the card can
+  see that the patient disputed it, and when. Under per-attestation blinded
+  commitments the disputed hash is the blinded value, which limits the leak to that
+  one attestation, but the dispute transaction still ties the patient's action to a
+  verification point in time.
+- **Dispute timing correlates with visits.** A dispute is typically filed shortly
+  after a patient learns of the bad record (often right after a visit), so dispute
+  timestamps leak coarse movement information (channel 2).
+- **Dispute spam is itself a signal.** Unbounded disputes would let an observer
+  distinguish active patients and would also be a griefing vector; disputes must be
+  bounded per signer/record and clearing must require attester or admin action
+  (anti-abuse requirement in #546).
+
+**Guidance:** disputes should be submitted through the same relayed-submission path
+as attestations (channel 5) where available, and the dispute signature domain must be
+separated from attestation and revocation domains so a dispute signature cannot be
+replayed as another action. Disputes are documented as an intentional, bounded
+linkability trade-off: the patient chooses to surface the signal.
+
+### Status-list contract (issue #547)
+
+A bitstring status list (aligned with W3C Bitstring Status List) lets verifiers sync
+revocation state in bulk instead of per-hash lookups. The privacy risk is **index
+correlation**:
+
+- **Index allocation must not reveal record identity.** If the status-list index were
+  derived directly from the record hash (or assigned in attestation order), an
+  observer could map list positions back to records and reconstruct which entries
+  were revoked, re-creating channel 1 at list granularity.
+- **Correlation across syncs.** A verifier that caches successive list versions can
+  diff them; if indices are stable and ordered by creation time, the diff reveals
+  *when* records were revoked and how many, which correlates with attester activity
+  (channel 4).
+- **Segment/commitment metadata.** Versioned segment commitments must not embed
+  record hashes or attester addresses in plaintext; only the signed root and segment
+  version are published.
+
+**Guidance:** allocate indices via a keyed, unpredictable mapping (e.g. a
+domain-separated PRF over the blinded record hash with a registry-held key) so
+positions carry no ordering or identity information; publish only versioned
+commitments and signed roots; and document the residual leak that the *count* of
+revocations per segment is public. The threat analysis and measured size/sync time
+for 1M entries are tracked in #547.
+
 ## Follow-up engineering issues
 
 1. Extend LRC-1 with a per-attestation nonce (`LRC-2`) and update `lafiya-commitment` and the CLI.
@@ -61,3 +117,5 @@ research item for channels 2 and 4.
 3. Revocation by blinded hash, and an off-chain (patient-held) attestation history.
 4. Relayed submission for attesters (channel 5).
 5. Research spike: batch anchoring and CHW activity privacy (channels 2 and 4).
+6. Dispute flags (#546): domain-separated patient signature, bounded disputes, attester/admin clearing.
+7. Status-list index allocation (#547): PRF-based indices, versioned commitments, index-correlation analysis.

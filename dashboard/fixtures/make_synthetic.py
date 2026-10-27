@@ -12,6 +12,7 @@ import random
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 REG, ATT = "C" + "R" * 55, "C" + "A" * 55
+POOL = "C" + "P" * 55
 GENESIS = dt.datetime(2026, 9, 1, tzinfo=dt.timezone.utc)
 REGIONS = ["lagos", "kano", "oyo", "rivers", "fct"]
 
@@ -51,6 +52,20 @@ def main():
         if rnd.random() < 0.03:
             events.append(ev(ledger + 1, ATT, "attestation_revoked", [rnd.choice(records)]))
         ledger += rnd.randint(20, 90)
+    pool_events = [
+        ev(40000, POOL, "initialized", ["GADMIN"]),
+        ev(40010, POOL, "programme_funded", ["GDONORA", "kano_mch"], "50000"),
+        ev(40020, POOL, "programme_funded", ["GDONORB", "kano_mch"], "25000"),
+        ev(40030, POOL, "programme_funded", ["GDONORA", "lagos_imm"], "40000"),
+    ]
+    for i, a in enumerate(list(attesters)[:6]):
+        item = h("item", i)
+        programme = "kano_mch" if i % 2 == 0 else "lagos_imm"
+        pool_events.append(ev(41000 + 10 * i, POOL, "work_item_approved", [item], a))
+        pool_events.append(ev(41001 + 10 * i, POOL, "work_item_programme_linked", [item, programme]))
+        pool_events.append(ev(45000 + 10 * i, POOL, "payout_claimed", [item, a], "5000"))
+    pool_events.append(ev(46000, POOL, "programme_refunded", ["GDONORB", "kano_mch"], "10000"))
+    events.extend(pool_events)
     events.append(ev(59500, ATT, "paused", ["GADMIN"]))
     with open(os.path.join(HERE, "events.jsonl"), "w") as f:
         for e in sorted(events, key=lambda e: e["ledger"]):

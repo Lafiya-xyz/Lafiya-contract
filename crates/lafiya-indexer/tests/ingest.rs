@@ -5,8 +5,9 @@ mod common;
 
 use std::sync::{Arc, Mutex};
 
+use lafiya_indexer::archive::{ArchiveError, ArchiveSource, CheckpointHash};
 use lafiya_indexer::decode::RawEvent;
-use lafiya_indexer::ingest::{backfill, IngestError, Ingestor};
+use lafiya_indexer::ingest::{backfill, backfill_range, handoff, IngestError, Ingestor};
 use lafiya_indexer::metrics::Metrics;
 use lafiya_indexer::rpc::{EventPage, EventSource, LedgerWindow, RpcError, Start};
 use lafiya_indexer::store;
@@ -19,6 +20,7 @@ use stellar_xdr::{
 struct MockSource {
     events: Arc<Mutex<Vec<RawEvent>>>,
     window: Arc<Mutex<(u32, u32)>>,
+    hashes: Arc<Mutex<Vec<(u32, String)>>>,
 }
 
 impl MockSource {
@@ -26,8 +28,33 @@ impl MockSource {
         Self {
             events: Arc::new(Mutex::new(events)),
             window: Arc::new(Mutex::new((oldest, latest))),
+            hashes: Arc::new(Mutex::new(Vec::new())),
         }
     }
+
+    /// Serve a ledger hash for every ledger in `oldest..=latest`.
+    fn with_hashes(mut self, oldest: u32, latest: u32) -> Self {
+        let hashes = (oldest..=latest)
+            .map(|l| (l, ledger_hash(l, 0)))
+            .collect();
+        self.hashes = Arc::new(Mutex::new(hashes));
+        self
+    }
+
+    /// Replace the served history with a fork from `fork_ledger` onwards.
+    fn fork_from(&self, fork_ledger: u32, events: Vec<RawEvent>) {
+        *self.events.lock().unwrap() = events;
+        let mut hashes = self.hashes.lock().unwrap();
+        for (ledger, hash) in hashes.iter_mut() {
+            if *ledger >= fork_ledger {
+                *hash = ledger_hash(*ledger, 1);
+            }
+        }
+    }
+}
+
+fn ledger_hash(ledger: u32, fork: u8) -> String {
+    format!("{ledger:08x}{fork:02x}").repeat(4)
 }
 
 fn event_id(ledger: u32, index: u32) -> String {
@@ -65,10 +92,12 @@ impl EventSource for MockSource {
             .cloned()
             .collect();
         let cursor = events.last().map(|e| e.id.clone()).unwrap_or(after);
+        let hashes = self.hashes.lock().unwrap().clone();
         Ok(EventPage {
             events,
             cursor,
             latest_ledger: latest,
+            ledger_hashes: hashes,
         })
     }
 }
@@ -288,6 +317,110 @@ async fn backfill_then_live_ingestion() {
     assert_final_state(&pool).await;
 }
 
+/// An archive that serves `events` and verifies them against `hashes`.
+fn archive(events: Vec<RawEvent>, hashes: Vec<(u32, CheckpointHash)>) -> ArchiveSource {
+    ArchiveSource::new(events, hashes)
+}
+
+fn hash(byte: u8) -> CheckpointHash {
+    CheckpointHash([byte; 32])
+}
+
+#[tokio::test]
+async fn archive_source_verifies_against_checkpoint_hashes() {
+    let all = scenario();
+    // Checkpoint hashes cover the archived ledgers 100..=103.
+    let hashes = vec![
+        (100, hash(0x10)),
+        (101, hash(0x11)),
+        (102, hash(0x12)),
+        (103, hash(0x13)),
+    ];
+    let source = archive(all[..4].to_vec(), hashes.clone());
+    let page = source.get_events(&Start::Ledger(100), 10).await.unwrap();
+    assert_eq!(page.events.len(), 4);
+
+    // A tampered archive event no longer matches its checkpoint hash.
+    let mut tampered = all[..4].to_vec();
+    tampered[2].value = b64(ScVal::Map(None));
+    let source = archive(tampered, hashes.clone());
+    let err = source.get_events(&Start::Ledger(100), 10).await.unwrap_err();
+    assert!(matches!(err, ArchiveError::HashMismatch { ledger: 102 }), "{err}");
+
+    // A ledger with no checkpoint hash is unverifiable and refused.
+    let source = archive(all[..4].to_vec(), hashes[..2].to_vec());
+    let err = source.get_events(&Start::Ledger(100), 10).await.unwrap_err();
+    assert!(matches!(err, ArchiveError::Unverifiable { ledger: 102 }), "{err}");
+}
+
+#[tokio::test]
+async fn backfill_is_resumable_and_parallelizable_by_ledger_range() {
+    let Some(pool) = common::test_pool().await else {
+        return;
+    };
+    let all = scenario();
+    let archived = all[..4].to_vec();
+
+    // Two workers backfill disjoint ledger ranges concurrently.
+    let (a, b) = tokio::join!(
+        backfill_range(&pool, archived.clone(), 100, 101),
+        backfill_range(&pool, archived.clone(), 102, 103),
+    );
+    assert_eq!(a.unwrap(), 2);
+    assert_eq!(b.unwrap(), 2);
+
+    // Re-running a completed range is a no-op (resumable).
+    assert_eq!(
+        backfill_range(&pool, archived.clone(), 100, 101).await.unwrap(),
+        0
+    );
+
+    // The remaining live events are ingested from RPC.
+    let source = MockSource::new(all[4..].to_vec(), 104, 110);
+    let ingestor = ingestor(&pool, &source);
+    while !ingestor.step().await.unwrap().caught_up {}
+    assert_final_state(&pool).await;
+}
+
+#[tokio::test]
+async fn handoff_from_archive_to_live_rpc_at_verified_boundary() {
+    let Some(pool) = common::test_pool().await else {
+        return;
+    };
+    let all = scenario();
+    let archived = all[..4].to_vec();
+    let hashes = vec![
+        (100, hash(0x10)),
+        (101, hash(0x11)),
+        (102, hash(0x12)),
+        (103, hash(0x13)),
+    ];
+    let source = archive(archived, hashes);
+    // Archive covers through ledger 103; RPC retains 104 onwards.
+    let boundary = handoff(&pool, &source, 100, 103).await.unwrap();
+    assert_eq!(boundary, 104);
+
+    let live = MockSource::new(all[4..].to_vec(), 104, 110);
+    let ingestor = ingestor(&pool, &live);
+    while !ingestor.step().await.unwrap().caught_up {}
+    assert_final_state(&pool).await;
+}
+
+#[tokio::test]
+async fn handoff_refuses_unverifiable_archive() {
+    let Some(pool) = common::test_pool().await else {
+        return;
+    };
+    let all = scenario();
+    // Missing the checkpoint hash for ledger 103.
+    let hashes = vec![(100, hash(0x10)), (101, hash(0x11)), (102, hash(0x12))];
+    let source = archive(all[..4].to_vec(), hashes);
+    let err = handoff(&pool, &source, 100, 103).await.unwrap_err();
+    assert!(matches!(err, IngestError::UnverifiableArchive { .. }), "{err}");
+    assert!(err.is_fatal());
+    assert_eq!(store::checkpoint(&pool).await.unwrap(), None);
+}
+
 #[tokio::test]
 async fn api_serves_derived_state() {
     let Some(pool) = common::test_pool().await else {
@@ -341,4 +474,87 @@ async fn api_serves_derived_state() {
     assert_eq!(get("/records/nothex/history").await.0, 400);
     assert_eq!(get("/attesters?status=bogus").await.0, 400);
     assert_eq!(get("/health").await.1["status"], "ok");
+}
+
+#[tokio::test]
+async fn records_ledger_hashes_and_verifies_continuity() {
+    let Some(pool) = common::test_pool().await else {
+        return;
+    };
+    let source = MockSource::new(scenario(), 1, 110).with_hashes(1, 110);
+    let ingestor = ingestor(&pool, &source);
+    while !ingestor.step().await.unwrap().caught_up {}
+
+    // Every ingested ledger has its hash persisted.
+    let hashes: Vec<(i64, String)> =
+        sqlx::query_as("SELECT ledger, ledger_hash FROM ledger_hashes ORDER BY ledger")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(hashes.len(), 8);
+    for (ledger, hash) in &hashes {
+        assert_eq!(hash, &ledger_hash(*ledger as u32, 0));
+    }
+
+    // A provider that serves a divergent hash for an already-ingested ledger
+    // is detected as a reorg rather than silently accepted.
+    source.fork_from(105, scenario());
+    let err = ingestor.step().await.unwrap_err();
+    assert!(matches!(err, IngestError::Reorg { .. }), "{err}");
+    assert_eq!(
+        ingestor.metrics.reorg_detected_total(),
+        1,
+        "reorg must be counted"
+    );
+}
+
+#[tokio::test]
+async fn reorg_rolls_back_to_common_ancestor_and_reingests() {
+    let Some(pool) = common::test_pool().await else {
+        return;
+    };
+    let source = MockSource::new(scenario(), 1, 110).with_hashes(1, 110);
+    let ingestor = ingestor(&pool, &source);
+    while !ingestor.step().await.unwrap().caught_up {}
+    assert_final_state(&pool).await;
+
+    // The provider fails over to a node whose history forks at ledger 105:
+    // R2 is never attested and A is removed earlier.
+    let forked = vec![
+        attester_event(100, "attester_added", 1),
+        attester_event(101, "attester_added", 2),
+        attester_event(102, "attester_suspended", 2),
+        attested(103, 0xaa, 1, 1_000),
+        revoked(104, 0xaa),
+        attester_event(105, "attester_removed", 1),
+        attester_event(106, "attester_added", 2),
+    ];
+    source.fork_from(105, forked);
+
+    // The next step detects the mismatch, rolls back atomically and re-ingests.
+    let step = ingestor.step().await.unwrap();
+    assert!(step.reorged);
+    assert_eq!(ingestor.metrics.reorg_detected_total(), 1);
+    assert_eq!(ingestor.metrics.last_rollback_depth(), 3);
+
+    // Derived state reflects only the forked history.
+    let mut expected = vec![
+        (account(1).1, "removed".to_string()),
+        (account(2).1, "suspended".to_string()),
+    ];
+    expected.sort();
+    assert_eq!(statuses(&pool).await, expected);
+    let attestations: Vec<String> =
+        sqlx::query_scalar("SELECT record_hash FROM attestations ORDER BY event_id")
+            .fetch_all(&pool)
+            .await
+            .unwrap();
+    assert_eq!(attestations, vec!["aa".repeat(32)]);
+
+    // Re-running the rollback + re-ingest is idempotent.
+    let before = statuses(&pool).await;
+    let applied = store::rollback_to(&pool, 104).await.unwrap();
+    assert_eq!(applied, 0);
+    assert_eq!(statuses(&pool).await, before);
+    assert_eq!(ingestor.metrics.reorg_detected_total(), 1);
 }

@@ -27,11 +27,22 @@
 //! [`DecodeError`] covers every rejection case from the spec: invalid prefix,
 //! invalid base45, invalid CBOR, unknown version, network mismatch, truncated
 //! or missing required fields, and commitment mismatch for LRC-2 payloads.
+//!
+//! # Multi-frame transport
+//!
+//! Payloads that do not fit in a single QR code can be split into a sequence
+//! of frames with [`encode_qr_frames`] and reassembled with
+//! [`decode_qr_frames`]. Each frame is itself a valid `LFQR:` string carrying a
+//! small CBOR envelope (`{1: total, 2: index, 3: chunk}`) so frames can be
+//! scanned in any order. See [`QrFrame`] and [`FrameError`].
 
-pub(crate) mod base45;
-pub(crate) mod cbor;
+pub mod base45;
+pub mod cbor;
 
 use sha2::{Digest, Sha256};
+
+#[cfg(feature = "wasm")]
+mod wasm;
 
 // ---------------------------------------------------------------------------
 // QR prefix
@@ -89,6 +100,8 @@ const KEY_OFFLINE_RECEIPT: u64 = 7;
 const KEY_FALLBACK_URL: u64 = 8;
 const KEY_PATIENT_SIG: u64 = 9;
 const KEY_UNDISCLOSED_LEAVES: u64 = 10;
+const KEY_ISSUED_AT: u64 = 11;
+const KEY_VALID_UNTIL: u64 = 12;
 
 // Disclosure sub-keys
 const DISC_KEY_INDEX: u64 = 1;
@@ -177,13 +190,13 @@ pub struct Disclosure {
 }
 
 // ---------------------------------------------------------------------------
-// Offline receipt (ADR-0014)
+// Offline receipt (ADR-0025)
 // ---------------------------------------------------------------------------
 
 /// An offline-verifiable attestation receipt embedded in a QR payload.
 ///
 /// Enables a responder to verify the card without a live Soroban RPC call.
-/// See ADR-0014 for the full specification.
+/// See ADR-0025 for the full specification.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OfflineReceipt {
     /// Receipt version (always `1` for this spec).
@@ -224,12 +237,16 @@ pub struct QrPayload {
     pub disclosures: Option<Vec<Disclosure>>,
     /// Undisclosed leaf hashes for LRC-2 payloads.
     pub undisclosed_leaves: Option<Vec<[u8; 32]>>,
-    /// Offline attestation receipt (ADR-0014).
+    /// Offline attestation receipt (ADR-0025).
     pub offline_receipt: Option<OfflineReceipt>,
     /// Untrusted display-only URL. Must NOT be used for verification.
     pub fallback_url: Option<String>,
     /// Ed25519 patient signature (64 bytes) over canonical payload fields 1–5.
     pub patient_sig: Option<[u8; 64]>,
+    /// Unix epoch seconds when the card was issued (freshness, issue #526).
+    pub issued_at: Option<u64>,
+    /// Unix epoch seconds after which the card is stale (freshness, issue #526).
+    pub valid_until: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -260,6 +277,8 @@ impl QrPayloadBuilder {
                 offline_receipt: None,
                 fallback_url: None,
                 patient_sig: None,
+                issued_at: None,
+                valid_until: None,
             },
         }
     }
@@ -294,6 +313,13 @@ impl QrPayloadBuilder {
         self
     }
 
+    /// Attach freshness fields (issue #526).
+    pub fn with_freshness(mut self, issued_at: u64, valid_until: u64) -> Self {
+        self.payload.issued_at = Some(issued_at);
+        self.payload.valid_until = Some(valid_until);
+        self
+    }
+
     /// Finalise and return the payload.
     pub fn build(self) -> QrPayload {
         self.payload
@@ -323,6 +349,8 @@ pub enum DecodeError {
     InvalidField(&'static str),
     /// LRC-2 recomputed root ≠ `card_ref`.
     CommitmentMismatch,
+    /// Payload is outside its freshness window (issue #526).
+    StalePayload,
 }
 
 impl core::fmt::Display for DecodeError {
@@ -343,6 +371,7 @@ impl core::fmt::Display for DecodeError {
             }
             DecodeError::InvalidField(name) => write!(f, "INVALID_FIELD: {name}"),
             DecodeError::CommitmentMismatch => write!(f, "COMMITMENT_MISMATCH"),
+            DecodeError::StalePayload => write!(f, "STALE_PAYLOAD"),
         }
     }
 }
@@ -427,6 +456,280 @@ pub fn decode_qr_with_network(
 }
 
 // ---------------------------------------------------------------------------
+// Multi-frame transport
+// ---------------------------------------------------------------------------
+
+/// Maximum number of frames a single payload may be split into.
+///
+/// Bounds reassembly memory and keeps animated-QR playback practical.
+pub const MAX_FRAMES: usize = 64;
+
+/// Default maximum number of base45 characters carried per frame.
+///
+/// QR alphanumeric mode tops out around 4,296 characters at the highest
+/// error-correction level; 1,000 leaves headroom for the frame envelope and
+/// keeps individual codes easy to scan from a screen.
+pub const DEFAULT_FRAME_CHARS: usize = 1000;
+
+// Frame envelope CBOR keys
+const FRAME_KEY_TOTAL: u64 = 1;
+const FRAME_KEY_INDEX: u64 = 2;
+const FRAME_KEY_CHUNK: u64 = 3;
+
+/// A single frame of a multi-frame QR payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QrFrame {
+    /// Total number of frames in the sequence (1-based count).
+    pub total: u8,
+    /// Zero-based index of this frame.
+    pub index: u8,
+    /// The base45 chunk carried by this frame.
+    pub chunk: String,
+}
+
+/// Errors returned by [`encode_qr_frames`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameError {
+    /// The underlying single-payload encode failed.
+    Encode(EncodeError),
+    /// The payload requires more than [`MAX_FRAMES`] frames.
+    TooManyFrames(usize),
+    /// `frame_chars` was zero.
+    InvalidFrameSize,
+}
+
+impl core::fmt::Display for FrameError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FrameError::Encode(e) => write!(f, "FRAME_ENCODE: {e}"),
+            FrameError::TooManyFrames(n) => {
+                write!(f, "TOO_MANY_FRAMES: payload needs {n} frames (max {MAX_FRAMES})")
+            }
+            FrameError::InvalidFrameSize => write!(f, "INVALID_FRAME_SIZE: frame_chars must be > 0"),
+        }
+    }
+}
+
+impl std::error::Error for FrameError {}
+
+impl From<EncodeError> for FrameError {
+    fn from(e: EncodeError) -> Self {
+        FrameError::Encode(e)
+    }
+}
+
+/// Errors returned by [`decode_qr_frames`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FrameDecodeError {
+    /// A frame failed to decode as a `LFQR:` string.
+    Decode(DecodeError),
+    /// A frame's CBOR envelope was malformed.
+    InvalidFrame(String),
+    /// Frames disagree on the total count.
+    InconsistentTotal { got: u8, expected: u8 },
+    /// A frame index is out of range for the declared total.
+    IndexOutOfRange { index: u8, total: u8 },
+    /// The same index was supplied more than once.
+    DuplicateFrame(u8),
+    /// Not all frames were supplied.
+    MissingFrames { got: usize, expected: usize },
+    /// The reassembled payload failed to decode.
+    Payload(DecodeError),
+}
+
+impl core::fmt::Display for FrameDecodeError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            FrameDecodeError::Decode(e) => write!(f, "FRAME_DECODE: {e}"),
+            FrameDecodeError::InvalidFrame(e) => write!(f, "INVALID_FRAME: {e}"),
+            FrameDecodeError::InconsistentTotal { got, expected } => {
+                write!(f, "INCONSISTENT_TOTAL: got {got}, expected {expected}")
+            }
+            FrameDecodeError::IndexOutOfRange { index, total } => {
+                write!(f, "INDEX_OUT_OF_RANGE: index {index} for total {total}")
+            }
+            FrameDecodeError::DuplicateFrame(i) => write!(f, "DUPLICATE_FRAME: {i}"),
+            FrameDecodeError::MissingFrames { got, expected } => {
+                write!(f, "MISSING_FRAMES: got {got} of {expected}")
+            }
+            FrameDecodeError::Payload(e) => write!(f, "FRAME_PAYLOAD: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for FrameDecodeError {}
+
+/// Split a [`QrPayload`] into a sequence of `LFQR:` frame strings.
+///
+/// The payload is encoded exactly as [`encode_qr`] would, then the base45 body
+/// is split into chunks of at most `frame_chars` characters. Each chunk is
+/// wrapped in a small CBOR envelope and base45-encoded behind the `LFQR:`
+/// prefix, so every frame is a self-describing QR string.
+///
+/// A payload that fits in a single chunk still yields one frame; callers that
+/// want the plain single-code form should use [`encode_qr`] directly.
+pub fn encode_qr_frames(
+    payload: &QrPayload,
+    frame_chars: usize,
+) -> Result<Vec<String>, FrameError> {
+    if frame_chars == 0 {
+        return Err(FrameError::InvalidFrameSize);
+    }
+
+    let single = encode_qr(payload)?;
+    let body = single
+        .strip_prefix(QR_PREFIX)
+        .expect("encode_qr always emits the QR prefix");
+
+    // Split the base45 body on character boundaries (base45 is ASCII).
+    let chunks: Vec<&str> = body
+        .as_bytes()
+        .chunks(frame_chars)
+        .map(|c| core::str::from_utf8(c).expect("base45 output is ASCII"))
+        .collect();
+
+    if chunks.len() > MAX_FRAMES {
+        return Err(FrameError::TooManyFrames(chunks.len()));
+    }
+
+    let total = chunks.len() as u8;
+    let mut frames = Vec::with_capacity(chunks.len());
+    for (index, chunk) in chunks.into_iter().enumerate() {
+        let envelope: Vec<(u64, CborValue)> = vec![
+            (FRAME_KEY_TOTAL, CborValue::Uint(total as u64)),
+            (FRAME_KEY_INDEX, CborValue::Uint(index as u64)),
+            (FRAME_KEY_CHUNK, CborValue::Text(chunk.to_string())),
+        ];
+        let mut out = Vec::new();
+        cbor::encode_value(&CborValue::Map(envelope), &mut out);
+        frames.push(format!("{}{}", QR_PREFIX, base45::encode(&out)));
+    }
+
+    Ok(frames)
+}
+
+/// Reassemble a [`QrPayload`] from a set of `LFQR:` frame strings.
+///
+/// Frames may be supplied in any order. Duplicate indices, inconsistent totals,
+/// out-of-range indices, missing frames, or a corrupt reassembled payload are
+/// all rejected.
+pub fn decode_qr_frames<S: AsRef<str>>(frames: &[S]) -> Result<QrPayload, FrameDecodeError> {
+    if frames.is_empty() {
+        return Err(FrameDecodeError::MissingFrames { got: 0, expected: 1 });
+    }
+
+    let mut total: Option<u8> = None;
+    let mut chunks: Vec<Option<String>> = Vec::new();
+
+    for frame in frames {
+        let parsed = parse_frame(frame.as_ref())?;
+
+        match total {
+            None => {
+                total = Some(parsed.total);
+                chunks = vec![None; parsed.total as usize];
+            }
+            Some(t) if t != parsed.total => {
+                return Err(FrameDecodeError::InconsistentTotal {
+                    got: parsed.total,
+                    expected: t,
+                });
+            }
+            Some(_) => {}
+        }
+
+        if parsed.index >= parsed.total {
+            return Err(FrameDecodeError::IndexOutOfRange {
+                index: parsed.index,
+                total: parsed.total,
+            });
+        }
+
+        let slot = &mut chunks[parsed.index as usize];
+        if slot.is_some() {
+            return Err(FrameDecodeError::DuplicateFrame(parsed.index));
+        }
+        *slot = Some(parsed.chunk);
+    }
+
+    let expected = total.expect("at least one frame was parsed") as usize;
+    let mut body = String::new();
+    for (i, slot) in chunks.into_iter().enumerate() {
+        match slot {
+            Some(chunk) => body.push_str(&chunk),
+            None => {
+                return Err(FrameDecodeError::MissingFrames {
+                    got: i,
+                    expected,
+                })
+            }
+        }
+    }
+
+    let single = format!("{}{}", QR_PREFIX, body);
+    decode_qr(&single).map_err(FrameDecodeError::Payload)
+}
+
+fn parse_frame(frame: &str) -> Result<QrFrame, FrameDecodeError> {
+    let rest = frame
+        .strip_prefix(QR_PREFIX)
+        .ok_or(FrameDecodeError::Decode(DecodeError::InvalidPrefix))?;
+
+    let cbor_bytes = base45::decode(rest)
+        .map_err(|e| FrameDecodeError::Decode(DecodeError::InvalidBase45(e)))?;
+
+    let (value, trailing) = cbor::decode_value(&cbor_bytes)
+        .map_err(|e| FrameDecodeError::InvalidFrame(e.to_string()))?;
+    if !trailing.is_empty() {
+        return Err(FrameDecodeError::InvalidFrame(
+            "trailing bytes after frame envelope".into(),
+        ));
+    }
+
+    let map = match value {
+        CborValue::Map(m) => m,
+        _ => {
+            return Err(FrameDecodeError::InvalidFrame(
+                "expected CBOR map for frame envelope".into(),
+            ))
+        }
+    };
+
+    let total = map
+        .iter()
+        .find(|(k, _)| *k == FRAME_KEY_TOTAL)
+        .and_then(|(_, v)| if let CborValue::Uint(n) = v { Some(*n) } else { None })
+        .ok_or_else(|| FrameDecodeError::InvalidFrame("frame: missing total".into()))?;
+    let index = map
+        .iter()
+        .find(|(k, _)| *k == FRAME_KEY_INDEX)
+        .and_then(|(_, v)| if let CborValue::Uint(n) = v { Some(*n) } else { None })
+        .ok_or_else(|| FrameDecodeError::InvalidFrame("frame: missing index".into()))?;
+    let chunk = map
+        .iter()
+        .find(|(k, _)| *k == FRAME_KEY_CHUNK)
+        .and_then(|(_, v)| if let CborValue::Text(s) = v { Some(s.clone()) } else { None })
+        .ok_or_else(|| FrameDecodeError::InvalidFrame("frame: missing chunk".into()))?;
+
+    if total == 0 || total > MAX_FRAMES as u64 {
+        return Err(FrameDecodeError::InvalidFrame(format!(
+            "frame: total {total} out of range"
+        )));
+    }
+    if index > u8::MAX as u64 {
+        return Err(FrameDecodeError::InvalidFrame(
+            "frame: index out of range".into(),
+        ));
+    }
+
+    Ok(QrFrame {
+        total: total as u8,
+        index: index as u8,
+        chunk,
+    })
+}
+
+// ---------------------------------------------------------------------------
 // CBOR encoding (manual, no external dependency)
 // ---------------------------------------------------------------------------
 //
@@ -506,6 +809,14 @@ fn encode_cbor(payload: &QrPayload) -> Result<Vec<u8>, EncodeError> {
     // Patient sig
     if let Some(sig) = &payload.patient_sig {
         map_entries.push((KEY_PATIENT_SIG, CborValue::Bytes(sig.to_vec())));
+    }
+
+    // Freshness fields (issue #526)
+    if let Some(issued_at) = payload.issued_at {
+        map_entries.push((KEY_ISSUED_AT, CborValue::Uint(issued_at)));
+    }
+    if let Some(valid_until) = payload.valid_until {
+        map_entries.push((KEY_VALID_UNTIL, CborValue::Uint(valid_until)));
     }
 
     let root = CborValue::Map(map_entries);
@@ -695,6 +1006,10 @@ fn decode_cbor(bytes: &[u8]) -> Result<QrPayload, DecodeError> {
             Ok(b.try_into().unwrap())
         }).transpose()?;
 
+    // Optional: freshness fields (issue #526)
+    let issued_at = find_uint(&map, KEY_ISSUED_AT);
+    let valid_until = find_uint(&map, KEY_VALID_UNTIL);
+
     Ok(QrPayload {
         version,
         network_id,
@@ -706,7 +1021,234 @@ fn decode_cbor(bytes: &[u8]) -> Result<QrPayload, DecodeError> {
         offline_receipt,
         fallback_url,
         patient_sig,
+        issued_at,
+        valid_until,
     })
+}
+
+// ---------------------------------------------------------------------------
+// Freshness / anti-replay policy (issue #526)
+// ---------------------------------------------------------------------------
+
+/// Verifier-side policy for stale QR payloads (issue #526).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StalenessPolicy {
+    /// Accept but surface a warning.
+    Warn,
+    /// Reject only when the payload is expired; accept future-dated with warning.
+    SoftFail,
+    /// Reject any payload outside its validity window.
+    HardFail,
+}
+
+/// Outcome of a freshness check.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Freshness {
+    /// No freshness fields present.
+    Missing,
+    /// Within the validity window.
+    Valid,
+    /// Past `valid_until`.
+    Expired,
+    /// `issued_at` is in the future relative to the verifier clock.
+    Future,
+}
+
+/// Evaluate freshness of a payload against a verifier clock (unix seconds).
+pub fn check_freshness(payload: &QrPayload, now: u64) -> Freshness {
+    match (payload.issued_at, payload.valid_until) {
+        (None, None) => Freshness::Missing,
+        (issued, valid) => {
+            if let Some(issued) = issued {
+                if issued > now {
+                    return Freshness::Future;
+                }
+            }
+            if let Some(valid) = valid {
+                if now > valid {
+                    return Freshness::Expired;
+                }
+            }
+            Freshness::Valid
+        }
+    }
+}
+
+/// Apply a [`StalenessPolicy`] to a payload, returning `Ok(())` when accepted.
+pub fn enforce_freshness(
+    payload: &QrPayload,
+    now: u64,
+    policy: StalenessPolicy,
+) -> Result<Freshness, DecodeError> {
+    let state = check_freshness(payload, now);
+    match (&state, policy) {
+        (Freshness::Valid, _) => Ok(state),
+        (Freshness::Missing, StalenessPolicy::HardFail) => Err(DecodeError::StalePayload),
+        (Freshness::Missing, _) => Ok(state),
+        (Freshness::Expired, StalenessPolicy::Warn) => Ok(state),
+        (Freshness::Expired, _) => Err(DecodeError::StalePayload),
+        (Freshness::Future, StalenessPolicy::HardFail) => Err(DecodeError::StalePayload),
+        (Freshness::Future, _) => Ok(state),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Structured-append multi-symbol encoding (issue #525)
+// ---------------------------------------------------------------------------
+
+/// Maximum number of chunks a single payload may be split into.
+pub const MAX_CHUNKS: u8 = 16;
+
+/// Prefix for a chunked QR symbol.
+pub const CHUNK_PREFIX: &str = "LFQC:";
+
+/// A single chunk of a multi-symbol QR payload.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QrChunk {
+    /// Identifier of the set this chunk belongs to (first 4 bytes of SHA-256 of the full payload).
+    pub set_id: [u8; 4],
+    /// Zero-based index of this chunk.
+    pub index: u8,
+    /// Total number of chunks in the set.
+    pub total: u8,
+    /// Integrity hash over the reassembled payload (first 8 bytes of SHA-256).
+    pub integrity: [u8; 8],
+    /// Chunk payload bytes.
+    pub data: Vec<u8>,
+}
+
+/// Errors from chunked encoding/decoding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ChunkError {
+    /// Payload requires more than [`MAX_CHUNKS`] chunks.
+    TooManyChunks(usize),
+    /// A chunk string is malformed.
+    Malformed(String),
+    /// Chunks from different sets were mixed.
+    MixedSets,
+    /// Integrity hash did not match the reassembled payload.
+    IntegrityMismatch,
+    /// Underlying decode error.
+    Decode(DecodeError),
+}
+
+impl core::fmt::Display for ChunkError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            ChunkError::TooManyChunks(n) => write!(f, "TOO_MANY_CHUNKS: {n}"),
+            ChunkError::Malformed(e) => write!(f, "MALFORMED_CHUNK: {e}"),
+            ChunkError::MixedSets => write!(f, "MIXED_SETS"),
+            ChunkError::IntegrityMismatch => write!(f, "INTEGRITY_MISMATCH"),
+            ChunkError::Decode(e) => write!(f, "DECODE: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for ChunkError {}
+
+/// Encode a payload into one or more chunk strings.
+///
+/// When the encoded payload fits in a single symbol, a single-element vector
+/// containing the plain `LFQR:` string is returned.
+pub fn encode_qr_chunks(payload: &QrPayload, chunk_size: usize) -> Result<Vec<String>, ChunkError> {
+    let full = encode_qr(payload).map_err(ChunkError::Decode)?;
+    let bytes = full.as_bytes();
+    let chunk_size = chunk_size.max(1);
+    let total = bytes.len().div_ceil(chunk_size);
+    if total > MAX_CHUNKS as usize {
+        return Err(ChunkError::TooManyChunks(total));
+    }
+    if total <= 1 {
+        return Ok(vec![full]);
+    }
+    let digest = Sha256::digest(bytes);
+    let set_id: [u8; 4] = digest[0..4].try_into().unwrap();
+    let integrity: [u8; 8] = digest[0..8].try_into().unwrap();
+    let mut out = Vec::with_capacity(total);
+    for (i, chunk) in bytes.chunks(chunk_size).enumerate() {
+        let b45 = base45::encode(chunk);
+        out.push(format!(
+            "{}{:02x}{:02x}{:02x}{:02x}:{:02x}:{:02x}:{}",
+            CHUNK_PREFIX,
+            set_id[0], set_id[1], set_id[2], set_id[3],
+            i as u8, total as u8, b45,
+        ));
+    }
+    let _ = integrity;
+    Ok(out)
+}
+
+/// Reassembly state machine tolerant of out-of-order and duplicate scans.
+#[derive(Debug, Default)]
+pub struct ChunkAssembler {
+    set_id: Option<[u8; 4]>,
+    total: Option<u8>,
+    parts: std::collections::BTreeMap<u8, Vec<u8>>,
+}
+
+impl ChunkAssembler {
+    /// Create an empty assembler.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Feed a chunk string. Returns `Some(full_qr_string)` when complete.
+    pub fn push(&mut self, chunk: &str) -> Result<Option<String>, ChunkError> {
+        let rest = chunk
+            .strip_prefix(CHUNK_PREFIX)
+            .ok_or_else(|| ChunkError::Malformed("missing LFQC: prefix".into()))?;
+        let mut it = rest.splitn(4, ':');
+        let set_hex = it.next().ok_or_else(|| ChunkError::Malformed("missing set id".into()))?;
+        let idx_hex = it.next().ok_or_else(|| ChunkError::Malformed("missing index".into()))?;
+        let tot_hex = it.next().ok_or_else(|| ChunkError::Malformed("missing total".into()))?;
+        let data_b45 = it.next().ok_or_else(|| ChunkError::Malformed("missing data".into()))?;
+
+        let set_bytes = hex::decode(set_hex).map_err(|_| ChunkError::Malformed("bad set id".into()))?;
+        if set_bytes.len() != 4 {
+            return Err(ChunkError::Malformed("set id must be 4 bytes".into()));
+        }
+        let set_id: [u8; 4] = set_bytes.try_into().unwrap();
+        let index = u8::from_str_radix(idx_hex, 16)
+            .map_err(|_| ChunkError::Malformed("bad index".into()))?;
+        let total = u8::from_str_radix(tot_hex, 16)
+            .map_err(|_| ChunkError::Malformed("bad total".into()))?;
+        if total == 0 || total > MAX_CHUNKS {
+            return Err(ChunkError::Malformed("total out of range".into()));
+        }
+        if index >= total {
+            return Err(ChunkError::Malformed("index out of range".into()));
+        }
+
+        match self.set_id {
+            Some(existing) if existing != set_id => return Err(ChunkError::MixedSets),
+            _ => self.set_id = Some(set_id),
+        }
+        match self.total {
+            Some(existing) if existing != total => return Err(ChunkError::MixedSets),
+            _ => self.total = Some(total),
+        }
+
+        let data = base45::decode(data_b45).map_err(ChunkError::Malformed)?;
+        self.parts.entry(index).or_insert(data);
+
+        if self.parts.len() == total as usize {
+            let mut joined = Vec::new();
+            for i in 0..total {
+                let part = self.parts.get(&i)
+                    .ok_or_else(|| ChunkError::Malformed("missing chunk".into()))?;
+                joined.extend_from_slice(part);
+            }
+            let digest = Sha256::digest(&joined);
+            let expected: [u8; 4] = digest[0..4].try_into().unwrap();
+            if expected != set_id {
+                return Err(ChunkError::IntegrityMismatch);
+            }
+            let s = String::from_utf8(joined)
+                .map_err(|_| ChunkError::Malformed("reassembled payload is not UTF-8".into()))?;
+            return Ok(Some(s));
+        }
+        Ok(None)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1008,6 +1550,89 @@ mod tests {
         }
     }
 
+    // ── Freshness (issue #526) ──────────────────────────────────────────────
+
+    #[test]
+    fn freshness_missing() {
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref()).build();
+        assert_eq!(check_freshness(&payload, 1000), Freshness::Missing);
+        assert!(enforce_freshness(&payload, 1000, StalenessPolicy::HardFail).is_err());
+        assert!(enforce_freshness(&payload, 1000, StalenessPolicy::Warn).is_ok());
+    }
+
+    #[test]
+    fn freshness_valid_expired_future() {
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref())
+            .with_freshness(1000, 2000)
+            .build();
+        assert_eq!(check_freshness(&payload, 1500), Freshness::Valid);
+        assert_eq!(check_freshness(&payload, 2500), Freshness::Expired);
+        assert_eq!(check_freshness(&payload, 500), Freshness::Future);
+        assert!(enforce_freshness(&payload, 2500, StalenessPolicy::Warn).is_ok());
+        assert!(enforce_freshness(&payload, 2500, StalenessPolicy::SoftFail).is_err());
+        assert!(enforce_freshness(&payload, 500, StalenessPolicy::HardFail).is_err());
+    }
+
+    #[test]
+    fn freshness_round_trip() {
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref())
+            .with_freshness(1000, 2000)
+            .build();
+        let qr = encode_qr(&payload).expect("encode");
+        let decoded = decode_qr(&qr).expect("decode");
+        assert_eq!(decoded.issued_at, Some(1000));
+        assert_eq!(decoded.valid_until, Some(2000));
+    }
+
+    // ── Chunking (issue #525) ───────────────────────────────────────────────
+
+    #[test]
+    fn chunks_single_symbol() {
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref()).build();
+        let chunks = encode_qr_chunks(&payload, 4096).expect("encode");
+        assert_eq!(chunks.len(), 1);
+        assert!(chunks[0].starts_with(QR_PREFIX));
+    }
+
+    #[test]
+    fn chunks_two_symbols_out_of_order_duplicates() {
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref())
+            .with_fallback_url("https://lafiya.example/card/abc123")
+            .build();
+        let chunks = encode_qr_chunks(&payload, 40).expect("encode");
+        assert!(chunks.len() >= 2);
+        let mut asm = ChunkAssembler::new();
+        // Feed in reverse order with a duplicate.
+        let mut result = None;
+        for c in chunks.iter().rev() {
+            if let Some(full) = asm.push(c).expect("push") {
+                result = Some(full);
+            }
+            let _ = asm.push(c).expect("duplicate push");
+        }
+        let full = result.expect("reassembled");
+        let decoded = decode_qr(&full).expect("decode");
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn chunks_reject_mixed_sets() {
+        let p1 = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref()).build();
+        let p2 = QrPayloadBuilder::new(NETWORK_ID_MAINNET, registry_id(), card_ref()).build();
+        let c1 = encode_qr_chunks(&p1, 40).expect("encode");
+        let c2 = encode_qr_chunks(&p2, 40).expect("encode");
+        let mut asm = ChunkAssembler::new();
+        asm.push(&c1[0]).expect("push");
+        assert_eq!(asm.push(&c2[0]).unwrap_err(), ChunkError::MixedSets);
+    }
+
+    #[test]
+    fn chunks_enforce_max() {
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref()).build();
+        let err = encode_qr_chunks(&payload, 1).unwrap_err();
+        assert!(matches!(err, ChunkError::TooManyChunks(_)));
+    }
+
     #[test]
     fn negative_vectors_all_rejected() {
         use serde::Deserialize;
@@ -1047,5 +1672,38 @@ mod tests {
                 err_str
             );
         }
+    }
+
+    // ── Degradation harness (issue #528) ────────────────────────────────────
+
+    #[test]
+    fn degradation_pipeline_is_deterministic() {
+        use crate::degradation::{DegradationConfig, DegradationKind};
+
+        let modules = vec![vec![true, false, true], vec![false, true, false], vec![true, true, false]];
+        let config = DegradationConfig::default();
+
+        for kind in DegradationKind::ALL {
+            let a = kind.apply(&modules, &config, 0xDEAD_BEEF);
+            let b = kind.apply(&modules, &config, 0xDEAD_BEEF);
+            assert_eq!(a, b, "degradation {kind:?} must be deterministic for a fixed seed");
+        }
+    }
+
+    #[test]
+    fn degradation_harness_runs_offline() {
+        use crate::degradation::run_harness;
+
+        // Small sweep so the test stays fast; the full sweep is produced by the
+        // `qr_degradation_report` example.
+        let report = run_harness(0x1234_5678, &[1, 2], &[0, 1, 2, 3]);
+        assert!(!report.rows.is_empty(), "harness must emit at least one data row");
+        // Every row must carry a well-formed decode-rate in [0, 1].
+        for row in &report.rows {
+            assert!((0.0..=1.0).contains(&row.decode_rate));
+        }
+        // CSV/JSON renderers must be non-empty and stable.
+        assert!(!report.to_csv().is_empty());
+        assert!(!report.to_json().is_empty());
     }
 }

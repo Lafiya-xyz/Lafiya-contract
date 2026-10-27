@@ -92,6 +92,102 @@ timestamp: u64;
 }
 
 
+/**
+ * Aggregated quorum status for a record: the number of distinct active
+ * attesters and whether the configured policy is satisfied.
+ */
+export interface QuorumStatus {
+  /**
+ * Number of distinct, currently-active attesters.
+ */
+count: u32;
+  /**
+ * Minimum distinct attesters required by the policy (0 if none).
+ */
+required: u32;
+  /**
+ * Whether `count >= required`.
+ */
+satisfied: boolean;
+}
+
+
+/**
+ * Dispute overlay status for a record.
+ */
+export interface DisputeStatus {
+  /**
+ * Whether a dispute is currently flagged.
+ */
+disputed: boolean;
+  /**
+ * Ledger timestamp at which the dispute was raised, if any.
+ */
+raised_at: Option<u64>;
+}
+
+
+/**
+ * Aggregated verification result surfaced to verifiers.
+ */
+export interface VerificationResult {
+  /**
+ * Whether any active attestation exists.
+ */
+attested: boolean;
+  /**
+ * Distinct active attester count.
+ */
+quorum_count: u32;
+  /**
+ * Whether the quorum policy is satisfied.
+ */
+quorum_satisfied: boolean;
+  /**
+ * Whether a patient dispute is currently flagged.
+ */
+disputed: boolean;
+}
+
+
+/**
+ * Signed root commitment for the current status-list segment.
+ */
+export interface StatusListRoot {
+  /**
+ * Segment index the root covers.
+ */
+index: u32;
+  /**
+ * Versioned commitment over the segment bitstring.
+ */
+root: Buffer;
+  /**
+ * Ledger at which the root was published.
+ */
+published_at: u64;
+}
+
+
+/**
+ * A status-list segment: a compact bitstring of revocation bits.
+ */
+export interface StatusListSegment {
+  /**
+ * Segment index.
+ */
+index: u32;
+  /**
+ * Packed bitstring of revocation bits.
+ */
+bits: Buffer;
+  /**
+ * Version of the segment commitment.
+ */
+version: u32;
+}
+
+
 
 
 
@@ -241,6 +337,87 @@ export interface Client {
    */
   get_attestation_history: ({record_hash}: {record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Array<Attestation>>>
 
+  /**
+   * Construct and simulate a extend_attestation_ttl transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Permissionlessly extend the rent lifetime of the attestation entry for
+   * `record_hash` so verifiable proofs outlive the original submitter's
+   * attention. Callable by anyone; requires no authorization.
+   *
+   * The target ledger is capped to `MAX_TTL_EXTENSION` ledgers from the
+   * current ledger, so callers cannot pin entries indefinitely. The call
+   * can only lengthen the entry's TTL — it never shortens it and never
+   * alters the stored attestation data. Returns the resulting live-until
+   * ledger.
+   */
+  extend_attestation_ttl: ({record_hash, extend_to}: {record_hash: Buffer, extend_to: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<u32>>>
+
+  /**
+   * Construct and simulate a set_quorum_policy transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Set the quorum policy (minimum number of distinct attesters) required
+   * for records of `record_class`. Requires the admin's authorization.
+   */
+  set_quorum_policy: ({record_class, min_attesters}: {record_class: u32, min_attesters: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_quorum_policy transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the quorum policy for `record_class`, if one is configured.
+   * Callable by anyone.
+   */
+  get_quorum_policy: ({record_class}: {record_class: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Option<u32>>>
+
+  /**
+   * Construct and simulate a get_quorum_status transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the aggregated quorum status for `record_hash` in `record_class`.
+   * Counts only distinct, currently-active attesters; revoked and
+   * superseded attestations do not contribute. Callable by anyone and
+   * exposes only public data.
+   */
+  get_quorum_status: ({record_hash, record_class}: {record_hash: Buffer, record_class: u32}, options?: MethodOptions) => Promise<AssembledTransaction<QuorumStatus>>
+
+  /**
+   * Construct and simulate a dispute_attestation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Flag the attestation for `record_hash` as disputed. The patient must
+   * authorize via the QR-spec signature scheme over a domain-separated
+   * commitment; the underlying attestation is never deleted. Disputes are
+   * bounded per record hash to prevent spam.
+   */
+  dispute_attestation: ({record_hash, patient, signature}: {record_hash: Buffer, patient: string, signature: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a clear_dispute transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Clear the dispute overlay for `record_hash`. Requires the admin's
+   * authorization (attester or admin action).
+   */
+  clear_dispute: ({record_hash}: {record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_dispute_status transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the dispute status for `record_hash`. Callable by anyone.
+   */
+  get_dispute_status: ({record_hash}: {record_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<DisputeStatus>>
+
+  /**
+   * Construct and simulate a get_verification_result transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the aggregated verification result for `record_hash` in
+   * `record_class`, combining attestation presence, quorum satisfaction
+   * and the dispute overlay. Callable by anyone.
+   */
+  get_verification_result: ({record_hash, record_class}: {record_hash: Buffer, record_class: u32}, options?: MethodOptions) => Promise<AssembledTransaction<VerificationResult>>
+
+  /**
+   * Construct and simulate a get_status_list_root transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the signed root commitment for the current status-list segment.
+   * Callable by anyone.
+   */
+  get_status_list_root: (options?: MethodOptions) => Promise<AssembledTransaction<StatusListRoot>>
+
+  /**
+   * Construct and simulate a get_status_list_segment transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the status-list segment at `index`, if present. Callable by
+   * anyone; verifiers validate inclusion against the signed root.
+   */
+  get_status_list_segment: ({index}: {index: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Option<StatusListSegment>>>
+
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -296,6 +473,16 @@ export class Client extends ContractClient {
         revoke_attestation: this.txFromJSON<Result<void>>,
         get_attester_registry: this.txFromJSON<Result<string>>,
         set_attester_registry: this.txFromJSON<Result<void>>,
-        get_attestation_history: this.txFromJSON<Array<Attestation>>
+        get_attestation_history: this.txFromJSON<Array<Attestation>>,
+        extend_attestation_ttl: this.txFromJSON<Result<u32>>,
+        set_quorum_policy: this.txFromJSON<Result<void>>,
+        get_quorum_policy: this.txFromJSON<Option<u32>>,
+        get_quorum_status: this.txFromJSON<QuorumStatus>,
+        dispute_attestation: this.txFromJSON<Result<void>>,
+        clear_dispute: this.txFromJSON<Result<void>>,
+        get_dispute_status: this.txFromJSON<DisputeStatus>,
+        get_verification_result: this.txFromJSON<VerificationResult>,
+        get_status_list_root: this.txFromJSON<StatusListRoot>,
+        get_status_list_segment: this.txFromJSON<Option<StatusListSegment>>
   }
 }

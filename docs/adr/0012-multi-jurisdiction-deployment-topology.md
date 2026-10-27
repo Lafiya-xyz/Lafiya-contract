@@ -1,4 +1,5 @@
-# ADR-0012: Multi-jurisdiction deployment topology
+<!-- adr-redirect: 0020-multi-jurisdiction-deployment-topology.md -->
+# Moved: ADR-0020
 
 - **Status:** Proposed
 - **Date:** 2026-09-25
@@ -61,6 +62,136 @@ accept, and it mixes regulatory regimes in a single piece of shared state.
    unless the jurisdiction asks for one. Every handover is recorded in the deployment
    ledger.
 
+## Federation trust anchors
+
+Decision 2 describes the trust list as an off-chain artefact. This section pins down
+its format, how a verifier discovers it, how a verifier uses it, and what can go
+wrong. It applies to Topology B (one deployment per jurisdiction) and is the
+contract that Topology C's on-chain federation root must remain compatible with.
+
+### Trust-anchor document format
+
+Each jurisdiction publishes exactly one *trust-anchor document* per sequence number.
+It is a JSON object with these fields:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `version` | integer | Document schema version. Currently `1`. |
+| `jurisdiction` | string | ISO 3166-1 alpha-2 code of the publishing deployment. |
+| `network_passphrase` | string | Stellar network passphrase the registries live on. |
+| `attestation_registry` | string | Contract ID of the jurisdiction's `attestation-registry`. |
+| `attester_registry` | string | Contract ID of the jurisdiction's `attester-registry`. |
+| `governance_signers` | array of string | Ed25519 public keys (G...) of the jurisdiction's governance multisig, sorted lexicographically. |
+| `governance_threshold` | integer | Number of signatures required on this document. |
+| `sequence` | integer | Monotonically increasing document sequence number. |
+| `not_before` | string | RFC 3339 UTC timestamp; the document is invalid before this instant. |
+| `not_after` | string | RFC 3339 UTC timestamp; the document is invalid after this instant. |
+| `revoked` | boolean | When `true`, the jurisdiction withdraws its anchor; see failure modes. |
+| `signatures` | array of object | `{ "signer": "G...", "signature": "<base64 ed25519>" }`, at least `governance_threshold` entries. |
+
+The **canonical document** is the UTF-8 encoding of the JSON object with all fields
+except `signatures`, keys sorted lexicographically, no insignificant whitespace, and
+no trailing newline. Each signature is an Ed25519 signature over the SHA-256 digest of
+the canonical document, produced by a key listed in `governance_signers`. A document
+is *valid* only if at least `governance_threshold` distinct listed signers signed the
+canonical document, `not_before <= now <= not_after`, and `sequence` is greater than
+any sequence the verifier has already accepted for that jurisdiction.
+
+### Key discovery
+
+The verifier learns a jurisdiction's governance keys out of band, once, and pins
+them. The pin is the pair (jurisdiction code, governance signer set) recorded in the
+verifier's configuration or in a trust list it already ships. The document itself is
+discovered through SEP-1: the jurisdiction's `stellar.toml` on a domain it controls
+carries a `[DOCUMENTATION]`-style entry under a `LAFIYA_FEDERATION` section with
+`TRUST_ANCHOR_URL` (HTTPS URL of the document) and `TRUST_ANCHOR_SHA256` (hex digest
+of the document bytes). The verifier fetches the URL, checks the digest against the
+pinned value, then verifies the signatures against the pinned governance keys. The
+`stellar.toml` domain is pinned too, so a compromised DNS or hosting provider cannot
+swap in a different document without also breaking the digest.
+
+### Verifier algorithm for foreign attestations
+
+Given an attestation issued by a foreign `attestation-registry`:
+
+1. **Resolve jurisdiction.** Map the attestation's registry contract ID to a
+   jurisdiction code using the verifier's pinned trust list. If no entry matches,
+   fail with `unknown_jurisdiction`.
+2. **Fetch and verify the trust-anchor document.** Fetch the document via the pinned
+   `TRUST_ANCHOR_URL`, check `TRUST_ANCHOR_SHA256`, verify the canonical-document
+   signatures against the pinned `governance_signers` and `governance_threshold`,
+   check the validity window, and check `sequence` against the last accepted
+   sequence. Any failure is a hard failure (see below); the verifier does not fall
+   back to an older document.
+3. **Check the foreign attestation and attester status.** Read the attestation from
+   the foreign `attestation-registry` and the attester's status from the foreign
+   `attester-registry`, both named in the document. Confirm the attestation is not
+   revoked and the attester is currently allowlisted. Reads are read-only; the
+   verifier never writes to a foreign deployment.
+4. **Apply local policy.** The local deployment decides what a valid foreign
+   attestation is worth: which jurisdictions it accepts, which attestation types it
+   honours, and whether a foreign attestation alone is sufficient or must be paired
+   with a local one. Policy is local configuration, not part of the document.
+
+### Failure modes
+
+| Failure | Cause | Verifier behaviour |
+| --- | --- | --- |
+| `unknown_jurisdiction` | Registry contract ID not in the pinned trust list. | Reject. Do not guess from the contract ID. |
+| `anchor_unreachable` | `TRUST_ANCHOR_URL` fetch fails or times out. | Reject; retry with backoff. Never use a cached document past `not_after`. |
+| `anchor_hash_mismatch` | Fetched bytes do not match `TRUST_ANCHOR_SHA256`. | Reject and alert; treat as possible tampering. |
+| `anchor_signature_invalid` | Fewer than `governance_threshold` valid signatures from pinned signers. | Reject. |
+| `anchor_expired` | `now` outside `[not_before, not_after]`. | Reject. |
+| `anchor_stale` | `sequence` not greater than the last accepted sequence. | Reject; treat as replay. |
+| `anchor_revoked` | Document has `revoked: true`. | Reject all attestations from that jurisdiction until a newer, non-revoked document is accepted. |
+| `registry_unreachable` | Foreign registry read fails. | Reject; retry with backoff. |
+| `attester_not_allowlisted` | Attester suspended or removed in the foreign registry. | Reject. |
+| `attestation_revoked` | Attestation revoked in the foreign registry. | Reject. |
+
+### Threat analysis: rogue-deployment injection
+
+The main risk is an attacker standing up a deployment that claims to be, or to
+speak for, a jurisdiction the verifier trusts.
+
+- **Self-signed anchors are not trust.** An attacker can publish a perfectly
+  well-formed document signed by keys they control. It is only trusted if those keys
+  are in the verifier's *pinned* `governance_signers` for that jurisdiction. A
+  document whose signers are not pinned fails `anchor_signature_invalid`, even if it
+  is internally consistent. The verifier never learns governance keys from the
+  document it is verifying.
+- **Look-alike jurisdictions.** An attacker registering `NG`-like contract IDs or a
+  similar domain gains nothing: the contract ID must match the pinned trust-list
+  entry, and the document must come from the pinned domain and match the pinned
+  digest.
+- **Replay of old documents.** An attacker who captured an old, validly signed
+  document could replay it to resurrect a revoked anchor or an old registry ID. The
+  monotonic `sequence` check (`anchor_stale`) and the `not_after` window
+  (`anchor_expired`) prevent this. Verifiers persist the highest accepted sequence
+  per jurisdiction.
+- **Key compromise and rotation.** If a jurisdiction's governance key is
+  compromised, it publishes a new document with a higher `sequence`, a new
+  `governance_signers` set, and signatures meeting the *old* threshold (so the
+  rotation is itself authorized). Verifiers accept the new signer set only through
+  such a document; a document that changes `governance_signers` without a valid
+  signature from the previously pinned set is rejected. If the old keys are lost
+  entirely, recovery requires an out-of-band trust-list update, which is why the
+  trust list is versioned and signed.
+- **Revocation propagation.** A jurisdiction withdraws trust by publishing a
+  document with `revoked: true` and a higher `sequence`. Verifiers stop accepting
+  that jurisdiction's attestations as soon as they see it. Propagation is bounded by
+  how often verifiers refresh; the `not_after` window bounds how long a stale
+  document can be used.
+
+### Backward compatibility
+
+Single-deployment verifiers are unaffected. They do not read the federation
+section, do not fetch trust-anchor documents, and keep using their existing trust
+anchors (the single `attestation-registry` / `attester-registry` pair they were
+configured with). The federation fields are additive: a verifier that ignores them
+behaves exactly as before, and a deployment that never publishes a trust-anchor
+document remains verifiable by its own jurisdiction's verifiers. Mixed fleets are
+supported: a verifier may enable federation for some jurisdictions and not others.
+
 ## Alternatives considered
 
 ### A. One global deployment with country-scoped registrars
@@ -106,8 +237,10 @@ To be filed as separate issues once this ADR is accepted:
 
 - **Tooling:** per-jurisdiction config profiles (`jurisdiction` key in
   `config/networks.toml`, `lafiya-cli --jurisdiction <code>`).
-- **Tooling:** a trust-list format (JSON, signed, versioned) plus a verification helper in
-  the verifier SDK.
+- **Tooling:** implement the trust-anchor document format and canonicalization above,
+  plus a verification helper in the verifier SDK.
+- **Sandbox:** a read-only cross-registry check against a mock second deployment, run as
+  a two-deployment sandbox scenario.
 - **Contracts:** a design spike for the federation root contract, including its governance
   quorum, extended in the TLA+ models.
 - **Contracts:** let `attestation-registry` consult several recognized attester registries

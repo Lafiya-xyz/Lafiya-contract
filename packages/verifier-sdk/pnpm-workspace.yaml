@@ -1,2 +1,11 @@
+# Dependency lifecycle scripts never run (see docs/verifier-sdk.md, "Supply
+# chain"). Every package that ships one must be listed here explicitly;
+# strictDepBuilds fails the install on any unlisted one.
 allowBuilds:
-  esbuild: set this to true or false
+  esbuild: true
+
+# The published manifest depends on the bindings by version; in this repo
+# they resolve to the committed sources instead.
+overrides:
+  "@lafiya/attestation-registry": "file:../../bindings/attestation-registry"
+  "@lafiya/attester-registry": "file:../../bindings/attester-registry"

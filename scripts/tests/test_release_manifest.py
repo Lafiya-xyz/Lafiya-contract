@@ -245,6 +245,32 @@ def test_generated_manifest_is_schema_valid(
     assert run_main(monkeypatch, validate.main, out) == 0
 
 
+def test_incentive_pool_is_a_generated_contract() -> None:
+    assert "incentive-pool" in gen.CONTRACTS
+
+
+def test_generated_manifest_includes_incentive_pool(
+    tmp_path: pathlib.Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    previous = write(tmp_path, "prev.json", MANIFEST)
+    out = tmp_path / "manifest.json"
+    run_main(monkeypatch, gen.main, "--pretty", "--previous", previous, "-o", out)
+    manifest = json.loads(out.read_text())
+    pool = next(c for c in manifest["contracts"] if c["name"] == "incentive-pool")
+    assert pool["wasm"]["sha256"] is not None
+    assert any(b["contract"] == "incentive-pool" for b in manifest["bindings"])
+    assert run_main(monkeypatch, validate.main, out) == 0
+
+
+def test_incentive_pool_events_are_classified() -> None:
+    events = gen.parse_events("contracts/incentive-pool", "incentive-pool")
+    assert events
+    assert {e["contract"] for e in events} == {"incentive-pool"}
+    classified = gen.classify_events(events, {})
+    assert all(e["compatibility"] == "unclassified" for e in classified)
+    assert all({"topic_fields", "data_fields"} <= e.keys() for e in classified)
+
+
 def test_generate_prints_to_stdout(
     monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:

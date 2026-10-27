@@ -18,42 +18,30 @@ See [Local Setup > Prerequisites](#prerequisites) for the tools you'll need befo
 
 ## Local Setup
 
-The core development environment requires Rust and the Soroban SDK.
-For the quick-start commands, see the [Getting Started](README.md#getting-started) section in the `README.md`.
+Run one command from a fresh clone:
 
-### Recommended: devcontainer / Codespaces
+```bash
+make first-run
+```
 
-The recommended setup is the devcontainer in [`.devcontainer/`](.devcontainer/).
-Open the repository in VS Code with the Dev Containers extension ("Reopen in
-Container") or create a GitHub Codespace. It provides, with every version
-pinned and every download checksum-verified:
+It checks prerequisites (Rust, the `wasm32v1-none` target, `stellar-cli`, Node 22 + pnpm, Python 3), prints the exact
+install command for anything missing, then smoke-builds and tests one contract (`attester-registry`) and one
+TypeScript package (`verifier-sdk`). It is exercised weekly on a clean devcontainer and a fresh Ubuntu runner by the
+`Devcontainer` workflow, which also logs the elapsed seconds (`first_run_seconds=`, anonymous) so setup time can be tracked.
+The easiest path is the devcontainer in [`.devcontainer/`](.devcontainer/) ("Reopen in Container" or a Codespace); it
+has every tool pinned and preinstalled, and `make first-run` works there with no extra steps.
 
-- the Rust channel from `rust-toolchain.toml` with `wasm32v1-none`, `rustfmt`,
-  `clippy`, plus nightly for `cargo-fuzz`;
-- `stellar-cli`, `cargo-nextest`, `cargo-mutants`, `cargo-fuzz`, `just`;
-- Python 3.12 with `jsonschema`, and Node 22 LTS with pnpm;
-- sidecars: `stellar/quickstart --local` (Soroban RPC on port 8000, with a
-  health check) and `postgres` for the indexer.
+### Troubleshooting
 
-On creation it builds the contract wasm, adds the `local` network to
-`stellar-cli`, and creates and funds a `dev` identity. After that, `make check`
-and `make test-integration` work with no manual steps.
+| Symptom | Fix |
+| --- | --- |
+| `MISSING stellar` | `cargo install --locked stellar-cli --features opt` |
+| `MISSING wasm32v1-none target` | `rustup target add wasm32v1-none` |
+| `MISSING pnpm` | `corepack enable && corepack prepare pnpm@latest --activate` |
+| Wrong Rust version | `rustup show` in the repo root; `rust-toolchain.toml` pins the channel |
+| `pnpm install` lockfile error | run from `packages/verifier-sdk`; do not use `--no-frozen-lockfile` on a clean tree |
 
-**Codespaces prebuilds:** maintainers enable them under *Settings → Codespaces
-→ Prebuild configurations* for `main`, using `.devcontainer/devcontainer.json`.
-The image build and `onCreateCommand` (wasm build) run in the prebuild, so a
-new codespace is ready in about two minutes. The `Devcontainer` workflow
-builds the container and runs `make check` inside it so the setup can't rot.
-
-If you would rather set up your machine by hand, install the prerequisites below.
-
-### Prerequisites
-- **Rust (stable)**: Install via [rustup](https://rustup.rs).
-- **Wasm target**: `rustup target add wasm32v1-none` (pinned via `rust-toolchain.toml`).
-- **Stellar CLI**: Needed for deploying and interacting with the testnet. Install it via Cargo:
-  ```bash
-  cargo install --locked stellar-cli --features opt
-  ```
+Each failure message from the script names the command that fixes it.
 
 ---
 
@@ -146,6 +134,46 @@ PROPTEST_CASES=100000 cargo test -p attestation-registry fuzz_test -- --nocaptur
 If proptest finds a failing case, it shrinks it to a minimal repro and writes it to `contracts/<crate>/proptest-regressions/fuzz_test.txt`; commit that file alongside your fix so the minimal input becomes a permanent regression test (proptest replays entries from that file automatically on every run).
 
 If a crash or invariant violation surfaces while working on either fuzz target, file it as its own bug report and fix it — don't fold an unrelated fix into a feature PR.
+
+### Native Crates: Miri, Sanitizers, and Semver Checks
+The pure-Rust library crates `lafiya-commitment`, `lafiya-config`, and
+`lafiya-fraud-scoring` are consumed outside this repo, so they get two extra
+checks:
+
+- **Miri and sanitizers (nightly, non-blocking).** `.github/workflows/native-crates-nightly.yml`
+  runs each crate's test suite under Miri, plus AddressSanitizer and
+  LeakSanitizer, on a pinned nightly toolchain. A failure opens or comments on
+  the "Nightly Miri/sanitizer run failed" issue. Reproduce locally with:
+  ```bash
+  rustup toolchain install nightly-2026-10-01 --component miri,rust-src
+  MIRIFLAGS="-Zmiri-disable-isolation" cargo +nightly-2026-10-01 miri test -p lafiya-commitment
+  ```
+  A test that cannot run under Miri (FFI, very slow loops) is marked
+  `#[cfg_attr(miri, ignore = "<reason>")]` and added to the exceptions below.
+
+  | Exception | Reason | Tracking |
+  | --- | --- | --- |
+  | `lafiya-qr` (whole crate) | Not a workspace member yet and its test suite does not compile | Add it to the workspace and fix the tests, then add it to the Miri matrix |
+
+- **Semver checks (blocking on PRs).** The `Semver checks (native crates)` CI
+  job runs `cargo semver-checks` against the PR's merge base. A PR that
+  changes a crate's public API in a breaking way without the matching version
+  bump in that crate's `Cargo.toml` fails.
+
+**Breaking changes before 1.0.** These crates are versioned independently of
+the workspace, and SemVer allows breaking changes in `0.x`. The process is:
+
+1. Prefer an additive change: add the new item and mark the old one
+   `#[deprecated(since = "0.N.0", note = "use ... instead")]`.
+2. If the break is necessary, bump the crate's `0.MINOR` version (for example
+   `0.1.x` → `0.2.0`) in its own `Cargo.toml` in the same PR; a patch bump is
+   only for non-breaking changes. This bump is the "version intent" the
+   semver-checks job looks for.
+3. Tick **Breaking change?** in the PR template, and mark the commit as
+   breaking (`feat(commitment)!: ...` or a `BREAKING CHANGE:` footer naming
+   the crate and the migration) so release-please records it in the changelog.
+4. Changes to the commitment *encoding* are never a crate-level break: they
+   need a new commitment version under ADR-0008 ([stability policy](docs/stability-policy.md)).
 
 ### Task Runner
 Developer and CI tasks run through `cargo xtask` (the `xtask/` workspace member, aliased

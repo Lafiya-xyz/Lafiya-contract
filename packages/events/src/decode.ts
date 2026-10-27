@@ -61,6 +61,24 @@ function convert(val: xdr.ScVal, type: SpecType): unknown {
       ? undefined
       : convert(val, type.option.value_type);
   }
+  if (typeof type === "object" && "vec" in type) {
+    if (val.switch().name !== "scvVec") {
+      throw new Error(`expected vec, got ${val.switch().name}`);
+    }
+    return (val.vec() ?? []).map((item) => convert(item, type.vec.element_type));
+  }
+  if (typeof type === "object" && "tuple" in type) {
+    if (val.switch().name !== "scvVec") {
+      throw new Error(`expected tuple, got ${val.switch().name}`);
+    }
+    const items = val.vec() ?? [];
+    if (items.length !== type.tuple.elements.length) {
+      throw new Error(
+        `expected ${type.tuple.elements.length} tuple elements, got ${items.length}`,
+      );
+    }
+    return items.map((item, i) => convert(item, type.tuple.elements[i]));
+  }
   const native = scValToNative(val);
   if (type === "bytes" || (typeof type === "object" && "bytes_n" in type)) {
     return Array.from(native as Uint8Array, (b) =>
@@ -71,6 +89,7 @@ function convert(val: xdr.ScVal, type: SpecType): unknown {
   if (typeof native === "number" && /^[iu](64|128|256)$/.test(String(type))) {
     return BigInt(native);
   }
+  if (typeof native === "bigint") return native;
   return native;
 }
 
@@ -98,13 +117,25 @@ function tryDecode(spec: EventSpec, raw: RawEvent): Record<string, unknown> {
     }
     for (const field of dataFields) {
       const val = entries.get(field.name);
-      if (val === undefined) throw new Error(`missing data field ${field.name}`);
+      if (val === undefined) {
+        // Optional fields may be omitted from the map entirely.
+        if (typeof field.type === "object" && "option" in field.type) {
+          out[field.key] = undefined;
+          continue;
+        }
+        throw new Error(`missing data field ${field.name}`);
+      }
       out[field.key] = convert(val, field.type);
     }
   } else if (dataFields.length === 1) {
     out[dataFields[0].key] = convert(raw.value, dataFields[0].type);
   } else if (dataFields.length > 1) {
     const items = raw.value.vec() ?? [];
+    if (items.length !== dataFields.length) {
+      throw new Error(
+        `expected ${dataFields.length} data fields, got ${items.length}`,
+      );
+    }
     dataFields.forEach((field, i) => {
       out[field.key] = convert(items[i], field.type);
     });
@@ -114,9 +145,11 @@ function tryDecode(spec: EventSpec, raw: RawEvent): Record<string, unknown> {
 
 /** The event kind for a raw event's prefix topic, or `undefined` if it isn't a Lafiya event. */
 export function eventKindOf(topic: xdr.ScVal[]): EventKind | undefined {
-  for (let n = 1; n <= topic.length; n++) {
+  // Longest prefix wins so nested prefixes (e.g. pool `pause` vs
+  // `pause/claim`) resolve to the most specific event kind.
+  for (let n = topic.length; n >= 1; n--) {
     const prefix = topic.slice(0, n).map(symbolOf);
-    if (prefix.some((p) => p === undefined)) return undefined;
+    if (prefix.some((p) => p === undefined)) continue;
     const kind = BY_PREFIX.get(prefix.join("\u0000"));
     if (kind) return kind;
   }
@@ -150,4 +183,14 @@ export function decodeEvent(raw: RawEvent): LafiyaEvent | undefined {
     }
   }
   throw new EventDecodeError(kind, raw.id, lastError);
+}
+
+/** Decode a batch of raw events, skipping non-Lafiya events. */
+export function decodeEvents(raws: RawEvent[]): LafiyaEvent[] {
+  const out: LafiyaEvent[] = [];
+  for (const raw of raws) {
+    const decoded = decodeEvent(raw);
+    if (decoded) out.push(decoded);
+  }
+  return out;
 }

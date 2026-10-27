@@ -1,0 +1,280 @@
+# Data classification registry for lafiya-indexer.
+#
+# This file is the machine-readable source of truth for the data inventory
+# required by issue #522. The CI test in
+# `crates/lafiya-indexer/tests/data_classification.rs` parses this file and
+# compares it against:
+#   - every table.column in the indexer database schema (see `store.rs`), and
+#   - every structured log field emitted by the indexer (see `LOG_FIELDS` below).
+#
+# The test FAILS if a column or log field is present in the schema/logs but
+# missing here, or if an entry here references something that no longer exists.
+#
+# Schema:
+#   version: <int>                     # bump when the format changes
+#   tables:
+#     <table_name>:
+#       description: <string>
+#       columns:
+#         <column_name>:
+#           classification: <enum>     # see CLASSIFICATIONS below
+#           lawful_basis: <enum>       # see LAWFUL_BASES below
+#           retention: <string>        # see RETENTION below
+#           notes: <string>            # optional
+#   log_fields:
+#     <field_name>:
+#       classification: <enum>
+#       lawful_basis: <enum>
+#       retention: <string>
+#       notes: <string>                # optional
+#
+# CLASSIFICATIONS (least to most sensitive):
+#   public_onchain   - value is a direct copy of public chain data (NDPA
+#                      analysis in docs/compliance/ndpa-onchain-analysis.md
+#                      applies). No additional privacy obligation.
+#   public_derived   - deterministically derived from public chain data and
+#                      reveals nothing beyond it (e.g. block height, tx index).
+#   operational      - operational metadata not present on chain (timestamps,
+#                      cursors, job state). Retained only as long as needed to
+#                      operate the indexer.
+#   linkable         - could be combined with other data to link records or
+#                      identities. Must be pruned per retention policy and must
+#                      never appear in high-cardinality metrics labels.
+#   secret           - credentials or keys. Never logged, never indexed.
+#
+# LAWFUL_BASES:
+#   public_interest  - processing of public blockchain data.
+#   legitimate       - operational necessity (legitimate interest).
+#   consent          - explicit operator consent (e.g. configured endpoints).
+#   contract         - required to fulfil an operator contract.
+#
+# RETENTION:
+#   permanent        - retained for the life of the index (public chain data).
+#   <duration>       - e.g. "30d", "90d", "1y". Pruned by the pruning job.
+#   session          - discarded when the process exits.
+#
+# PRUNING: any entry with a non-permanent retention MUST be handled by the
+# pruning job in `crates/lafiya-indexer/src/prune.rs`. The test asserts that
+# every prunable column/field is registered with the pruning job.
+
+version: 1
+
+tables:
+  events:
+    description: >
+      Mirrors on-chain contract events. Every column is a direct copy of
+      public chain data covered by the NDPA on-chain analysis.
+    columns:
+      id:
+        classification: public_derived
+        lawful_basis: public_interest
+        retention: permanent
+        notes: Internal surrogate key; deterministic ordering of chain events.
+      contract_id:
+        classification: public_onchain
+        lawful_basis: public_interest
+        retention: permanent
+      ledger:
+        classification: public_onchain
+        lawful_basis: public_interest
+        retention: permanent
+      tx_hash:
+        classification: public_onchain
+        lawful_basis: public_interest
+        retention: permanent
+      event_index:
+        classification: public_onchain
+        lawful_basis: public_interest
+        retention: permanent
+      topic:
+        classification: public_onchain
+        lawful_basis: public_interest
+        retention: permanent
+      payload:
+        classification: public_onchain
+        lawful_basis: public_interest
+        retention: permanent
+        notes: Raw event body as emitted on chain.
+      ingested_at:
+        classification: operational
+        lawful_basis: legitimate
+        retention: permanent
+        notes: >
+          Operational timestamp of ingestion. Retained alongside the event
+          because it is required for reorg handling and audit of the index.
+
+  checkpoints:
+    description: >
+      Per-contract ingestion cursors. Operational state only; contains no
+      record hashes or addresses beyond the public contract id.
+    columns:
+      contract_id:
+        classification: public_onchain
+        lawful_basis: public_interest
+        retention: permanent
+      last_ledger:
+        classification: public_derived
+        lawful_basis: public_interest
+        retention: permanent
+      updated_at:
+        classification: operational
+        lawful_basis: legitimate
+        retention: permanent
+
+  request_log:
+    description: >
+      Operational log of RPC/HTTP requests made by the indexer. Contains
+      linkable request metadata that is NOT on chain and MUST be pruned.
+    columns:
+      id:
+        classification: public_derived
+        lawful_basis: legitimate
+        retention: 30d
+      method:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 30d
+      path:
+        classification: linkable
+        lawful_basis: legitimate
+        retention: 30d
+        notes: >
+          Request path may contain record identifiers. Pruned after 30 days
+          and never used as a metrics label.
+      status:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 30d
+      latency_ms:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 30d
+      remote_addr:
+        classification: linkable
+        lawful_basis: legitimate
+        retention: 30d
+        notes: >
+          Client address. Linkable to request patterns; pruned after 30 days
+          and never emitted as a metrics label.
+      created_at:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 30d
+
+  metrics_snapshots:
+    description: >
+      Periodic snapshots of aggregate counters for dashboards. Aggregates
+      only; must not contain record hashes or addresses.
+    columns:
+      id:
+        classification: public_derived
+        lawful_basis: legitimate
+        retention: 90d
+      metric_name:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 90d
+      metric_value:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 90d
+      captured_at:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 90d
+
+  pruning_runs:
+    description: >
+      Audit trail of pruning job executions. Used to prove idempotency and
+      lock behaviour in tests.
+    columns:
+      id:
+        classification: public_derived
+        lawful_basis: legitimate
+        retention: 1y
+      started_at:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 1y
+      finished_at:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 1y
+      rows_pruned:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 1y
+      lock_acquired:
+        classification: operational
+        lawful_basis: legitimate
+        retention: 1y
+
+log_fields:
+  # Fields emitted by the indexer's structured logger. Any field added to a
+  # log line MUST be registered here or the CI test fails.
+  timestamp:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d
+  level:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d
+  target:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d
+  message:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d
+    notes: >
+      Free-form message. MUST NOT interpolate record hashes or addresses;
+      use structured fields instead.
+  contract_id:
+    classification: public_onchain
+    lawful_basis: public_interest
+    retention: 30d
+  ledger:
+    classification: public_onchain
+    lawful_basis: public_interest
+    retention: 30d
+  tx_hash:
+    classification: public_onchain
+    lawful_basis: public_interest
+    retention: 30d
+    notes: >
+      Public chain data, but high cardinality. Never used as a metrics label.
+  event_index:
+    classification: public_onchain
+    lawful_basis: public_interest
+    retention: 30d
+  request_id:
+    classification: linkable
+    lawful_basis: legitimate
+    retention: 30d
+    notes: >
+      Correlates log lines within a single request. Pruned after 30 days and
+      never used as a metrics label.
+  remote_addr:
+    classification: linkable
+    lawful_basis: legitimate
+    retention: 30d
+    notes: >
+      Client address. Pruned after 30 days and never used as a metrics label.
+  duration_ms:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d
+  error_kind:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d
+  rows_pruned:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d
+  lock_acquired:
+    classification: operational
+    lawful_basis: legitimate
+    retention: 30d

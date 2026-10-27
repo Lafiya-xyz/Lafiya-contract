@@ -168,7 +168,49 @@ export function attachSignatures(
 // the shared state that lets a CLI-based signer and a browser-based signer
 // take part in the same ceremony: whichever side collects a signature
 // appends it and hands the (JSON, human-diffable) file to the next signer.
+//
+// Air-gapped interop (#534): the CLI's `tx prepare` envelope and `tx sign
+// --offline` detached signature bundle use this same ceremony shape, so a
+// browser signer can pick up a file produced on a networked host, sign it on
+// an offline device, and hand the result back -- or vice versa. The optional
+// `envelope` block below carries the CLI envelope's self-describing metadata
+// (contract id, expiry, human-readable decode) and a digest of the entry so
+// an offline signer can detect tampering in transit before signing. Files
+// without it remain valid (version 1, browser-only ceremonies).
 // ---------------------------------------------------------------------------
+
+/** Human-readable decode of what a ceremony authorizes, for offline review. */
+export interface CeremonyDecode {
+  /** The multisig-account contract the call targets. */
+  contractId: string;
+  /** The contract function being invoked. */
+  functionName: string;
+  /** Ledger sequence the authorization expires at. */
+  validUntilLedger: number;
+  /** Free-form, human-readable summary of the invocation arguments. */
+  summary: string;
+}
+
+/**
+ * Self-describing envelope metadata shared with the CLI's `tx prepare`
+ * output. Present when the ceremony originated from (or is destined for) an
+ * air-gapped CLI signing flow.
+ */
+export interface CeremonyEnvelope {
+  /** Envelope format version, for forward compatibility. */
+  version: 1;
+  /** The multisig-account contract this ceremony authorizes a call on. */
+  contractId: string;
+  /** Network passphrase the payload hash was computed under. */
+  networkPassphrase: string;
+  /** Ledger sequence the authorization is valid until. */
+  validUntilLedger: number;
+  /** Human-readable decode of the invocation, for offline review. */
+  decode: CeremonyDecode;
+  /** hex-encoded SHA-256 of the raw `entryXdr` bytes, so an offline signer
+   * can detect tampering with the entry in transit before signing. */
+  entryDigestHex: string;
+}
 
 /** On-disk / wire shape of one signing ceremony. */
 export interface CeremonyFile {
@@ -188,6 +230,13 @@ export interface CeremonyFile {
   /** Signatures collected so far, in the order they were added (not
    * necessarily sorted -- `attachSignatures` sorts at submission time). */
   signatures: Array<{ publicKey: string; signatureHex: string }>;
+  /** Optional self-describing envelope metadata (air-gapped CLI interop). */
+  envelope?: CeremonyEnvelope;
+}
+
+/** Compute the hex-encoded SHA-256 digest of an entry's raw XDR bytes. */
+function entryDigestHex(entry: xdr.SorobanAuthorizationEntry): string {
+  return Buffer.from(hash(entry.toXDR())).toString("hex");
 }
 
 /** Build a fresh, unsigned ceremony file for `entry`. */
@@ -196,9 +245,10 @@ export function createCeremony(
   contractId: string,
   networkPassphrase: string,
   validUntilLedger: number,
+  decode?: CeremonyDecode,
 ): CeremonyFile {
   const payload = buildAuthPayload(entry, networkPassphrase, validUntilLedger);
-  return {
+  const ceremony: CeremonyFile = {
     version: 1,
     contractId,
     networkPassphrase,
@@ -207,6 +257,17 @@ export function createCeremony(
     payloadHex: Buffer.from(payload).toString("hex"),
     signatures: [],
   };
+  if (decode) {
+    ceremony.envelope = {
+      version: 1,
+      contractId,
+      networkPassphrase,
+      validUntilLedger,
+      decode,
+      entryDigestHex: entryDigestHex(entry),
+    };
+  }
+  return ceremony;
 }
 
 /** Parse a ceremony file's JSON text, validating its shape. */
@@ -230,12 +291,72 @@ export function readCeremony(json: string): CeremonyFile {
       throw new Error(`ceremony file missing required field: ${field}`);
     }
   }
+  if (parsed.envelope !== undefined) {
+    const env = parsed.envelope as Partial<CeremonyEnvelope>;
+    if (env.version !== 1) {
+      throw new Error(
+        `unsupported ceremony envelope version: ${String(env.version)} (expected 1)`,
+      );
+    }
+    for (const field of [
+      "contractId",
+      "networkPassphrase",
+      "validUntilLedger",
+      "decode",
+      "entryDigestHex",
+    ] as const) {
+      if (env[field] === undefined) {
+        throw new Error(`ceremony envelope missing required field: ${field}`);
+      }
+    }
+  }
   return parsed as CeremonyFile;
 }
 
 /** Serialize a ceremony file back to JSON text (pretty-printed for diffs). */
 export function writeCeremony(ceremony: CeremonyFile): string {
   return JSON.stringify(ceremony, null, 2) + "\n";
+}
+
+/**
+ * Re-decode a ceremony on the signing device and verify it is internally
+ * consistent before signing: the entry must hash to the recorded
+ * `entryDigestHex`, the payload must re-derive from the entry, and the
+ * envelope's contract/network/expiry must match the ceremony's own fields.
+ * Throws on any mismatch, so tampering in transit is caught before a key is
+ * ever used. Returns the ceremony unchanged when it has no envelope.
+ */
+export function verifyCeremony(ceremony: CeremonyFile): CeremonyFile {
+  const entry = xdr.SorobanAuthorizationEntry.fromXDR(ceremony.entryXdr, "base64");
+  const derivedPayload = buildAuthPayload(
+    entry,
+    ceremony.networkPassphrase,
+    ceremony.validUntilLedger,
+  );
+  if (Buffer.from(derivedPayload).toString("hex") !== ceremony.payloadHex) {
+    throw new Error(
+      "ceremony payloadHex does not match the entry (tampered or stale ceremony)",
+    );
+  }
+  const envelope = ceremony.envelope;
+  if (!envelope) {
+    return ceremony;
+  }
+  if (entryDigestHex(entry) !== envelope.entryDigestHex) {
+    throw new Error(
+      "ceremony entry digest does not match the envelope (tampered in transit)",
+    );
+  }
+  if (
+    envelope.contractId !== ceremony.contractId ||
+    envelope.networkPassphrase !== ceremony.networkPassphrase ||
+    envelope.validUntilLedger !== ceremony.validUntilLedger
+  ) {
+    throw new Error(
+      "ceremony envelope metadata does not match the ceremony (tampered in transit)",
+    );
+  }
+  return ceremony;
 }
 
 /**
@@ -264,6 +385,36 @@ export function addSignatureToCeremony(
   };
 }
 
+/**
+ * Merge a detached signature bundle (the CLI's `tx sign --offline` output,
+ * which is a ceremony file carrying only `signatures`) into `ceremony`,
+ * verifying each signature against the ceremony's payload first. The bundle
+ * must describe the same entry and payload as `ceremony`. Returns a new
+ * ceremony; neither input is mutated.
+ */
+export function mergeSignatureBundle(
+  ceremony: CeremonyFile,
+  bundle: CeremonyFile,
+): CeremonyFile {
+  if (
+    bundle.entryXdr !== ceremony.entryXdr ||
+    bundle.payloadHex !== ceremony.payloadHex
+  ) {
+    throw new Error(
+      "signature bundle was produced for a different entry or payload",
+    );
+  }
+  let merged = ceremony;
+  for (const sig of bundle.signatures) {
+    merged = addSignatureToCeremony(
+      merged,
+      sig.publicKey,
+      Buffer.from(sig.signatureHex, "hex"),
+    );
+  }
+  return merged;
+}
+
 /** Rebuild the signed `SorobanAuthorizationEntry` from a ceremony's
  * collected signatures, sorted and encoded via `attachSignatures`. */
 export function finalizeCeremony(
@@ -276,3 +427,6 @@ export function finalizeCeremony(
   }));
   return attachSignatures(entry, sigs);
 }
+
+export * from "./passkey.js";
+export * from "./intent.js";

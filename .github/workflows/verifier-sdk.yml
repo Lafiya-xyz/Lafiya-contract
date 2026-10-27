@@ -1,0 +1,101 @@
+name: verifier-sdk
+
+# Gates for @lafiya/verifier (packages/verifier-sdk): supply-chain policy,
+# tests, and a per-entry-point gzip size budget whose report is posted on
+# pull requests. Tags `verifier-sdk-v*` publish to npm with provenance.
+
+on:
+  pull_request:
+    paths:
+      - 'packages/verifier-sdk/**'
+      - 'bindings/attestation-registry/**'
+      - 'bindings/attester-registry/**'
+      - '.github/workflows/verifier-sdk.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'packages/verifier-sdk/**'
+      - 'bindings/attestation-registry/**'
+      - 'bindings/attester-registry/**'
+      - '.github/workflows/verifier-sdk.yml'
+    tags: ['verifier-sdk-v*']
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    working-directory: packages/verifier-sdk
+
+jobs:
+  check:
+    name: Supply chain, tests and size budget
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Supply-chain policy
+        run: node scripts/check-supply-chain.mjs
+      # --frozen-lockfile fails on any drift from the committed lockfile, and
+      # pnpm verifies every tarball against its lockfile integrity hash.
+      # Install scripts are disabled by .npmrc and strictDepBuilds.
+      - name: Install (frozen lockfile, no install scripts)
+        run: pnpm install --frozen-lockfile --ignore-scripts
+      - name: Production dependency inventory
+        run: pnpm ls --prod --depth 1
+      - run: pnpm typecheck
+      - run: pnpm test
+      - run: pnpm build
+      - name: Size budget
+        run: node scripts/check-size.mjs --markdown "$RUNNER_TEMP/size.md"
+      - name: Post size report
+        if: always() && github.event_name == 'pull_request'
+        # Fork PRs get a read-only token; the report is still in the job summary.
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        run: |
+          [ -f "$RUNNER_TEMP/size.md" ] || exit 0
+          gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --edit-last --body-file "$RUNNER_TEMP/size.md" \
+            || gh pr comment "$PR" --repo "$GITHUB_REPOSITORY" --body-file "$RUNNER_TEMP/size.md"
+
+  publish:
+    name: Publish to npm with provenance
+    if: startsWith(github.ref, 'refs/tags/verifier-sdk-v')
+    needs: check
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write # npm provenance attestation
+    steps:
+      - uses: actions/checkout@v7
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Refuse unpublishable local dependencies
+        # The bindings are file: dependencies until they are on npm (see
+        # PUBLISHING.md); a tarball depending on them would not install.
+        run: |
+          if node -e 'const d=require("./package.json").dependencies||{};process.exit(Object.values(d).some(v=>v.startsWith("file:"))?0:1)'; then
+            echo "::error::publish the @lafiya bindings to npm and depend on their versions first"
+            exit 1
+          fi
+      - run: pnpm install --frozen-lockfile --ignore-scripts
+      - run: pnpm build
+      - name: Publish
+        run: npm publish --provenance --access public --ignore-scripts
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}

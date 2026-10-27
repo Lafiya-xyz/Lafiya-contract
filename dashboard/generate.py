@@ -172,6 +172,29 @@ def manifest_hashes(paths):
     return hashes
 
 
+def incentives(events):
+    """Per-programme funding attribution from incentive-pool events:
+    funded (`programme_funded`), refunded to donors (`programme_refunded`),
+    paid out (`payout_claimed` joined via `work_item_programme_linked`) and
+    remaining. Payouts with no programme link draw from unallocated funds."""
+    item_programme = {}
+    rows = defaultdict(lambda: {"funded": 0, "refunded": 0, "paid": 0})
+    for e in events:
+        name, topics = e["name"], e.get("topics") or []
+        if name == "work_item_programme_linked":
+            item_programme[topics[0]] = topics[1]
+        elif name in ("programme_funded", "programme_refunded"):
+            key = "funded" if name == "programme_funded" else "refunded"
+            rows[topics[1]][key] += int(e["data"])
+        elif name == "payout_claimed":
+            rows[item_programme.get(topics[0], "unallocated")]["paid"] += int(e["data"])
+    out = []
+    for programme, v in sorted(rows.items()):
+        remaining = None if programme == "unallocated" else v["funded"] - v["refunded"] - v["paid"]
+        out.append({"programme": programme, **v, "remaining": remaining})
+    return out
+
+
 def build(events, regions, manifests, provenance):
     activity = suppress(verification_activity(events, regions))
     activity_rows = [
@@ -181,7 +204,7 @@ def build(events, regions, manifests, provenance):
         "provenance": provenance,
         "verification_activity": activity_rows,
         "attesters": attester_counts(events),
-        "incentives": [],  # populated once M2 incentive contracts exist
+        "incentives": incentives(events),
         "contract_health": contract_health(events, manifest_hashes(manifests)),
     }
 
@@ -269,6 +292,8 @@ def main(argv=None):
     p.add_argument("--ledger-to", type=int, required=True)
     p.add_argument("--contracts", required=True, help="comma separated contract IDs")
     p.add_argument("--out", required=True)
+    p.add_argument("--exclude-attester", action="append", default=[],
+                   help="attester address to omit (canary attester); repeatable")
     args = p.parse_args(argv)
 
     with open(args.attesters, encoding="utf-8") as f:
@@ -276,6 +301,7 @@ def main(argv=None):
     events = [
         e for e in load_events(args.events)
         if args.ledger_from <= e["ledger"] < args.ledger_to
+        and e.get("data", "") not in args.exclude_attester
     ]
     provenance = {
         "network": args.network,
