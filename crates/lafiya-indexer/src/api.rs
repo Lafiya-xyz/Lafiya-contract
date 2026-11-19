@@ -410,11 +410,18 @@ impl IntoResponse for ApiError {
 /// `finalized_ledger` is the highest ledger the indexer considers final; events
 /// at or below it will never be rolled back, so consumers can treat them as
 /// settled. It is `None` when no finality boundary is known yet.
+///
+/// `indexed_through_ledger` is the highest ledger reflected in this response
+/// (the requested `as_of_ledger` when given, otherwise the indexer checkpoint).
+/// `latest_network_ledger` is the newest ledger the indexer has observed on the
+/// network. Both are read from the same snapshot as `items`.
 #[derive(Serialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
     pub finalized_ledger: Option<i64>,
+    pub indexed_through_ledger: Option<i64>,
+    pub latest_network_ledger: Option<i64>,
 }
 
 fn page<T>(mut items: Vec<T>, limit: i64, key: impl Fn(&T) -> String) -> Page<T> {
@@ -428,7 +435,45 @@ fn page<T>(mut items: Vec<T>, limit: i64, key: impl Fn(&T) -> String) -> Page<T>
         items,
         next_cursor,
         finalized_ledger: None,
+        indexed_through_ledger: None,
+        latest_network_ledger: None,
     }
+}
+
+/// Ledger watermarks attached to every API response.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Watermarks {
+    /// Highest ledger reflected in the response body.
+    pub indexed_through_ledger: Option<i64>,
+    /// Newest ledger observed on the network.
+    pub latest_network_ledger: Option<i64>,
+}
+
+impl Watermarks {
+    /// Read both watermarks from a single connection/transaction so they are
+    /// consistent with the rows read on the same snapshot.
+    async fn read(
+        conn: &mut sqlx::PgConnection,
+        as_of_ledger: Option<i64>,
+    ) -> Result<Self, ApiError> {
+        let row: (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT (SELECT ledger FROM indexer_checkpoint LIMIT 1),
+                    (SELECT MAX(ledger) FROM indexer_checkpoint)",
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(Self {
+            indexed_through_ledger: as_of_ledger.or(row.0),
+            latest_network_ledger: row.1.or(row.0),
+        })
+    }
+}
+
+/// Attach watermarks to a page of results.
+fn with_watermarks<T>(mut page: Page<T>, wm: Watermarks) -> Json<Page<T>> {
+    page.indexed_through_ledger = wm.indexed_through_ledger;
+    page.latest_network_ledger = wm.latest_network_ledger;
+    Json(page)
 }
 
 /// Attach the current finality boundary to a page of results.
