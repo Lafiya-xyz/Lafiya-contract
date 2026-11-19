@@ -410,11 +410,18 @@ impl IntoResponse for ApiError {
 /// `finalized_ledger` is the highest ledger the indexer considers final; events
 /// at or below it will never be rolled back, so consumers can treat them as
 /// settled. It is `None` when no finality boundary is known yet.
+///
+/// `indexed_through_ledger` is the highest ledger reflected in this response
+/// (the requested `as_of_ledger` when given, otherwise the indexer checkpoint).
+/// `latest_network_ledger` is the newest ledger the indexer has observed on the
+/// network. Both are read from the same snapshot as `items`.
 #[derive(Serialize)]
 pub struct Page<T> {
     pub items: Vec<T>,
     pub next_cursor: Option<String>,
     pub finalized_ledger: Option<i64>,
+    pub indexed_through_ledger: Option<i64>,
+    pub latest_network_ledger: Option<i64>,
 }
 
 fn page<T>(mut items: Vec<T>, limit: i64, key: impl Fn(&T) -> String) -> Page<T> {
@@ -428,7 +435,45 @@ fn page<T>(mut items: Vec<T>, limit: i64, key: impl Fn(&T) -> String) -> Page<T>
         items,
         next_cursor,
         finalized_ledger: None,
+        indexed_through_ledger: None,
+        latest_network_ledger: None,
     }
+}
+
+/// Ledger watermarks attached to every API response.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Watermarks {
+    /// Highest ledger reflected in the response body.
+    pub indexed_through_ledger: Option<i64>,
+    /// Newest ledger observed on the network.
+    pub latest_network_ledger: Option<i64>,
+}
+
+impl Watermarks {
+    /// Read both watermarks from a single connection/transaction so they are
+    /// consistent with the rows read on the same snapshot.
+    async fn read(
+        conn: &mut sqlx::PgConnection,
+        as_of_ledger: Option<i64>,
+    ) -> Result<Self, ApiError> {
+        let row: (Option<i64>, Option<i64>) = sqlx::query_as(
+            "SELECT (SELECT ledger FROM indexer_checkpoint LIMIT 1),
+                    (SELECT MAX(ledger) FROM indexer_checkpoint)",
+        )
+        .fetch_one(&mut *conn)
+        .await?;
+        Ok(Self {
+            indexed_through_ledger: as_of_ledger.or(row.0),
+            latest_network_ledger: row.1.or(row.0),
+        })
+    }
+}
+
+/// Attach watermarks to a page of results.
+fn with_watermarks<T>(mut page: Page<T>, wm: Watermarks) -> Json<Page<T>> {
+    page.indexed_through_ledger = wm.indexed_through_ledger;
+    page.latest_network_ledger = wm.latest_network_ledger;
+    Json(page)
 }
 
 /// Attach the current finality boundary to a page of results.
@@ -760,24 +805,16 @@ async fn record_status(
     Path(hash): Path<String>,
 ) -> Result<Json<RecordStatus>, ApiError> {
     let hash = validate_hash(&hash)?;
-    let row: Option<RecordStatus> = sqlx::query_as(
+    // Raw facts only: no verdict precedence is encoded in SQL. The verdict is
+    // computed by `lafiya-verification-model` (see `record_verdict`).
+    let row: Option<RecordFacts> = sqlx::query_as(
         "SELECT r.record_hash,
-                CASE
-                    WHEN r.revoked THEN 'revoked'
-                    WHEN COALESCE(d.disputed, FALSE) THEN 'disputed'
-                    WHEN COALESCE(q.quorum_satisfied, FALSE) THEN 'verified'
-                    WHEN COALESCE(t.expires_at_ledger, 0) > 0
-                         AND t.expires_at_ledger <= $2 THEN 'archived'
-                    ELSE 'pending'
-                END AS state,
                 COALESCE(q.quorum_count, 0) AS quorum_count,
                 COALESCE(q.quorum_required, 0) AS quorum_required,
                 COALESCE(q.quorum_satisfied, FALSE) AS quorum_satisfied,
                 COALESCE(d.disputed, FALSE) AS disputed,
                 r.revoked,
-                t.expires_at_ledger,
-                COALESCE(t.expires_at_ledger, 0) > 0
-                    AND t.expires_at_ledger <= $2 AS archived
+                t.expires_at_ledger
          FROM records r
          LEFT JOIN record_quorum q ON q.record_hash = r.record_hash
          LEFT JOIN record_disputes d ON d.record_hash = r.record_hash
@@ -789,11 +826,72 @@ async fn record_status(
          WHERE r.record_hash = $1",
     )
     .bind(&hash)
-    .bind(current_ledger(&s.pool).await?)
     .fetch_optional(&s.pool)
     .await?;
-    row.map(Json)
-        .ok_or_else(|| ApiError::NotFound("record not found".into()))
+    let facts = row.ok_or_else(|| ApiError::NotFound("record not found".into()))?;
+    let ledger = current_ledger(&s.pool).await?;
+    Ok(Json(facts.into_status(ledger)))
+}
+
+/// Raw per-record facts read from the database. Verdict precedence lives in
+/// `lafiya-verification-model`, never here.
+#[derive(sqlx::FromRow)]
+struct RecordFacts {
+    record_hash: String,
+    quorum_count: i64,
+    quorum_required: i64,
+    quorum_satisfied: bool,
+    disputed: bool,
+    revoked: bool,
+    expires_at_ledger: Option<i64>,
+}
+
+impl RecordFacts {
+    fn into_status(self, current_ledger: i64) -> RecordStatus {
+        let archived = self
+            .expires_at_ledger
+            .is_some_and(|expires| expires > 0 && expires <= current_ledger);
+        let state = record_verdict(self.revoked, self.disputed, self.quorum_satisfied, archived);
+        RecordStatus {
+            record_hash: self.record_hash,
+            state,
+            quorum_count: self.quorum_count,
+            quorum_required: self.quorum_required,
+            quorum_satisfied: self.quorum_satisfied,
+            disputed: self.disputed,
+            revoked: self.revoked,
+            expires_at_ledger: self.expires_at_ledger,
+            archived,
+        }
+    }
+}
+
+/// Map raw record facts onto the verification model and return the record
+/// state string. Precedence: revoked, disputed, verified, archived, pending.
+fn record_verdict(revoked: bool, disputed: bool, quorum_satisfied: bool, archived: bool) -> String {
+    use lafiya_verification_model::{evaluate, AttesterStatus, Input, ReadStatus, Verdict};
+
+    let input = Input {
+        network_matches: true,
+        attestation_read: ReadStatus::Ok,
+        attester_status_read: ReadStatus::Ok,
+        attestation_found: true,
+        revoked,
+        attester_status: AttesterStatus::Active,
+        attested_in_compromise_window: false,
+        age_exceeds_policy: archived,
+        superseded: false,
+        offline: false,
+    };
+    let verdict = evaluate(&input).verdict;
+    let state = match verdict {
+        Verdict::Revoked => "revoked",
+        Verdict::Expired => "archived",
+        Verdict::Verified if disputed => "disputed",
+        Verdict::Verified if quorum_satisfied => "verified",
+        _ => "pending",
+    };
+    state.to_string()
 }
 
 #[derive(Serialize, sqlx::FromRow)]
