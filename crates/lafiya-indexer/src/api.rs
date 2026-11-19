@@ -805,24 +805,16 @@ async fn record_status(
     Path(hash): Path<String>,
 ) -> Result<Json<RecordStatus>, ApiError> {
     let hash = validate_hash(&hash)?;
-    let row: Option<RecordStatus> = sqlx::query_as(
+    // Raw facts only: no verdict precedence is encoded in SQL. The verdict is
+    // computed by `lafiya-verification-model` (see `record_verdict`).
+    let row: Option<RecordFacts> = sqlx::query_as(
         "SELECT r.record_hash,
-                CASE
-                    WHEN r.revoked THEN 'revoked'
-                    WHEN COALESCE(d.disputed, FALSE) THEN 'disputed'
-                    WHEN COALESCE(q.quorum_satisfied, FALSE) THEN 'verified'
-                    WHEN COALESCE(t.expires_at_ledger, 0) > 0
-                         AND t.expires_at_ledger <= $2 THEN 'archived'
-                    ELSE 'pending'
-                END AS state,
                 COALESCE(q.quorum_count, 0) AS quorum_count,
                 COALESCE(q.quorum_required, 0) AS quorum_required,
                 COALESCE(q.quorum_satisfied, FALSE) AS quorum_satisfied,
                 COALESCE(d.disputed, FALSE) AS disputed,
                 r.revoked,
-                t.expires_at_ledger,
-                COALESCE(t.expires_at_ledger, 0) > 0
-                    AND t.expires_at_ledger <= $2 AS archived
+                t.expires_at_ledger
          FROM records r
          LEFT JOIN record_quorum q ON q.record_hash = r.record_hash
          LEFT JOIN record_disputes d ON d.record_hash = r.record_hash
@@ -834,11 +826,72 @@ async fn record_status(
          WHERE r.record_hash = $1",
     )
     .bind(&hash)
-    .bind(current_ledger(&s.pool).await?)
     .fetch_optional(&s.pool)
     .await?;
-    row.map(Json)
-        .ok_or_else(|| ApiError::NotFound("record not found".into()))
+    let facts = row.ok_or_else(|| ApiError::NotFound("record not found".into()))?;
+    let ledger = current_ledger(&s.pool).await?;
+    Ok(Json(facts.into_status(ledger)))
+}
+
+/// Raw per-record facts read from the database. Verdict precedence lives in
+/// `lafiya-verification-model`, never here.
+#[derive(sqlx::FromRow)]
+struct RecordFacts {
+    record_hash: String,
+    quorum_count: i64,
+    quorum_required: i64,
+    quorum_satisfied: bool,
+    disputed: bool,
+    revoked: bool,
+    expires_at_ledger: Option<i64>,
+}
+
+impl RecordFacts {
+    fn into_status(self, current_ledger: i64) -> RecordStatus {
+        let archived = self
+            .expires_at_ledger
+            .is_some_and(|expires| expires > 0 && expires <= current_ledger);
+        let state = record_verdict(self.revoked, self.disputed, self.quorum_satisfied, archived);
+        RecordStatus {
+            record_hash: self.record_hash,
+            state,
+            quorum_count: self.quorum_count,
+            quorum_required: self.quorum_required,
+            quorum_satisfied: self.quorum_satisfied,
+            disputed: self.disputed,
+            revoked: self.revoked,
+            expires_at_ledger: self.expires_at_ledger,
+            archived,
+        }
+    }
+}
+
+/// Map raw record facts onto the verification model and return the record
+/// state string. Precedence: revoked, disputed, verified, archived, pending.
+fn record_verdict(revoked: bool, disputed: bool, quorum_satisfied: bool, archived: bool) -> String {
+    use lafiya_verification_model::{evaluate, AttesterStatus, Input, ReadStatus, Verdict};
+
+    let input = Input {
+        network_matches: true,
+        attestation_read: ReadStatus::Ok,
+        attester_status_read: ReadStatus::Ok,
+        attestation_found: true,
+        revoked,
+        attester_status: AttesterStatus::Active,
+        attested_in_compromise_window: false,
+        age_exceeds_policy: archived,
+        superseded: false,
+        offline: false,
+    };
+    let verdict = evaluate(&input).verdict;
+    let state = match verdict {
+        Verdict::Revoked => "revoked",
+        Verdict::Expired => "archived",
+        Verdict::Verified if disputed => "disputed",
+        Verdict::Verified if quorum_satisfied => "verified",
+        _ => "pending",
+    };
+    state.to_string()
 }
 
 #[derive(Serialize, sqlx::FromRow)]
