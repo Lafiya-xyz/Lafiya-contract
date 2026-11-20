@@ -64,7 +64,16 @@ export const Errors = {
   /**
    * The supplied signature count exceeds the configured signer count.
    */
-  7: {message:"TooManySigners"}
+  7: {message:"TooManySigners"},
+  /**
+   * The signer policy's combined weight, role, and minimum-signer constraints cannot be satisfied.
+   */
+  8: {message:"UnsatisfiablePolicy"},
+  /**
+   * The signer policy hinges on a single signer whose absence makes it unsatisfiable, and the
+   * single-point-of-failure override was not set.
+   */
+  9: {message:"SinglePointOfFailure"}
 }
 
 

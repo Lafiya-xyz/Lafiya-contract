@@ -8,14 +8,18 @@
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 pub mod admin;
+pub mod invariants;
 pub mod migration;
 pub mod pausable;
 pub mod storage;
 pub mod ttl;
 
 pub use admin::Admin;
+pub use invariants::InvariantReport;
 pub use pausable::Pausable;
 pub use ttl::{extend_instance_ttl, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
 
 // Re-export commonly used soroban types
 pub use soroban_sdk::{Address, Env};
+</｜｜DSML｜｜ parameter>
+</invariant_report_placeholder>

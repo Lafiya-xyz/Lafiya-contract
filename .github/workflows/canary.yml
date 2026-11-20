@@ -35,6 +35,7 @@ jobs:
           CANARY_ADDRESS: ${{ vars.CANARY_ATTESTER_ADDRESS }}
           CANARY_SECRET: ${{ secrets.CANARY_ATTESTER_SECRET }}
           CANARY_MAINNET_APPROVED: ${{ vars.CANARY_MAINNET_APPROVED }}
+          INCENTIVE_POOL: ${{ vars.CANARY_INCENTIVE_POOL }}
         run: ./scripts/canary.sh
       - name: Alert on failure
         if: failure()

@@ -297,6 +297,28 @@
       "i18n_key": "err.attester.batch_too_large",
       "since": "0.1.0",
       "deprecated": null
+    },
+    {
+      "contract": "multisig-account",
+      "code": 1,
+      "name": "UnsatisfiablePolicy",
+      "doc": "The supplied `SignerPolicy` cannot be satisfied by any subset of the configured signers: the weight threshold exceeds the sum of signer weights, `minimum_signers` exceeds the signer count, or the per-role `role_requirements` demand more signers of a role than exist. Accepting such a policy would permanently brick the account and the admin of both registries, so `set_policy` rejects it. Adjust the thresholds, role requirements, or signer set and retry.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.multisig.unsatisfiable_policy",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "multisig-account",
+      "code": 2,
+      "name": "SinglePointOfFailure",
+      "doc": "The supplied `SignerPolicy` is satisfiable only while one specific signer participates: removing that signer makes the policy unsatisfiable. This is a lockout risk, so `set_policy` rejects it unless the policy explicitly sets `allow_single_point_of_failure`. Only set that flag after accepting the operational risk of losing access if the signer is lost.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.multisig.single_point_of_failure",
+      "since": "0.3.0",
+      "deprecated": null
     }
   ]
 }

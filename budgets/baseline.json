@@ -225,6 +225,17 @@
       "events_size_bytes": 0,
       "estimated_fee_stroops": 55000,
       "worst_case_scenario": "5-of-5 multisig signature verification"
+    },
+    "set_policy": {
+      "cpu_instructions": 850000,
+      "memory_bytes": 65536,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 1536,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 1024,
+      "events_size_bytes": 256,
+      "estimated_fee_stroops": 180000,
+      "worst_case_scenario": "MAX_SIGNERS (10) signers, full role_requirements, exact subset satisfiability search plus single-point-of-failure analysis"
     }
   },
   "incentive-pool": {
@@ -238,6 +249,17 @@
       "events_size_bytes": 2560,
       "estimated_fee_stroops": 900000,
       "worst_case_scenario": "MAX_BATCH_APPROVALS (16) items, distinct attesters, full attestation history window, epoch budget enabled"
+    },
+    "check_invariants": {
+      "cpu_instructions": 120000,
+      "memory_bytes": 16384,
+      "ledger_read_entries": 8,
+      "ledger_read_bytes": 2048,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 45000,
+      "worst_case_scenario": "read-only self-diagnostic: token balance, total_reserved, total_paid, total_deposited, epoch_approved, epoch_cap, schedule_version, pause and role state"
     }
   }
 }

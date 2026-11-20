@@ -59,6 +59,19 @@ Test paths are relative to `contracts/<crate>/src/`.
 | INV-MS-4 | The number of signatures is bounded by the signer count (budget-exhaustion protection). | `test.rs::too_many_signatures_is_rejected` |
 | INV-MS-5 | Successful auth extends the instance TTL, so the account is not archived while in use. | `test.rs::check_auth_extends_ttl_on_success` |
 | INV-MS-6 | The multisig can administer both registries end to end. | `integration_test.rs::multisig_address_administers_both_registries` |
+| INV-MS-7 | `set_policy` rejects any `SignerPolicy` whose combined `weight_threshold`, `minimum_signers`, and `role_requirements` cannot be satisfied by the configured signers, returning a typed error instead of bricking the account. | `test.rs::set_policy_rejects_unsatisfiable_weight_threshold`, `set_policy_rejects_unsatisfiable_role_requirements`, `set_policy_accepts_satisfiable_policy`; `fuzz_test.rs::policy_satisfiability_matches_brute_force_oracle` |
+| INV-MS-8 | `set_policy` rejects a policy that hinges on a single signer (one signer whose absence makes it unsatisfiable) unless `allow_single_point_of_failure` is set. | `test.rs::set_policy_rejects_single_point_of_failure`, `set_policy_allows_single_point_of_failure_with_override` |
+
+## incentive-pool (INV-IP)
+
+| ID | Invariant | Checked by |
+|---|---|---|
+| INV-IP-1 | Solvency: the pool token balance is at least `total_reserved`. | `test.rs::check_invariants_reports_balance_below_reserved` |
+| INV-IP-2 | Accounting: `total_paid <= total_deposited`. | `test.rs::check_invariants_reports_paid_above_deposited` |
+| INV-IP-3 | Epoch approvals never exceed the epoch cap (`epoch_approved <= epoch_cap`). | `test.rs::check_invariants_reports_approved_above_cap` |
+| INV-IP-4 | `schedule_version` is monotonically non-decreasing across schedule updates. | `test.rs::check_invariants_reports_schedule_version_regression` |
+| INV-IP-5 | Pause and role consistency: pause state and role assignments are mutually consistent (no privileged action while paused, roles only held by configured addresses). | `test.rs::check_invariants_reports_pause_role_inconsistency` |
+| INV-IP-6 | `check_invariants()` is read-only, stays within the read budget, and returns the shared `InvariantReport` shape from `lafiya-contract-common`. | `test.rs::check_invariants_is_read_only`, `check_invariants_within_read_budget`; `benches/` read-budget benchmark; watchdog and status probes consume it |
 
 ## Commitment scheme (optional scope)
 

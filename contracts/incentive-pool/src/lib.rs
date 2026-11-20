@@ -14,6 +14,7 @@
 //! approved allowlisted attesters claim per-item payouts with
 //! per-attestation replay protection.
 
+use lafiya_contract_common::{InvariantReport, InvariantViolation};
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, token,
     xdr::ToXdr, Address, Bytes, BytesN, Env, Map, Vec,
@@ -139,6 +140,9 @@ enum DataKey {
     PendingEpochConfig,
     /// Amount approved in the epoch starting at the given timestamp.
     EpochApproved(u64),
+    /// Highest schedule version ever applied; used by `check_invariants`
+    /// to detect a regression in `ScheduleVersion`.
+    ScheduleVersionHighWater,
 }
 
 /// One entry of an `approve_work_items` batch.
@@ -910,6 +914,102 @@ impl IncentivePool {
             .unwrap_or(false)
     }
 
+    /// Read-only self-diagnostic: check the pool's solvency and accounting
+    /// invariants and return a shared `InvariantReport`.
+    ///
+    /// Checks, in order:
+    /// - `token.balance >= total_reserved` (custody covers reservations)
+    /// - `total_paid <= total_deposited` (accounting never over-pays)
+    /// - `epoch_approved <= epoch_cap` for the current epoch
+    /// - `schedule_version` monotonicity (never below the last applied one)
+    /// - pause and role consistency (admin/approver/token/registry present)
+    ///
+    /// Never mutates state and performs a bounded number of reads: the
+    /// instance entries plus one token balance call.
+    pub fn check_invariants(env: Env) -> InvariantReport {
+        let mut report = InvariantReport::new();
+
+        // Solvency: custody must cover outstanding reservations.
+        let reserved = Self::total_reserved(&env);
+        let balance = match Self::token(&env) {
+            Ok(token_addr) => {
+                token::Client::new(&env, &token_addr).balance(&env.current_contract_address())
+            }
+            Err(_) => 0,
+        };
+        if balance < reserved {
+            report.push(InvariantViolation::new(
+                "solvency",
+                "token.balance < total_reserved",
+            ));
+        }
+
+        // Accounting: payouts can never exceed deposits.
+        let deposited = Self::total_deposited(&env);
+        let paid = Self::total_paid(&env);
+        if paid > deposited {
+            report.push(InvariantViolation::new(
+                "accounting",
+                "total_paid > total_deposited",
+            ));
+        }
+
+        // Epoch budget: approvals in the current epoch stay within its cap.
+        if let Some(epoch) = EpochState::load(&env) {
+            if epoch.approved > epoch.available {
+                report.push(InvariantViolation::new(
+                    "epoch_budget",
+                    "epoch_approved > epoch_cap",
+                ));
+            }
+        }
+
+        // Schedule version monotonicity: the stored version must never be
+        // below the highest version recorded on an applied schedule entry.
+        let version = Self::get_schedule_version(env.clone());
+        let last_applied: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ScheduleVersionHighWater)
+            .unwrap_or(0);
+        if version < last_applied {
+            report.push(InvariantViolation::new(
+                "schedule_version",
+                "schedule_version regressed below high-water mark",
+            ));
+        }
+
+        // Pause and role consistency: required roles must be configured.
+        if Self::admin(&env).is_err() {
+            report.push(InvariantViolation::new("roles", "admin not configured"));
+        }
+        if Self::approver(&env).is_err() {
+            report.push(InvariantViolation::new("roles", "approver not configured"));
+        }
+        if Self::token(&env).is_err() {
+            report.push(InvariantViolation::new("roles", "token not configured"));
+        }
+        if Self::attester_registry(&env).is_err() {
+            report.push(InvariantViolation::new(
+                "roles",
+                "attester registry not configured",
+            ));
+        }
+        let paused: bool = env
+            .storage()
+            .instance()
+            .get(&DataKey::Paused)
+            .unwrap_or(false);
+        if paused && Self::admin(&env).is_err() {
+            report.push(InvariantViolation::new(
+                "pause",
+                "contract paused with no admin to unpause",
+            ));
+        }
+
+        report
+    }
+
     /// Accept the observed token balance as the new accounting baseline and
     /// unblock `claim`. Positive drift (e.g. a direct transfer) is credited
     /// as a deposit; negative drift (e.g. clawback) is debited. Requires
@@ -1095,6 +1195,16 @@ impl IncentivePool {
         env.storage()
             .instance()
             .set(&DataKey::ScheduleVersion, &version);
+        let high_water: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::ScheduleVersionHighWater)
+            .unwrap_or(0);
+        if version > high_water {
+            env.storage()
+                .instance()
+                .set(&DataKey::ScheduleVersionHighWater, &version);
+        }
         env.storage().persistent().remove(&key);
         env.storage().persistent().set(
             &DataKey::PayoutRate(work_type, region_class),
@@ -1850,6 +1960,53 @@ impl IncentivePool {
     }
 }
 
+/// Test-only state manipulation helpers used to break each invariant and
+/// assert that `check_invariants` reports it. Compiled only under `cfg(test)`.
+#[cfg(test)]
+impl IncentivePool {
+    pub(crate) fn test_set_total_reserved(env: &Env, value: i128) {
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalReserved, &value);
+    }
+
+    pub(crate) fn test_set_total_deposited(env: &Env, value: i128) {
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalDeposited, &value);
+    }
+
+    pub(crate) fn test_set_total_paid(env: &Env, value: i128) {
+        env.storage().instance().set(&DataKey::TotalPaid, &value);
+    }
+
+    pub(crate) fn test_set_epoch_approved(env: &Env, epoch_start: u64, value: i128) {
+        env.storage()
+            .persistent()
+            .set(&DataKey::EpochApproved(epoch_start), &value);
+    }
+
+    pub(crate) fn test_set_schedule_version(env: &Env, value: u32) {
+        env.storage()
+            .instance()
+            .set(&DataKey::ScheduleVersion, &value);
+    }
+
+    pub(crate) fn test_set_schedule_high_water(env: &Env, value: u32) {
+        env.storage()
+            .instance()
+            .set(&DataKey::ScheduleVersionHighWater, &value);
+    }
+
+    pub(crate) fn test_clear_admin(env: &Env) {
+        env.storage().instance().remove(&DataKey::Admin);
+    }
+
+    pub(crate) fn test_set_paused(env: &Env, paused: bool) {
+        env.storage().instance().set(&DataKey::Paused, &paused);
+    }
+}
+
 /// Per-call approval state shared by single and batch approval.
 struct ApprovalCtx {
     attester_registry: Address,
@@ -1922,6 +2079,10 @@ impl EpochState {
     clippy::arithmetic_side_effects
 )]
 mod test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod invariants_test;
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]

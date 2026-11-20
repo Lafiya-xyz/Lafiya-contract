@@ -48,7 +48,19 @@ def run(a):
         assert r["items"], "fixture attestation not found"
         return len(r["items"])
 
-    probes = [timed("rpc_liveness", rpc), timed("indexer_lag", indexer), timed("verify_fixture", verify)]
+    def pool_invariants():
+        # Read-only self-diagnostic view on the incentive pool; reports solvency
+        # and accounting invariants (see incentive-pool check_invariants()).
+        r = post(a.rpc_url, {
+            "jsonrpc": "2.0", "id": 1, "method": "simulateTransaction",
+            "params": {"contract_id": a.pool_contract_id, "function": "check_invariants", "args": []},
+        })
+        report = r["result"]
+        assert report.get("ok", False), report
+        return {"ok": report.get("ok"), "violations": report.get("violations", [])}
+
+    probes = [timed("rpc_liveness", rpc), timed("indexer_lag", indexer), timed("verify_fixture", verify),
+              timed("pool_invariants", pool_invariants)]
     return {"ts": int(time.time()), "location": a.location, "deployment": a.deployment, "probes": probes}
 
 
@@ -59,6 +71,7 @@ def main(argv=None):
     p.add_argument("--rpc-url", required=True)
     p.add_argument("--indexer-url", required=True)
     p.add_argument("--fixture-hash", required=True)
+    p.add_argument("--pool-contract-id", required=True)
     p.add_argument("--max-lag", type=int, default=20)
     p.add_argument("--history", required=True)
     a = p.parse_args(argv)

@@ -25,6 +25,15 @@ enum Task {
         #[command(subcommand)]
         sub: sandbox::SandboxSub,
     },
+    /// Testnet rehearsal of the incentive-pool payout flow against real testnet USDC
+    Rehearse {
+        /// Emit the machine-readable report to this path (defaults to stdout)
+        #[arg(long)]
+        report: Option<std::path::PathBuf>,
+        /// Fail the run if any rehearsal step does not match its expected outcome
+        #[arg(long)]
+        strict: bool,
+    },
     /// Build all workspace members (including lafiya-indexer and lafiya-qr)
     Build,
     /// Lint all workspace members with clippy, denying warnings
@@ -39,6 +48,7 @@ fn main() -> anyhow::Result<()> {
     match Cli::parse().task {
         Task::Docs { check } => docs::run(check),
         Task::Sandbox { sub } => sandbox::run(&sub),
+        Task::Rehearse { report, strict } => rehearse(report.as_deref(), strict),
         Task::Build => build(),
         Task::Lint => lint(),
         Task::Test => test(),
@@ -79,4 +89,30 @@ fn lint() -> anyhow::Result<()> {
 
 fn test() -> anyhow::Result<()> {
     cargo(&["test", "--workspace", "--all-features"])
+}
+
+/// Invoke the scripted testnet rehearsal and forward its machine-readable report.
+fn rehearse(report: Option<&std::path::Path>, strict: bool) -> anyhow::Result<()> {
+    let script = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("scripts")
+        .join("rehearse_incentive_pool.sh");
+    if !script.exists() {
+        anyhow::bail!("rehearsal script not found at {}", script.display());
+    }
+
+    let mut cmd = std::process::Command::new("bash");
+    cmd.arg(&script);
+    if let Some(path) = report {
+        cmd.arg("--report").arg(path);
+    }
+    if strict {
+        cmd.arg("--strict");
+    }
+
+    let status = cmd.status()?;
+    if !status.success() {
+        anyhow::bail!("testnet rehearsal failed with {status}");
+    }
+    Ok(())
 }

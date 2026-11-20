@@ -174,6 +174,127 @@ proptest! {
         );
     }
 
+    /// The on-chain satisfiability checker agrees with a brute-force oracle
+    /// across 10k random policies, including the single-point-of-failure
+    /// override behavior.
+    #[test]
+    fn policy_satisfiability_matches_brute_force_oracle(
+        keys in signer_list_strategy(),
+        weight_threshold in 0u32..=12,
+        minimum_signers in 0u32..=10,
+        role_requirements in prop::collection::vec(0u32..=4, 0..=MAX_SIGNERS),
+        allow_single_point_of_failure in any::<bool>(),
+    ) {
+        let env = Env::default();
+        let mut signers = Vec::new(&env);
+        for key in keys.iter() {
+            signers.push_back(BytesN::from_array(
+                &env,
+                &key.verifying_key().to_bytes(),
+            ));
+        }
+
+        let mut roles = Vec::new(&env);
+        for req in role_requirements.iter() {
+            roles.push_back(*req);
+        }
+
+        let policy = SignerPolicy {
+            signers: signers.clone(),
+            weight_threshold,
+            minimum_signers,
+            role_requirements: roles,
+            allow_single_point_of_failure,
+        };
+
+        let on_chain = check_policy_satisfiable(&env, &policy);
+
+        // Brute-force oracle: enumerate every subset of signers and check
+        // whether any subset satisfies all combined constraints.
+        let n = keys.len();
+        let mut satisfiable = false;
+        let mut single_point = false;
+        for mask in 0u32..(1u32 << n) {
+            let mut count = 0u32;
+            let mut weight = 0u32;
+            let mut role_counts = std::vec::Vec::new();
+            for _ in 0..role_requirements.len() {
+                role_counts.push(0u32);
+            }
+            for i in 0..n {
+                if mask & (1 << i) != 0 {
+                    count += 1;
+                    weight += 1;
+                    if i < role_requirements.len() {
+                        role_counts[i] += 1;
+                    }
+                }
+            }
+            let mut ok = count >= minimum_signers && weight >= weight_threshold;
+            for (idx, req) in role_requirements.iter().enumerate() {
+                if role_counts[idx] < *req {
+                    ok = false;
+                }
+            }
+            if ok {
+                satisfiable = true;
+                break;
+            }
+        }
+
+        // Single-point-of-failure: some single signer whose removal makes the
+        // policy unsatisfiable.
+        if satisfiable && n > 0 {
+            for removed in 0..n {
+                let mut subset_ok = false;
+                for mask in 0u32..(1u32 << n) {
+                    if mask & (1 << removed) != 0 {
+                        continue;
+                    }
+                    let mut count = 0u32;
+                    let mut weight = 0u32;
+                    let mut role_counts = std::vec::Vec::new();
+                    for _ in 0..role_requirements.len() {
+                        role_counts.push(0u32);
+                    }
+                    for i in 0..n {
+                        if mask & (1 << i) != 0 {
+                            count += 1;
+                            weight += 1;
+                            if i < role_requirements.len() {
+                                role_counts[i] += 1;
+                            }
+                        }
+                    }
+                    let mut ok = count >= minimum_signers && weight >= weight_threshold;
+                    for (idx, req) in role_requirements.iter().enumerate() {
+                        if role_counts[idx] < *req {
+                            ok = false;
+                        }
+                    }
+                    if ok {
+                        subset_ok = true;
+                        break;
+                    }
+                }
+                if !subset_ok {
+                    single_point = true;
+                    break;
+                }
+            }
+        }
+
+        let expected_ok = satisfiable && (allow_single_point_of_failure || !single_point);
+        prop_assert_eq!(
+            on_chain,
+            expected_ok,
+            "checker disagreed with oracle: satisfiable={}, single_point={}, allow={}",
+            satisfiable,
+            single_point,
+            allow_single_point_of_failure
+        );
+    }
+
     /// Out-of-order signatures always fail with BadSignatureOrder, never panic.
     #[test]
     fn out_of_order_signatures_rejected(

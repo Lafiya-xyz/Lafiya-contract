@@ -932,3 +932,115 @@ fn scheduled_approval_uses_timelocked_rate_and_records_version() {
     );
     assert_eq!(client.get_work_item_schedule_version(&id), 1);
 }
+
+// ─────────────── Invariant self-diagnostic (#700) ───────────────
+
+/// Runs `f` with the contract's own storage as the current address so tests can
+/// corrupt internal state directly (test-only state manipulation).
+fn with_contract_storage<R>(env: &Env, contract: &Address, f: impl FnOnce() -> R) -> R {
+    env.as_contract(contract, f)
+}
+
+fn assert_violation(report: &InvariantReport, expected: InvariantViolation) {
+    assert!(
+        report.violations.contains(&expected),
+        "expected violation {expected:?}, got {:?}",
+        report.violations
+    );
+}
+
+#[test]
+fn check_invariants_healthy_pool_reports_no_violations() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    client.fund(&(10 * ONE_UNIT));
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+    client.claim(&id);
+
+    let report = client.check_invariants();
+    assert!(report.violations.is_empty(), "unexpected: {:?}", report.violations);
+    let _ = env;
+}
+
+#[test]
+fn check_invariants_detects_solvency_breach() {
+    let (env, client, _registry, _admin, _approver, token, _ta) = setup();
+    client.fund(&(10 * ONE_UNIT));
+
+    // Drain the token balance out from under the pool.
+    let token_client = soroban_sdk::token::StellarAssetClient::new(&env, &token);
+    token_client.transfer(&client.address, &Address::generate(&env), &(10 * ONE_UNIT));
+
+    let report = client.check_invariants();
+    assert_violation(&report, InvariantViolation::Insolvent);
+}
+
+#[test]
+fn check_invariants_detects_paid_exceeding_deposited() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+    client.fund(&ONE_UNIT);
+
+    with_contract_storage(&env, &client.address, || {
+        let paid: i128 = env.storage().instance().get(&DataKey::TotalPaid).unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalPaid, &(paid + 2 * ONE_UNIT));
+    });
+
+    let report = client.check_invariants();
+    assert_violation(&report, InvariantViolation::PaidExceedsDeposited);
+}
+
+#[test]
+fn check_invariants_detects_approved_exceeding_cap() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+
+    with_contract_storage(&env, &client.address, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::EpochApproved, &(POOL_CAP + 1));
+    });
+
+    let report = client.check_invariants();
+    assert_violation(&report, InvariantViolation::EpochCapExceeded);
+}
+
+#[test]
+fn check_invariants_detects_schedule_version_regression() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+
+    with_contract_storage(&env, &client.address, || {
+        env.storage().instance().set(&DataKey::ScheduleVersion, &5u32);
+        env.storage().instance().set(&DataKey::LastAppliedVersion, &7u32);
+    });
+
+    let report = client.check_invariants();
+    assert_violation(&report, InvariantViolation::ScheduleVersionRegressed);
+}
+
+#[test]
+fn check_invariants_detects_pause_state_inconsistency() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+
+    with_contract_storage(&env, &client.address, || {
+        env.storage().instance().set(&DataKey::Paused, &true);
+    });
+
+    let report = client.check_invariants();
+    assert_violation(&report, InvariantViolation::PauseStateInconsistent);
+}
+
+#[test]
+fn check_invariants_detects_role_inconsistency() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+
+    with_contract_storage(&env, &client.address, || {
+        env.storage().instance().remove(&DataKey::Approver);
+    });
+
+    let report = client.check_invariants();
+    assert_violation(&report, InvariantViolation::RoleInconsistent);
+}

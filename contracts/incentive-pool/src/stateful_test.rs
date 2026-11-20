@@ -294,6 +294,14 @@ pub fn replay(ops: Vec<Op>) {
         for (i, a) in h.attesters.iter().enumerate() {
             assert_eq!(h.pool.get_attester_total_claimed(a), m.per_attester[i]);
         }
+
+        // Self-diagnostic view must agree with the model: no violations.
+        let report = h.pool.check_invariants();
+        assert!(
+            report.is_ok(),
+            "step {n} {op:?}: check_invariants reported violations: {:?}",
+            report
+        );
     }
 }
 

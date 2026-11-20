@@ -4,7 +4,10 @@
 # dedicated canary attester and verify it reads back. See
 # docs/runbooks/canary-attestations.md.
 # Required env: ATT_REGISTRY NETWORK_URL CANARY_SECRET CANARY_ADDRESS NETWORK_NAME
-# Optional env: MAX_LATENCY_SECS (default 60)
+# Optional env: MAX_LATENCY_SECS (default 60) INCENTIVE_POOL
+#
+# When INCENTIVE_POOL is set, the pool's read-only check_invariants() view is
+# also polled and the canary fails if it reports any violations.
 
 set -euo pipefail
 
@@ -38,4 +41,16 @@ if (( ELAPSED > ${MAX_LATENCY_SECS:-60} )); then
   echo "Canary slow: write+read took ${ELAPSED}s (limit ${MAX_LATENCY_SECS:-60}s)." >&2
   exit 1
 fi
+
+# Poll the incentive pool's self-diagnostic view. It is read-only, so this does
+# not mutate pool state; any reported violation fails the canary.
+if [[ -n "${INCENTIVE_POOL:-}" ]]; then
+  INVARIANTS=$(stellar-cli contract invoke "$INCENTIVE_POOL" check_invariants --network "$NETWORK_URL")
+  if grep -Eq 'violations:[[:space:]]*\[[^]]*[^[:space:]]' <<<"$INVARIANTS"; then
+    echo "Canary failed: incentive pool invariant violations reported:" >&2
+    echo "$INVARIANTS" >&2
+    exit 1
+  fi
+fi
+
 echo "Canary ok in ${ELAPSED}s ($HASH)."
