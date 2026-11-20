@@ -56,6 +56,13 @@ pub struct EventRule {
     pub kind: String,
     pub events: Vec<String>,
     pub severity: Severity,
+    /// Optional runbook link surfaced with the alert (#743).
+    #[serde(default)]
+    pub runbook: Option<String>,
+    /// Optional dedup key template; `{contract}` and `{event}` are expanded
+    /// (#743). Defaults to the rule kind.
+    #[serde(default)]
+    pub dedup_key: Option<String>,
 }
 
 /// Alert when more than `max_count` `event`s land within `window_ledgers`.
@@ -377,6 +384,9 @@ pub enum SinkConfig {
         url: String,
         #[serde(default = "default_format")]
         format: String,
+        /// HMAC-SHA256 key; when set, payloads carry `X-Lafiya-Signature` (#745).
+        #[serde(default)]
+        signing_key: Option<String>,
         #[serde(default)]
         min_severity: Option<Severity>,
     },
