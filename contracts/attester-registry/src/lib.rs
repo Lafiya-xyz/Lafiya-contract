@@ -134,6 +134,16 @@ enum DataKey {
     SessionKey(BytesN<32>),
     /// Session key pks delegated by an attester.
     AttesterSessions(Address),
+    /// Optional tier label assigned to an attester.
+    AttesterTier(Address),
+    /// Optional metadata hash assigned to an attester.
+    AttesterInfoHash(Address),
+    /// Whether an attester is currently in probation.
+    AttesterProbation(Address),
+    /// The credential issuer address recorded for an attester.
+    AttesterIssuer(Address),
+    /// A pending scheduled removal time for an attester.
+    ScheduledRemoval(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -234,6 +244,21 @@ pub enum AttesterStatusKind {
     Suspended,
     NotYetValid,
     Expired,
+}
+
+/// Effective capabilities held by an account, as returned by
+/// `get_capabilities`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CapabilitySnapshot {
+    /// Whether the account is the current admin.
+    pub is_admin: bool,
+    /// Whether the account holds the global `Registrar` role.
+    pub registrar: bool,
+    /// Whether the account holds the `Guardian` role.
+    pub guardian: bool,
+    /// The account's regional registrar assignment, if any.
+    pub regional_registrar: Option<RegionalRegistrarInfo>,
 }
 
 /// An allowlisted attester's metadata, suspension state, and computed validity
@@ -484,6 +509,28 @@ pub struct SessionKeyRevoked {
     pub schema_version: u32,
 }
 
+/// Emitted from every attester mutation with the full post-state, so indexers
+/// can rebuild the attesters table without reading storage.
+///
+/// `status` is the computed [`AttesterStatusKind`] encoded as a `Symbol`
+/// (`active`, `suspended`, `not_yet_valid`, `expired`, or `removed`). `tier`
+/// and `info_hash` are optional; `probation` reflects the probation flag.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttesterStateChanged {
+    #[topic]
+    pub attester: Address,
+    pub status: Symbol,
+    pub tier: Option<Symbol>,
+    pub region: Option<String>,
+    pub probation: bool,
+    pub info_hash: Option<BytesN<32>>,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
+}
+
 /// Emitted when an attester is suspended.
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -622,6 +669,8 @@ impl AttesterRegistry {
         Self::clear_attester_sessions(&env, &previous_attester);
         Self::record_status_change(&env, &previous_attester, false);
         Self::record_status_change(&env, &new_attester, !suspended);
+        Self::emit_state_changed(&env, &previous_attester);
+        Self::emit_state_changed(&env, &new_attester);
         AttesterRotated {
             previous_attester,
             new_attester,
@@ -654,6 +703,7 @@ impl AttesterRegistry {
             }
             Self::record_status_change(&env, &attester, false);
         }
+        Self::emit_state_changed(&env, &attester);
         AttesterRevoked {
             attester,
             seq: storage::next_event_seq(&env),
@@ -758,6 +808,21 @@ impl AttesterRegistry {
     /// Return whether `account` holds `role`.
     pub fn has_role(env: Env, role: Role, account: Address) -> bool {
         storage::has(&env, &DataKey::Role(role, account))
+    }
+
+    /// Return the effective capability snapshot for `account`: whether it is
+    /// the admin, which roles it holds, and its regional registrar assignment
+    /// (if any). Read-only; used by clients and the cross-contract property
+    /// harness to compute the effective-capability graph.
+    pub fn get_capabilities(env: Env, account: Address) -> CapabilitySnapshot {
+        let admin = Self::admin(&env).ok();
+        let is_admin = admin.as_ref() == Some(&account);
+        CapabilitySnapshot {
+            is_admin,
+            registrar: storage::has(&env, &DataKey::Role(Role::Registrar, account.clone())),
+            guardian: storage::has(&env, &DataKey::Role(Role::Guardian, account.clone())),
+            regional_registrar: storage::get(&env, &DataKey::RegionalRegistrar(account)),
+        }
     }
 
     /// Assign a delegated registrar to one region with a concurrent enrollment quota.
@@ -971,6 +1036,7 @@ impl AttesterRegistry {
             Self::record_regional_attester(&env, &registrar, &attester);
         }
         storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::emit_state_changed(&env, &attester);
         AttesterAdded {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
@@ -1048,6 +1114,7 @@ impl AttesterRegistry {
             Self::record_regional_attester(&env, &registrar, &attester);
         }
         storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::emit_state_changed(&env, &attester);
         AttesterAdded {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
@@ -1092,6 +1159,7 @@ impl AttesterRegistry {
         storage::set(&env, &DataKey::Attester(attester.clone()), &info);
         Self::set_validity(&env, &attester, valid_from, valid_until);
         storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Self::emit_state_changed(&env, &attester);
         AttesterInfoUpdated {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
@@ -1162,6 +1230,7 @@ impl AttesterRegistry {
                     Self::record_regional_attester(&env, &registrar, &attester);
                 }
                 count += 1;
+                Self::emit_state_changed(&env, &attester);
                 AttesterAdded {
                     attester: attester.clone(),
                     contract_kind: Symbol::new(&env, "attester_registry"),
@@ -1228,6 +1297,7 @@ impl AttesterRegistry {
                 Self::clear_attester_sessions(&env, &attester);
                 count = count.saturating_sub(1);
                 Self::record_status_change(&env, &attester, false);
+                Self::emit_state_changed(&env, &attester);
                 AttesterRemoved {
                     attester: attester.clone(),
                     contract_kind: Symbol::new(&env, "attester_registry"),
@@ -1268,6 +1338,7 @@ impl AttesterRegistry {
                 storage::set(&env, &DataKey::AttesterCount, &(count - 1));
             }
             Self::record_status_change(&env, &attester, false);
+            Self::emit_state_changed(&env, &attester);
             AttesterRemoved {
                 attester: attester.clone(),
                 contract_kind: Symbol::new(&env, "attester_registry"),
@@ -1369,6 +1440,7 @@ impl AttesterRegistry {
         Self::clear_attester_sessions(&env, &attester);
         Self::record_status_change(&env, &attester, false);
         probation::flag_if_active(&env, &attester, &reason);
+        Self::emit_state_changed(&env, &attester);
         AttesterSuspended {
             attester,
             reason,
@@ -1398,6 +1470,7 @@ impl AttesterRegistry {
         info.suspended_since = None;
         storage::set(&env, &DataKey::Attester(attester.clone()), &info);
         Self::record_status_change(&env, &attester, true);
+        Self::emit_state_changed(&env, &attester);
         AttesterReinstated {
             attester,
             contract_kind: Symbol::new(&env, "attester_registry"),
@@ -1971,6 +2044,53 @@ impl AttesterRegistry {
 
     fn attester_count(env: &Env) -> u32 {
         storage::get(env, &DataKey::AttesterCount).unwrap_or(0)
+    }
+
+    /// Emit the full post-state of `attester` as an `AttesterStateChanged`
+    /// event. Called from every attester mutation path so indexers can rebuild
+    /// the attesters table from events alone.
+    fn emit_state_changed(env: &Env, attester: &Address) {
+        let stored: Option<StoredAttesterInfo> =
+            storage::get(env, &DataKey::Attester(attester.clone()));
+        let (status, region, info_hash) = match stored {
+            Some(info) if !info.removed => {
+                let (valid_from, valid_until) = Self::validity(env, attester);
+                let full = AttesterInfo {
+                    license_hash: info.license_hash.clone(),
+                    region: info.region.clone(),
+                    valid_from,
+                    valid_until,
+                    suspended: info.suspended,
+                    removed: info.removed,
+                    suspension_reason: info.suspension_reason.clone(),
+                    suspended_since: info.suspended_since,
+                    trust_revoked_after: info.trust_revoked_after,
+                };
+                let status = match Self::status(&full, env.ledger().timestamp()) {
+                    AttesterStatusKind::Active => Symbol::new(env, "active"),
+                    AttesterStatusKind::Suspended => Symbol::new(env, "suspended"),
+                    AttesterStatusKind::NotYetValid => Symbol::new(env, "not_yet_valid"),
+                    AttesterStatusKind::Expired => Symbol::new(env, "expired"),
+                };
+                (status, info.region, info.license_hash)
+            }
+            _ => (Symbol::new(env, "removed"), None, None),
+        };
+        let tier: Option<Symbol> = storage::get(env, &DataKey::AttesterTier(attester.clone()));
+        let probation: bool =
+            storage::get(env, &DataKey::AttesterProbation(attester.clone())).unwrap_or(false);
+        AttesterStateChanged {
+            attester: attester.clone(),
+            status,
+            tier,
+            region,
+            probation,
+            info_hash,
+            contract_kind: Symbol::new(env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(env),
+        }
+        .publish(env);
     }
 
     fn record_status_change(env: &Env, attester: &Address, active: bool) {

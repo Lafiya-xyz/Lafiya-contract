@@ -127,6 +127,65 @@ mod pause_policy {
         },
     ];
 
+    /// FACILITY_REGISTRY pause policy: core writes are blocked, remediation is allowed
+    const FACILITY_REGISTRY_POLICY: &[EntryPoint] = &[
+        EntryPoint {
+            name: "enroll",
+            is_read_only: false,
+            should_be_blocked_when_paused: true, // blocked: core write
+        },
+        EntryPoint {
+            name: "deactivate",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: remediation
+        },
+        EntryPoint {
+            name: "reactivate",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: remediation
+        },
+        EntryPoint {
+            name: "affiliate",
+            is_read_only: false,
+            should_be_blocked_when_paused: true, // blocked: core write
+        },
+        EntryPoint {
+            name: "disaffiliate",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: remediation
+        },
+        EntryPoint {
+            name: "pause",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: remediation
+        },
+        EntryPoint {
+            name: "unpause",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: remediation
+        },
+        EntryPoint {
+            name: "propose_admin",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: administrative
+        },
+        EntryPoint {
+            name: "accept_admin",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: administrative
+        },
+        EntryPoint {
+            name: "upgrade",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: administrative
+        },
+        EntryPoint {
+            name: "migrate",
+            is_read_only: false,
+            should_be_blocked_when_paused: false, // allowed: administrative
+        },
+    ];
+
     #[test]
     fn attester_registry_pause_policy_is_documented() {
         let mut blocked_count = 0;
@@ -185,6 +244,34 @@ mod pause_policy {
     }
 
     #[test]
+    fn facility_registry_pause_policy_is_documented() {
+        let mut blocked_count = 0;
+        let mut allowed_count = 0;
+
+        for ep in FACILITY_REGISTRY_POLICY {
+            if !ep.is_read_only {
+                if ep.should_be_blocked_when_paused {
+                    blocked_count += 1;
+                } else {
+                    allowed_count += 1;
+                }
+            }
+        }
+
+        assert!(
+            blocked_count > 0 && allowed_count > 0,
+            "facility-registry pause policy must have both blocked ({}) and allowed ({}) operations",
+            blocked_count,
+            allowed_count
+        );
+
+        println!(
+            "✓ facility-registry: {} blocked, {} allowed",
+            blocked_count, allowed_count
+        );
+    }
+
+    #[test]
     fn pause_policy_matrices_are_consistent() {
         // Verify that the "core write" operations (e.g., add_attester, attest) are blocked
         let attester_add = ATTESTER_REGISTRY_POLICY
@@ -224,6 +311,58 @@ mod pause_policy {
             "revoke_attestation must be allowed during pause (remediation)"
         );
 
+        // Verify facility-registry core writes are blocked
+        let facility_enroll = FACILITY_REGISTRY_POLICY
+            .iter()
+            .find(|ep| ep.name == "enroll")
+            .expect("enroll not found in policy");
+        assert!(
+            facility_enroll.should_be_blocked_when_paused,
+            "enroll must be blocked during pause"
+        );
+
+        let facility_affiliate = FACILITY_REGISTRY_POLICY
+            .iter()
+            .find(|ep| ep.name == "affiliate")
+            .expect("affiliate not found in policy");
+        assert!(
+            facility_affiliate.should_be_blocked_when_paused,
+            "affiliate must be blocked during pause"
+        );
+
+        // Verify facility-registry remediation operations are allowed
+        for name in ["deactivate", "reactivate", "disaffiliate"] {
+            let ep = FACILITY_REGISTRY_POLICY
+                .iter()
+                .find(|ep| ep.name == name)
+                .unwrap_or_else(|| panic!("{} not found in policy", name));
+            assert!(
+                !ep.should_be_blocked_when_paused,
+                "{} must be allowed during pause (remediation)",
+                name
+            );
+        }
+
+        // Verify facility-registry governance operations are allowed
+        for name in [
+            "pause",
+            "unpause",
+            "propose_admin",
+            "accept_admin",
+            "upgrade",
+            "migrate",
+        ] {
+            let ep = FACILITY_REGISTRY_POLICY
+                .iter()
+                .find(|ep| ep.name == name)
+                .unwrap_or_else(|| panic!("{} not found in policy", name));
+            assert!(
+                !ep.should_be_blocked_when_paused,
+                "{} must be allowed during pause (administrative)",
+                name
+            );
+        }
+
         println!("✓ Pause policy matrices are consistent with remediation principle");
     }
 
@@ -238,8 +377,9 @@ mod pause_policy {
         let undocumented_count = count_undocumented_entry_points();
         assert_eq!(
             undocumented_count, 0,
-            "Found {} undocumented entry points. Update ATTESTER_REGISTRY_POLICY and/or \
-             ATTESTATION_REGISTRY_POLICY with blocked/allowed decisions. See docs/PAUSE-POLICY.md",
+            "Found {} undocumented entry points. Update ATTESTER_REGISTRY_POLICY, \
+             ATTESTATION_REGISTRY_POLICY and/or FACILITY_REGISTRY_POLICY with \
+             blocked/allowed decisions. See docs/PAUSE-POLICY.md",
             undocumented_count
         );
     }

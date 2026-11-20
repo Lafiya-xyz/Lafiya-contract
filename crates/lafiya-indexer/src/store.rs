@@ -473,6 +473,73 @@ async fn upsert_attester(
     Ok(())
 }
 
+/// Full post-state of an attester, as carried by `AttesterStateChanged`.
+///
+/// This is the authoritative source for rebuilding the `attesters` table:
+/// applying it is a single upsert that overwrites every derived column, so the
+/// indexer never needs to read contract storage to reconstruct state.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttesterState {
+    pub attester: String,
+    pub status: String,
+    pub tier: i32,
+    pub region: Option<String>,
+    pub probation: bool,
+    pub info_hash: Option<String>,
+    /// Monotonic per-attester generation; used to ignore out-of-order events.
+    pub seq: i64,
+}
+
+/// Apply a full attester post-state in one upsert.
+///
+/// The `seq` guard makes replay idempotent and order-independent: a state with
+/// a lower generation than the stored one is ignored, so re-ingesting an older
+/// page (or a reorg replay) cannot regress the row.
+async fn apply_attester_state(
+    tx: &mut Transaction<'_, Postgres>,
+    raw: &RawEvent,
+    state: &AttesterState,
+) -> Result<(), sqlx::Error> {
+    let ledger = i64::from(raw.ledger);
+    sqlx::query(
+        "INSERT INTO attesters
+             (address, status, tier, region, probation, info_hash, seq,
+              allowlisted, suspended, info_stale,
+              first_seen_ledger, updated_ledger, updated_event_id)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $11, $12)
+         ON CONFLICT (address) DO UPDATE SET
+             status = EXCLUDED.status,
+             tier = EXCLUDED.tier,
+             region = EXCLUDED.region,
+             probation = EXCLUDED.probation,
+             info_hash = EXCLUDED.info_hash,
+             seq = EXCLUDED.seq,
+             allowlisted = EXCLUDED.allowlisted,
+             suspended = EXCLUDED.suspended,
+             info_stale = EXCLUDED.info_stale,
+             updated_ledger = EXCLUDED.updated_ledger,
+             updated_event_id = EXCLUDED.updated_event_id
+         WHERE attesters.seq IS NULL OR attesters.seq <= EXCLUDED.seq",
+    )
+    .bind(&state.attester)
+    .bind(&state.status)
+    .bind(state.tier)
+    .bind(&state.region)
+    .bind(state.probation)
+    .bind(&state.info_hash)
+    .bind(state.seq)
+    // Legacy columns are derived from the authoritative status so that
+    // consumers still reading them stay consistent with the new event.
+    .bind(state.status == "active")
+    .bind(state.status == "suspended")
+    .bind(state.info_hash.is_none())
+    .bind(ledger)
+    .bind(&raw.id)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 async fn apply_event(
     tx: &mut Transaction<'_, Postgres>,
     raw: &RawEvent,
@@ -480,6 +547,32 @@ async fn apply_event(
 ) -> Result<(), sqlx::Error> {
     let ledger = i64::from(raw.ledger);
     match event {
+        // Preferred path: the event carries the full post-state, so the row is
+        // rebuilt without any storage read. Emitted from every mutation.
+        LafiyaEvent::AttesterStateChanged {
+            attester,
+            status,
+            tier,
+            region,
+            probation,
+            info_hash,
+            seq,
+        } => {
+            let state = AttesterState {
+                attester: attester.clone(),
+                status: status.clone(),
+                tier: *tier,
+                region: region.clone(),
+                probation: *probation,
+                info_hash: info_hash.clone(),
+                seq: *seq,
+            };
+            apply_attester_state(tx, raw, &state).await?;
+        }
+        // Legacy delta handlers: kept as a fallback for historical events that
+        // predate `AttesterStateChanged`. They only patch the columns they know
+        // about and leave the full-state columns untouched.
+        //
         // `add_attester` resets info but keeps an existing suspension;
         // `remove_attester` clears both.
         LafiyaEvent::AttesterAdded { attester } => {
@@ -700,6 +793,68 @@ mod tests {
         assert!(r.batch_size > 0);
         assert!(r.max_batches > 0);
         assert!(r.retention_secs > 0);
+    }
+
+    /// The full post-state upsert is idempotent and ignores stale generations,
+    /// so replaying events (or a reorg) converges on the same row.
+    #[sqlx::test]
+    async fn attester_state_upsert_is_monotonic(pool: PgPool) -> sqlx::Result<()> {
+        MIGRATOR.run(&pool).await.unwrap();
+        let raw = |id: &str, ledger: u32| RawEvent {
+            id: id.into(),
+            contract_id: "C".into(),
+            ledger,
+            ledger_closed_at: "2024-01-01T00:00:00Z".into(),
+            tx_hash: "tx".into(),
+            topic: vec![],
+            value: Value::Null,
+            in_successful_contract_call: true,
+        };
+        let mut tx = pool.begin().await?;
+        let newer = AttesterState {
+            attester: "G".into(),
+            status: "active".into(),
+            tier: 2,
+            region: Some("af-west".into()),
+            probation: false,
+            info_hash: Some("h2".into()),
+            seq: 2,
+        };
+        apply_attester_state(&mut tx, &raw("evt-2", 2), &newer).await?;
+        // A stale state (lower seq) must not regress the row.
+        let older = AttesterState {
+            status: "suspended".into(),
+            tier: 1,
+            region: None,
+            probation: true,
+            info_hash: None,
+            seq: 1,
+            ..newer.clone()
+        };
+        apply_attester_state(&mut tx, &raw("evt-1", 1), &older).await?;
+        tx.commit().await?;
+
+        let (status, tier, region, probation, info_hash, seq): (
+            String,
+            i32,
+            Option<String>,
+            bool,
+            Option<String>,
+            i64,
+        ) = sqlx::query_as(
+            "SELECT status, tier, region, probation, info_hash, seq
+             FROM attesters WHERE address = $1",
+        )
+        .bind("G")
+        .fetch_one(&pool)
+        .await?;
+        assert_eq!(status, "active");
+        assert_eq!(tier, 2);
+        assert_eq!(region.as_deref(), Some("af-west"));
+        assert!(!probation);
+        assert_eq!(info_hash.as_deref(), Some("h2"));
+        assert_eq!(seq, 2);
+        Ok(())
     }
 
     /// Pruning is idempotent and bounded: a second run over an already-pruned

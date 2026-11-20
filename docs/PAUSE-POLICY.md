@@ -34,7 +34,26 @@ When a contract is paused, core write operations are blocked to prevent new atte
 | `accept_admin` | **Allowed** | Administrative; completes emergency transfers |
 | `upgrade` | **Allowed** | Administrative; critical for deploying incident fixes |
 
+## facility-registry
+
+| Operation | Status | Reason |
+|-----------|--------|--------|
+| `register_facility` | **Blocked** | Core write; prevents new facility registrations during incident |
+| `update_facility` | **Blocked** | Core write; prevents facility metadata changes during incident |
+| `deactivate_facility` | **Allowed** | Remediation; must remain available to remove compromised facilities |
+| `get_facility` | **Allowed** | Read-only; essential for authorization and operational queries |
+| `is_paused` | **Allowed** | Read-only; needed for cross-contract pause coordination (ADR-0021) |
+| `get_admin` | **Allowed** | Read-only; monitoring and operational queries |
+| `get_schema_version` | **Allowed** | Read-only; monitoring and operational queries |
+| `pause` | **Allowed** | Remediation; must work even when already paused |
+| `unpause` | **Allowed** | Remediation; essential for recovering from incident |
+| `propose_admin` | **Allowed** | Administrative; may be needed for incident response chain-of-command |
+| `accept_admin` | **Allowed** | Administrative; completes remediation authorization flow |
+| `upgrade` | **Allowed** | Administrative; emergency hotfix deployment may be required while paused |
+| `migrate` | **Allowed** | Administrative; schema migration may be required during recovery |
+
 ## multisig-account
+=======
 
 No pause mechanism; all operations are always available. This ensures that treasury and authorization infrastructure remain operational during incidents.
 

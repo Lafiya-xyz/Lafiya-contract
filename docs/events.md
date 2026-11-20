@@ -237,6 +237,21 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `schema_version` | `u32` | data |
 | `seq` | `u64` | data |
 
+### `AttesterStateChanged`
+
+- **Prefix topics:** `attester_state_changed`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `status` | `Symbol` | data |
+| `tier` | `Symbol` | data |
+| `region` | `Symbol` | data |
+| `probation` | `bool` | data |
+| `info_hash` | `BytesN<32>` | data |
+| `seq` | `u64` | data |
+
 ### `AttesterAdded`
 
 - **Prefix topics:** `attester_added`

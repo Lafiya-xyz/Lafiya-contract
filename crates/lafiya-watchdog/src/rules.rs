@@ -60,6 +60,22 @@ pub fn default_rules() -> Vec<EventRule> {
         ),
         rule("pause_toggled", &["paused", "unpaused"], Severity::High),
         rule("bulk_revocation", &["attestation_revoked"], Severity::Info),
+        // facility-registry: governance parity with the other registries.
+        rule(
+            "facility_admin_proposed",
+            &["admin_proposed"],
+            Severity::High,
+        ),
+        rule(
+            "facility_admin_accepted",
+            &["admin_accepted"],
+            Severity::Critical,
+        ),
+        rule(
+            "facility_migrated",
+            &["migrated"],
+            Severity::Critical,
+        ),
         // incentive-pool: approval authority and blast-radius controls.
         rule(
             "approver_reconfigured",
@@ -187,6 +203,23 @@ impl Engine {
                 ));
             }
             self.expected_wasm.insert(e.contract.clone(), hash);
+        }
+
+        // facility-registry emits `migrated` after an upgrade; track the
+        // expected wasm hash from its topic so a silent swap is still caught.
+        if e.name == "migrated" {
+            if let Some(hash) = e.topics.first() {
+                let hash = hash.to_ascii_lowercase();
+                if !self.known_wasm.contains(&hash) {
+                    alerts.push(self.alert(
+                        UNKNOWN_WASM_UPGRADE,
+                        Severity::Critical,
+                        format!("migration to wasm {hash} which is NOT in any release manifest"),
+                        e,
+                    ));
+                }
+                self.expected_wasm.insert(e.contract.clone(), hash);
+            }
         }
 
         if self.alert_on_dispute && e.name == "attestation_disputed" {
@@ -614,5 +647,36 @@ mod tests {
         assert!(Engine::new(&c)
             .evaluate(&ev("attestation_disputed", 1, &[]))
             .is_empty());
+    }
+
+    #[test]
+    fn facility_registry_governance_events_are_alerted() {
+        let mut e = Engine::new(&cfg());
+        assert_eq!(
+            kinds(&e.evaluate(&ev("admin_proposed", 1, &["GOLD", "GNEW"]))),
+            vec![("facility_admin_proposed", Severity::High)]
+        );
+        assert_eq!(
+            kinds(&e.evaluate(&ev("admin_accepted", 2, &["GNEW"]))),
+            vec![("facility_admin_accepted", Severity::Critical)]
+        );
+        assert_eq!(
+            kinds(&e.evaluate(&ev("paused", 3, &[]))),
+            vec![("pause_toggled", Severity::High)]
+        );
+        assert_eq!(
+            kinds(&e.evaluate(&ev("unpaused", 4, &[]))),
+            vec![("pause_toggled", Severity::High)]
+        );
+    }
+
+    #[test]
+    fn facility_registry_migration_tracks_expected_wasm() {
+        let mut e = Engine::new(&cfg());
+        let a = e.evaluate(&ev("migrated", 1, &[&"bb".repeat(32)]));
+        assert!(kinds(&a).contains(&(UNKNOWN_WASM_UPGRADE, Severity::Critical)));
+        assert!(e.observe_wasm("CREG", &"bb".repeat(32), 2).is_none());
+        let a = e.observe_wasm("CREG", &"cc".repeat(32), 3).unwrap();
+        assert_eq!(a.kind, WASM_CHANGED_WITHOUT_EVENT);
     }
 }

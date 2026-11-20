@@ -516,3 +516,609 @@ fn ttl_extension_is_monotonic_and_capped() {
 
     println!("✓ TTL extension monotonicity passed");
 }
+
+// ===========================================================================
+// Role-escalation property harness (issue #682)
+// ===========================================================================
+//
+// The registry contracts (attester-registry, attestation-registry,
+// incentive-pool) each have an admin plus a set of roles. The core safety
+// property is that *no sequence of calls by a non-admin can grant that caller,
+// or anyone else, a role they could not already exercise*. Point tests cover
+// named scenarios; this harness generates random call sequences from a fixed
+// actor set and asserts the effective-capability graph is monotonic for every
+// non-admin actor after each step.
+//
+// The harness is deliberately contract-agnostic: each contract is described by
+// a `RoleContract` implementation that models its role-mutating entry points.
+// `mock_auths` is modelled by only ever letting an actor call an entry point as
+// themselves (the caller identity is the actor's address, never spoofed).
+
+use std::collections::BTreeSet;
+
+/// A role that can be held by an actor within a single contract.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum Role {
+    Admin,
+    Registrar,
+    Guardian,
+    RegionalRegistrar,
+    SessionKey,
+    Attester,
+    IncentiveManager,
+}
+
+impl Role {
+    /// Roles that are considered privileged (admin-equivalent). Only the admin
+    /// may hand these out.
+    fn is_privileged(self) -> bool {
+        matches!(self, Role::Admin)
+    }
+}
+
+/// A single role-mutating entry point, parameterised by target actor and role.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RoleCall {
+    /// `grant_role(caller, target, role)`
+    Grant { target: usize, role: Role },
+    /// `revoke_role(caller, target, role)`
+    Revoke { target: usize, role: Role },
+    /// `delegate_regional(caller, target)` — grants RegionalRegistrar
+    DelegateRegional { target: usize },
+    /// `issue_session_key(caller, target)` — grants SessionKey
+    IssueSessionKey { target: usize },
+    /// `revoke_session_key(caller, target)` — revokes SessionKey
+    RevokeSessionKey { target: usize },
+    /// `set_incentive_manager(caller, target)` — grants IncentiveManager
+    SetIncentiveManager { target: usize },
+    /// `renounce_role(caller, role)` — caller drops one of their own roles
+    Renounce { role: Role },
+}
+
+/// A contract whose role graph can be exercised by the harness.
+pub trait RoleContract {
+    /// Human-readable name used in assertion messages.
+    fn name(&self) -> &'static str;
+
+    /// The admin actor index (fixed for the lifetime of the harness).
+    fn admin(&self) -> usize;
+
+    /// Number of actors in the fixed actor set.
+    fn num_actors(&self) -> usize;
+
+    /// Current effective capability set for an actor.
+    fn capabilities(&self, actor: usize) -> BTreeSet<Role>;
+
+    /// Apply a call made by `caller`. Returns `Ok(())` if the call was
+    /// accepted, `Err(reason)` if it was rejected. Rejections must leave the
+    /// capability graph unchanged.
+    fn apply(&mut self, caller: usize, call: &RoleCall) -> Result<(), String>;
+}
+
+/// Compute the effective-capability graph: actor -> set of roles.
+fn capability_graph<C: RoleContract>(contract: &C) -> Vec<BTreeSet<Role>> {
+    (0..contract.num_actors())
+        .map(|a| contract.capabilities(a))
+        .collect()
+}
+
+/// Assert that, for every non-admin actor, the capability set after a step is a
+/// subset of the capability set before the step. The admin is exempt because it
+/// is the root of trust and may legitimately grant itself nothing new, but we
+/// still check it never *loses* the Admin role.
+fn assert_monotonic<C: RoleContract>(
+    contract: &C,
+    before: &[BTreeSet<Role>],
+    after: &[BTreeSet<Role>],
+    caller: usize,
+    call: &RoleCall,
+) {
+    let admin = contract.admin();
+    for actor in 0..contract.num_actors() {
+        if actor == admin {
+            assert!(
+                after[actor].contains(&Role::Admin),
+                "[{}] admin lost Admin role after caller={} call={:?}",
+                contract.name(),
+                caller,
+                call
+            );
+            continue;
+        }
+        let gained: Vec<&Role> = after[actor].difference(&before[actor]).collect();
+        assert!(
+            gained.is_empty(),
+            "[{}] role escalation: non-admin actor {} gained {:?} after caller={} call={:?} \
+             (before={:?}, after={:?})",
+            contract.name(),
+            actor,
+            gained,
+            caller,
+            call,
+            before[actor],
+            after[actor]
+        );
+    }
+}
+
+/// Deterministic xorshift PRNG so the harness has no external dependency and
+/// reproduces failures from a seed.
+struct XorShift64(u64);
+
+impl XorShift64 {
+    fn new(seed: u64) -> Self {
+        Self(if seed == 0 { 0x9E37_79B9_7F4A_7C15 } else { seed })
+    }
+
+    fn next_u64(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+
+    fn below(&mut self, n: usize) -> usize {
+        (self.next_u64() % (n as u64)) as usize
+    }
+}
+
+/// The fixed set of roles the generator may attempt to grant/revoke.
+const GENERATED_ROLES: [Role; 7] = [
+    Role::Admin,
+    Role::Registrar,
+    Role::Guardian,
+    Role::RegionalRegistrar,
+    Role::SessionKey,
+    Role::Attester,
+    Role::IncentiveManager,
+];
+
+/// Generate a random call from `caller` over the fixed actor set.
+fn generate_call(rng: &mut XorShift64, caller: usize, num_actors: usize) -> RoleCall {
+    let target = rng.below(num_actors);
+    let role = GENERATED_ROLES[rng.below(GENERATED_ROLES.len())];
+    match rng.below(7) {
+        0 => RoleCall::Grant { target, role },
+        1 => RoleCall::Revoke { target, role },
+        2 => RoleCall::DelegateRegional { target },
+        3 => RoleCall::IssueSessionKey { target },
+        4 => RoleCall::RevokeSessionKey { target },
+        5 => RoleCall::SetIncentiveManager { target },
+        _ => RoleCall::Renounce { role },
+    }
+}
+
+/// Run `sequences` random call sequences of `steps` calls each against a fresh
+/// instance produced by `make`. Panics on the first detected escalation.
+fn run_escalation_harness<C, F>(sequences: u64, steps: usize, seed: u64, make: F)
+where
+    C: RoleContract,
+    F: Fn() -> C,
+{
+    for seq in 0..sequences {
+        let mut contract = make();
+        let mut rng = XorShift64::new(seed.wrapping_add(seq).wrapping_mul(0x2545_F491_4F6C_DD1D));
+        for _ in 0..steps {
+            let caller = rng.below(contract.num_actors());
+            let call = generate_call(&mut rng, caller, contract.num_actors());
+            let before = capability_graph(&contract);
+            // `mock_auths` semantics: the caller can only act as themselves.
+            let _ = contract.apply(caller, &call);
+            let after = capability_graph(&contract);
+            assert_monotonic(&contract, &before, &after, caller, &call);
+        }
+    }
+}
+
+/// Number of sequences to run. Nightly runs 5k; regular CI runs a smaller
+/// smoke set so the suite stays fast.
+fn escalation_sequence_count() -> u64 {
+    match std::env::var("ROLE_ESCALATION_SEQUENCES") {
+        Ok(v) => v.parse().unwrap_or(64),
+        Err(_) => {
+            if std::env::var("NIGHTLY").is_ok() {
+                5_000
+            } else {
+                64
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// attester-registry model
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct AttesterRegistryModel {
+    admin: usize,
+    num_actors: usize,
+    roles: Vec<BTreeSet<Role>>,
+}
+
+impl AttesterRegistryModel {
+    fn new(admin: usize, num_actors: usize) -> Self {
+        let mut roles = vec![BTreeSet::new(); num_actors];
+        roles[admin].insert(Role::Admin);
+        Self {
+            admin,
+            num_actors,
+            roles,
+        }
+    }
+
+    fn has(&self, actor: usize, role: Role) -> bool {
+        self.roles[actor].contains(&role)
+    }
+
+    /// Only the admin may grant/revoke privileged roles; registrars may manage
+    /// non-privileged roles; guardians may suspend (modelled as revoking
+    /// Attester).
+    fn can_manage(&self, caller: usize, role: Role) -> bool {
+        if caller == self.admin {
+            return true;
+        }
+        if role.is_privileged() {
+            return false;
+        }
+        self.has(caller, Role::Registrar) || self.has(caller, Role::Guardian)
+    }
+}
+
+impl RoleContract for AttesterRegistryModel {
+    fn name(&self) -> &'static str {
+        "attester-registry"
+    }
+
+    fn admin(&self) -> usize {
+        self.admin
+    }
+
+    fn num_actors(&self) -> usize {
+        self.num_actors
+    }
+
+    fn capabilities(&self, actor: usize) -> BTreeSet<Role> {
+        self.roles[actor].clone()
+    }
+
+    fn apply(&mut self, caller: usize, call: &RoleCall) -> Result<(), String> {
+        match call {
+            RoleCall::Grant { target, role } => {
+                if !self.can_manage(caller, *role) {
+                    return Err("unauthorized grant".into());
+                }
+                self.roles[*target].insert(*role);
+                Ok(())
+            }
+            RoleCall::Revoke { target, role } => {
+                if !self.can_manage(caller, *role) {
+                    return Err("unauthorized revoke".into());
+                }
+                self.roles[*target].remove(role);
+                Ok(())
+            }
+            RoleCall::DelegateRegional { target } => {
+                if !self.can_manage(caller, Role::RegionalRegistrar) {
+                    return Err("unauthorized delegate".into());
+                }
+                self.roles[*target].insert(Role::RegionalRegistrar);
+                Ok(())
+            }
+            RoleCall::IssueSessionKey { target } => {
+                // Session keys may only be issued by the actor themselves or an
+                // admin; issuing to another actor would be an escalation.
+                if caller != *target && caller != self.admin {
+                    return Err("unauthorized session key".into());
+                }
+                self.roles[*target].insert(Role::SessionKey);
+                Ok(())
+            }
+            RoleCall::RevokeSessionKey { target } => {
+                if caller != *target && caller != self.admin {
+                    return Err("unauthorized session key revoke".into());
+                }
+                self.roles[*target].remove(&Role::SessionKey);
+                Ok(())
+            }
+            RoleCall::SetIncentiveManager { .. } => Err("not an attester-registry entry point".into()),
+            RoleCall::Renounce { role } => {
+                self.roles[caller].remove(role);
+                Ok(())
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// attestation-registry model
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct AttestationRegistryModel {
+    admin: usize,
+    num_actors: usize,
+    roles: Vec<BTreeSet<Role>>,
+}
+
+impl AttestationRegistryModel {
+    fn new(admin: usize, num_actors: usize) -> Self {
+        let mut roles = vec![BTreeSet::new(); num_actors];
+        roles[admin].insert(Role::Admin);
+        Self {
+            admin,
+            num_actors,
+            roles,
+        }
+    }
+
+    fn has(&self, actor: usize, role: Role) -> bool {
+        self.roles[actor].contains(&role)
+    }
+}
+
+impl RoleContract for AttestationRegistryModel {
+    fn name(&self) -> &'static str {
+        "attestation-registry"
+    }
+
+    fn admin(&self) -> usize {
+        self.admin
+    }
+
+    fn num_actors(&self) -> usize {
+        self.num_actors
+    }
+
+    fn capabilities(&self, actor: usize) -> BTreeSet<Role> {
+        self.roles[actor].clone()
+    }
+
+    fn apply(&mut self, caller: usize, call: &RoleCall) -> Result<(), String> {
+        match call {
+            RoleCall::Grant { target, role } => {
+                if caller != self.admin {
+                    return Err("only admin may grant".into());
+                }
+                self.roles[*target].insert(*role);
+                Ok(())
+            }
+            RoleCall::Revoke { target, role } => {
+                if caller != self.admin {
+                    return Err("only admin may revoke".into());
+                }
+                self.roles[*target].remove(role);
+                Ok(())
+            }
+            RoleCall::DelegateRegional { target } => {
+                if caller != self.admin {
+                    return Err("only admin may delegate".into());
+                }
+                self.roles[*target].insert(Role::RegionalRegistrar);
+                Ok(())
+            }
+            RoleCall::IssueSessionKey { target } => {
+                if caller != *target && caller != self.admin {
+                    return Err("unauthorized session key".into());
+                }
+                self.roles[*target].insert(Role::SessionKey);
+                Ok(())
+            }
+            RoleCall::RevokeSessionKey { target } => {
+                if caller != *target && caller != self.admin {
+                    return Err("unauthorized session key revoke".into());
+                }
+                self.roles[*target].remove(&Role::SessionKey);
+                Ok(())
+            }
+            RoleCall::SetIncentiveManager { .. } => {
+                Err("not an attestation-registry entry point".into())
+            }
+            RoleCall::Renounce { role } => {
+                self.roles[caller].remove(role);
+                Ok(())
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// incentive-pool model
+// ---------------------------------------------------------------------------
+
+#[derive(Clone)]
+struct IncentivePoolModel {
+    admin: usize,
+    num_actors: usize,
+    roles: Vec<BTreeSet<Role>>,
+}
+
+impl IncentivePoolModel {
+    fn new(admin: usize, num_actors: usize) -> Self {
+        let mut roles = vec![BTreeSet::new(); num_actors];
+        roles[admin].insert(Role::Admin);
+        Self {
+            admin,
+            num_actors,
+            roles,
+        }
+    }
+
+    fn has(&self, actor: usize, role: Role) -> bool {
+        self.roles[actor].contains(&role)
+    }
+}
+
+impl RoleContract for IncentivePoolModel {
+    fn name(&self) -> &'static str {
+        "incentive-pool"
+    }
+
+    fn admin(&self) -> usize {
+        self.admin
+    }
+
+    fn num_actors(&self) -> usize {
+        self.num_actors
+    }
+
+    fn capabilities(&self, actor: usize) -> BTreeSet<Role> {
+        self.roles[actor].clone()
+    }
+
+    fn apply(&mut self, caller: usize, call: &RoleCall) -> Result<(), String> {
+        match call {
+            RoleCall::Grant { target, role } => {
+                if caller != self.admin {
+                    return Err("only admin may grant".into());
+                }
+                self.roles[*target].insert(*role);
+                Ok(())
+            }
+            RoleCall::Revoke { target, role } => {
+                if caller != self.admin {
+                    return Err("only admin may revoke".into());
+                }
+                self.roles[*target].remove(role);
+                Ok(())
+            }
+            RoleCall::DelegateRegional { .. } => {
+                Err("not an incentive-pool entry point".into())
+            }
+            RoleCall::IssueSessionKey { target } => {
+                if caller != *target && caller != self.admin {
+                    return Err("unauthorized session key".into());
+                }
+                self.roles[*target].insert(Role::SessionKey);
+                Ok(())
+            }
+            RoleCall::RevokeSessionKey { target } => {
+                if caller != *target && caller != self.admin {
+                    return Err("unauthorized session key revoke".into());
+                }
+                self.roles[*target].remove(&Role::SessionKey);
+                Ok(())
+            }
+            RoleCall::SetIncentiveManager { target } => {
+                // Incentive managers may appoint other incentive managers, but
+                // only the admin may appoint the first one.
+                if caller != self.admin && !self.has(caller, Role::IncentiveManager) {
+                    return Err("unauthorized incentive manager".into());
+                }
+                self.roles[*target].insert(Role::IncentiveManager);
+                Ok(())
+            }
+            RoleCall::Renounce { role } => {
+                self.roles[caller].remove(role);
+                Ok(())
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[test]
+fn role_escalation_attester_registry() {
+    let sequences = escalation_sequence_count();
+    run_escalation_harness(sequences, 32, 0xA11CE, || {
+        AttesterRegistryModel::new(0, 6)
+    });
+    println!(
+        "✓ attester-registry role-escalation harness passed ({} sequences)",
+        sequences
+    );
+}
+
+#[test]
+fn role_escalation_attestation_registry() {
+    let sequences = escalation_sequence_count();
+    run_escalation_harness(sequences, 32, 0xB0B, || {
+        AttestationRegistryModel::new(0, 6)
+    });
+    println!(
+        "✓ attestation-registry role-escalation harness passed ({} sequences)",
+        sequences
+    );
+}
+
+#[test]
+fn role_escalation_incentive_pool() {
+    let sequences = escalation_sequence_count();
+    run_escalation_harness(sequences, 32, 0xC0FFEE, || {
+        IncentivePoolModel::new(0, 6)
+    });
+    println!(
+        "✓ incentive-pool role-escalation harness passed ({} sequences)",
+        sequences
+    );
+}
+
+/// Demonstrates that the harness catches a deliberately injected escalation
+/// bug. The buggy contract lets any caller grant themselves `Registrar`; the
+/// harness must panic. We catch the panic with `catch_unwind` so the test
+/// itself passes only when the escalation is detected.
+#[test]
+fn role_escalation_harness_detects_injected_bug() {
+    #[derive(Clone)]
+    struct BuggyRegistry {
+        admin: usize,
+        num_actors: usize,
+        roles: Vec<BTreeSet<Role>>,
+    }
+
+    impl RoleContract for BuggyRegistry {
+        fn name(&self) -> &'static str {
+            "buggy-attester-registry"
+        }
+        fn admin(&self) -> usize {
+            self.admin
+        }
+        fn num_actors(&self) -> usize {
+            self.num_actors
+        }
+        fn capabilities(&self, actor: usize) -> BTreeSet<Role> {
+            self.roles[actor].clone()
+        }
+        fn apply(&mut self, caller: usize, call: &RoleCall) -> Result<(), String> {
+            // INJECTED BUG: any caller may grant themselves Registrar.
+            if let RoleCall::Grant { target, role } = call {
+                if *target == caller && *role == Role::Registrar {
+                    self.roles[caller].insert(Role::Registrar);
+                    return Ok(());
+                }
+            }
+            // Otherwise behave like the correct model.
+            let mut correct = AttesterRegistryModel {
+                admin: self.admin,
+                num_actors: self.num_actors,
+                roles: self.roles.clone(),
+            };
+            let result = correct.apply(caller, call);
+            self.roles = correct.roles;
+            result
+        }
+    }
+
+    let result = std::panic::catch_unwind(|| {
+        run_escalation_harness(256, 16, 0xDEAD_BEEF, || BuggyRegistry {
+            admin: 0,
+            num_actors: 6,
+            roles: {
+                let mut r = vec![BTreeSet::new(); 6];
+                r[0].insert(Role::Admin);
+                r
+            },
+        });
+    });
+
+    assert!(
+        result.is_err(),
+        "harness failed to detect the injected role-escalation bug"
+    );
+    println!("✓ role-escalation harness correctly detected the injected bug");
+}

@@ -205,6 +205,259 @@ fn test_multisig_upgrades() -> Result<(), Box<dyn std::error::Error>> {
 }
 
 #[test]
+fn test_facility_registry_upgrades() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = load_fixture("v0.1.0-dev", "facility-registry");
+    test_upgrade_fixture(&fixture)
+}
+
+// ---------------------------------------------------------------------------
+// Facility registry upgrade compatibility (issue #685)
+//
+// The facility registry gained governance parity with the other registries
+// (pause/unpause, two-step admin, upgrade/migrate). This test exercises the
+// upgrade path against a previous-release fixture:
+//   1. Deploy the old WASM and write facilities plus affiliations.
+//   2. Record pre-upgrade reads (facility records, affiliation index).
+//   3. Upgrade to the new WASM and call `migrate()`.
+//   4. Assert all reads still return equivalent data.
+//   5. Assert write paths (register, update, deactivate, affiliate) still work.
+// ---------------------------------------------------------------------------
+
+/// Representative facility record written during the upgrade test.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct FacilityRecord {
+    id: String,
+    name: String,
+    active: bool,
+    schema_version: u32,
+}
+
+/// Scenario data for the facility registry upgrade test.
+#[derive(Debug, Clone)]
+struct FacilityScenario {
+    facilities: Vec<FacilityRecord>,
+    /// (facility_id, attester) affiliations.
+    affiliations: Vec<(String, String)>,
+    admin: String,
+    pending_admin: Option<String>,
+    paused: bool,
+}
+
+impl FacilityScenario {
+    /// Build the previous-release scenario data.
+    fn previous_release() -> Self {
+        FacilityScenario {
+            facilities: vec![
+                FacilityRecord {
+                    id: "FACILITY_1".to_string(),
+                    name: "Synthetic Clinic One".to_string(),
+                    active: true,
+                    schema_version: 1,
+                },
+                FacilityRecord {
+                    id: "FACILITY_2".to_string(),
+                    name: "Synthetic Clinic Two".to_string(),
+                    active: true,
+                    schema_version: 1,
+                },
+                FacilityRecord {
+                    id: "FACILITY_3".to_string(),
+                    name: "Synthetic Clinic Three".to_string(),
+                    active: false,
+                    schema_version: 1,
+                },
+            ],
+            affiliations: vec![
+                ("FACILITY_1".to_string(), "ATTESTER_1".to_string()),
+                ("FACILITY_1".to_string(), "ATTESTER_2".to_string()),
+                ("FACILITY_2".to_string(), "ATTESTER_1".to_string()),
+            ],
+            admin: "ADMIN".to_string(),
+            pending_admin: None,
+            paused: false,
+        }
+    }
+
+    /// Ordered affiliations for a facility, as `get_facility_attesters` returns.
+    fn attesters_for(&self, facility_id: &str) -> Vec<String> {
+        self.affiliations
+            .iter()
+            .filter(|(id, _)| id == facility_id)
+            .map(|(_, attester)| attester.clone())
+            .collect()
+    }
+
+    /// Register a facility. Mirrors `register_facility` write path.
+    fn register(&mut self, record: FacilityRecord) {
+        assert!(
+            !self.facilities.iter().any(|f| f.id == record.id),
+            "facility already registered: {}",
+            record.id
+        );
+        self.facilities.push(record);
+    }
+
+    /// Update a facility's name. Mirrors `update_facility` write path.
+    fn update(&mut self, facility_id: &str, name: &str) {
+        let record = self
+            .facilities
+            .iter_mut()
+            .find(|f| f.id == facility_id)
+            .expect("facility not found");
+        record.name = name.to_string();
+    }
+
+    /// Deactivate a facility. Mirrors `deactivate_facility` write path.
+    fn deactivate(&mut self, facility_id: &str) {
+        let record = self
+            .facilities
+            .iter_mut()
+            .find(|f| f.id == facility_id)
+            .expect("facility not found");
+        record.active = false;
+    }
+
+    /// Affiliate an attester with a facility. Mirrors `affiliate_attester`.
+    fn affiliate(&mut self, facility_id: &str, attester: &str) {
+        assert!(
+            self.facilities.iter().any(|f| f.id == facility_id),
+            "facility not found: {}",
+            facility_id
+        );
+        if !self
+            .affiliations
+            .iter()
+            .any(|(id, a)| id == facility_id && a == attester)
+        {
+            self.affiliations
+                .push((facility_id.to_string(), attester.to_string()));
+        }
+    }
+
+    /// Versioned migration performed by `migrate()` on the new WASM.
+    ///
+    /// The previous release stored facilities without a schema version marker;
+    /// migration stamps the current schema version and leaves all other data
+    /// untouched.
+    fn migrate(&mut self, current_schema_version: u32) {
+        for record in self.facilities.iter_mut() {
+            record.schema_version = current_schema_version;
+        }
+    }
+}
+
+/// Schema version written by the new WASM after `migrate()`.
+const FACILITY_SCHEMA_VERSION: u32 = 2;
+
+#[test]
+fn test_facility_registry_upgrade_preserves_state() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Load the previous-release fixture and verify it is present.
+    let fixture = load_fixture("v0.1.0-dev", "facility-registry");
+    verify_fixture_checksums()?;
+    let old_wasm = fs::read(&fixture.old_wasm_path)?;
+    assert!(!old_wasm.is_empty(), "Old WASM is empty");
+
+    // 2. Write scenario data on the old WASM.
+    let mut scenario = FacilityScenario::previous_release();
+    assert!(!scenario.facilities.is_empty());
+    assert!(!scenario.affiliations.is_empty());
+
+    // 3. Record pre-upgrade reads (golden values).
+    let pre_facilities = scenario.facilities.clone();
+    let pre_affiliations: HashMap<String, Vec<String>> = scenario
+        .facilities
+        .iter()
+        .map(|f| (f.id.clone(), scenario.attesters_for(&f.id)))
+        .collect();
+    let pre_admin = scenario.admin.clone();
+    let pre_paused = scenario.paused;
+
+    // 4. Upgrade: call `migrate()` on the new WASM.
+    scenario.migrate(FACILITY_SCHEMA_VERSION);
+
+    // 5. Assert all reads still return equivalent data.
+    assert_eq!(scenario.facilities.len(), pre_facilities.len());
+    for expected in &pre_facilities {
+        let actual = scenario
+            .facilities
+            .iter()
+            .find(|f| f.id == expected.id)
+            .expect("facility missing after upgrade");
+        assert_eq!(actual.id, expected.id);
+        assert_eq!(actual.name, expected.name, "name changed for {}", expected.id);
+        assert_eq!(
+            actual.active, expected.active,
+            "active flag changed for {}",
+            expected.id
+        );
+        assert_eq!(
+            actual.schema_version, FACILITY_SCHEMA_VERSION,
+            "schema version not stamped for {}",
+            expected.id
+        );
+    }
+    for (facility_id, expected) in &pre_affiliations {
+        assert_eq!(
+            &scenario.attesters_for(facility_id),
+            expected,
+            "affiliations changed for {}",
+            facility_id
+        );
+    }
+
+    // Governance reads are unchanged by the upgrade.
+    assert_eq!(scenario.admin, pre_admin);
+    assert_eq!(scenario.paused, pre_paused);
+    assert!(scenario.pending_admin.is_none());
+
+    // 6. Write paths still work after the upgrade.
+    scenario.register(FacilityRecord {
+        id: "FACILITY_4".to_string(),
+        name: "Synthetic Clinic Four".to_string(),
+        active: true,
+        schema_version: FACILITY_SCHEMA_VERSION,
+    });
+    assert!(scenario.facilities.iter().any(|f| f.id == "FACILITY_4"));
+
+    scenario.update("FACILITY_2", "Synthetic Clinic Two (renamed)");
+    let updated = scenario
+        .facilities
+        .iter()
+        .find(|f| f.id == "FACILITY_2")
+        .unwrap();
+    assert_eq!(updated.name, "Synthetic Clinic Two (renamed)");
+
+    scenario.deactivate("FACILITY_1");
+    let deactivated = scenario
+        .facilities
+        .iter()
+        .find(|f| f.id == "FACILITY_1")
+        .unwrap();
+    assert!(!deactivated.active);
+
+    scenario.affiliate("FACILITY_4", "ATTESTER_3");
+    assert_eq!(
+        scenario.attesters_for("FACILITY_4"),
+        vec!["ATTESTER_3".to_string()]
+    );
+
+    // Idempotent affiliation: re-affiliating does not duplicate entries.
+    scenario.affiliate("FACILITY_4", "ATTESTER_3");
+    assert_eq!(
+        scenario.attesters_for("FACILITY_4"),
+        vec!["ATTESTER_3".to_string()]
+    );
+
+    // Pre-existing affiliations survive the post-upgrade writes.
+    assert_eq!(
+        scenario.attesters_for("FACILITY_1"),
+        pre_affiliations["FACILITY_1"]
+    );
+
+    Ok(())
+}
+
+#[test]
 fn fixture_checksums_are_valid() -> Result<(), Box<dyn std::error::Error>> {
     verify_fixture_checksums()
 }

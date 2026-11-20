@@ -37,6 +37,18 @@ CREATE TRIGGER raw_events_append_only
 -- suspension flag independently (`add_attester` does not clear a
 -- suspension; `remove_attester` does), so both flags are tracked and the
 -- status is derived from them.
+--
+-- The columns below mirror the full post-state carried by the
+-- `AttesterStateChanged` event so the indexer can rebuild this table purely
+-- from events (no storage reads):
+--   * status      <- derived from allowlisted/suspended (see generated column)
+--   * tier        <- `tier`
+--   * region      <- `region`
+--   * probation   <- `probation`
+--   * info_hash   <- `info_hash` (metadata hash; supersedes `license_hash`)
+--   * seq         <- `seq` (monotonic per-attester generation)
+-- `license_hash` is retained for backward compatibility with the legacy
+-- `AttesterInfoUpdated` path; `info_hash` is the canonical metadata hash.
 CREATE TABLE attesters (
     address           TEXT PRIMARY KEY,
     allowlisted       BOOLEAN NOT NULL,
@@ -46,7 +58,13 @@ CREATE TABLE attesters (
              WHEN suspended THEN 'suspended'
              ELSE 'active' END
     ) STORED,
+    tier              TEXT,
     region            TEXT,
+    probation         BOOLEAN NOT NULL DEFAULT false,
+    info_hash         TEXT,
+    -- Monotonic per-attester generation from `AttesterStateChanged.seq`.
+    -- Used to order/ignore stale events and to detect gaps during replay.
+    seq               BIGINT NOT NULL DEFAULT 0,
     license_hash      TEXT,
     -- Set by `AttesterInfoUpdated` (which carries no data); cleared once the
     -- reconciler has read the new info from chain.
@@ -57,6 +75,8 @@ CREATE TABLE attesters (
 );
 CREATE INDEX attesters_region_status_idx ON attesters (region, status);
 CREATE INDEX attesters_status_idx ON attesters (status);
+CREATE INDEX attesters_tier_idx ON attesters (tier);
+CREATE INDEX attesters_info_hash_idx ON attesters (info_hash);
 
 -- One row per `AttestationRecorded`. The current attestation for a record is
 -- the latest row whose `revoked_event_id` is NULL.
