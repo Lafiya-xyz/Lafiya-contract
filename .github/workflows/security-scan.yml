@@ -20,6 +20,46 @@ jobs:
           persist-credentials: false
       - run: python3 scripts/ci/check_secrets_inventory.py
 
+  workflow-static-analysis:
+    name: Workflow static analysis (actionlint + zizmor)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    env:
+      ACTIONLINT_VERSION: 1.7.7
+      ZIZMOR_VERSION: 1.5.2
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Enforce pull_request_target allowlist
+        run: python3 scripts/ci/check_workflow_policy.py
+      - name: Install actionlint (pinned + checksum)
+        env:
+          AL_URL: https://github.com/rhysd/actionlint/releases/download/v1.7.7/actionlint_1.7.7_linux_amd64.tar.gz
+          AL_SHA256: 023070a287cd8cccd71515fedc843f1985bf96c436b7effaedf6ffb9f8b2e3ef
+        run: |
+          curl -fsSL "$AL_URL" -o actionlint.tar.gz
+          echo "$AL_SHA256  actionlint.tar.gz" | sha256sum -c -
+          tar -xzf actionlint.tar.gz actionlint
+      - name: actionlint (SARIF)
+        run: ./actionlint -format sarif .github/workflows/*.yml > actionlint.sarif
+      - name: Install zizmor (pinned)
+        run: pip install "zizmor==${ZIZMOR_VERSION}"
+      - name: zizmor (SARIF)
+        run: zizmor --format sarif .github/workflows > zizmor.sarif
+      - if: always()
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: actionlint.sarif
+          category: actionlint
+      - if: always()
+        uses: github/codeql-action/upload-sarif@2892aa5e19bbd11bc0cff5427e3b750a04d9e3c2 # v4.38.2
+        with:
+          sarif_file: zizmor.sarif
+          category: zizmor
+
   codeql:
     name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
