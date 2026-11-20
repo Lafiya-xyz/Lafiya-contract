@@ -78,6 +78,34 @@ pub enum LafiyaEvent {
     PoolUnpaused {
         by: String,
     },
+    /// A facility was enrolled (facility-registry).
+    FacilityEnrolled {
+        facility_id: u64,
+        license_hash: String,
+        mutation_seq: u64,
+    },
+    /// A facility was deactivated (facility-registry).
+    FacilityDeactivated {
+        facility_id: u64,
+        mutation_seq: u64,
+    },
+    /// A facility was reactivated (facility-registry).
+    FacilityReactivated {
+        facility_id: u64,
+        mutation_seq: u64,
+    },
+    /// An attester became affiliated with a facility (facility-registry).
+    AttesterAffiliated {
+        facility_id: u64,
+        attester: String,
+        mutation_seq: u64,
+    },
+    /// An attester's affiliation with a facility ended (facility-registry).
+    AttesterDisaffiliated {
+        facility_id: u64,
+        attester: String,
+        mutation_seq: u64,
+    },
     /// Administration events, with their topic fields rendered as strings.
     Admin {
         name: String,
@@ -104,6 +132,11 @@ impl LafiyaEvent {
             Self::PoolWithdrawn { .. } => "pool_withdrawn",
             Self::PoolPaused { .. } => "pool_paused",
             Self::PoolUnpaused { .. } => "pool_unpaused",
+            Self::FacilityEnrolled { .. } => "facility_enrolled",
+            Self::FacilityDeactivated { .. } => "facility_deactivated",
+            Self::FacilityReactivated { .. } => "facility_reactivated",
+            Self::AttesterAffiliated { .. } => "attester_affiliated",
+            Self::AttesterDisaffiliated { .. } => "attester_disaffiliated",
             Self::Admin { name, .. } | Self::Unknown { name } => name,
         }
     }
