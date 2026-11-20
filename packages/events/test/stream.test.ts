@@ -323,3 +323,172 @@ describe("streamEvents fault tolerance", () => {
     expect(compareCursors(`${ids[1].split("-")[0]}-0000000002`, ids[1])).toBeGreaterThan(0);
   });
 });
+
+describe("streamEvents gap detection under the new ordering scheme", () => {
+  /** Builds a TOID cursor for `ledger` with the given tx/event indices. */
+  const toid = (ledger: number, tx = 0, event = 0) =>
+    `${((BigInt(ledger) << 32n) | BigInt(tx)).toString().padStart(19, "0")}-${event
+      .toString()
+      .padStart(10, "0")}`;
+
+  /** A fake RPC over synthetic events, one per ledger, with a movable retention floor. */
+  function syntheticRpc(ledgers: number[], retention: { oldest: number }) {
+    const events: RawEvent[] = ledgers.map((ledger, i) => ({
+      ...raws[i % raws.length],
+      ledger,
+      id: toid(ledger),
+    }));
+    const calls: any[] = [];
+    return {
+      calls,
+      events,
+      async getEvents(req: any) {
+        calls.push(req);
+        const start =
+          req.cursor !== undefined
+            ? events.findIndex((e) => compareCursors(e.id, req.cursor) > 0)
+            : events.findIndex((e) => e.ledger >= req.startLedger);
+        const page = start < 0 ? [] : events.slice(start, start + req.limit);
+        return {
+          events: page,
+          cursor: page.at(-1)?.id ?? req.cursor ?? "",
+          latestLedger: 2000,
+          oldestLedger: retention.oldest,
+        };
+      },
+    } satisfies EventsRpc & { calls: any[]; events: RawEvent[] };
+  }
+
+  it("does not report a gap when ledgers are dense but event indices are sparse", async () => {
+    // Several events per ledger: the ordering key is (ledger, tx, event), so a
+    // page boundary that splits a ledger must not look like a ledger gap.
+    const retention = { oldest: 900 };
+    const events: RawEvent[] = [
+      { ...raws[0], ledger: 1000, id: toid(1000, 0, 0) },
+      { ...raws[1], ledger: 1000, id: toid(1000, 0, 1) },
+      { ...raws[2], ledger: 1000, id: toid(1000, 1, 0) },
+      { ...raws[3], ledger: 1001, id: toid(1001, 0, 0) },
+      { ...raws[4], ledger: 1002, id: toid(1002, 0, 0) },
+    ];
+    const rpc: EventsRpc = {
+      async getEvents(req: any) {
+        const start =
+          req.cursor !== undefined
+            ? events.findIndex((e) => compareCursors(e.id, req.cursor) > 0)
+            : events.findIndex((e) => e.ledger >= req.startLedger);
+        const page = start < 0 ? [] : events.slice(start, start + req.limit);
+        return {
+          events: page,
+          cursor: page.at(-1)?.id ?? req.cursor ?? "",
+          latestLedger: 2000,
+          oldestLedger: retention.oldest,
+        };
+      },
+    };
+    const gaps: unknown[] = [];
+    const seen = await collect(
+      streamEvents({
+        rpc,
+        contracts: ["C"],
+        startLedger: 1000,
+        pageSize: 2,
+        follow: false,
+        onGap: (gap) => {
+          gaps.push(gap);
+        },
+      }),
+    );
+    expect(gaps).toEqual([]);
+    expect(seen.map((e) => e.cursor)).toEqual(events.map((e) => e.id));
+  });
+
+  it("detects a gap from the cursor's ledger, not from a global event sequence", async () => {
+    // Retention has moved past the ledger of the last cursor; the next page
+    // starts at a later ledger. The gap must be reported in ledger terms.
+    const retention = { oldest: 900 };
+    const rpc = syntheticRpc([1000, 1001, 1002, 1003, 1004, 1005], retention);
+    let calls = 0;
+    const flakyRpc: EventsRpc = {
+      async getEvents(req: any) {
+        if (++calls === 2) {
+          retention.oldest = 1004;
+          throw new Error("ECONNRESET");
+        }
+        return rpc.getEvents(req);
+      },
+    };
+    const gaps: unknown[] = [];
+    const seen = await collect(
+      streamEvents({
+        rpc: flakyRpc,
+        contracts: ["C"],
+        startLedger: 1000,
+        pageSize: 2,
+        follow: false,
+        retry: noBackoff,
+        onGap: (gap) => {
+          gaps.push(gap);
+        },
+      }),
+    );
+    expect(gaps).toEqual([{ fromLedger: 1002, toLedger: 1003 }]);
+    expect(seen.map((e) => e.ledger)).toEqual([1000, 1001, 1004, 1005]);
+  });
+
+  it("resumes from a cursor whose ledger is still retained without a gap", async () => {
+    const retention = { oldest: 1001 };
+    const rpc = syntheticRpc([1000, 1001, 1002, 1003], retention);
+    const gaps: unknown[] = [];
+    const seen = await collect(
+      streamEvents({
+        rpc,
+        contracts: ["C"],
+        cursor: toid(1001),
+        follow: false,
+        onGap: (gap) => {
+          gaps.push(gap);
+        },
+      }),
+    );
+    expect(gaps).toEqual([]);
+    expect(seen.map((e) => e.ledger)).toEqual([1002, 1003]);
+  });
+
+  it("reports a gap when resuming from a cursor older than retention", async () => {
+    const retention = { oldest: 1002 };
+    const rpc = syntheticRpc([1000, 1001, 1002, 1003], retention);
+    const gaps: unknown[] = [];
+    const seen = await collect(
+      streamEvents({
+        rpc,
+        contracts: ["C"],
+        cursor: toid(1000),
+        follow: false,
+        onGap: (gap) => {
+          gaps.push(gap);
+        },
+      }),
+    );
+    expect(gaps).toEqual([{ fromLedger: 1001, toLedger: 1001 }]);
+    expect(seen.map((e) => e.ledger)).toEqual([1002, 1003]);
+  });
+
+  it("keeps cursor order stable when a page replays events from the same ledger", async () => {
+    const retention = { oldest: 900 };
+    const rpc = syntheticRpc([1000, 1001, 1002, 1003], retention);
+    let call = 0;
+    const replaying: EventsRpc = {
+      async getEvents(req: any) {
+        if (call++ % 2 === 1 && req.cursor !== undefined) {
+          const at = rpc.events.findIndex((e) => e.id === req.cursor);
+          return rpc.getEvents({ ...req, cursor: at > 0 ? rpc.events[at - 1].id : req.cursor });
+        }
+        return rpc.getEvents(req);
+      },
+    };
+    const seen = await collect(
+      streamEvents({ rpc: replaying, contracts: ["C"], startLedger: 1000, pageSize: 2, follow: false }),
+    );
+    expect(seen.map((e) => e.cursor)).toEqual(rpc.events.map((e) => e.id));
+  });
+});

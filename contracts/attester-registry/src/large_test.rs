@@ -4,7 +4,7 @@ extern crate std;
 
 use crate::{AttesterRegistry, AttesterRegistryClient, Role};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Env};
+use soroban_sdk::{Address, Env, Vec};
 
 struct BudgetCheckpoint {
     attesters: usize,
@@ -95,4 +95,87 @@ fn large_attester_allowlist_load() {
     for attester in &sampled_attesters {
         assert!(client.is_attester(attester));
     }
+}
+
+#[test]
+fn large_session_invalidation_is_constant_time() {
+    let (env, client, admin) = {
+        let env = Env::default();
+        env.mock_all_auths();
+        let admin = Address::generate(&env);
+        let contract_id = env.register(AttesterRegistry, (admin.clone(),));
+        let client = AttesterRegistryClient::new(&env, &contract_id);
+        (env, client, admin)
+    };
+    client.grant_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Guardian, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+
+    // Fill the attester's session slots up to the cap.
+    let mut issued = Vec::new(&env);
+    let mut i = 0u32;
+    loop {
+        match client.try_issue_session_key(&admin, &attester) {
+            Ok(Ok(session)) => {
+                issued.push_back(session);
+                i += 1;
+            }
+            Ok(Err(err)) => {
+                // The cap must be enforced with a typed error.
+                assert_eq!(err, crate::Error::SessionLimitReached);
+                break;
+            }
+            Err(_) => panic!("unexpected invocation failure while issuing sessions"),
+        }
+    }
+    assert!(i > 0, "expected at least one session to be issued");
+    assert_eq!(i, crate::MAX_SESSIONS_PER_ATTESTER);
+
+    // Every issued session is valid before invalidation.
+    for session in issued.iter() {
+        assert!(client.is_session_valid(&session));
+    }
+    assert_eq!(client.list_sessions(&attester).len(), i);
+
+    // Suspending the attester invalidates all sessions with O(1) writes.
+    let budget_before = env.cost_estimate().budget();
+    let cpu_before = budget_before.cpu_instruction_cost();
+    let memory_before = budget_before.memory_bytes_cost();
+    client.suspend_attester(&admin, &attester);
+    let budget_after = env.cost_estimate().budget();
+    let cpu_cost = budget_after.cpu_instruction_cost() - cpu_before;
+    let memory_cost = budget_after.memory_bytes_cost() - memory_before;
+    std::println!("suspend with {i} sessions: cpu={cpu_cost}, memory={memory_cost}");
+
+    // The invalidation cost must not scale with the number of sessions.
+    assert!(
+        cpu_cost <= 2_000_000,
+        "suspend CPU cost with {i} sessions was {cpu_cost}, exceeding ceiling"
+    );
+    assert!(
+        memory_cost <= 1_000_000,
+        "suspend memory cost with {i} sessions was {memory_cost}, exceeding ceiling"
+    );
+
+    for session in issued.iter() {
+        assert!(!client.is_session_valid(&session));
+    }
+    assert_eq!(client.list_sessions(&attester).len(), 0);
+
+    // revoke_all_sessions also invalidates in constant time and emits an event.
+    client.unsuspend_attester(&admin, &attester);
+    let mut reissued = Vec::new(&env);
+    for _ in 0..crate::MAX_SESSIONS_PER_ATTESTER {
+        reissued.push_back(client.issue_session_key(&admin, &attester));
+    }
+    for session in reissued.iter() {
+        assert!(client.is_session_valid(&session));
+    }
+    client.revoke_all_sessions(&admin, &attester);
+    for session in reissued.iter() {
+        assert!(!client.is_session_valid(&session));
+    }
+    assert_eq!(client.list_sessions(&attester).len(), 0);
 }

@@ -17,6 +17,14 @@ pub const WATCHDOG_FAILING: &str = "watchdog_failing";
 pub const ATTESTATION_EXPIRING: &str = "attestation_expiring";
 /// A patient-initiated dispute overlay was recorded on an attestation.
 pub const ATTESTATION_DISPUTED: &str = "attestation_disputed";
+/// An attester's session generation was bumped, invalidating every session
+/// issued under the previous generation (suspend, remove, rotate, or an
+/// explicit `revoke_all_sessions`).
+pub const SESSIONS_INVALIDATED: &str = "sessions_invalidated";
+/// A status-list root was activated for an epoch.
+pub const STATUS_LIST_EPOCH_ACTIVATED: &str = "status_list_epoch_activated";
+/// A previously revoked status-list bit was explicitly cleared.
+pub const STATUS_LIST_UNREVOKED: &str = "status_list_unrevoked";
 
 pub struct Engine {
     rules: Vec<EventRule>,
@@ -75,6 +83,27 @@ pub fn default_rules() -> Vec<EventRule> {
             "work_item_endorsement",
             &["work_item_proposed", "work_item_endorsed"],
             Severity::Info,
+        ),
+        // attester-registry: O(1) mass invalidation of session keys.
+        rule(
+            "sessions_invalidated",
+            &[
+                "sessions_invalidated",
+                "session_generation_bumped",
+                "revoke_all_sessions",
+            ],
+            Severity::High,
+        ),
+        // attestation-registry: epoch-versioned status list.
+        rule(
+            "status_list_epoch_activated",
+            &["status_list_epoch_activated", "status_list_root_set"],
+            Severity::Info,
+        ),
+        rule(
+            "status_list_unrevoked",
+            &["status_list_unrevoked", "unrevoke"],
+            Severity::High,
         ),
     ]
 }
@@ -194,6 +223,55 @@ impl Engine {
                 ATTESTATION_DISPUTED,
                 Severity::High,
                 format!("attestation disputed on {}", e.contract),
+                e,
+            ));
+        }
+
+        if matches("session_generation_bumped", &e.name)
+            || matches("revoke_all_sessions", &e.name)
+            || matches("sessions_invalidated", &e.name)
+        {
+            // The attester is the first topic; the new generation, when
+            // present, is the second.
+            let attester = e.topics.first().cloned().unwrap_or_default();
+            let generation = e
+                .topics
+                .get(1)
+                .map(|g| format!(" (generation {g})"))
+                .unwrap_or_default();
+            alerts.push(self.alert(
+                SESSIONS_INVALIDATED,
+                Severity::High,
+                format!(
+                    "all sessions for attester {attester} invalidated{generation} on {}",
+                    e.contract
+                ),
+                e,
+            ));
+        }
+
+        if matches("status_list_epoch_activated", &e.name)
+            || matches("status_list_root_set", &e.name)
+        {
+            let epoch = e.topics.first().cloned().unwrap_or_default();
+            alerts.push(self.alert(
+                STATUS_LIST_EPOCH_ACTIVATED,
+                Severity::Info,
+                format!("status list root activated for epoch {epoch} on {}", e.contract),
+                e,
+            ));
+        }
+
+        if matches("status_list_unrevoked", &e.name) || matches("unrevoke", &e.name) {
+            let epoch = e.topics.first().cloned().unwrap_or_default();
+            let index = e.topics.get(1).cloned().unwrap_or_default();
+            alerts.push(self.alert(
+                STATUS_LIST_UNREVOKED,
+                Severity::High,
+                format!(
+                    "status list bit {index} unrevoked in epoch {epoch} on {}",
+                    e.contract
+                ),
                 e,
             ));
         }
@@ -614,5 +692,40 @@ mod tests {
         assert!(Engine::new(&c)
             .evaluate(&ev("attestation_disputed", 1, &[]))
             .is_empty());
+    }
+
+    #[test]
+    fn session_generation_bump_is_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev(
+            "session_generation_bumped",
+            1,
+            &["GATT", "3"],
+        ));
+        assert_eq!(kinds(&a), vec![(SESSIONS_INVALIDATED, Severity::High)]);
+        assert!(a[0].summary.contains("GATT"));
+        assert!(a[0].summary.contains("generation 3"));
+    }
+
+    #[test]
+    fn revoke_all_sessions_is_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("revoke_all_sessions", 1, &["GATT"]));
+        assert_eq!(kinds(&a), vec![(SESSIONS_INVALIDATED, Severity::High)]);
+    }
+
+    #[test]
+    fn status_list_epoch_activation_is_info() {
+        let a = Engine::new(&cfg()).evaluate(&ev("status_list_epoch_activated", 1, &["7"]));
+        assert_eq!(
+            kinds(&a),
+            vec![(STATUS_LIST_EPOCH_ACTIVATED, Severity::Info)]
+        );
+        assert!(a[0].summary.contains("epoch 7"));
+    }
+
+    #[test]
+    fn status_list_unrevoke_is_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("status_list_unrevoked", 1, &["7", "42"]));
+        assert_eq!(kinds(&a), vec![(STATUS_LIST_UNREVOKED, Severity::High)]);
+        assert!(a[0].summary.contains("42"));
     }
 }

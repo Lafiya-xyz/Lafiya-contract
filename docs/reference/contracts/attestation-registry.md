@@ -100,13 +100,60 @@ returned; no underlying health data is exposed. Callable by anyone.
 ### `get_status_list_segment`
 
 ```rust
-fn get_status_list_segment(segment_index: u32) -> Option<StatusListSegment>
+fn get_status_list_segment(epoch: u64, segment_index: u32) -> Option<StatusListSegment>
 ```
 
-Return a versioned status-list segment (bitstring) for compact bulk
-revocation checks by offline verifiers. Each segment carries a version
-and a commitment; verifiers validate inclusion against a signed root
-published out of band. Callable by anyone.
+Return the versioned status-list segment (bitstring) for `segment_index`
+within `epoch` for compact bulk revocation checks by offline verifiers.
+Each segment carries a version and a commitment; verifiers validate
+inclusion against the epoch's signed root published out of band.
+Verifiers must read `get_status_list_root(epoch)` first and then read
+segments for that same epoch, so the pair is always consistent. Segments
+from old epochs stay readable until the retention TTL passes. Callable by
+anyone.
+
+### `get_status_list_root`
+
+```rust
+fn get_status_list_root(epoch: u64) -> Option<StatusListRoot>
+```
+
+Return the activated status-list root for `epoch`, if any. Verifiers read
+this first, then fetch the segments for the same epoch. Callable by
+anyone.
+
+### `publish_status_list_segment`
+
+```rust
+fn publish_status_list_segment(epoch: u64, segment_index: u32, bits: Bytes, segment_hash: BytesN<32>) -> Result<(), Error>
+```
+
+Publish a status-list segment for `epoch`. Requires the admin's
+authorization. Revocation is monotonic across epochs: a bit that is set
+in the previous epoch cannot be cleared here, except through the explicit
+`unrevoke_status_list_bit` path. Emits `StatusListUpdated`.
+
+### `set_status_list_root`
+
+```rust
+fn set_status_list_root(epoch: u64, root: BytesN<32>) -> Result<(), Error>
+```
+
+Activate the status-list root for `epoch`. Requires the admin's
+authorization. Succeeds only if every segment referenced by the root is
+present for that epoch and the Merkle root over the segment hashes
+recomputes on-chain (bounded segment count). Emits `StatusListRootSet`.
+
+### `unrevoke_status_list_bit`
+
+```rust
+fn unrevoke_status_list_bit(epoch: u64, segment_index: u32, bit_index: u32) -> Result<(), Error>
+```
+
+Explicitly clear a previously set revocation bit for `epoch`. Requires
+the admin's authorization. This is the only path that can clear a bit;
+all other publishes must keep revocation monotonic. Emits
+`StatusListBitUnrevoked`.
 
 ### `get_admin`
 
@@ -250,13 +297,24 @@ Aggregated, public-only verification view for a record hash.
 
 ### `StatusListSegment`
 
-Versioned bitstring segment for compact bulk revocation checks.
+Versioned bitstring segment for compact bulk revocation checks, scoped to
+an epoch.
 
 | Field | Type | Description |
 | --- | --- | --- |
+| `epoch` | `u64` | Epoch this segment belongs to. |
 | `version` | `u32` | Monotonic version, bumped on any bit change. |
 | `bits` | `Bytes` | Packed bitstring; set bit means revoked. |
-| `commitment` | `BytesN<32>` | Commitment over `(version, bits)` for inclusion proofs. |
+| `commitment` | `BytesN<32>` | Commitment over `(epoch, version, bits)` for inclusion proofs. |
+
+### `StatusListRoot`
+
+Activated Merkle root over the segment hashes of an epoch.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `epoch` | `u64` | Epoch this root covers. |
+| `root` | `BytesN<32>` | Merkle root over the epoch's segment hashes. |
 
 ## Errors (`Error`)
 
@@ -273,6 +331,9 @@ Versioned bitstring segment for compact bulk revocation checks.
 | 9 | `DisputeLimitReached` | The per-hash dispute bound (`MAX_DISPUTES_PER_HASH`) has been reached. |
 | 10 | `InvalidQuorumPolicy` | The requested quorum policy is invalid (e.g. `required` is zero or exceeds the attester count bound). |
 | 11 | `TtlHorizonExceeded` | The requested TTL exceeds `MAX_TTL_HORIZON` ledgers from the current ledger. |
+| 12 | `StatusListIncomplete` | The status-list root cannot be activated because a referenced segment for the epoch is missing. |
+| 13 | `StatusListRootMismatch` | The recomputed Merkle root over the epoch's segment hashes does not match the supplied root. |
+| 14 | `RevocationNotMonotonic` | A publish attempted to clear a bit that was set in the previous epoch without using `unrevoke_status_list_bit`. |
 
 ## Events
 
@@ -284,7 +345,27 @@ Versioned bitstring segment for compact bulk revocation checks.
 | `AttestationTtlExtended` | `"attestation_ttl_extended"`, `record_hash: BytesN<32>` | `extend_to: u32` | Emitted when an attestation entry's TTL is extended. |
 | `AttestationDisputed` | `"attestation_disputed"`, `record_hash: BytesN<32>` | `patient: Address` | Emitted when a patient flags an attestation as disputed. |
 | `QuorumPolicySet` | `"quorum_policy_set"`, `record_class: u32` | `required: u32` | Emitted when a record class's quorum policy is configured. |
-| `StatusListUpdated` | `"status_list_updated"`, `segment_index: u32` | `version: u32` | Emitted when a status-list segment's bits or version change. |
+| `StatusListUpdated` | `"status_list_updated"`, `epoch: u64`, `segment_index: u32` | `version: u32` | Emitted when a status-list segment's bits or version change. |
+| `StatusListRootSet` | `"status_list_root_set"`, `epoch: u64` | `root: BytesN<32>` | Emitted when an epoch's status-list root is activated. |
+| `StatusListBitUnrevoked` | `"status_list_bit_unrevoked"`, `epoch: u64`, `segment_index: u32`, `bit_index: u32` |  | Emitted when a revocation bit is explicitly cleared via `unrevoke_status_list_bit`. |
 | `AttesterRegistryRepointed` | `"attester_registry_repointed"`, `previous: Address`, `new: Address` |  | Emitted when the `attester-registry` contract this registry consults is repointed. |
 | `Paused` | `"paused"`, `by: Address` |  | Emitted when state-changing operations are paused. |
 | `Unpaused` | `"unpaused"`, `by: Address` |  | Emitted when state-changing operations are unpaused. |
+
+## Module layout
+
+The contract source is split into cohesive modules under
+`contracts/attestation-registry/src/`; `lib.rs` keeps only the thin
+`#[contractimpl]` entry points. The interface, events, and storage layout
+are unchanged by this layout.
+
+| Module | Responsibility |
+| --- | --- |
+| `admin.rs` | Admin transfer, pause/unpause, registry repointing. |
+| `attest.rs` | Single attestations, history, TTL extension. |
+| `consent.rs` | Consent records and patient-scoped consent checks. |
+| `batch.rs` | Batched attestation submission. |
+| `quorum.rs` | Quorum policies and co-attestation tallies. |
+| `dispute.rs` | Patient dispute overlays. |
+| `status_list.rs` | Epoch-versioned status-list segments, roots, and unrevoke path. |
+| `rate_limit.rs` | Per-caller rate limiting. |

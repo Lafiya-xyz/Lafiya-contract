@@ -53,6 +53,23 @@ pub enum LafiyaEvent {
     AttestationRevoked {
         record_hash: String,
     },
+    /// A status-list segment published for a given epoch.
+    StatusListSegmentPublished {
+        epoch: u64,
+        index: u64,
+        segment_hash: String,
+    },
+    /// A status-list root activated for a given epoch.
+    StatusListRootSet {
+        epoch: u64,
+        root: String,
+    },
+    /// A revocation bit explicitly cleared via the unrevoke path.
+    StatusListUnrevoked {
+        epoch: u64,
+        index: u64,
+        bit: u64,
+    },
     /// An approval of a work item by an attester.
     WorkItemApproved {
         work_item_id: u64,
@@ -99,6 +116,9 @@ impl LafiyaEvent {
             Self::AttesterInfoUpdated { .. } => "attester_info_updated",
             Self::AttestationRecorded { .. } => "attestation_recorded",
             Self::AttestationRevoked { .. } => "attestation_revoked",
+            Self::StatusListSegmentPublished { .. } => "status_list_segment_published",
+            Self::StatusListRootSet { .. } => "status_list_root_set",
+            Self::StatusListUnrevoked { .. } => "status_list_unrevoked",
             Self::WorkItemApproved { .. } => "work_item_approved",
             Self::WorkItemClaimed { .. } => "work_item_claimed",
             Self::PoolWithdrawn { .. } => "pool_withdrawn",
@@ -187,6 +207,38 @@ pub fn decode(raw: &RawEvent) -> Result<LafiyaEvent, DecodeError> {
                     Some(ScVal::U64(t)) => *t,
                     _ => return Err(err("data.timestamp missing".into())),
                 },
+            }
+        }
+        "status_list_segment_published" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::StatusListSegmentPublished {
+                epoch: u64_topic(1)?,
+                index: u64_topic(2)?,
+                segment_hash: map_field(&data, "segment_hash")
+                    .and_then(bytes_hex)
+                    .ok_or_else(|| err("data.segment_hash missing".into()))?,
+            }
+        }
+        "status_list_root_set" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::StatusListRootSet {
+                epoch: u64_topic(1)?,
+                root: map_field(&data, "root")
+                    .and_then(bytes_hex)
+                    .ok_or_else(|| err("data.root missing".into()))?,
+            }
+        }
+        "status_list_unrevoked" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::StatusListUnrevoked {
+                epoch: u64_topic(1)?,
+                index: u64_topic(2)?,
+                bit: map_field(&data, "bit")
+                    .and_then(|v| match v {
+                        ScVal::U64(n) => Some(*n),
+                        _ => None,
+                    })
+                    .ok_or_else(|| err("data.bit missing".into()))?,
             }
         }
         "work_item_approved" => {
@@ -446,6 +498,88 @@ mod tests {
         assert_eq!(ev, LafiyaEvent::PoolPaused { by: addr_str.clone() });
         let ev = decode(&raw(vec![sym("pool_unpaused"), addr], ScVal::Void)).unwrap();
         assert_eq!(ev, LafiyaEvent::PoolUnpaused { by: addr_str });
+    }
+
+    fn bytes_map(key: &str, bytes: &[u8]) -> ScVal {
+        ScVal::Map(Some(ScMap(
+            vec![ScMapEntry {
+                key: sym(key),
+                val: ScVal::Bytes(bytes.to_vec().try_into().unwrap()),
+            }]
+            .try_into()
+            .unwrap(),
+        )))
+    }
+
+    #[test]
+    fn decodes_status_list_events() {
+        let ev = decode(&raw(
+            vec![
+                sym("status_list_segment_published"),
+                ScVal::U64(3),
+                ScVal::U64(1),
+            ],
+            bytes_map("segment_hash", &[0xcd; 32]),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::StatusListSegmentPublished {
+                epoch: 3,
+                index: 1,
+                segment_hash: "cd".repeat(32),
+            }
+        );
+        let ev = decode(&raw(
+            vec![sym("status_list_root_set"), ScVal::U64(3)],
+            bytes_map("root", &[0xef; 32]),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::StatusListRootSet {
+                epoch: 3,
+                root: "ef".repeat(32),
+            }
+        );
+        let ev = decode(&raw(
+            vec![
+                sym("status_list_unrevoked"),
+                ScVal::U64(3),
+                ScVal::U64(1),
+            ],
+            ScVal::Map(Some(ScMap(
+                vec![ScMapEntry {
+                    key: sym("bit"),
+                    val: ScVal::U64(9),
+                }]
+                .try_into()
+                .unwrap(),
+            ))),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::StatusListUnrevoked {
+                epoch: 3,
+                index: 1,
+                bit: 9,
+            }
+        );
+    }
+
+    #[test]
+    fn rejects_malformed_status_list_event() {
+        assert!(decode(&raw(
+            vec![sym("status_list_root_set"), ScVal::U64(1)],
+            ScVal::Void
+        ))
+        .is_err());
+        assert!(decode(&raw(
+            vec![sym("status_list_segment_published"), ScVal::U64(1)],
+            bytes_map("segment_hash", &[0; 32])
+        ))
+        .is_err());
     }
 
     #[test]

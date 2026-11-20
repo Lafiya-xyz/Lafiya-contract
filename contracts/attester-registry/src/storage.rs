@@ -26,6 +26,10 @@ impl StorageKey for DataKey {
             | DataKey::PendingAdminExpiresAt
             | DataKey::Role(..)
             | DataKey::RegionalRegistrar(..) => Durability::Instance,
+            // Per-attester keys live in persistent storage so that hot paths
+            // (session issuance, generation bumps, attester registration) never
+            // write the shared instance entry. This keeps transactions that
+            // touch different attesters parallelizable (#671).
             DataKey::Attester(..)
             | DataKey::Suspended(..)
             | DataKey::AttesterRotation(..)
@@ -33,7 +37,11 @@ impl StorageKey for DataKey {
             | DataKey::AttesterStatusChangeCount(..)
             | DataKey::AttesterValidity(..)
             | DataKey::RegionalRegistrarCount(..)
-            | DataKey::RegionalAttester(..) => Durability::Persistent,
+            | DataKey::RegionalAttester(..)
+            | DataKey::SessionGeneration(..)
+            | DataKey::Session(..)
+            | DataKey::SessionIndex(..)
+            | DataKey::SessionCount(..) => Durability::Persistent,
         }
     }
 }
@@ -77,6 +85,10 @@ mod tests {
             DataKey::RegionalRegistrar(Address::generate(env)),
             DataKey::RegionalRegistrarCount(Address::generate(env)),
             DataKey::RegionalAttester(Address::generate(env)),
+            DataKey::SessionGeneration(Address::generate(env)),
+            DataKey::Session(Address::generate(env), 1),
+            DataKey::SessionIndex(Address::generate(env), 0),
+            DataKey::SessionCount(Address::generate(env)),
         ]
     }
 
@@ -134,5 +146,27 @@ mod tests {
             !include_str!("lib.rs").contains("storage()"),
             "lib.rs must use the typed accessors in storage.rs"
         );
+    }
+
+    /// Hot-path entry points must not write shared instance keys (#671).
+    /// Session issuance and generation bumps are per-attester, so they only
+    /// touch persistent entries keyed by the attester address.
+    #[test]
+    fn session_keys_are_not_instance_durable() {
+        let env = lafiya_test_utils::new_env();
+        let attester = Address::generate(&env);
+        let keys = std::vec![
+            DataKey::SessionGeneration(attester.clone()),
+            DataKey::Session(attester.clone(), 1),
+            DataKey::SessionIndex(attester.clone(), 0),
+            DataKey::SessionCount(attester.clone()),
+        ];
+        for key in keys.iter() {
+            assert_eq!(
+                key.durability(),
+                Durability::Persistent,
+                "session keys must not share the instance entry"
+            );
+        }
     }
 }

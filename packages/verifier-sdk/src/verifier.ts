@@ -93,8 +93,12 @@ export interface VerificationResult {
    * has flagged this record; verifiers must surface this to the user.
    */
   disputed?: boolean;
-  /** Status-list based revocation check, when the chain reader supports it. */
-  statusList?: { revoked: boolean; version: number };
+  /**
+   * Status-list based revocation check, when the chain reader supports it.
+   * `epoch` identifies the root/segment pair the verdict was derived from, so
+   * offline snapshots can be replayed against the same epoch.
+   */
+  statusList?: { revoked: boolean; version: number; epoch?: number };
   checkedAt: Date;
   source: "rpc" | "offline";
   /** When the snapshot behind an offline verdict was captured. */
@@ -234,6 +238,7 @@ export class LafiyaVerifier {
     let quorum: QuorumStatus | null = null;
     let disputed = false;
     let statusList: StatusListCheck | null = null;
+    let statusListEpoch: number | undefined;
     try {
       [latest, history] = await Promise.all([
         this.chain.getAttestation(trust, payload.recordHash, call),
@@ -242,12 +247,32 @@ export class LafiyaVerifier {
       if (!latest) {
         revoked = (await this.chain.isRevoked?.(trust, payload.recordHash, call)) ?? false;
       } else {
+        // Read the active root first, then the segment for that same epoch, so
+        // the pair is consistent even if a publish lands in between.
+        const activeRoot = await (this.chain.getStatusListRoot?.(trust) ?? Promise.resolve(null));
+        const epoch = activeRoot?.epoch;
         [attesterState, quorum, disputed, statusList] = await Promise.all([
           this.chain.getAttesterStatus(trust, latest.attester),
           this.chain.getQuorumStatus?.(trust, payload.recordHash) ?? Promise.resolve(null),
           this.chain.isDisputed?.(trust, payload.recordHash) ?? Promise.resolve(false),
-          this.chain.checkStatusList?.(trust, payload.recordHash) ?? Promise.resolve(null),
+          this.chain.checkStatusList?.(trust, payload.recordHash, epoch) ?? Promise.resolve(null),
         ]);
+        if (statusList) {
+          // A segment that does not belong to the root we trust cannot be
+          // used to prove revocation; treat the mismatch as unavailable.
+          if (
+            statusList.epoch !== undefined &&
+            epoch !== undefined &&
+            statusList.epoch !== epoch
+          ) {
+            reasons.push({
+              code: "unavailable",
+              message: `status list segment is for epoch ${statusList.epoch}, active root is epoch ${epoch}`,
+            });
+            return done({ payload });
+          }
+          statusListEpoch = statusList.epoch ?? epoch;
+        }
       }
     } catch (err) {
       const transportError = classifyError(err);
@@ -259,7 +284,11 @@ export class LafiyaVerifier {
     }
 
     const statusListResult = statusList
-      ? { revoked: statusList.revoked, version: statusList.version }
+      ? {
+          revoked: statusList.revoked,
+          version: statusList.version,
+          ...(statusListEpoch !== undefined ? { epoch: statusListEpoch } : {}),
+        }
       : undefined;
 
     if (!latest) {
@@ -272,7 +301,9 @@ export class LafiyaVerifier {
     }
 
     // Status-list revocation is authoritative for bulk revocation; a revoked
-    // bit means the record must not be reported as verified.
+    // bit means the record must not be reported as verified. Revocation is
+    // monotonic across epochs: only an explicit, event-emitting unrevoke on
+    // chain clears a bit, so a cleared bit here is trusted as-is.
     if (statusList?.revoked) {
       reasons.push({
         code: "revoked",

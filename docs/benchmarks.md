@@ -93,3 +93,65 @@ To measure the current checkout without the history:
 cargo build -p lafiya-bench
 scripts/bench_measure.sh | jq .metrics
 ```
+
+## Hot-path footprint and fee deltas
+
+These record the changes from the parallel-execution work (#671), the
+epoch-versioned status list (#673) and the session generation counter
+(#674). Numbers are from `lafiya-bench` on the plain release build, so they
+are comparable with each other but not with reproducible release artifacts.
+Fees are the Soroban resource fee at the network's default rates; treat them
+as relative, not as a quote.
+
+### #671: no shared instance writes on hot paths
+
+Before, every event-emitting call read and wrote `DataKey::EventSeq` in
+instance storage, which rewrote the whole instance entry (admin, roles, rate
+limit config). After, ordering comes from per-record sequences and the
+`(ledger, tx index, event index)` tuple, and rarely changing config lives in
+its own persistent entry.
+
+| Scenario | Metric | Before | After | Delta |
+|---|---|---|---|---|
+| `attestation-registry/attest/cpu_instructions` | CPU | 1,842,113 | 1,401,507 | −23.9% |
+| `attestation-registry/attest/ledger_write_entries` | writes | 6 | 4 | −2 |
+| `attestation-registry/attest/ledger_write_bytes` | bytes | 1,984 | 1,120 | −43.6% |
+| `attestation-registry/attest/fee_stroops` | fee | 41,207 | 31,884 | −22.6% |
+| `attestation-registry/co_attest/ledger_write_entries` | writes | 6 | 4 | −2 |
+| `attestation-registry/claim/ledger_write_entries` | writes | 5 | 3 | −2 |
+| `attester-registry/add_attester_loaded/ledger_write_entries` | writes | 7 | 5 | −2 |
+| `incentive-pool/claim/ledger_write_entries` | writes | 5 | 3 | −2 |
+
+The footprint test asserts that none of `attest`, `co_attest`, `claim` or
+`add_attester` touches an instance key, so a regression fails CI rather than
+only showing up as drift.
+
+### #673: status-list publish at the maximum segment count
+
+Publishing a full epoch at `MAX_STATUS_LIST_SEGMENTS` (64 segments of 16 KiB
+bits each) and then activating the root:
+
+| Scenario | Metric | Before (root + segments, no check) | After (epoch-consistent publish) | Delta |
+|---|---|---|---|---|
+| `attestation-registry/publish_status_list_max/cpu_instructions` | CPU | 12,904,551 | 18,336,902 | +42.1% |
+| `attestation-registry/publish_status_list_max/ledger_write_entries` | writes | 129 | 193 | +64 |
+| `attestation-registry/publish_status_list_max/ledger_write_bytes` | bytes | 1,118,208 | 1,245,696 | +11.4% |
+| `attestation-registry/publish_status_list_max/fee_stroops` | fee | 288,410 | 410,772 | +42.4% |
+
+The increase is the on-chain Merkle recomputation over the segment hashes and
+the previous-epoch monotonicity comparison. It is bounded by the segment cap
+and paid once per epoch, not per verification.
+
+### #674: O(1) session invalidation
+
+Suspending an attester with 32 active sessions:
+
+| Scenario | Metric | Before (per-session revoke) | After (generation bump) | Delta |
+|---|---|---|---|---|
+| `attester-registry/suspend_with_sessions/cpu_instructions` | CPU | 3,118,742 | 402,118 | −87.1% |
+| `attester-registry/suspend_with_sessions/ledger_write_entries` | writes | 66 | 3 | −63 |
+| `attester-registry/suspend_with_sessions/ledger_write_bytes` | bytes | 21,120 | 1,344 | −93.6% |
+| `attester-registry/suspend_with_sessions/fee_stroops` | fee | 69,733 | 9,142 | −86.9% |
+
+The write count is now independent of the number of sessions, so it stays
+within per-transaction write limits even at `MAX_SESSIONS_PER_ATTESTER`.

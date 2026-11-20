@@ -1,7 +1,7 @@
 import { OfflineChainReader, type OfflineBundle } from "./chain.js";
 
 /** Bump when the stored record layout changes; unknown versions read as a cache miss. */
-export const SNAPSHOT_SCHEMA = 1;
+export const SNAPSHOT_SCHEMA = 2;
 
 export class SnapshotError extends Error {
   constructor(message: string) {
@@ -12,14 +12,19 @@ export class SnapshotError extends Error {
 
 /**
  * A sealed {@link OfflineBundle}. `hash` commits to the bundle, the ledger it
- * was read at, and the previous snapshot's hash, so a cache cannot be
- * silently rolled back or spliced. `signature` (over `hash`) is optional and
- * checked by a caller-supplied verifier, e.g. the snapshot publisher's key.
+ * was read at, the status-list `epoch` the bundle was read for, and the
+ * previous snapshot's hash, so a cache cannot be silently rolled back or
+ * spliced. `signature` (over `hash`) is optional and checked by a
+ * caller-supplied verifier, e.g. the snapshot publisher's key.
+ *
+ * The `epoch` is embedded so an offline verifier reads a root and its
+ * segments as one epoch-consistent pair rather than mixing epochs.
  */
 export interface SnapshotEnvelope {
   schema: number;
   bundle: OfflineBundle;
   ledger: number;
+  epoch: number;
   prev: string | null;
   hash: string;
   signature?: string;
@@ -40,16 +45,22 @@ export async function sha256Hex(text: string): Promise<string> {
 }
 
 function bodyHash(e: Omit<SnapshotEnvelope, "hash" | "signature">): Promise<string> {
-  return sha256Hex(canonical({ schema: e.schema, bundle: e.bundle, ledger: e.ledger, prev: e.prev }));
+  return sha256Hex(
+    canonical({ schema: e.schema, bundle: e.bundle, ledger: e.ledger, epoch: e.epoch, prev: e.prev }),
+  );
 }
 
 export async function sealSnapshot(
   bundle: OfflineBundle,
   ledger: number,
+  epoch: number,
   prev: string | null,
   sign?: (hash: string) => Promise<string> | string,
 ): Promise<SnapshotEnvelope> {
-  const body = { schema: SNAPSHOT_SCHEMA, bundle, ledger, prev };
+  if (!Number.isSafeInteger(epoch) || epoch < 0) {
+    throw new SnapshotError(`invalid status-list epoch ${epoch}`);
+  }
+  const body = { schema: SNAPSHOT_SCHEMA, bundle, ledger, epoch, prev };
   const hash = await bodyHash(body);
   return { ...body, hash, ...(sign ? { signature: await sign(hash) } : {}) };
 }
@@ -57,6 +68,11 @@ export async function sealSnapshot(
 export interface OpenOptions {
   /** When set, a signature is required and must pass this check. */
   verifySignature?: (hash: string, signature: string) => Promise<boolean> | boolean;
+  /**
+   * When set, the snapshot's embedded epoch must match. Use this to pin a
+   * verifier to the epoch whose root it already trusts.
+   */
+  expectedEpoch?: number;
 }
 
 /** Check integrity (and signature, if required); throws {@link SnapshotError}. */
@@ -66,6 +82,14 @@ export async function openSnapshot(
 ): Promise<OfflineChainReader> {
   if (envelope.schema !== SNAPSHOT_SCHEMA) {
     throw new SnapshotError(`unsupported snapshot schema ${envelope.schema}`);
+  }
+  if (!Number.isSafeInteger(envelope.epoch) || envelope.epoch < 0) {
+    throw new SnapshotError(`invalid status-list epoch ${envelope.epoch}`);
+  }
+  if (opts.expectedEpoch !== undefined && envelope.epoch !== opts.expectedEpoch) {
+    throw new SnapshotError(
+      `snapshot epoch ${envelope.epoch} does not match expected epoch ${opts.expectedEpoch}`,
+    );
   }
   if ((await bodyHash(envelope)) !== envelope.hash) {
     throw new SnapshotError("snapshot hash mismatch (corrupted or tampered)");
@@ -175,13 +199,19 @@ export class SnapshotCache {
     }
   }
 
-  /** Persist `bundle`; refuses to move the cache back to an older ledger. */
-  async save(bundle: OfflineBundle, ledger: number): Promise<SnapshotEnvelope> {
+  /**
+   * Persist `bundle` for status-list `epoch`; refuses to move the cache back
+   * to an older ledger or to an older epoch.
+   */
+  async save(bundle: OfflineBundle, ledger: number, epoch: number): Promise<SnapshotEnvelope> {
     const prev = await this.current(bundle.network);
     if (prev && ledger < prev.ledger) {
       throw new SnapshotError(`ledger ${ledger} is older than cached ledger ${prev.ledger}`);
     }
-    const envelope = await sealSnapshot(bundle, ledger, prev?.hash ?? null, this.opts.sign);
+    if (prev && epoch < prev.epoch) {
+      throw new SnapshotError(`epoch ${epoch} is older than cached epoch ${prev.epoch}`);
+    }
+    const envelope = await sealSnapshot(bundle, ledger, epoch, prev?.hash ?? null, this.opts.sign);
     await this.store.put(bundle.network, JSON.stringify(envelope));
     return envelope;
   }
@@ -192,6 +222,25 @@ export class SnapshotCache {
     if (!envelope || envelope.bundle.network !== network) return null;
     try {
       return await openSnapshot(envelope, this.opts);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The cached snapshot as an epoch-consistent root/segment pair, or `null`
+   * if absent, unreadable, or failing checks. The reader is bound to the
+   * snapshot's embedded epoch, so callers must read `root(epoch)` first and
+   * then segments for that same epoch.
+   */
+  async loadEpoch(
+    network: string,
+  ): Promise<{ epoch: number; reader: OfflineChainReader } | null> {
+    const envelope = await this.current(network);
+    if (!envelope || envelope.bundle.network !== network) return null;
+    try {
+      const reader = await openSnapshot(envelope, this.opts);
+      return { epoch: envelope.epoch, reader };
     } catch {
       return null;
     }

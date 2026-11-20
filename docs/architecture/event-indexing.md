@@ -50,10 +50,103 @@ contain personal or other sensitive data.
 
 These events need to be consumed by the off‑chain services used by **lafiya‑web** to display the verified status in near‑real‑time. This document outlines the design of an **event indexing / webhook service** that polls or streams Soroban events and reconciles them with the existing Supabase‑backed profile data.
 
+## Event Ordering Scheme
+
+### Why the global sequence was removed
+
+Earlier contract versions stamped every emitted event with a single
+contract-wide `EventSeq` counter stored in **instance** storage. That design
+had two problems:
+
+1. **Serialization under parallel execution.** Every event-emitting call wrote
+   the same instance entry, so Soroban's parallel transaction scheduler could
+   never run two attestations concurrently. Each attestation was serialized
+   against every other one.
+2. **Write amplification.** Instance storage is a single ledger entry holding
+   all instance data (admin, roles, rate-limit config, and so on). Incrementing
+   the sequence rewrote the entire entry on every event, inflating fees and
+   footprint for hot paths.
+
+The contracts no longer maintain a shared event counter. Hot-path entry points
+(`attest`, co-attest, `claim`, `add_attester`) write no shared instance key;
+this is asserted by a footprint test in each contract's test suite.
+
+### Ordering key
+
+Events are now ordered by the **ledger-level position** supplied by the
+network, not by a contract-assigned counter. Each event's canonical ordering
+key is the tuple:
+
+```
+(ledger_sequence, transaction_index, event_index)
+```
+
+where:
+
+- `ledger_sequence` is the ledger in which the event was emitted;
+- `transaction_index` is the position of the emitting transaction within the
+  ledger;
+- `event_index` is the position of the event within the transaction's event
+  list.
+
+Soroban RPC `getEvents` returns all three components for every event, and they
+are stable and totally ordered across the whole network. The indexer uses this
+tuple as its primary ordering key and as the idempotency key for replay
+protection (replacing the old "same ledger sequence & index" check, which
+referenced the contract counter).
+
+### Per-record and per-attester sequences
+
+Where a contract needs an ordering value *inside* its own state (rather than
+for cross-contract event ordering), it uses sequences scoped to the record or
+attester rather than a global counter:
+
+- `AttestationRecorded` carries a per-record `sequence` (and optional
+  `evicted_sequence`) that orders the bounded FIFO history for that subject.
+  This sequence is stored alongside the record, not in a shared instance entry.
+- Per-attester counters (for example, rate-limit window bookkeeping) are keyed
+  by attester address in persistent storage, so writes for different attesters
+  touch disjoint entries and can execute in parallel.
+
+These scoped sequences are **not** a substitute for the ledger-level ordering
+key. They describe intra-record history; the `(ledger, tx, event)` tuple
+describes global event order.
+
+### Config out of the hot instance entry
+
+Rarely changing configuration (admin, roles, rate-limit configuration) is read
+from instance storage but is no longer rewritten on hot paths. Hot-path writes
+are confined to per-record and per-attester persistent entries. This keeps the
+instance entry stable across attestations and preserves parallelism.
+
+## Gap Detection
+
+The indexer must detect missed events without relying on a contract-assigned
+counter. Gap detection now works at the ledger level:
+
+- **Ledger continuity.** The indexer tracks the last fully processed
+  `ledger_sequence`. For each new page it verifies that ledgers are contiguous
+  with the checkpoint. A skipped ledger is a gap.
+- **Intra-ledger completeness.** Within a ledger, events are grouped by
+  `transaction_index` and ordered by `event_index`. The indexer verifies that
+  the observed `(tx, event)` positions form a contiguous prefix of the
+  transaction's event list; a missing position within a transaction is a gap.
+- **Empty ledgers are expected.** A ledger with no matching events is not a
+  gap; only a ledger that was never fetched or a missing intra-ledger position
+  is. The indexer advances the checkpoint across empty ledgers normally.
+- **Re-fetch on gap.** When a gap is detected, the indexer re-fetches the
+  affected ledger range from RPC (or the archive during backfill) rather than
+  skipping ahead. If the range is outside RPC retention, it fails hard and
+  requires a `backfill`, exactly as before.
+
+Because the ordering key is network-assigned, gap detection no longer needs to
+reason about contract-side counters and remains correct when multiple
+transactions in the same ledger emit events for the same contract.
+
 ## Architecture Options
 
 ### 1. Polling (Periodic RPC Calls)
-- **Mechanism**: Use the Soroban RPC `getEvents` endpoint periodically (e.g., every 30 seconds) to fetch new events since the last known ledger sequence.
+- **Mechanism**: Use the Soroban RPC `getEvents` endpoint periodically (e.g., every 30 seconds) to fetch new events since the last known ledger sequence.
 - **Pros**:
   - Simple to implement; no long‑running connections.
   - Works with any RPC node, even those without event‑streaming support.
@@ -65,7 +158,7 @@ These events need to be consumed by the off‑chain services used by **lafiya‑
 ### 2. RPC Event Streaming (WebSocket / SSE)
 - **Mechanism**: Connect to a Soroban RPC node that provides a continuous event stream (WebSocket or Server‑Sent Events). The service maintains the cursor (ledger sequence & offset) and processes events as they arrive.
 - **Pros**:
-  - Near‑instantaneous delivery (< 1 s).
+  - Near‑instantaneous delivery (< 1 s).
   - Guarantees ordering and no gaps when the cursor is persisted.
 - **Cons**:
   - Requires a node that supports streaming; not all public RPC providers expose it.
@@ -75,7 +168,7 @@ These events need to be consumed by the off‑chain services used by **lafiya‑
 
 Given the need for **low latency** and **reliability**, we recommend a **hybrid approach**:
 1. **Primary**: Use RPC event streaming when a compatible node is configured (e.g., a dedicated Soroban‑node with WebSocket support).
-2. **Fallback**: Switch to polling when the stream connection drops or when the node does not support streaming. The fallback poll interval should be short (≈ 15 s) to minimise latency.
+2. **Fallback**: Switch to polling when the stream connection drops or when the node does not support streaming. The fallback poll interval should be short (≈ 15 s) to minimise latency.
 
 The service will persist the **cursor** (last processed ledger & offset) in Supabase. On restart it resumes from the stored cursor, ensuring no events are missed.
 
@@ -83,7 +176,7 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
 
 1. **Event Processor**
    - Receives events, parses the relevant fields (e.g., attester address, subject address, timestamp).
-   - Writes a row to a new `event_log` table in Supabase for auditability.
+   - Writes a row to a new `event_log` table in Supabase for auditability, keyed by the `(ledger_sequence, transaction_index, event_index)` ordering tuple.
 2. **Profile Updater**
    - For `AttestationRecorded`, update the `profiles` table (e.g., set `verified = true`, store attestation metadata).
    - For `AttestationRevoked`, remove the indexed attestation and set the corresponding profile's `verified` state to false.
@@ -102,12 +195,13 @@ The service will persist the **cursor** (last processed ledger & offset) in Supa
 ## Failure & Replay Handling
 
 - **Persistence**: The cursor is stored in Supabase; if the indexer crashes, it restarts from the last persisted cursor.
-- **Idempotency**: Event processing is idempotent – the service checks if an event with the same ledger sequence & index already exists before applying changes.
-- **Replay**: In case of extended downtime, the service can perform a **catch‑up sweep** by querying `getEvents` from the last stored cursor up to the latest ledger, processing any missing events.
+- **Idempotency**: Event processing is idempotent – the service checks if an event with the same `(ledger_sequence, transaction_index, event_index)` tuple already exists before applying changes.
+- **Replay**: In case of extended downtime, the service can perform a **catch‑up sweep** by querying `getEvents` from the last stored cursor up to the latest ledger, processing any missing events. Gap detection (see above) verifies ledger continuity and intra-ledger completeness during the sweep.
 - **Alerting**: Monitoring (via Supabase functions or external Prometheus) alerts on:
-  - Stream disconnects lasting > 1 minute.
+  - Stream disconnects lasting > 1 minute.
   - Polling errors or RPC timeouts.
   - Event processing failures (e.g., DB write errors).
+  - Detected ledger gaps or intra-ledger position gaps.
 
 ## Implementation
 
@@ -118,6 +212,8 @@ approach above, with a Postgres store rather than Supabase, and adds:
 - cursor checkpointing that is transactional with each applied page;
 - a hard failure (never a silent skip) when the checkpoint falls outside
   RPC retention, plus a `backfill` command for archived history;
+- ledger-level and intra-ledger gap detection using the
+  `(ledger_sequence, transaction_index, event_index)` ordering key;
 - a reconciler that samples `get_attester_status` / `get_attestation`
   and reports mismatches as metrics;
 - a read-only, paginated HTTP API with an OpenAPI spec, a health endpoint,
@@ -160,7 +256,9 @@ boundary**: the highest ledger that is both present in the archive and still
 within RPC retention. At the boundary the indexer:
 
 1. verifies the archive header for the boundary ledger;
-2. fetches the same ledger range from RPC and confirms the event sets match;
+2. fetches the same ledger range from RPC and confirms the event sets match,
+   comparing events by their `(ledger_sequence, transaction_index, event_index)`
+   ordering key;
 3. only then switches to `RpcEventSource` for subsequent ledgers.
 
 If the comparison fails, the handoff is aborted and the checkpoint is not

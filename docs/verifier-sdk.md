@@ -142,6 +142,41 @@ are allocated independently of record hashes — so a status-list hit must
 still be confirmed against `attestation-registry` before showing `revoked`
 to a user.
 
+#### Epoch-consistent reads
+
+Segments and the root are published under an `epoch: u64`. A root is only
+activated once every segment it references is present for that epoch and the
+on-chain Merkle root over the segment hashes recomputes, so a verifier can
+never observe a segment set that is inconsistent with the root it trusts.
+
+`StatusListSync` always reads `root(epoch)` first and then fetches segments
+for **that same epoch**; it never mixes segments from different epochs. The
+cached list records the epoch it was built from, and `isRevoked` answers only
+from that epoch. If a newer epoch is published mid-refresh, the sync either
+completes the new epoch atomically or keeps serving the previous one — it
+never returns a half-updated view.
+
+Old epochs stay readable until their retention TTL passes, so in-flight
+verifications are not broken by a publish. `sync.epoch` exposes the epoch in
+use, and `sync.refresh({ epoch })` can pin a specific (still retained) epoch
+for reproducible checks.
+
+Revocation is monotonic across epochs: a bit, once set, cannot be cleared
+without an explicit, event-emitting `unrevoke` path. The SDK treats a
+segment that clears a previously set bit as a `TrustError` rather than
+silently accepting it.
+
+#### Offline snapshots
+
+Offline bundles embed the status-list `epoch` alongside the segments and
+root, so `OfflineChainReader` verifies epoch-consistent pairs from the
+snapshot. A bundle whose segments do not match its embedded epoch's root
+fails to load as a miss (like any other corrupt record), and results report
+the epoch via `result.statusListEpoch`. Snapshots captured before epochs were
+introduced load with `statusListEpoch: undefined` and are treated as
+potentially inconsistent: they still verify attestations, but status-list
+revocation checks are skipped and the result notes the missing epoch.
+
 ## Verdicts
 
 The verdict set is finite and ordered by precedence; when several reasons

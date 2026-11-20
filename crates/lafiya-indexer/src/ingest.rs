@@ -14,6 +14,85 @@ use crate::rpc::{EventSource, RpcError, Start};
 use crate::store::{self, Checkpoint, StoreError};
 use crate::webhook::{self, WebhookConfig, WebhookError};
 
+/// Ordering key for an event, derived from chain position rather than a
+/// contract-global sequence number.
+///
+/// The attestation registry no longer maintains a shared `EventSeq` instance
+/// entry (see issue #671): every event-emitting call would otherwise serialize
+/// against every other one. Events are instead ordered by
+/// `(ledger, tx_index, event_index)`, which the RPC already provides and which
+/// is unique and monotonic per ledger. Gap detection compares consecutive
+/// keys within a contract instead of expecting `seq + 1`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct EventOrder {
+    pub ledger: u32,
+    pub tx_index: u32,
+    pub event_index: u32,
+}
+
+impl EventOrder {
+    /// Build the ordering key from a raw event. `tx_index` and `event_index`
+    /// come from the RPC event object; when a provider omits them they are
+    /// treated as zero, which still yields a stable per-ledger order.
+    pub fn from_raw(event: &RawEvent) -> Self {
+        Self {
+            ledger: event.ledger,
+            tx_index: event.tx_index.unwrap_or(0),
+            event_index: event.event_index.unwrap_or(0),
+        }
+    }
+}
+
+/// Detects dropped events using chain-position ordering.
+///
+/// A gap is only reported when two consecutive events for the same contract
+/// are in the *same* ledger and their `(tx_index, event_index)` are not
+/// contiguous, or when a ledger is skipped entirely between two observed
+/// events. Ledger skips are normal (a contract may emit nothing for many
+/// ledgers), so only intra-ledger discontinuities are treated as gaps; the
+/// RPC is expected to return every event for a ledger it serves.
+#[derive(Debug, Default)]
+pub struct SeqTracker {
+    last: std::collections::HashMap<String, EventOrder>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SeqGap {
+    pub contract_id: String,
+    pub expected: EventOrder,
+    pub got: EventOrder,
+}
+
+impl SeqTracker {
+    /// Observe a page of events and return any ordering gaps.
+    pub fn observe(&mut self, events: &[RawEvent]) -> Vec<SeqGap> {
+        let mut gaps = Vec::new();
+        for event in events {
+            let order = EventOrder::from_raw(event);
+            if let Some(prev) = self.last.get(&event.contract_id) {
+                if prev.ledger == order.ledger {
+                    let expected = EventOrder {
+                        ledger: prev.ledger,
+                        tx_index: prev.tx_index,
+                        event_index: prev.event_index.saturating_add(1),
+                    };
+                    // Only flag a gap when the same tx is missing an event;
+                    // a new tx index is a legitimate jump.
+                    if order.tx_index == prev.tx_index && order.event_index > expected.event_index {
+                        gaps.push(SeqGap {
+                            contract_id: event.contract_id.clone(),
+                            expected,
+                            got: order,
+                        });
+                    }
+                }
+            }
+            self.last.insert(event.contract_id.clone(), order);
+        }
+        gaps
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum IngestError {
     /// Ingestion cannot continue without losing history. Never skipped.
@@ -79,7 +158,8 @@ pub struct Ingestor<S> {
     /// deployment ledger).
     pub start_ledger: Option<u32>,
     pub page_limit: u32,
-    /// Detects dropped events from per-contract sequence numbers.
+    /// Detects dropped events from chain-position ordering
+    /// `(ledger, tx_index, event_index)` rather than a shared sequence number.
     pub seq_tracker: Mutex<SeqTracker>,
 }
 
@@ -132,9 +212,13 @@ impl<S: EventSource> Ingestor<S> {
             self.metrics.event_seq_gaps_total.inc();
             tracing::error!(
                 contract = %g.contract_id,
-                expected = g.expected,
-                got = g.got,
-                "event sequence gap: the RPC dropped events; re-sync this range"
+                expected_ledger = g.expected.ledger,
+                expected_tx = g.expected.tx_index,
+                expected_event = g.expected.event_index,
+                got_ledger = g.got.ledger,
+                got_tx = g.got.tx_index,
+                got_event = g.got.event_index,
+                "event ordering gap: the RPC dropped events; re-sync this range"
             );
         }
 
@@ -403,6 +487,53 @@ pub async fn backfill(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn raw_event(contract: &str, ledger: u32, tx: u32, idx: u32) -> RawEvent {
+        RawEvent {
+            id: format!("{ledger:010}-{tx:04}-{idx:04}"),
+            contract_id: contract.to_string(),
+            ledger,
+            ledger_hash: String::new(),
+            tx_index: Some(tx),
+            event_index: Some(idx),
+            topics: Vec::new(),
+            value: String::new(),
+        }
+    }
+
+    #[test]
+    fn seq_tracker_orders_by_chain_position() {
+        let mut tracker = SeqTracker::default();
+        // Contiguous events in one tx: no gap.
+        let page = vec![
+            raw_event("C1", 10, 0, 0),
+            raw_event("C1", 10, 0, 1),
+            raw_event("C1", 10, 0, 2),
+        ];
+        assert!(tracker.observe(&page).is_empty());
+
+        // A skipped event index within the same tx is a gap.
+        let page = vec![raw_event("C1", 10, 0, 5)];
+        let gaps = tracker.observe(&page);
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].expected.event_index, 3);
+        assert_eq!(gaps[0].got.event_index, 5);
+
+        // A new tx index is a legitimate jump, not a gap.
+        let page = vec![raw_event("C1", 10, 1, 0)];
+        assert!(tracker.observe(&page).is_empty());
+
+        // A new ledger is a legitimate jump, not a gap.
+        let page = vec![raw_event("C1", 11, 0, 0)];
+        assert!(tracker.observe(&page).is_empty());
+    }
+
+    #[test]
+    fn seq_tracker_is_per_contract() {
+        let mut tracker = SeqTracker::default();
+        let page = vec![raw_event("C1", 10, 0, 0), raw_event("C2", 10, 0, 0)];
+        assert!(tracker.observe(&page).is_empty());
+    }
 
     #[test]
     fn retention_check_fails_below_oldest_ledger() {

@@ -84,6 +84,11 @@ pub const EPOCH_CONFIG_DELAY: u64 = 48 * 60 * 60;
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
+/// Persistent storage TTL policy for hot-path counters (totals, caps,
+/// reservations): threshold 30 days, extend to 90 days.
+const PERSISTENT_BUMP_AMOUNT: u32 = 1_555_200;
+const PERSISTENT_LIFETIME_THRESHOLD: u32 = 518_400;
+
 /// Default approval lifetime: 90 days, in seconds of ledger time.
 /// Also applied to work items approved before expiry existed (see ADR 0018).
 pub const DEFAULT_APPROVAL_TTL_SECS: u64 = 90 * 24 * 60 * 60;
@@ -602,12 +607,12 @@ impl IncentivePool {
             .instance()
             .set(&DataKey::MaxPerClaim, &max_per_claim);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::MaxPerAttester, &max_per_attester);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TotalDeposited, &0_i128);
-        env.storage().instance().set(&DataKey::TotalPaid, &0_i128);
+        env.storage().persistent().set(&DataKey::TotalPaid, &0_i128);
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
@@ -658,29 +663,17 @@ impl IncentivePool {
 
     /// Return the per-attester cumulative claim cap.
     pub fn get_max_per_attester(env: Env) -> Result<i128, Error> {
-        Ok(env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxPerAttester)
-            .unwrap_or(i128::MAX))
+        Ok(Self::max_per_attester(&env))
     }
 
     /// Return the cumulative amount deposited into the pool.
     pub fn get_total_deposited(env: Env) -> Result<i128, Error> {
-        Ok(env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalDeposited)
-            .unwrap_or(0))
+        Ok(Self::total_deposited(&env))
     }
 
     /// Return the cumulative amount paid out from the pool.
     pub fn get_total_paid(env: Env) -> Result<i128, Error> {
-        Ok(env
-            .storage()
-            .instance()
-            .get(&DataKey::TotalPaid)
-            .unwrap_or(0))
+        Ok(Self::total_paid(&env))
     }
 
     /// Whether a work item has been approved.
@@ -788,9 +781,13 @@ impl IncentivePool {
     }
 
     /// Set the per-attester cumulative claim cap. Requires admin auth.
+    /// Stored persistently so `claim` never reads the shared instance entry.
     pub fn set_max_per_attester(env: Env, max: i128) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
-        env.storage().instance().set(&DataKey::MaxPerAttester, &max);
+        env.storage()
+            .persistent()
+            .set(&DataKey::MaxPerAttester, &max);
+        Self::bump_persistent(&env, &DataKey::MaxPerAttester);
         Ok(())
     }
 
@@ -838,8 +835,9 @@ impl IncentivePool {
             .checked_add(received)
             .ok_or(Error::ArithmeticOverflow)?;
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TotalDeposited, &deposited);
+        Self::bump_persistent(&env, &DataKey::TotalDeposited);
 
         env.storage()
             .instance()
@@ -884,7 +882,10 @@ impl IncentivePool {
         let new_paid = total_paid
             .checked_add(amount)
             .ok_or(Error::ArithmeticOverflow)?;
-        env.storage().instance().set(&DataKey::TotalPaid, &new_paid);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalPaid, &new_paid);
+        Self::bump_persistent(&env, &DataKey::TotalPaid);
 
         env.storage()
             .instance()
@@ -927,8 +928,9 @@ impl IncentivePool {
             return Err(Error::InsufficientPoolBalance);
         }
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TotalDeposited, &deposited);
+        Self::bump_persistent(&env, &DataKey::TotalDeposited);
         env.storage()
             .instance()
             .set(&DataKey::DriftDetected, &false);
@@ -1444,6 +1446,12 @@ impl IncentivePool {
     /// attester's auth. Pays the attester's bound payout address (see
     /// `set_payout_address`), defaulting to the attester itself. Enforces replay protection, per-attester cap,
     /// and pool balance checks. Transfers tokens on success.
+    ///
+    /// Parallel-execution note: this hot path deliberately writes **no**
+    /// shared instance entry. Per-attester cap, replay flag, reservation
+    /// release and the cumulative paid counter are all persistent entries
+    /// keyed by the work item or attester, so two claims for different
+    /// attesters touch disjoint entries and can execute in parallel.
     pub fn claim(env: Env, work_item_id: BytesN<32>) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
 
@@ -1464,12 +1472,9 @@ impl IncentivePool {
             return Err(Error::PayoutNotEligible);
         }
 
-        // Enforce per-attester cumulative cap.
-        let max_per_attester: i128 = env
-            .storage()
-            .instance()
-            .get(&DataKey::MaxPerAttester)
-            .unwrap_or(i128::MAX);
+        // Enforce per-attester cumulative cap. The cap is read from the
+        // persistent config entry (not the shared instance entry).
+        let max_per_attester = Self::max_per_attester(&env);
         let attester_claimed: i128 = env
             .storage()
             .persistent()
@@ -1482,7 +1487,9 @@ impl IncentivePool {
             return Err(Error::AttesterClaimCapExceeded);
         }
 
-        // Verify pool has sufficient unallocated balance.
+        // Verify pool has sufficient unallocated balance. Totals are
+        // persistent counters so concurrent claims do not contend on the
+        // instance entry.
         let total_paid = Self::total_paid(&env);
         let new_paid = total_paid
             .checked_add(work_item.payout_amount)
@@ -1513,11 +1520,14 @@ impl IncentivePool {
             return Err(Error::TransferFailed);
         }
 
-        // Persist state updates after successful transfer.
+        // Persist state updates after successful transfer. Every write
+        // below is a persistent entry keyed by the work item or attester.
         env.storage()
             .persistent()
             .set(&DataKey::WorkItemClaimed(work_item_id.clone()), &true);
-        env.storage().instance().set(&DataKey::TotalPaid, &new_paid);
+        env.storage()
+            .persistent()
+            .set(&DataKey::TotalPaid, &new_paid);
         env.storage().persistent().set(
             &DataKey::AttesterTotalClaimed(attester.clone()),
             &new_attester_claimed,
@@ -1534,7 +1544,7 @@ impl IncentivePool {
         Self::bump_persistent(&env, &DataKey::WorkItem(work_item_id.clone()));
         Self::bump_persistent(&env, &DataKey::WorkItemClaimed(work_item_id.clone()));
         Self::bump_persistent(&env, &DataKey::AttesterTotalClaimed(attester.clone()));
-        Self::bump_instance(&env);
+        Self::bump_persistent(&env, &DataKey::TotalPaid);
 
         PayoutClaimed {
             work_item_id,
@@ -1652,8 +1662,9 @@ impl IncentivePool {
             .checked_add(payout_amount)
             .ok_or(Error::ArithmeticOverflow)?;
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TotalReserved, &reserved);
+        Self::bump_persistent(env, &DataKey::TotalReserved);
 
         env.storage()
             .instance()
@@ -1728,15 +1739,17 @@ impl IncentivePool {
     }
 
     /// Decrease `TotalReserved`, flooring at zero: legacy items were never
-    /// added to the reservation counter.
+    /// added to the reservation counter. Written as a persistent entry so
+    /// claims do not contend on the shared instance entry.
     fn release_reservation(env: &Env, amount: i128) -> Result<(), Error> {
         let reserved = Self::total_reserved(env)
             .checked_sub(amount)
             .ok_or(Error::ArithmeticOverflow)?
             .max(0);
         env.storage()
-            .instance()
+            .persistent()
             .set(&DataKey::TotalReserved, &reserved);
+        Self::bump_persistent(env, &DataKey::TotalReserved);
         Ok(())
     }
 
@@ -1756,25 +1769,60 @@ impl IncentivePool {
         })
     }
 
+    /// Cumulative deposits. Read from persistent storage, falling back to
+    /// the legacy instance entry written by earlier versions.
     fn total_deposited(env: &Env) -> i128 {
+        if let Some(v) = env
+            .storage()
+            .persistent()
+            .get(&DataKey::TotalDeposited)
+        {
+            return v;
+        }
         env.storage()
             .instance()
             .get(&DataKey::TotalDeposited)
             .unwrap_or(0)
     }
 
+    /// Cumulative payouts. Read from persistent storage, falling back to
+    /// the legacy instance entry written by earlier versions.
     fn total_paid(env: &Env) -> i128 {
+        if let Some(v) = env.storage().persistent().get(&DataKey::TotalPaid) {
+            return v;
+        }
         env.storage()
             .instance()
             .get(&DataKey::TotalPaid)
             .unwrap_or(0)
     }
 
+    /// Total reserved for unclaimed work items. Read from persistent
+    /// storage, falling back to the legacy instance entry.
     fn total_reserved(env: &Env) -> i128 {
+        if let Some(v) = env.storage().persistent().get(&DataKey::TotalReserved) {
+            return v;
+        }
         env.storage()
             .instance()
             .get(&DataKey::TotalReserved)
             .unwrap_or(0)
+    }
+
+    /// Per-attester cumulative claim cap. Read from persistent storage,
+    /// falling back to the legacy instance entry.
+    fn max_per_attester(env: &Env) -> i128 {
+        if let Some(v) = env
+            .storage()
+            .persistent()
+            .get(&DataKey::MaxPerAttester)
+        {
+            return v;
+        }
+        env.storage()
+            .instance()
+            .get(&DataKey::MaxPerAttester)
+            .unwrap_or(i128::MAX)
     }
 
     fn default_ttl(env: &Env) -> u64 {
@@ -1847,6 +1895,13 @@ impl IncentivePool {
             return Err(Error::ContractPaused);
         }
         Ok(())
+    }
+
+    /// Extend the TTL of a persistent entry touched by a hot path.
+    fn bump_persistent(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, PERSISTENT_LIFETIME_THRESHOLD, PERSISTENT_BUMP_AMOUNT);
     }
 }
 

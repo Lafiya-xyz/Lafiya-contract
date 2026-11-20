@@ -20,11 +20,13 @@ import { CHW, NOW, NOW_S, REGISTRY, TRUST } from "./helpers.js";
 
 const RECORD = "ab".repeat(32);
 const HOUR = 3600;
+const EPOCH = 7n;
 
 function bundle(over: Partial<OfflineBundle> = {}): OfflineBundle {
   return {
     network: "testnet",
     snapshotAt: Number(NOW_S),
+    epoch: EPOCH,
     attestations: { [RECORD]: [{ attester: CHW, timestamp: (NOW_S - 100n).toString() }] },
     attesters: { [CHW]: { suspended: false } },
     revoked: [],
@@ -34,7 +36,12 @@ function bundle(over: Partial<OfflineBundle> = {}): OfflineBundle {
 
 const card = `lafiya:v1?${new URLSearchParams({ network: "testnet", contract: REGISTRY, record: RECORD })}`;
 
-async function verdictFor(b: OfflineBundle, staleness?: StalenessPolicy, riskClass?: string) {
+async function verdictFor(
+  b: OfflineBundle,
+  staleness?: StalenessPolicy,
+  riskClass?: string,
+  opts: { trustedEpoch?: bigint } = {},
+) {
   const reader = await openSnapshot(await sealSnapshot(b, 1, null));
   const verifier = new LafiyaVerifier({
     network: "testnet",
@@ -42,6 +49,7 @@ async function verdictFor(b: OfflineBundle, staleness?: StalenessPolicy, riskCla
     chain: reader,
     now: () => NOW,
     ...(staleness ? { staleness } : {}),
+    ...(opts.trustedEpoch !== undefined ? { trustedEpoch: opts.trustedEpoch } : {}),
   });
   return verifier.verifyCard(card, riskClass ? { riskClass } : {});
 }
@@ -51,6 +59,19 @@ describe("snapshot integrity", () => {
     const env = await sealSnapshot(bundle(), 10, null);
     await expect(openSnapshot(env)).resolves.toBeDefined();
     const forged = { ...env, bundle: bundle({ revoked: [] , attesters: {} }) };
+    await expect(openSnapshot(forged)).rejects.toBeInstanceOf(SnapshotError);
+  });
+
+  it("embeds the status-list epoch in the sealed bundle", async () => {
+    const env = await sealSnapshot(bundle(), 10, null);
+    expect(env.bundle.epoch).toBe(EPOCH);
+    const opened = await openSnapshot(env);
+    expect(opened.bundle.epoch).toBe(EPOCH);
+  });
+
+  it("rejects a snapshot whose epoch was tampered with", async () => {
+    const env = await sealSnapshot(bundle(), 10, null);
+    const forged = { ...env, bundle: { ...env.bundle, epoch: EPOCH + 1n } };
     await expect(openSnapshot(forged)).rejects.toBeInstanceOf(SnapshotError);
   });
 
@@ -74,6 +95,13 @@ describe("snapshot cache", () => {
     expect(second.prev).toBe(first.hash);
     await expect(cache.save(bundle(), 9)).rejects.toBeInstanceOf(SnapshotError);
     expect((await cache.load("testnet"))?.snapshotAt).toBe(Number(NOW_S));
+  });
+
+  it("preserves the epoch across cache round-trips", async () => {
+    const cache = new SnapshotCache(new MemorySnapshotStore());
+    await cache.save(bundle({ epoch: EPOCH + 3n }), 10);
+    const loaded = await cache.load("testnet");
+    expect(loaded?.bundle.epoch).toBe(EPOCH + 3n);
   });
 
   it("treats corrupt or unknown-schema records as a miss", async () => {
@@ -139,6 +167,16 @@ describe("staleness semantics", () => {
     const result = await verdictFor(bundle(), fail);
     expect(result).toMatchObject({ verdict: "verified", source: "offline" });
     expect(result.staleAsOf).toEqual(NOW);
+  });
+
+  it("verifies against the epoch-consistent status-list pair", async () => {
+    const result = await verdictFor(bundle({ epoch: EPOCH }), fail);
+    expect(result).toMatchObject({ verdict: "verified", source: "offline", epoch: EPOCH });
+  });
+
+  it("fails closed when the snapshot epoch does not match the trusted root epoch", async () => {
+    const result = await verdictFor(bundle({ epoch: EPOCH }), fail, undefined, { trustedEpoch: EPOCH + 1n });
+    expect(result.verdict).toBe("unavailable");
   });
 
   it("hard-fails a stale snapshot as unavailable", async () => {

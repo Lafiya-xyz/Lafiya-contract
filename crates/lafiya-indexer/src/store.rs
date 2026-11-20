@@ -61,6 +61,27 @@ pub struct LedgerHash {
     pub hash: String,
 }
 
+/// A status-list segment published for a specific epoch.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct StatusListSegment {
+    pub epoch: i64,
+    pub segment_index: i64,
+    pub bits: Vec<u8>,
+    pub segment_hash: String,
+    pub ledger: i64,
+    pub event_id: String,
+}
+
+/// A status-list root activated for a specific epoch.
+#[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
+pub struct StatusListRoot {
+    pub epoch: i64,
+    pub root: String,
+    pub segment_count: i64,
+    pub ledger: i64,
+    pub event_id: String,
+}
+
 /// A work item in the incentive pool.
 #[derive(Debug, Clone, PartialEq, Eq, sqlx::FromRow)]
 pub struct WorkItem {
@@ -329,6 +350,88 @@ pub async fn last_hashed_ledger(pool: &PgPool) -> Result<Option<u32>, sqlx::Erro
         .fetch_one(pool)
         .await?;
     Ok(ledger.map(|l| l as u32))
+}
+
+/// Insert a status-list segment for `(epoch, segment_index)`, ignoring
+/// duplicates by that key. Segments are epoch-scoped so verifiers can read a
+/// root and its segments consistently.
+pub async fn insert_status_list_segment(
+    pool: &PgPool,
+    segment: &StatusListSegment,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO status_list_segments
+             (epoch, segment_index, bits, segment_hash, ledger, event_id)
+         VALUES ($1, $2, $3, $4, $5, $6)
+         ON CONFLICT (epoch, segment_index) DO NOTHING",
+    )
+    .bind(segment.epoch)
+    .bind(segment.segment_index)
+    .bind(&segment.bits)
+    .bind(&segment.segment_hash)
+    .bind(segment.ledger)
+    .bind(&segment.event_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Activate a status-list root for `epoch`, ignoring duplicates by epoch.
+pub async fn insert_status_list_root(
+    pool: &PgPool,
+    root: &StatusListRoot,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "INSERT INTO status_list_roots
+             (epoch, root, segment_count, ledger, event_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (epoch) DO NOTHING",
+    )
+    .bind(root.epoch)
+    .bind(&root.root)
+    .bind(root.segment_count)
+    .bind(root.ledger)
+    .bind(&root.event_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Fetch the active root for `epoch`.
+pub async fn status_list_root(
+    pool: &PgPool,
+    epoch: i64,
+) -> Result<Option<StatusListRoot>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT epoch, root, segment_count, ledger, event_id
+         FROM status_list_roots WHERE epoch = $1",
+    )
+    .bind(epoch)
+    .fetch_optional(pool)
+    .await
+}
+
+/// Fetch all segments for `epoch`, ordered by segment index.
+pub async fn status_list_segments(
+    pool: &PgPool,
+    epoch: i64,
+) -> Result<Vec<StatusListSegment>, sqlx::Error> {
+    sqlx::query_as(
+        "SELECT epoch, segment_index, bits, segment_hash, ledger, event_id
+         FROM status_list_segments
+         WHERE epoch = $1
+         ORDER BY segment_index ASC",
+    )
+    .bind(epoch)
+    .fetch_all(pool)
+    .await
+}
+
+/// Highest epoch for which a root has been activated, if any.
+pub async fn latest_status_list_epoch(pool: &PgPool) -> Result<Option<i64>, sqlx::Error> {
+    sqlx::query_scalar("SELECT MAX(epoch) FROM status_list_roots")
+        .fetch_one(pool)
+        .await
 }
 
 /// Insert a work item, or update its status/amount if it already exists.
@@ -663,6 +766,65 @@ async fn apply_event(
             .execute(&mut **tx)
             .await?;
         }
+        LafiyaEvent::StatusListSegmentPublished {
+            epoch,
+            segment_index,
+            bits,
+            segment_hash,
+        } => {
+            sqlx::query(
+                "INSERT INTO status_list_segments
+                     (epoch, segment_index, bits, segment_hash, ledger, event_id)
+                 VALUES ($1, $2, $3, $4, $5, $6)
+                 ON CONFLICT (epoch, segment_index) DO NOTHING",
+            )
+            .bind(*epoch as i64)
+            .bind(*segment_index as i64)
+            .bind(bits)
+            .bind(segment_hash)
+            .bind(ledger)
+            .bind(&raw.id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        LafiyaEvent::StatusListRootSet {
+            epoch,
+            root,
+            segment_count,
+        } => {
+            sqlx::query(
+                "INSERT INTO status_list_roots
+                     (epoch, root, segment_count, ledger, event_id)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (epoch) DO NOTHING",
+            )
+            .bind(*epoch as i64)
+            .bind(root)
+            .bind(*segment_count as i64)
+            .bind(ledger)
+            .bind(&raw.id)
+            .execute(&mut **tx)
+            .await?;
+        }
+        LafiyaEvent::StatusListUnrevoked {
+            epoch,
+            segment_index,
+            bit_index,
+        } => {
+            sqlx::query(
+                "INSERT INTO status_list_unrevocations
+                     (event_id, epoch, segment_index, bit_index, ledger, tx_hash)
+                 VALUES ($1, $2, $3, $4, $5, $6)",
+            )
+            .bind(&raw.id)
+            .bind(*epoch as i64)
+            .bind(*segment_index as i64)
+            .bind(*bit_index as i64)
+            .bind(ledger)
+            .bind(&raw.tx_hash)
+            .execute(&mut **tx)
+            .await?;
+        }
         LafiyaEvent::Admin { name, fields } => {
             sqlx::query(
                 "INSERT INTO admin_events (event_id, contract_id, name, fields, ledger, tx_hash)
@@ -729,6 +891,40 @@ mod tests {
         assert_eq!(first.deliveries, 10);
         let second = prune(&pool, retention).await?;
         assert_eq!(second.deliveries, 0);
+        Ok(())
+    }
+
+    /// Status-list segments and roots are epoch-scoped: re-inserting the same
+    /// `(epoch, index)` or epoch is a no-op, and reads return only that epoch.
+    #[sqlx::test]
+    async fn status_list_is_epoch_scoped(pool: PgPool) -> sqlx::Result<()> {
+        MIGRATOR.run(&pool).await.unwrap();
+        let segment = StatusListSegment {
+            epoch: 1,
+            segment_index: 0,
+            bits: vec![0u8; 16],
+            segment_hash: "h0".into(),
+            ledger: 10,
+            event_id: "evt-seg".into(),
+        };
+        insert_status_list_segment(&pool, &segment).await?;
+        insert_status_list_segment(&pool, &segment).await?;
+        let root = StatusListRoot {
+            epoch: 1,
+            root: "root1".into(),
+            segment_count: 1,
+            ledger: 11,
+            event_id: "evt-root".into(),
+        };
+        insert_status_list_root(&pool, &root).await?;
+        insert_status_list_root(&pool, &root).await?;
+        assert_eq!(status_list_segments(&pool, 1).await?.len(), 1);
+        assert_eq!(status_list_segments(&pool, 2).await?.len(), 0);
+        assert_eq!(
+            status_list_root(&pool, 1).await?.map(|r| r.root),
+            Some("root1".to_string())
+        );
+        assert_eq!(latest_status_list_epoch(&pool).await?, Some(1));
         Ok(())
     }
 

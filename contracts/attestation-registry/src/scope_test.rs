@@ -3,6 +3,8 @@
 extern crate std;
 
 use super::*;
+use crate::attest::AttestationScope;
+use crate::status_list::{StatusListSegment, StatusListRoot};
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{Env, Map};
 
@@ -91,7 +93,7 @@ fn class_attestation_requires_sufficient_tier() {
         .set_attester_tier(&w.admin, &attester, &attester_registry::Tier::Physician);
     w.client
         .attest_with_scope(&attester, &patient, &record, &medication, &None);
-    let scope = w.client.get_attestation_scope(&record).unwrap();
+    let scope: AttestationScope = w.client.get_attestation_scope(&record).unwrap();
     assert_eq!(scope.class, medication);
     assert_eq!(scope.facility_id, None);
 }
@@ -271,4 +273,72 @@ fn probation_rate_cap_limits_attestations_until_promotion() {
         let patient = consent(&w, &attester, &record);
         w.client.attest(&attester, &patient, &record);
     }
+}
+
+// ── Epoch-versioned status list scope ──
+
+#[test]
+fn status_list_root_requires_epoch_consistent_segments() {
+    let w = world();
+    let epoch = 1u64;
+    let segment = StatusListSegment {
+        epoch,
+        index: 0,
+        bits: 0b1,
+        segment_hash: hash(&w.env, 50),
+    };
+    w.client.publish_status_list_segment(
+        &epoch,
+        &segment.index,
+        &segment.bits,
+        &segment.segment_hash,
+    );
+
+    // A root over a segment that was never published for this epoch is
+    // rejected; the interface and storage layout are unchanged.
+    let missing = StatusListRoot {
+        epoch,
+        root: hash(&w.env, 51),
+    };
+    assert_eq!(
+        w.client
+            .try_set_status_list_root(&missing.epoch, &missing.root),
+        Err(Ok(Error::StatusListSegmentMissing))
+    );
+
+    let root = StatusListRoot {
+        epoch,
+        root: hash(&w.env, 52),
+    };
+    w.client.set_status_list_root(&root.epoch, &root.root);
+    assert_eq!(w.client.get_status_list_root(&epoch), Some(root.root));
+}
+
+#[test]
+fn status_list_revocation_is_monotonic_across_epochs() {
+    let w = world();
+    let first = 1u64;
+    let second = 2u64;
+    w.client
+        .publish_status_list_segment(&first, &0, &0b1, &hash(&w.env, 60));
+    w.client
+        .set_status_list_root(&first, &hash(&w.env, 61));
+
+    // Clearing a previously set bit without an explicit unrevoke is refused.
+    assert_eq!(
+        w.client
+            .try_publish_status_list_segment(&second, &0, &0b0, &hash(&w.env, 62)),
+        Err(Ok(Error::StatusListRevocationMonotonic))
+    );
+
+    // The explicit unrevoke path emits an event and allows the clear.
+    w.client.unrevoke_status_list_bit(&second, &0, &0);
+    w.client
+        .publish_status_list_segment(&second, &0, &0b0, &hash(&w.env, 63));
+    w.client
+        .set_status_list_root(&second, &hash(&w.env, 64));
+    assert_eq!(
+        w.client.get_status_list_root(&second),
+        Some(hash(&w.env, 64))
+    );
 }

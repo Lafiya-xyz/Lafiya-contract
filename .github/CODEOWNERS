@@ -6,6 +6,17 @@
 /scripts/   @Coredevjay
 /docs/      @Coredevjay
 
+# attestation-registry: ownership maps to cohesive modules (see issue #672).
+/contracts/attestation-registry/src/lib.rs         @Coredevjay
+/contracts/attestation-registry/src/admin.rs       @Coredevjay
+/contracts/attestation-registry/src/consent.rs     @Coredevjay
+/contracts/attestation-registry/src/attest.rs      @Coredevjay
+/contracts/attestation-registry/src/batch.rs       @Coredevjay
+/contracts/attestation-registry/src/quorum.rs      @Coredevjay
+/contracts/attestation-registry/src/dispute.rs     @Coredevjay
+/contracts/attestation-registry/src/status_list.rs @Coredevjay
+/contracts/attestation-registry/src/rate_limit.rs  @Coredevjay
+
 # Mainnet enablement requires owner sign-off (see docs/runbooks/mainnet-readiness.md).
 /config/networks.toml          @Coredevjay
 /config/mainnet-readiness.json @Coredevjay

@@ -93,3 +93,57 @@ where
 pub fn extend_instance_ttl(env: &Env, threshold: u32, extend_to: u32) {
     env.storage().instance().extend_ttl(threshold, extend_to);
 }
+
+/// Durability class for keys that are written on hot paths.
+///
+/// Hot-path entry points (attest, co-attest, claim, add_attester, ...) must
+/// not write any shared instance key: under Soroban's parallel execution
+/// model, transactions that write the same entry cannot run in parallel, and
+/// every instance write rewrites the whole instance entry. Sequence counters
+/// and other per-event bookkeeping therefore live in persistent storage,
+/// keyed per record/attester, so distinct transactions touch distinct
+/// entries.
+pub const HOT_PATH_DURABILITY: Durability = Durability::Persistent;
+
+/// Durability class for rarely changing configuration (admin, roles, rate
+/// limit config, ...). These are read on hot paths but only written by
+/// admin entry points, so they may stay in the shared instance entry.
+pub const CONFIG_DURABILITY: Durability = Durability::Instance;
+
+/// Returns the durability class a hot-path key must use.
+///
+/// This is a compile-time constant today, but routing hot-path keys through
+/// this helper keeps the intent explicit and lets the policy change in one
+/// place.
+pub fn hot_path_durability() -> Durability {
+    HOT_PATH_DURABILITY
+}
+
+/// Returns the durability class a rarely changing config key must use.
+pub fn config_durability() -> Durability {
+    CONFIG_DURABILITY
+}
+
+/// Reads the current value of a per-record sequence counter and returns the
+/// next one, without touching any shared entry.
+///
+/// `key` must be a per-record/per-attester key (for example
+/// `DataKey::EventSeq(record_id)`), bound to [`HOT_PATH_DURABILITY`]. The
+/// counter starts at 0 when absent, so the first call returns 1.
+pub fn next_sequence<K>(env: &Env, key: &K) -> u64
+where
+    K: StorageKey + IntoVal<Env, Val>,
+{
+    let current: u64 = get(env, key).unwrap_or(0);
+    let next = current.saturating_add(1);
+    set(env, key, &next);
+    next
+}
+
+/// Reads a per-record sequence counter without incrementing it.
+pub fn peek_sequence<K>(env: &Env, key: &K) -> u64
+where
+    K: StorageKey + IntoVal<Env, Val>,
+{
+    get(env, key).unwrap_or(0)
+}
