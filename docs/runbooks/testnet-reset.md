@@ -1,5 +1,10 @@
 # Runbook: Testnet Reset
 
+**Incident severity:** **SEV4**; **SEV3** if the automation fails to recover.
+Roles: IC = release manager, operations lead = on-call operator, communications
+lead = none. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 SDF periodically resets testnet and futurenet, wiping every account and
 contract. After a reset every contract ID in `config/networks.toml`, the
 bindings, and `lafiya-web`'s environment points at nothing.

@@ -1,5 +1,10 @@
 # Canary attestations
 
+**Incident severity:** **SEV2** when the canary fails or exceeds
+`MAX_LATENCY_SECS`; **SEV3** for a single flake. Roles: IC = on-call maintainer,
+operations lead = on-call operator, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 A scheduled workflow (`.github/workflows/canary.yml`, `scripts/canary.sh`)
 submits one attestation from a dedicated canary attester and reads it back,
 alerting (issue + failed run) on failure or when write+read exceeds

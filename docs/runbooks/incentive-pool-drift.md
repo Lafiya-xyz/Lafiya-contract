@@ -3,6 +3,11 @@
 **Trigger:** a `BalanceMismatch` event, `claim` failing with
 `ReconciliationRequired` (22), or `reconcile()` returning nonzero `drift`.
 
+**Incident severity:** default **SEV2**; **SEV1** if negative drift persists
+after `pause`. Roles: IC = on-call maintainer, operations lead = treasury
+operator, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 1. **Measure.** Call `reconcile()` and record `accounted`, `actual_balance`
    and `drift`. Check `is_drift_detected()`.
 2. **Pause if negative.** If `drift < 0`, call `pause` while investigating;

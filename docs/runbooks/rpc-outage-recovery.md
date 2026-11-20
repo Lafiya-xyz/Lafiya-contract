@@ -8,6 +8,11 @@ endpoint fails or hangs, before deciding whether to re-run it. Not a description
 configure networks (see `config/README.md`) or how to upgrade a contract (see
 [`contract-upgrade.md`](contract-upgrade.md)).
 
+**Incident severity:** default **SEV2**; **SEV3** if a failover provider absorbs the
+outage. Roles: IC = on-call maintainer, operations lead = on-call operator,
+communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 **Background:** see
 [ADR-0011](../adr/0011-rpc-provider-failover-and-transaction-recovery.md) for the full
 retry-classification model and the failure-injection prototype this runbook mirrors

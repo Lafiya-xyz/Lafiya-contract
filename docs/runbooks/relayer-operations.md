@@ -1,5 +1,10 @@
 # Runbook: Relayer and Sponsor Account Operations
 
+**Incident severity:** **SEV2** for sponsor exhaustion or a relayer outage;
+**SEV1** for sponsor key compromise. Roles: IC = on-call maintainer, operations
+lead = relayer operator, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 Covers the sponsored-attestation relayer
 ([design](../relayer-sponsored-attestations.md),
 [threat model](../security/relayer-threat-model.md)) and fee bumping

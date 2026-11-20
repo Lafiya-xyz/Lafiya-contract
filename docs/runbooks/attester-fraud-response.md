@@ -4,6 +4,11 @@
 [`crates/lafiya-fraud-scoring`](../../crates/lafiya-fraud-scoring) (issue #415) and whoever
 reviews its output.
 
+**Incident severity:** **SEV1** if a flagged attester's attestations still verify;
+otherwise **SEV2**. Roles: IC = on-call maintainer, operations lead = fraud
+reviewer, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 **Scope:** what to do with a `RiskReport` once the scoring job produces one. Not a description
 of the scoring itself (see
 [`docs/spikes/0415-attester-fraud-scoring.md`](../spikes/0415-attester-fraud-scoring.md)) or of

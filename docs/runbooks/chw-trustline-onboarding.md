@@ -1,5 +1,10 @@
 # CHW trustline onboarding (incentive-pool payouts)
 
+**Incident severity:** **SEV3**; **SEV2** if a whole cohort cannot be paid. Roles:
+IC = on-call maintainer, operations lead = support operator, communications lead =
+communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 `incentive-pool::claim` pays the attester in the pool token (USDC, a Stellar
 Asset Contract). A recipient account without a trustline, or whose trustline
 the issuer has not authorized, cannot receive it. Since #509 such a claim

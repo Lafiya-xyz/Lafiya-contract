@@ -6,6 +6,11 @@
 **Scope:** upgrading existing deployed instances (testnet or mainnet). Initial
 deployment is out of scope for this runbook.
 
+**Incident severity:** default **SEV2**; **SEV1** if a wrong verification verdict
+is observed after the upgrade. Roles: IC = on-call maintainer, operations lead =
+release manager, communications lead = maintainer on rotation. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 **Companion tooling:** [`scripts/upgrade.sh`](../../scripts/upgrade.sh) automates the
 mechanical steps described here (build → size check → hash → upload → `upgrade()` →
 optional `migrate()` → verify). Every step the script performs is also spelled out
