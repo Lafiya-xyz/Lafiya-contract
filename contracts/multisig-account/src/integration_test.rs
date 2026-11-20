@@ -1,7 +1,8 @@
 extern crate std;
 
-use crate::test::{register_account, signatures_for, signing_keys};
+use crate::test::{signatures_for, signing_keys};
 use ed25519_dalek::SigningKey;
+use lafiya_test_utils::SystemBuilder;
 use sha2::{Digest, Sha256};
 use soroban_sdk::{
     testutils::Address as _,
@@ -57,19 +58,15 @@ fn multisig_address_administers_both_registries() {
     let env = Env::default();
     env.mock_all_auths();
     let keys = signing_keys();
-    let account = register_account(&env, &keys, 2);
-
-    let attester_registry_id =
-        env.register(attester_registry::AttesterRegistry, (account.clone(),));
-    let attester_registry =
-        attester_registry::AttesterRegistryClient::new(&env, &attester_registry_id);
-
-    let attestation_registry_id = env.register(
-        attestation_registry::AttestationRegistry,
-        (account.clone(), attester_registry_id.clone()),
-    );
-    let _attestation_registry =
-        attestation_registry::AttestationRegistryClient::new(&env, &attestation_registry_id);
+    let system = SystemBuilder::new(&env)
+        .with_multisig_account(&keys, 2)
+        .with_attester_registry()
+        .with_attestation_registry()
+        .build();
+    let account = system.multisig_account_address();
+    let attester_registry_id = system.attester_registry_address();
+    let attester_registry = system.attester_registry();
+    let _attestation_registry = system.attestation_registry();
 
     let grant_registrar = authorization_entry(
         &env,

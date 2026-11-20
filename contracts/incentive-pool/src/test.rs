@@ -4,7 +4,7 @@ use super::*;
 use soroban_sdk::testutils::{Address as _, Events as _};
 use soroban_sdk::{Address, BytesN, Env, Event, IntoVal};
 
-use lafiya_test_utils::{new_env, register_funded_token, register_token};
+use lafiya_test_utils::{new_env, register_token, SystemBuilder};
 
 const ONE_UNIT: i128 = 1_000_000; // 1 USDC (6 decimals)
 const POOL_CAP: i128 = 100_000 * ONE_UNIT; // 100 000 USDC
@@ -19,41 +19,20 @@ fn setup() -> (
     Address,
     Address,
 ) {
-    let env = new_env();
-
-    let admin = Address::generate(&env);
-    let attester_registry_id = env.register(attester_registry::AttesterRegistry, (admin.clone(),));
-    let attester_registry_client =
-        attester_registry::AttesterRegistryClient::new(&env, &attester_registry_id);
-    attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
-    attester_registry_client.grant_role(&attester_registry::Role::Guardian, &admin);
-
-    // Deploy a token (Stellar asset contract for testing).
-    let (token, token_client) = register_funded_token(&env, &admin, 2 * POOL_CAP);
-    let token_admin = token_client.admin();
-
-    let approver = Address::generate(&env);
-
-    let contract_id = env.register(IncentivePool, ());
-    let client = IncentivePoolClient::new(&env, &contract_id);
-
-    client.initialize(
-        &admin,
-        &approver,
-        &token,
-        &attester_registry_id,
-        &CLAIM_CAP,
-        &POOL_CAP,
-    );
+    let system = SystemBuilder::new()
+        .with_attester_registry()
+        .with_funded_token(2 * POOL_CAP)
+        .with_incentive_pool(CLAIM_CAP, POOL_CAP)
+        .build();
 
     (
-        env,
-        client,
-        attester_registry_client,
-        admin,
-        approver,
-        token,
-        token_admin,
+        system.env,
+        system.incentive_pool,
+        system.attester_registry,
+        system.admin,
+        system.approver,
+        system.token,
+        system.token_admin,
     )
 }
 
@@ -700,7 +679,7 @@ fn multiple_attesters_independent_caps() {
 
 #[test]
 fn getters_before_initialize_fail() {
-    let env = Env::default();
+    let env = new_env();
     let contract_id = env.register(IncentivePool, ());
     let client = IncentivePoolClient::new(&env, &contract_id);
 

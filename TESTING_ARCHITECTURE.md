@@ -86,3 +86,58 @@
   `proptest-regressions/` on failure.
 - Reproduce locally:
   `PROPTEST_CASES=10000 cargo test -p incentive-pool -- stateful_test fuzz_test --nocapture`.
+
+## Proptest seeding, tiers, and regression persistence (#721)
+
+### Case-count tiers
+
+Proptest case counts are standardized through `PROPTEST_CASES` and the nextest
+profiles in `.config/`:
+
+| Tier | Profile | `PROPTEST_CASES` | When it runs |
+|------|---------|------------------|--------------|
+| PR (fast) | `default` | 256 | Every pull request |
+| Nightly (deep) | `nightly` | 50000 | Scheduled nightly workflow |
+
+Run the PR tier locally with `cargo nextest run` (the default profile). Run the
+nightly tier with `cargo nextest run --profile nightly`. Both profiles set
+`PROPTEST_CASES`; do not hard-code case counts in individual tests.
+
+### Seeds and failure output
+
+Every proptest failure prints its seed and the minimal failing input. Capture
+the seed from the failure output — it is also included in the deduplicated
+nightly issue opened automatically when a nightly run fails.
+
+### Regression files
+
+Every crate with proptests commits its `proptest-regressions/` directory
+(`contracts/multisig-account/proptest-regressions/` is the existing example).
+CI fails when a regression file has uncommitted changes, so a failure found in
+CI or nightly is never lost: commit the generated file in the fixing PR.
+
+### Reproducing a failure locally
+
+1. Re-run with the failing seed:
+   `PROPTEST_CASES=256 PROPTEST_RNG_SEED=<seed> cargo test -p <crate> -- <test_name> --nocapture`
+2. Or replay the persisted regression file:
+   `cargo test -p <crate> -- <test_name> --nocapture`
+   (proptest automatically replays cases from `proptest-regressions/`).
+3. To reproduce the deep tier, use `PROPTEST_CASES=50000` (or the `nightly`
+   nextest profile) with the same seed.
+
+## SystemBuilder migration for contract tests (#722)
+
+`lafiya-test-utils` provides a `SystemBuilder` that deploys any subset of the
+five contracts wired as in production (via constructors), exposing typed
+handles and named actors.
+
+- Prefer `SystemBuilder` over ad-hoc `setup()` helpers and raw `register`
+  calls in `contracts/*/src/test.rs`, `fuzz_test.rs`, `large_test.rs`, and
+  `tests/*.rs`.
+- Migrate one contract per commit with no change in assertions; the test count
+  must stay the same.
+- New tests must use `SystemBuilder`; a lint/check discourages new ad-hoc
+  `register`/setup code in tests.
+- Report test LOC before/after in the migration PR (target: ≥80% of setup code
+  migrated, measurable LOC decrease).

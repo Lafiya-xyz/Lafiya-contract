@@ -4,31 +4,34 @@
 //!
 //! Run just this target locally with more cases via:
 //! `PROPTEST_CASES=10000 cargo test -p attestation-registry fuzz_test -- --nocapture`
+//!
+//! Failures print the proptest seed; reproduce with
+//! `PROPTEST_SEED=<seed> cargo test -p attestation-registry fuzz_test`.
+//! Shrunk cases are persisted under `proptest-regressions/` and must be
+//! committed. See `TESTING_ARCHITECTURE.md` for the PR/nightly tiers.
 
 extern crate std;
 
 use super::*;
-use attester_registry::{AttesterRegistry, AttesterRegistryClient};
+use lafiya_test_utils::SystemBuilder;
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, BytesN, Env};
 
+/// Build a budget-constrained `Env` with the attestation registry and its
+/// attester registry wired as in production via the shared `SystemBuilder`.
 fn setup(
     env: &Env,
 ) -> (
     AttestationRegistryClient<'_>,
-    AttesterRegistryClient<'_>,
+    attester_registry::AttesterRegistryClient<'_>,
     Address,
 ) {
-    env.mock_all_auths();
-    let admin = Address::generate(env);
-    let attester_registry_id = env.register(AttesterRegistry, (admin.clone(),));
-    let attester_registry_client = AttesterRegistryClient::new(env, &attester_registry_id);
-    attester_registry_client.grant_role(&attester_registry::Role::Registrar, &admin);
-    let contract_id = env.register(AttestationRegistry, (admin.clone(), attester_registry_id));
+    let system = SystemBuilder::new(env).with_attestation_registry().build();
+    let admin = system.admin().clone();
     (
-        AttestationRegistryClient::new(env, &contract_id),
-        attester_registry_client,
+        system.attestation_registry().clone(),
+        system.attester_registry().clone(),
         admin,
     )
 }
@@ -49,7 +52,12 @@ fn attest_with_consent(
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(64))]
+    #![proptest_config(ProptestConfig {
+        cases: 64,
+        // Print the seed on failure so CI/nightly logs are reproducible.
+        verbose: 1,
+        ..ProptestConfig::default()
+    })]
 
     /// Any 32-byte `record_hash` value — including all-zero, all-`0xFF`,
     /// and arbitrary bytes — must be accepted by `attest` for an

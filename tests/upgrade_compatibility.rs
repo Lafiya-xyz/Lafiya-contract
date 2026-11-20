@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
+use lafiya_test_utils::SystemBuilder;
+
 /// Test data for upgrade verification
 #[derive(Debug, Clone)]
 struct UpgradeFixture {
@@ -170,6 +172,18 @@ fn test_upgrade_fixture(fixture: &UpgradeFixture) -> Result<(), Box<dyn std::err
     assert!(
         !old_wasm.is_empty(),
         "Old WASM is empty"
+    );
+
+    // 3b. Deploy the fixture through the shared builder so the system is wired
+    // exactly as in production (constructors, roles, cross-contract links).
+    let system = SystemBuilder::new()
+        .with_wasm(&fixture.old_wasm_path)
+        .deploy_all()
+        .expect("failed to deploy fixture via SystemBuilder");
+    assert!(
+        system.contract_count() > 0,
+        "SystemBuilder deployed no contracts for {}",
+        fixture.name
     );
 
     // 4. Create golden file tracking
@@ -333,6 +347,18 @@ fn test_attestation_registry_ring_buffer_migration() -> Result<(), Box<dyn std::
     let old_wasm = fs::read(&fixture.old_wasm_path)?;
     assert!(!old_wasm.is_empty(), "Old WASM is empty");
 
+    // 1b. Deploy the previous-release WASM via the shared builder so the
+    // pre-upgrade wiring matches production.
+    let system = SystemBuilder::new()
+        .with_wasm(&fixture.old_wasm_path)
+        .deploy_all()
+        .expect("failed to deploy fixture via SystemBuilder");
+    assert!(
+        system.contract_count() > 0,
+        "SystemBuilder deployed no contracts for {}",
+        fixture.name
+    );
+
     // 2. Write scenario data: attestations with full MAX_HISTORY histories.
     let mut store: HashMap<String, HistoryLayout> = HashMap::new();
     for (idx, att) in fixture.scenario_data.attestations.iter().enumerate() {
@@ -390,6 +416,18 @@ fn test_attestation_registry_ring_buffer_migration() -> Result<(), Box<dyn std::
 fn test_attestation_registry_lazy_v1_to_v2_conversion() -> Result<(), Box<dyn std::error::Error>> {
     let fixture = load_fixture("v0.1.0-dev", "attestation-registry");
     verify_fixture_checksums()?;
+
+    // Deploy the previous-release WASM via the shared builder so the
+    // pre-upgrade wiring matches production.
+    let system = SystemBuilder::new()
+        .with_wasm(&fixture.old_wasm_path)
+        .deploy_all()
+        .expect("failed to deploy fixture via SystemBuilder");
+    assert!(
+        system.contract_count() > 0,
+        "SystemBuilder deployed no contracts for {}",
+        fixture.name
+    );
 
     // Lazy conversion on first read: storage untouched until read.
     let mut on_read = v1_full_history(5000);

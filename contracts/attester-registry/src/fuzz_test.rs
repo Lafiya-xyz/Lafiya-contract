@@ -7,15 +7,41 @@
 //!
 //! Run just this target locally with more cases via:
 //! `PROPTEST_CASES=10000 cargo test -p attester-registry fuzz_test -- --nocapture`
+//!
+//! Case tiers are standardized across the workspace: PR runs use
+//! `PROPTEST_CASES=256` (the default below), nightly deep runs use
+//! `PROPTEST_CASES=50000` via the `nightly` nextest profile. On failure
+//! proptest prints the seed and the minimal failing input; the shrunk case
+//! is persisted to `contracts/attester-registry/proptest-regressions/` and
+//! must be committed so CI replays it. Reproduce a failure with:
+//! `PROPTEST_CASES=256 cargo test -p attester-registry fuzz_test -- --nocapture`
+//! and re-run the persisted case with `PROPTEST_REGRESSIONS=1`.
 
 extern crate std;
 
 use super::*;
+use lafiya_test_utils::SystemBuilder;
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, Env};
 
 const POOL_SIZE: usize = 4;
+
+/// Build a budget-constrained `Env` with the attester-registry deployed and
+/// wired through the shared `SystemBuilder`, returning the client and the
+/// admin actor. All roles needed by the state machine are granted to admin.
+fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
+    let env = Env::default();
+    env.mock_all_auths();
+    env.cost_estimate().budget().reset_unlimited();
+    let system = SystemBuilder::new(&env).with_attester_registry().build();
+    let client = system.attester_registry();
+    let admin = system.admin();
+    client.initialize(&admin);
+    client.grant_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Guardian, &admin);
+    (env, client, admin)
+}
 
 #[derive(Clone, Copy, Debug)]
 enum Op {
@@ -41,12 +67,7 @@ proptest! {
     fn is_attester_matches_model_after_any_op_sequence(
         ops in proptest::collection::vec(op_strategy(), 0..64)
     ) {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-    client.grant_role(&Role::Registrar, &admin);
-    client.grant_role(&Role::Guardian, &admin);
+        let (env, client, admin) = setup();
 
         let addrs: std::vec::Vec<Address> =
             (0..POOL_SIZE).map(|_| Address::generate(&env)).collect();
@@ -99,12 +120,7 @@ proptest! {
         // Adding the same (or any) attester any number of times in a row
         // must never flip is_attester to false for an address that was
         // never removed or suspended.
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        client.initialize(&admin);
-    client.grant_role(&Role::Registrar, &admin);
-    client.grant_role(&Role::Guardian, &admin);
+        let (env, client, admin) = setup();
 
         let addrs: std::vec::Vec<Address> =
             (0..POOL_SIZE).map(|_| Address::generate(&env)).collect();

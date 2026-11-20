@@ -1,4 +1,5 @@
 #![cfg(test)]
+use lafiya_test_utils::budget_env;
 use soroban_sdk::{testutils::*, Env, IntoVal};
 use std::fs;
 use serde_json::{json, Value};
@@ -29,6 +30,18 @@ fn measure_budget(env: &Env) -> BudgetSnapshot {
         events_size_bytes: resources.events_size_bytes,
         estimated_fee_stroops: fee.total,
     }
+}
+
+/// Emit per-test CPU and memory usage in a JUnit-friendly, greppable format so
+/// cost trends are visible in CI reports.
+fn report_test_cost(test_name: &str, snapshot: &BudgetSnapshot) {
+    println!(
+        "[budget] test={} cpu_instructions={} memory_bytes={} estimated_fee_stroops={}",
+        test_name,
+        snapshot.cpu_instructions,
+        snapshot.memory_bytes,
+        snapshot.estimated_fee_stroops
+    );
 }
 
 fn load_baseline() -> Value {
@@ -67,11 +80,12 @@ fn check_regression(name: &str, current: &BudgetSnapshot, baseline: &Value, thre
 
 #[test]
 fn test_attester_registry_budgets() {
-    let env = Env::default();
+    let env = budget_env();
     let baseline = load_baseline();
     
     // Test add_attester with worst-case state
     let snapshot = measure_budget(&env);
+    report_test_cost("add_attester", &snapshot);
     check_regression(
         "add_attester",
         &snapshot,
@@ -81,6 +95,7 @@ fn test_attester_registry_budgets() {
     
     // Test is_attester
     let snapshot = measure_budget(&env);
+    report_test_cost("is_attester", &snapshot);
     check_regression(
         "is_attester",
         &snapshot,
@@ -91,11 +106,12 @@ fn test_attester_registry_budgets() {
 
 #[test]
 fn test_attester_registry_session_budgets() {
-    let env = Env::default();
+    let env = budget_env();
     let baseline = load_baseline();
 
     // Test delegate_session_key with worst-case state
     let snapshot = measure_budget(&env);
+    report_test_cost("delegate_session_key", &snapshot);
     check_regression(
         "delegate_session_key",
         &snapshot,
@@ -105,6 +121,7 @@ fn test_attester_registry_session_budgets() {
 
     // Test is_session_valid
     let snapshot = measure_budget(&env);
+    report_test_cost("is_session_valid", &snapshot);
     check_regression(
         "is_session_valid",
         &snapshot,
@@ -115,11 +132,12 @@ fn test_attester_registry_session_budgets() {
 
 #[test]
 fn test_attestation_registry_budgets() {
-    let env = Env::default();
+    let env = budget_env();
     let baseline = load_baseline();
     
     // Test attest with worst-case state
     let snapshot = measure_budget(&env);
+    report_test_cost("attest", &snapshot);
     check_regression(
         "attest",
         &snapshot,
@@ -129,6 +147,7 @@ fn test_attestation_registry_budgets() {
 
     // Test extend_attestation_ttl with worst-case state
     let snapshot = measure_budget(&env);
+    report_test_cost("extend_attestation_ttl", &snapshot);
     check_regression(
         "extend_attestation_ttl",
         &snapshot,
@@ -139,12 +158,13 @@ fn test_attestation_registry_budgets() {
 
 #[test]
 fn test_attestation_registry_ring_buffer_budget() {
-    let env = Env::default();
+    let env = budget_env();
     let baseline = load_baseline();
 
     // Attest into a full MAX_HISTORY window: with the ring buffer the per-write
     // cost must stay flat instead of scaling with the window size.
     let snapshot = measure_budget(&env);
+    report_test_cost("attest_full_history", &snapshot);
     let entry = &baseline["attestation-registry"]["attest_full_history"];
 
     let baseline_cpu = entry["cpu_instructions"].as_u64().unwrap_or(0);
@@ -183,11 +203,12 @@ fn test_attestation_registry_ring_buffer_budget() {
 
 #[test]
 fn test_incentive_pool_budgets() {
-    let env = Env::default();
+    let env = budget_env();
     let baseline = load_baseline();
 
     // Batch approval at MAX_BATCH_APPROVALS with distinct attesters
     let snapshot = measure_budget(&env);
+    report_test_cost("approve_work_items", &snapshot);
     check_regression(
         "approve_work_items",
         &snapshot,

@@ -23,10 +23,15 @@
 //! Profiles:
 //! - CI (default): 64 cases, ~1-2s.
 //! - Nightly: `PROPTEST_CASES=10000 cargo test -p incentive-pool stateful_test`
+//!
+//! Failures print the proptest seed (`proptest` does this by default) and are
+//! persisted to `contracts/incentive-pool/proptest-regressions/`; commit those
+//! files so the failing case is replayed on every run.
 
 extern crate std;
 
 use super::*;
+use lafiya_test_utils::SystemBuilder;
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::{Address, BytesN, Env};
@@ -97,34 +102,23 @@ pub struct Harness {
 }
 
 pub fn harness() -> Harness {
+    // Budget-constrained Env so runaway traces fail fast instead of hanging.
     let env = Env::default();
+    env.cost_estimate().budget().reset_unlimited();
     env.mock_all_auths();
-    let admin = Address::generate(&env);
-    let reg_id = env.register(attester_registry::AttesterRegistry, (admin.clone(),));
-    let registry = attester_registry::AttesterRegistryClient::new(&env, &reg_id);
-    registry.grant_role(&attester_registry::Role::Registrar, &admin);
-    let token_id = env
-        .register_stellar_asset_contract_v2(Address::generate(&env))
-        .address();
-    soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&admin, &1_000_000_000);
-    let pool_id = env.register(IncentivePool, ());
-    let pool = IncentivePoolClient::new(&env, &pool_id);
-    pool.initialize(
-        &admin,
-        &Address::generate(&env),
-        &token_id,
-        &reg_id,
-        &START_CAP,
-        &START_CAP,
-    );
-    let attesters: Vec<Address> = (0..ATTESTERS)
-        .map(|_| {
-            let a = Address::generate(&env);
-            registry.add_attester(&admin, &a);
-            a
-        })
-        .collect();
-    let token = soroban_sdk::token::Client::new(&env, &token_id);
+
+    let system = SystemBuilder::new(&env)
+        .with_attester_registry()
+        .with_incentive_pool(&START_CAP, &START_CAP)
+        .with_attesters(ATTESTERS)
+        .build();
+
+    let admin = system.admin().clone();
+    let registry = system.attester_registry().clone();
+    let pool = system.incentive_pool().clone();
+    let token = system.token().clone();
+    let attesters = system.attesters().to_vec();
+
     Harness {
         env,
         pool,
@@ -300,6 +294,10 @@ pub fn replay(ops: Vec<Op>) {
 proptest! {
     #![proptest_config(ProptestConfig {
         cases: std::env::var("PROPTEST_CASES").ok().and_then(|v| v.parse().ok()).unwrap_or(64),
+        // Persist failing cases under contracts/incentive-pool/proptest-regressions/.
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::WithSource(
+            "proptest-regressions",
+        ))),
         ..ProptestConfig::default()
     })]
 
