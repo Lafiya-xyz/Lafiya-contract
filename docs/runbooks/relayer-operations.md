@@ -23,6 +23,38 @@ Covers the sponsored-attestation relayer
   unaffected, because they never sign the outer transaction.
 - Separate keys per environment. Testnet keys must never be reused on mainnet.
 
+## Channel-account pool
+
+Concurrent sponsored submissions must not share a source account: two
+transactions built from one account at the same time carry the same sequence
+number and one is rejected with `txBadSeq`. The relayer therefore leases a
+**channel account** per in-flight submission from
+`lafiya_rpc_resilience::ChannelPool`.
+
+- **Pool size.** Size the pool to the peak number of *concurrent* submissions,
+  not the request rate: `pool_size = ceil(peak_rps × p99_submit_latency_s) + 1`
+  spare. Start with 4 channels on testnet and 8 on mainnet; a submission that
+  finds every channel leased or quarantined fails fast with
+  `PoolError::Exhausted` rather than queueing behind a shared sequence number.
+- **Funding.** Each channel account needs only its own reserve (minimum
+  account balance) plus a small float for the fees of the transactions it
+  sources. Budget `channels × (reserve + max_fee_per_tx × expected_txs_between_topups)`.
+  Channel accounts pay fees only; they hold no contract role, exactly like the
+  sponsor account, and are topped up from the sponsor account.
+- **Sequence tracking.** Each channel tracks its next sequence number locally
+  while leased. On `txBadSeq` the pool re-syncs that channel from RPC
+  (`account_sequence`) and retries once. Never hand-edit a channel's sequence
+  number; re-sync it instead.
+- **Quarantine.** A timeout or lost response leaves the transaction's fate
+  unknown. The pool quarantines that channel (it is not leased again) until
+  `ChannelPool::resolve` polls the pending hash and sees `Accepted`, `Rejected`,
+  or `Expired`. Alert on `ChannelPool::quarantined()` being non-empty for more
+  than a few ledgers; if a channel stays quarantined, follow the ambiguous-state
+  steps in the [RPC outage runbook](rpc-outage-recovery.md).
+- **Idempotency.** The pool is keyed by channel, not by request: the relayer's
+  idempotency store still decides whether a request is submitted at all, so a
+  retried request never leases a second channel for the same key.
+
 ## Monitoring
 
 | Signal | Source | Action |
