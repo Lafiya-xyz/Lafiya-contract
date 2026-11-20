@@ -308,8 +308,29 @@ def build_vex(vex_path: Path) -> Json:
     }
 
 
+def build_soak(soak_path: Path | None) -> Json | None:
+    """Summarize an RC soak report (docs/releasing.md#release-candidate-soak)."""
+    if soak_path is None:
+        return None
+    report = json.loads(soak_path.read_text(encoding="utf-8"))
+    return {
+        "path": soak_path.name,
+        "sha256": sha256_file(soak_path),
+        "status": report.get("status", "in_progress"),
+        "git_commit": report["git_commit"],
+        "started_at": report["started_at"],
+        "finished_at": report["finished_at"],
+        "duration_days": report.get("duration_days", 0),
+        "network": report.get("network", "testnet"),
+        "report_url": report.get("report_url"),
+    }
+
+
 def generate(
-    previous_manifest: Json | None, sbom_dir: Path | None = None, vex_path: Path | None = None
+    previous_manifest: Json | None,
+    sbom_dir: Path | None = None,
+    vex_path: Path | None = None,
+    soak_path: Path | None = None,
 ) -> Json:
     contracts = build_contracts()
     contracts_by_name = {c["name"]: c for c in contracts}

@@ -24,7 +24,10 @@ publishing is added, use npm trusted publishing / crates.io trusted publishing
   in repository secrets. Mainnet keys follow the ceremony in
   `docs/security/chw-key-custody.md` and are not held by CI.
 - Fork PRs never receive secrets; `pull_request_target` is not used with checkout
-  of untrusted code.
+  of untrusted code. The trigger is restricted to the reviewed allowlist in
+  `scripts/ci/check_workflow_policy.py` (currently empty), enforced by the
+  `workflow-static-analysis` job in `security-scan.yml` alongside actionlint and
+  zizmor. Suppressions for either tool must carry a written justification.
 - Rotate on the cadence above, on suspected exposure, and on offboarding.
 
 ## Leak drill (run quarterly and after policy changes)
