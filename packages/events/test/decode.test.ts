@@ -55,6 +55,18 @@ describe("generated decoders", () => {
     expect(event?.kind === "AttestationRecorded" && typeof event.timestamp).toBe("bigint");
   });
 
+  it("decodes AttesterStateChanged with full post-state", () => {
+    const fixture = fixtures.find((f) => f.kind === "AttesterStateChanged");
+    expect(fixture, "missing fixture for AttesterStateChanged").toBeDefined();
+    const event = decodeEvent(toRaw(fixture!));
+    expect(event?.kind).toBe("AttesterStateChanged");
+    const payload = Object.fromEntries(
+      Object.keys(fixture!.expected).map((k) => [k, (event as any)[k]]),
+    );
+    expect(plain(payload)).toEqual(fixture!.expected);
+    expect(event?.kind === "AttesterStateChanged" && typeof event.seq).toBe("bigint");
+  });
+
   it("covers every incentive-pool event", () => {
     const poolKinds = Object.keys(EVENT_SPECS).filter((k) => k.startsWith("Pool"));
     expect(poolKinds.length).toBeGreaterThan(0);

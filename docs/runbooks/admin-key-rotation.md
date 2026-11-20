@@ -49,6 +49,15 @@ quorum on an account whose keys may be compromised:
 2. On each registry, call `propose_admin(<new account>)`, signed by the old
    admin. Then call `accept_admin()`, signed by the new admin. The watchdog
    pages on `propose_admin`. Tell on-call before you start.
+
+   This applies to every registry, including `facility-registry`, which
+   exposes the same two-step flow as `attester-registry`: `propose_admin`
+   stores the pending admin and `accept_admin` must be signed by that pending
+   admin before the proposal expires. If the proposal expires, re-run
+   `propose_admin` from the old admin; do not attempt to call `accept_admin`
+   with an expired proposal, it fails the same way as on the other
+   registries. Confirm the pending admin with `get_pending_admin` (or the
+   equivalent getter) before collecting the `accept_admin` signature.
 3. Update `config/networks.toml` and the record's `bindings`, then run
    `verify`.
 

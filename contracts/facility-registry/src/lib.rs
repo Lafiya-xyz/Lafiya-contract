@@ -6,13 +6,38 @@
 //! facility; verifiers use `was_affiliated_at` and `get_facility` to judge an
 //! existing attestation later. Enumeration follows ADR-0017: no on-chain
 //! directory, only a monotonic mutation cursor plus events.
+//!
+//! # Cross-contract call graph (acyclic)
+//!
+//! An affiliation is only *effective* while the attester is still active in
+//! `attester-registry` (issue #684). Rather than have `attester-registry` call
+//! back into this contract on removal or suspension (which would create a
+//! cycle), the check is performed lazily here:
+//!
+//! ```text
+//! attestation-registry ──▶ facility-registry ──▶ attester-registry
+//! ```
+//!
+//! `facility-registry` never calls `attestation-registry`, and
+//! `attester-registry` never calls `facility-registry`, so the graph is a DAG.
+//! The lazy cross-check costs one extra cross-contract call per
+//! `is_affiliated` / `get_effective_affiliation` invocation; callers that only
+//! need the stored periods can use `was_affiliated_at`, which does not
+//! cross-check.
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
-    String, Vec,
+    contract, contractclient, contracterror, contractevent, contractimpl, contracttype, Address,
+    BytesN, Env, String, Vec,
 };
+
+/// Minimal client for the `attester-registry` entry point this contract needs.
+/// Declaring only `is_attester` keeps the dependency one-directional.
+#[contractclient(name = "AttesterRegistryClient")]
+pub trait AttesterRegistry {
+    fn is_attester(env: Env, attester: Address) -> bool;
+}
 
 const SCHEMA_VERSION: u32 = 1;
 
@@ -42,6 +67,9 @@ enum DataKey {
     Affiliation(u64, Address),
     /// Number of attesters currently affiliated with a facility.
     AffiliateCount(u64),
+    /// Address of the `attester-registry` contract used for the lazy
+    /// active-attester cross-check (issue #684).
+    AttesterRegistry,
 }
 
 /// A licensed facility.
@@ -67,6 +95,20 @@ pub struct AffiliationPeriod {
     pub until: Option<u64>,
 }
 
+/// Why an affiliation is or is not effective (issue #684).
+///
+/// `affiliated` is the raw stored state (an open period exists and the
+/// facility is active); `attester_active` and `facility_active` let verifiers
+/// see which side invalidates it. An affiliation is effective only when all
+/// three are true.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct EffectiveAffiliation {
+    pub affiliated: bool,
+    pub attester_active: bool,
+    pub facility_active: bool,
+}
+
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
 #[repr(u32)]
@@ -89,6 +131,8 @@ pub enum Error {
     AffiliateLimitReached = 8,
     /// The pair already has `MAX_PERIODS` retained affiliation periods.
     PeriodLimitReached = 9,
+    /// No `attester-registry` address is configured for the cross-check.
+    AttesterRegistryNotSet = 10,
 }
 
 #[contractevent]
@@ -171,6 +215,23 @@ impl FacilityRegistry {
             .instance()
             .get(&DataKey::SchemaVersion)
             .unwrap_or(SCHEMA_VERSION)
+    }
+
+    /// Configure the `attester-registry` address used for the lazy
+    /// active-attester cross-check. Requires the admin.
+    pub fn set_attester_registry(env: Env, attester_registry: Address) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::AttesterRegistry, &attester_registry);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    pub fn get_attester_registry(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::AttesterRegistry)
     }
 
     /// Enroll a facility and return its id. Requires the admin.
@@ -335,13 +396,31 @@ impl FacilityRegistry {
         Self::affiliate_count(&env, facility_id)
     }
 
-    /// Whether `attester` is affiliated with `facility_id` right now and the
-    /// facility is active.
+    /// Whether `attester` is affiliated with `facility_id` right now, the
+    /// facility is active, and the attester is still active in
+    /// `attester-registry`.
+    ///
+    /// The attester check is a lazy cross-contract call (see the module docs);
+    /// it costs one extra invocation. If no `attester-registry` is configured
+    /// the attester is treated as inactive, so stale affiliations can never be
+    /// effective by omission.
     pub fn is_affiliated(env: Env, facility_id: u64, attester: Address) -> bool {
-        Self::is_facility_active(env.clone(), facility_id)
-            && Self::periods(&env, facility_id, &attester)
-                .last()
-                .is_some_and(|last| last.until.is_none())
+        let effective = Self::effective_affiliation(&env, facility_id, &attester);
+        effective.affiliated && effective.attester_active && effective.facility_active
+    }
+
+    /// Explain whether an affiliation is effective and why (issue #684).
+    ///
+    /// `affiliated` reflects the stored open period; `attester_active` is the
+    /// lazy `attester-registry::is_attester` cross-check; `facility_active` is
+    /// this contract's own facility state. The affiliation is effective only
+    /// when all three are true.
+    pub fn get_effective_affiliation(
+        env: Env,
+        facility_id: u64,
+        attester: Address,
+    ) -> EffectiveAffiliation {
+        Self::effective_affiliation(&env, facility_id, &attester)
     }
 
     /// Whether `attester` was affiliated with `facility_id` at `timestamp`,
@@ -378,6 +457,40 @@ impl FacilityRegistry {
 }
 
 impl FacilityRegistry {
+    /// Compute the effective-affiliation triple, performing the lazy
+    /// `attester-registry` cross-check.
+    fn effective_affiliation(
+        env: &Env,
+        facility_id: u64,
+        attester: &Address,
+    ) -> EffectiveAffiliation {
+        let facility_active = Self::facility(env, facility_id).is_ok_and(|info| info.active);
+        let affiliated = facility_active
+            && Self::periods(env, facility_id, attester)
+                .last()
+                .is_some_and(|last| last.until.is_none());
+        let attester_active = Self::attester_active(env, attester);
+        EffectiveAffiliation {
+            affiliated,
+            attester_active,
+            facility_active,
+        }
+    }
+
+    /// Lazy cross-check against `attester-registry::is_attester`. Returns
+    /// `false` when no registry is configured so stale affiliations are never
+    /// effective by omission.
+    fn attester_active(env: &Env, attester: &Address) -> bool {
+        let Some(registry) = env
+            .storage()
+            .instance()
+            .get::<DataKey, Address>(&DataKey::AttesterRegistry)
+        else {
+            return false;
+        };
+        AttesterRegistryClient::new(env, &registry).is_attester(&attester.clone())
+    }
+
     fn admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()

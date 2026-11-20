@@ -13,6 +13,7 @@ export type EventKind =
   | "AttesterRegistryRepointed"
   | "AttesterReinstated"
   | "AttesterRemoved"
+  | "AttesterStateChanged"
   | "AttesterSuspended"
   | "Initialized"
   | "Paused"
@@ -59,6 +60,16 @@ export interface AttesterReinstatedPayload {
 
 export interface AttesterRemovedPayload {
   attester: string;
+}
+
+export interface AttesterStateChangedPayload {
+  attester: string;
+  status: string;
+  tier: string;
+  region: string;
+  probation: boolean;
+  infoHash: string;
+  seq: bigint;
 }
 
 export interface AttesterSuspendedPayload {
@@ -126,6 +137,7 @@ export interface EventPayloads {
   AttesterRegistryRepointed: AttesterRegistryRepointedPayload;
   AttesterReinstated: AttesterReinstatedPayload;
   AttesterRemoved: AttesterRemovedPayload;
+  AttesterStateChanged: AttesterStateChangedPayload;
   AttesterSuspended: AttesterSuspendedPayload;
   Initialized: InitializedPayload;
   Paused: PausedPayload;
@@ -153,6 +165,7 @@ export const EVENT_SPECS: Record<EventKind, readonly EventSpec[]> = {
   AttesterRegistryRepointed: [{"dataFormat": "map", "fields": [{"key": "previous", "location": "topic", "name": "previous", "type": "address"}, {"key": "new", "location": "topic", "name": "new", "type": "address"}], "prefixTopics": ["attester_registry_repointed"]}],
   AttesterReinstated: [{"dataFormat": "map", "fields": [{"key": "attester", "location": "topic", "name": "attester", "type": "address"}], "prefixTopics": ["attester_reinstated"]}],
   AttesterRemoved: [{"dataFormat": "map", "fields": [{"key": "attester", "location": "topic", "name": "attester", "type": "address"}], "prefixTopics": ["attester_removed"]}],
+  AttesterStateChanged: [{"dataFormat": "map", "fields": [{"key": "attester", "location": "topic", "name": "attester", "type": "address"}, {"key": "status", "location": "data", "name": "status", "type": "symbol"}, {"key": "tier", "location": "data", "name": "tier", "type": "symbol"}, {"key": "region", "location": "data", "name": "region", "type": "symbol"}, {"key": "probation", "location": "data", "name": "probation", "type": "bool"}, {"key": "infoHash", "location": "data", "name": "info_hash", "type": {"bytes_n": {"n": 32}}}, {"key": "seq", "location": "data", "name": "seq", "type": "u64"}], "prefixTopics": ["attester_state_changed"]}],
   AttesterSuspended: [{"dataFormat": "map", "fields": [{"key": "attester", "location": "topic", "name": "attester", "type": "address"}], "prefixTopics": ["attester_suspended"]}],
   Initialized: [{"dataFormat": "map", "fields": [{"key": "admin", "location": "topic", "name": "admin", "type": "address"}], "prefixTopics": ["initialized"]}],
   Paused: [{"dataFormat": "map", "fields": [{"key": "by", "location": "topic", "name": "by", "type": "address"}], "prefixTopics": ["paused"]}],
@@ -176,6 +189,7 @@ export const EVENT_CONTRACTS: Record<EventKind, readonly string[]> = {
   AttesterRegistryRepointed: ["attestation-registry"],
   AttesterReinstated: ["attester-registry"],
   AttesterRemoved: ["attester-registry"],
+  AttesterStateChanged: ["attester-registry"],
   AttesterSuspended: ["attester-registry"],
   Initialized: ["attester-registry"],
   Paused: ["attestation-registry", "attester-registry", "incentive-pool"],

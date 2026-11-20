@@ -79,3 +79,24 @@ export const incentivePoolEvents: Record<string, EventSpec> = {
     ],
   },
 };
+
+/** Events emitted by the attester-registry contract, keyed by event name. */
+export const attesterRegistryEvents: Record<string, EventSpec> = {
+  /**
+   * Full post-state of an attester after any mutation. Indexers can rebuild
+   * the attesters table from this event alone, without storage reads.
+   */
+  AttesterStateChanged: {
+    prefixTopics: ["AttesterStateChanged"],
+    dataFormat: "map",
+    fields: [
+      { name: "attester", key: "attester", type: "address", location: "topic" },
+      { name: "status", key: "status", type: "u32", location: "data" },
+      { name: "tier", key: "tier", type: "u32", location: "data" },
+      { name: "region", key: "region", type: "u32", location: "data" },
+      { name: "probation", key: "probation", type: "bool", location: "data" },
+      { name: "info_hash", key: "infoHash", type: "bytes", location: "data" },
+      { name: "seq", key: "seq", type: "u64", location: "data" },
+    ],
+  },
+};

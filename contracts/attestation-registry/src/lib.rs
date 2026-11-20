@@ -1259,8 +1259,12 @@ impl AttestationRegistry {
     /// When `class` is given, the attester's tier must satisfy the capability
     /// matrix in `attester-registry`. When `facility_id` is given, the
     /// attester must be affiliated with that facility in the configured
-    /// `facility-registry`. Both are checked at attestation time only; later
-    /// affiliation changes do not rewrite the stored scope (see ADR-0019).
+    /// `facility-registry` **and** the affiliation must be effective: the
+    /// facility registry cross-checks the attester's current status in
+    /// `attester-registry`, so a removed or suspended attester's stale
+    /// affiliation is rejected here. Both are checked at attestation time
+    /// only; later affiliation changes do not rewrite the stored scope (see
+    /// ADR-0019).
     pub fn attest_with_scope(
         env: Env,
         attester: Address,
@@ -1288,12 +1292,25 @@ impl AttestationRegistry {
                 .instance()
                 .get(&DataKey::FacilityRegistry)
                 .ok_or(Error::FacilityRegistryNotSet)?;
-            match FacilityRegistryClient::new(&env, &facility_registry)
-                .try_is_affiliated(&facility_id, &attester)
-            {
-                Ok(Ok(true)) => {}
-                Ok(Ok(false)) => return Err(Error::FacilityNotAffiliated),
-                _ => return Err(Error::FacilityNotAffiliated),
+            // Prefer the effective-affiliation view, which reports whether the
+            // attester is still active. Fall back to the plain affiliation
+            // check for facility registries that predate the effective view.
+            let facility = FacilityRegistryClient::new(&env, &facility_registry);
+            match facility.try_get_effective_affiliation(&facility_id, &attester) {
+                Ok(Ok(effective)) => {
+                    if !effective.affiliated
+                        || !effective.attester_active
+                        || !effective.facility_active
+                    {
+                        return Err(Error::FacilityNotAffiliated);
+                    }
+                }
+                Ok(Err(_)) => return Err(Error::FacilityNotAffiliated),
+                Err(_) => match facility.try_is_affiliated(&facility_id, &attester) {
+                    Ok(Ok(true)) => {}
+                    Ok(Ok(false)) => return Err(Error::FacilityNotAffiliated),
+                    _ => return Err(Error::FacilityNotAffiliated),
+                },
             }
         }
         Self::record_attestation(
@@ -2831,3 +2848,7 @@ mod test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod scope_test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod role_escalation_test;
