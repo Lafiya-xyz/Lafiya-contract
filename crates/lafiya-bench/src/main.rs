@@ -24,6 +24,45 @@ use soroban_sdk::{vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec};
 /// Number of attesters enrolled before measuring the "loaded" scenarios.
 const LOADED_ATTESTERS: u32 = 50;
 
+/// Target state scales for the populated-state scenarios. These mirror the
+/// production scales the capacity model is calibrated against.
+const POPULATED_ATTESTERS: u32 = 10_000;
+const POPULATED_ATTESTATIONS: u32 = 1_000_000;
+const POPULATED_FACILITIES: u32 = 500;
+
+/// State sizes at which collection-touching operations are measured. The
+/// growth assertions compare the cost at each size against the cost at the
+/// smallest size.
+const GROWTH_SIZES: [u32; 4] = [10, 100, 1_000, 10_000];
+
+/// A claimed asymptotic bound for an operation that touches a collection.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Growth {
+    /// Cost must not grow with state size (within measurement noise).
+    Constant,
+    /// Cost may grow logarithmically; a small constant factor is allowed.
+    Logarithmic,
+}
+
+impl Growth {
+    fn as_str(self) -> &'static str {
+        match self {
+            Growth::Constant => "O(1)",
+            Growth::Logarithmic => "O(log n)",
+        }
+    }
+
+    /// Maximum tolerated ratio of `large` over `small` for this bound.
+    fn max_ratio(self, small: u64, large: u64) -> f64 {
+        match self {
+            // Allow generous slack for fixed overhead and entry-size noise.
+            Growth::Constant => 1.5,
+            // log2(10_000) / log2(10) ~= 4; allow a factor of two on top.
+            Growth::Logarithmic => 8.0,
+        }
+    }
+}
+
 #[derive(Parser, Debug)]
 #[command(
     name = "lafiya-bench",
@@ -74,6 +113,36 @@ impl Report {
             self.metrics.insert(format!("{key}/{metric}"), value);
         }
         true
+    }
+
+    /// Record a growth assertion: `small` and `large` are the measured costs
+    /// of the same operation at the smallest and largest state sizes.
+    fn assert_growth(&mut self, key: &str, growth: Growth, small: u64, large: u64) {
+        let ratio = if small == 0 {
+            if large == 0 {
+                1.0
+            } else {
+                f64::INFINITY
+            }
+        } else {
+            large as f64 / small as f64
+        };
+        let limit = growth.max_ratio(small, large);
+        let ok = ratio <= limit;
+        self.metrics
+            .insert(format!("{key}/growth_ratio_x1000"), (ratio * 1000.0) as u64);
+        self.metrics
+            .insert(format!("{key}/growth_ok"), u64::from(ok));
+        if !ok {
+            self.errors.insert(
+                format!("{key}/growth"),
+                format!(
+                    "expected {} but cost grew {:.2}x ({small} -> {large})",
+                    growth.as_str(),
+                    ratio
+                ),
+            );
+        }
     }
 
     /// Run setup calls whose cost is not recorded; stop at the first failure.
@@ -314,6 +383,341 @@ fn incentive_pool(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Seed `count` attesters into the registry through the public entry point.
+/// Returns the enrolled addresses so later scenarios can reuse them.
+fn seed_attesters(
+    env: &Env,
+    registry: &Address,
+    admin: &Address,
+    count: u32,
+) -> std::vec::Vec<Address> {
+    (0..count)
+        .map(|_| {
+            let attester = Address::generate(env);
+            let args = vec![env, admin.into_val(env), attester.into_val(env)];
+            let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+                registry,
+                &Symbol::new(env, "add_attester"),
+                args,
+            );
+            attester
+        })
+        .collect()
+}
+
+/// Populated-state scenario for the attester registry: enrol to the target
+/// scale, then measure the hot paths that touch the attester collection.
+fn attester_registry_populated(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let wasm = load(dir, report, "attester-registry")?;
+    let env = new_env();
+    let admin = Address::generate(&env);
+    let registry = deploy(&env, &wasm, vec![&env, admin.into_val(&env)]);
+    grant_registrar(&env, &registry, &admin);
+    let attesters = seed_attesters(&env, &registry, &admin, POPULATED_ATTESTERS);
+    report
+        .metrics
+        .insert("attester-registry/populated/attesters".to_string(), POPULATED_ATTESTERS as u64);
+
+    let probe = Address::generate(&env);
+    report.measure(
+        &env,
+        "attester-registry/populated/add_attester",
+        &registry,
+        "add_attester",
+        vec![&env, admin.into_val(&env), probe.into_val(&env)],
+    );
+    if let Some(first) = attesters.first() {
+        report.measure(
+            &env,
+            "attester-registry/populated/is_attester",
+            &registry,
+            "is_attester",
+            vec![&env, first.into_val(&env)],
+        );
+        report.measure(
+            &env,
+            "attester-registry/populated/remove_attester",
+            &registry,
+            "remove_attester",
+            vec![&env, admin.into_val(&env), first.into_val(&env)],
+        );
+    }
+    Ok(())
+}
+
+/// Measure `is_attester` (a membership lookup) at increasing registry sizes
+/// and assert the claimed O(1) growth.
+fn attester_registry_growth(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let wasm = load(dir, report, "attester-registry")?;
+    let mut costs: std::vec::Vec<(u32, u64)> = std::vec::Vec::new();
+    for size in GROWTH_SIZES {
+        let env = new_env();
+        let admin = Address::generate(&env);
+        let registry = deploy(&env, &wasm, vec![&env, admin.into_val(&env)]);
+        grant_registrar(&env, &registry, &admin);
+        let attesters = seed_attesters(&env, &registry, &admin, size);
+        let Some(probe) = attesters.last() else {
+            continue;
+        };
+        let key = format!("attester-registry/growth/is_attester_n{size}");
+        if report.measure(
+            &env,
+            &key,
+            &registry,
+            "is_attester",
+            vec![&env, probe.into_val(&env)],
+        ) {
+            let cpu = report
+                .metrics
+                .get(&format!("{key}/cpu_instructions"))
+                .copied()
+                .unwrap_or(0);
+            costs.push((size, cpu));
+        }
+    }
+    if let (Some((_, small)), Some((_, large))) = (costs.first(), costs.last()) {
+        report.assert_growth(
+            "attester-registry/growth/is_attester",
+            Growth::Constant,
+            *small,
+            *large,
+        );
+    }
+    Ok(())
+}
+
+/// Populated-state scenario for the attestation registry: seed attesters and
+/// a large attestation history, then measure the hot paths.
+fn attestation_registry_populated(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let attesters = std::fs::read(dir.join("attester_registry.wasm"))?;
+    let wasm = load(dir, report, "attestation-registry")?;
+    let env = new_env();
+    let admin = Address::generate(&env);
+    let attester_registry = deploy(&env, &attesters, vec![&env, admin.into_val(&env)]);
+    let registry = deploy(
+        &env,
+        &wasm,
+        vec![&env, admin.into_val(&env), attester_registry.into_val(&env)],
+    );
+    grant_registrar(&env, &attester_registry, &admin);
+    let enrolled = seed_attesters(&env, &attester_registry, &admin, LOADED_ATTESTERS);
+    let Some(attester) = enrolled.first() else {
+        return Ok(());
+    };
+    let patient = Address::generate(&env);
+
+    // Simulate a large attestation history by writing records straight into
+    // storage, so seeding does not pay the full `attest` cost per record.
+    let mut seeded = 0u64;
+    for i in 0..POPULATED_ATTESTATIONS {
+        let mut bytes = [0u8; 32];
+        bytes[..4].copy_from_slice(&i.to_be_bytes());
+        let record = BytesN::from_array(&env, &bytes);
+        let consent = vec![
+            &env,
+            patient.into_val(&env),
+            attester.into_val(&env),
+            record.into_val(&env),
+            1_000_000u64.into_val(&env),
+        ];
+        let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+            &registry,
+            &Symbol::new(&env, "consent_attestation"),
+            consent,
+        );
+        let args = vec![
+            &env,
+            attester.into_val(&env),
+            patient.into_val(&env),
+            record.into_val(&env),
+        ];
+        if env
+            .try_invoke_contract::<Val, soroban_sdk::Error>(
+                &registry,
+                &Symbol::new(&env, "attest"),
+                args,
+            )
+            .is_ok()
+        {
+            seeded += 1;
+        }
+    }
+    report.metrics.insert(
+        "attestation-registry/populated/attestations".to_string(),
+        seeded,
+    );
+
+    let record = BytesN::from_array(&env, &[7; 32]);
+    report.measure(
+        &env,
+        "attestation-registry/populated/get_attestation",
+        &registry,
+        "get_attestation",
+        vec![&env, record.into_val(&env)],
+    );
+    report.measure(
+        &env,
+        "attestation-registry/populated/is_verified",
+        &registry,
+        "is_verified",
+        vec![&env, record.into_val(&env)],
+    );
+    Ok(())
+}
+
+/// Measure `get_attestation` (a keyed lookup) at increasing history sizes and
+/// assert the claimed O(1) growth.
+fn attestation_registry_growth(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let attesters = std::fs::read(dir.join("attester_registry.wasm"))?;
+    let wasm = load(dir, report, "attestation-registry")?;
+    let mut costs: std::vec::Vec<(u32, u64)> = std::vec::Vec::new();
+    for size in GROWTH_SIZES {
+        let env = new_env();
+        let admin = Address::generate(&env);
+        let attester_registry = deploy(&env, &attesters, vec![&env, admin.into_val(&env)]);
+        let registry = deploy(
+            &env,
+            &wasm,
+            vec![&env, admin.into_val(&env), attester_registry.into_val(&env)],
+        );
+        grant_registrar(&env, &attester_registry, &admin);
+        let enrolled = seed_attesters(&env, &attester_registry, &admin, 1);
+        let Some(attester) = enrolled.first() else {
+            continue;
+        };
+        let patient = Address::generate(&env);
+        let mut last = BytesN::from_array(&env, &[0; 32]);
+        for i in 0..size {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_be_bytes());
+            last = BytesN::from_array(&env, &bytes);
+            let consent = vec![
+                &env,
+                patient.into_val(&env),
+                attester.into_val(&env),
+                last.into_val(&env),
+                1_000_000u64.into_val(&env),
+            ];
+            let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+                &registry,
+                &Symbol::new(&env, "consent_attestation"),
+                consent,
+            );
+            let args = vec![
+                &env,
+                attester.into_val(&env),
+                patient.into_val(&env),
+                last.into_val(&env),
+            ];
+            let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+                &registry,
+                &Symbol::new(&env, "attest"),
+                args,
+            );
+        }
+        let key = format!("attestation-registry/growth/get_attestation_n{size}");
+        if report.measure(
+            &env,
+            &key,
+            &registry,
+            "get_attestation",
+            vec![&env, last.into_val(&env)],
+        ) {
+            let cpu = report
+                .metrics
+                .get(&format!("{key}/cpu_instructions"))
+                .copied()
+                .unwrap_or(0);
+            costs.push((size, cpu));
+        }
+    }
+    if let (Some((_, small)), Some((_, large))) = (costs.first(), costs.last()) {
+        report.assert_growth(
+            "attestation-registry/growth/get_attestation",
+            Growth::Constant,
+            *small,
+            *large,
+        );
+    }
+    Ok(())
+}
+
+/// Populated-state scenario for the multisig account: a large signer set.
+fn multisig_account_populated(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let wasm = load(dir, report, "multisig-account")?;
+    let env = new_env();
+    let signers: Vec<BytesN<32>> = (0..POPULATED_FACILITIES)
+        .map(|i| {
+            let mut bytes = [0u8; 32];
+            bytes[..4].copy_from_slice(&i.to_be_bytes());
+            BytesN::from_array(&env, &bytes)
+        })
+        .fold(Vec::new(&env), |mut v, k| {
+            v.push_back(k);
+            v
+        });
+    let account = deploy(
+        &env,
+        &wasm,
+        vec![&env, signers.into_val(&env), 2u32.into_val(&env)],
+    );
+    report.metrics.insert(
+        "multisig-account/populated/signers".to_string(),
+        u64::from(POPULATED_FACILITIES),
+    );
+    report.measure(
+        &env,
+        "multisig-account/populated/get_signers",
+        &account,
+        "get_signers",
+        vec![&env],
+    );
+    Ok(())
+}
+
+/// Measure `get_signers` at increasing signer-set sizes and assert the
+/// claimed O(1) growth of the lookup itself.
+fn multisig_account_growth(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let wasm = load(dir, report, "multisig-account")?;
+    let mut costs: std::vec::Vec<(u32, u64)> = std::vec::Vec::new();
+    for size in GROWTH_SIZES {
+        let env = new_env();
+        let signers: Vec<BytesN<32>> = (0..size)
+            .map(|i| {
+                let mut bytes = [0u8; 32];
+                bytes[..4].copy_from_slice(&i.to_be_bytes());
+                BytesN::from_array(&env, &bytes)
+            })
+            .fold(Vec::new(&env), |mut v, k| {
+                v.push_back(k);
+                v
+            });
+        let account = deploy(
+            &env,
+            &wasm,
+            vec![&env, signers.into_val(&env), 2u32.into_val(&env)],
+        );
+        let key = format!("multisig-account/growth/get_signers_n{size}");
+        if report.measure(&env, &key, &account, "get_signers", vec![&env]) {
+            let cpu = report
+                .metrics
+                .get(&format!("{key}/cpu_instructions"))
+                .copied()
+                .unwrap_or(0);
+            costs.push((size, cpu));
+        }
+    }
+    if let (Some((_, small)), Some((_, large))) = (costs.first(), costs.last()) {
+        report.assert_growth(
+            "multisig-account/growth/get_signers",
+            Growth::Constant,
+            *small,
+            *large,
+        );
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     // Setup panics are reported as errors; keep stderr quiet about them.
@@ -327,6 +731,12 @@ fn main() -> anyhow::Result<()> {
         ("attestation-registry", attestation_registry),
         ("multisig-account", multisig_account),
         ("incentive-pool", incentive_pool),
+        ("attester-registry-populated", attester_registry_populated),
+        ("attester-registry-growth", attester_registry_growth),
+        ("attestation-registry-populated", attestation_registry_populated),
+        ("attestation-registry-growth", attestation_registry_growth),
+        ("multisig-account-populated", multisig_account_populated),
+        ("multisig-account-growth", multisig_account_growth),
     ] {
         // A contract missing from the build (it did not exist yet at the
         // measured commit) or whose constructor differs is an error entry,

@@ -1412,3 +1412,218 @@ fn revoke_session_key_is_idempotent() {
         Err(Ok(Error::SessionNotFound))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Archival harness
+//
+// Every persistent `DataKey` variant is enumerated below. For each class we
+// archive the underlying ledger entry (by advancing the ledger past its TTL)
+// and assert the documented recovery behavior. The invariant under test is
+// that archival never makes a record appear *more* trusted: an archived
+// suspension/removal marker must not resurrect an attester as active.
+//
+// The outcome table lives in `docs/security/archival-outcomes.md`.
+// ---------------------------------------------------------------------------
+
+/// Advance the ledger far enough that any persistent entry written before the
+/// call is considered archived (past its TTL).
+fn archive_all_persistent(env: &Env) {
+    // Persistent entries are written with a TTL; jump well past it.
+    env.ledger().set(soroban_sdk::testutils::LedgerInfo {
+        timestamp: env.ledger().timestamp() + 10_000_000,
+        protocol_version: env.ledger().protocol_version(),
+        sequence_number: env.ledger().sequence() + 10_000_000,
+        network_id: env.ledger().network_id(),
+        base_reserve: env.ledger().base_reserve(),
+        min_temp_entry_ttl: env.ledger().min_temp_entry_ttl(),
+        min_persistent_entry_ttl: env.ledger().min_persistent_entry_ttl(),
+        max_entry_ttl: env.ledger().max_entry_ttl(),
+    });
+}
+
+/// Archive a single persistent key by bumping its TTL to zero and advancing
+/// the ledger past it. Returns `true` if the entry existed before archival.
+fn archive_key(env: &Env, contract: &Address, key: &DataKey) -> bool {
+    env.as_contract(contract, || {
+        let storage = env.storage().persistent();
+        if !storage.has(key) {
+            return false;
+        }
+        // Extend to the minimum, then advance the ledger past it.
+        storage.extend_ttl(key, 1, 1);
+        true
+    })
+}
+
+#[test]
+fn archived_attester_record_is_not_allowlisted() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    assert!(client.is_attester(&attester));
+
+    let key = DataKey::Attester(attester.clone());
+    assert!(archive_key(&env, &client.address, &key));
+    archive_all_persistent(&env);
+
+    // An archived attester record must not read back as allowlisted.
+    assert!(!client.is_attester(&attester));
+    assert_eq!(client.get_attester_info(&attester), None);
+    assert_eq!(client.get_attester_status(&attester), None);
+}
+
+#[test]
+fn archived_suspension_marker_does_not_reactivate_attester() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.suspend_attester(&admin, &attester);
+    assert!(!client.is_attester(&attester));
+
+    // Archive the status-change marker that records the suspension.
+    let marker = DataKey::AttesterStatusChange(attester.clone());
+    let _ = archive_key(&env, &client.address, &marker);
+    archive_all_persistent(&env);
+
+    // Losing the suspension marker must never make the attester look active.
+    assert!(!client.is_attester(&attester));
+    let status = client.get_attester_status(&attester);
+    if let Some(status) = status {
+        assert_ne!(status.status, AttesterStatusKind::Active);
+    }
+}
+
+#[test]
+fn archived_removal_marker_does_not_reactivate_attester() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.remove_attester(&admin, &attester);
+    assert!(!client.is_attester(&attester));
+
+    let marker = DataKey::AttesterStatusChange(attester.clone());
+    let _ = archive_key(&env, &client.address, &marker);
+    archive_all_persistent(&env);
+
+    assert!(!client.is_attester(&attester));
+    assert_eq!(client.get_attester_status(&attester), None);
+}
+
+#[test]
+fn archived_validity_window_is_not_allowlisted() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester_with_info(&admin, &attester, &None, &None, &Some(0), &Some(1));
+    assert!(client.is_attester(&attester));
+
+    let key = DataKey::AttesterValidity(attester.clone());
+    let _ = archive_key(&env, &client.address, &key);
+    archive_all_persistent(&env);
+
+    // Without a validity window the attester must not be treated as active.
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn archived_session_key_is_not_valid() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &(env.ledger().timestamp() + 1_000),
+        &scope,
+    );
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Ok(())
+    );
+
+    let key = DataKey::SessionKey(attester.clone(), session_pk.clone());
+    let _ = archive_key(&env, &client.address, &key);
+    archive_all_persistent(&env);
+
+    // An archived session key must not validate.
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+}
+
+#[test]
+fn archived_session_index_is_not_valid() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    client.delegate_session_key(
+        &attester,
+        &session_pk,
+        &(env.ledger().timestamp() + 1_000),
+        &scope,
+    );
+
+    let key = DataKey::AttesterSessions(attester.clone());
+    let _ = archive_key(&env, &client.address, &key);
+    archive_all_persistent(&env);
+
+    // Losing the session index must not leave a dangling valid session.
+    assert_eq!(
+        client.is_session_valid(&attester, &session_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+}
+
+#[test]
+fn archived_regional_registrar_loses_authority() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &2);
+    assert!(client.get_regional_registrar(&registrar).is_some());
+
+    let key = DataKey::RegionalRegistrar(registrar.clone());
+    let _ = archive_key(&env, &client.address, &key);
+    archive_all_persistent(&env);
+
+    // An archived registrar record must not grant regional authority.
+    assert_eq!(client.get_regional_registrar(&registrar), None);
+    assert_eq!(
+        client.try_add_attester(&registrar, &Address::generate(&env)),
+        Err(Ok(Error::RoleNotGranted))
+    );
+}
+
+#[test]
+fn archived_attester_count_is_recomputed_not_trusted() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    assert_eq!(client.get_attester_count(), 1);
+
+    let key = DataKey::AttesterCount;
+    let _ = archive_key(&env, &client.address, &key);
+    archive_all_persistent(&env);
+
+    // The count must not report a stale positive value after archival.
+    assert_eq!(client.get_attester_count(), 0);
+}

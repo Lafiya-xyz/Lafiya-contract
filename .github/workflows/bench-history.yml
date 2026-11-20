@@ -62,6 +62,16 @@ jobs:
       - name: Measure missing commits
         run: python3 scripts/bench_history.py backfill --history history --count "${{ inputs.backfill || '50' }}" --ref "$GITHUB_SHA"
 
+      # Populated-state benchmarks: seed realistic state (attesters,
+      # attestations, facilities, histories) and measure the hot paths, so
+      # the recorded costs reflect production-scale collections rather than
+      # empty contracts (docs/capacity-forecast.md).
+      - name: Run populated-state benchmarks
+        run: |
+          cargo test --locked -p lafiya-bench --release -- populated_state --nocapture \
+            | tee populated-state.log
+          python3 scripts/bench_history.py populated --history history --log populated-state.log --ref "$GITHUB_SHA"
+
       - name: Evaluate drift and render the trend page
         run: |
           python3 scripts/bench_history.py alerts --history history --json alerts.json --markdown alerts.md

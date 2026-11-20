@@ -26,3 +26,34 @@ jobs:
         with:
           name: incentive-pool-proptest-regressions
           path: contracts/incentive-pool/proptest-regressions/
+
+  kani:
+    name: Kani proofs (accounting arithmetic)
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Kani
+        run: |
+          cargo install --locked kani-verifier
+          cargo kani setup
+      - name: Run Kani harnesses for accounting module
+        # Documented input bounds exercised by the harnesses:
+        #   - amounts and balances are i128 within [0, MAX_AMOUNT] where
+        #     MAX_AMOUNT = i128::MAX / 4 (leaves headroom for intermediate sums)
+        #   - rates are in basis points within [0, 10_000]
+        #   - epoch budgets and reservations are non-negative and bounded by
+        #     the deposited total
+        # Harnesses prove: no overflow within bounds; reserved + paid <= deposited
+        # is preserved; rounding never favors the claimant.
+        run: |
+          cargo kani -p incentive-pool \
+            --harness accounting_ \
+            --output-format terse
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: incentive-pool-kani-results
+          path: target/kani/
