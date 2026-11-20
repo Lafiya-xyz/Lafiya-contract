@@ -51,6 +51,45 @@ export interface Reason {
   message: string;
 }
 
+/**
+ * Stable, documented reason codes for the explanation trace. These strings are
+ * part of the public contract: they never change meaning and are never
+ * renamed. They mirror `Reason` in `crates/lafiya-verification-model`.
+ */
+export const REASON_CODES = [
+  "invalid_payload",
+  "untrusted_network",
+  "untrusted_contract",
+  "commitment_mismatch",
+  "attestation_read_failed",
+  "attestation_missing",
+  "revoked",
+  "attester_status_read_failed",
+  "compromise_window",
+  "attester_removed",
+  "age_exceeds_policy",
+  "attester_suspended",
+  "superseded",
+  "disputed",
+  "quorum_not_met",
+  "stale_snapshot",
+  "verified",
+] as const;
+
+export type ReasonCode = (typeof REASON_CODES)[number];
+
+/** One step of the explanation trace. Redacted: codes and hashes only. */
+export interface TraceStep {
+  /** Stable reason code (see {@link REASON_CODES}). */
+  code: ReasonCode;
+  /** Which check produced this step, e.g. `"commitment"`. */
+  check: string;
+  /** `"pass"` when the check succeeded, `"fail"` when it produced a reason. */
+  outcome: "pass" | "fail";
+  /** Hex digest of the inputs to the check; never the inputs themselves. */
+  inputHash?: string;
+}
+
 /** Pick the highest-precedence verdict among `reasons` (`verified` if none). */
 export function verdictOf(reasons: readonly Reason[]): Verdict {
   let best: Verdict = "verified";

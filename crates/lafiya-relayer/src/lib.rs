@@ -11,6 +11,13 @@
 use lafiya_rpc_resilience::{RpcProvider, SignedTx, SubmitOutcome, TxState};
 use std::collections::{HashMap, HashSet};
 
+pub mod policy;
+pub mod store;
+
+pub use policy::{Invocation, SponsoredTx, TxPolicy};
+
+pub use store::{MemorySpendStore, Reservation, ReservationState, SpendStore, StoreError};
+
 #[derive(Debug, Clone)]
 pub struct RelayerConfig {
     /// Only these (allowlisted) attester addresses are ever sponsored.
@@ -26,6 +33,9 @@ pub struct RelayerConfig {
     pub max_fee_per_tx: u64,
     /// Status polls after submission before reporting `Pending`.
     pub max_polls: u32,
+    /// Strict envelope policy (issue #747): allowlisted (contract, function)
+    /// pairs, auth-entry root match, resource caps and fee bound.
+    pub tx_policy: TxPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -35,6 +45,10 @@ pub struct SponsorRequest {
     pub attester: String,
     /// Sponsor-sourced transaction carrying the attester's signed auth entry.
     pub tx: SignedTx,
+    /// The decoded envelope the relayer validated (issue #747). The relayer
+    /// never trusts `tx` alone: it re-checks this against the policy and the
+    /// server-side simulation before submitting.
+    pub sponsored: SponsoredTx,
     /// Fee (stroops) the sponsor will pay for this transaction.
     pub fee: u64,
     /// Caller-supplied unix seconds (injected for deterministic tests).
@@ -60,10 +74,26 @@ pub enum RelayError {
     AttesterSpendCapExceeded,
     GlobalSpendCapExceeded,
     FeeTooHigh,
+    /// The envelope is not a single allowlisted invocation (issue #747).
+    NotAllowlistedInvocation,
+    /// The envelope carries more than one operation.
+    MultipleOperations,
+    /// The envelope's operation is not an `InvokeHostFunction`.
+    NotInvokeHostFunction,
+    /// The auth entries do not root at the envelope's invocation.
+    AuthRootMismatch,
+    /// Declared resource limits exceed the configured caps.
+    ResourceLimitExceeded,
+    /// Server-side simulation failed or disagrees with the envelope.
+    SimulationMismatch(String),
+    /// `max_fee_per_tx` exceeds simulated resource fee plus inclusion margin.
+    FeeAboveSimulation,
     /// The idempotency key was already used for a different transaction.
     KeyReused,
     /// The provider refused the submission before it reached the network.
     SubmitFailed(String),
+    /// The persistent spend store rejected the write.
+    Store(String),
 }
 
 /// One row of the append-only spend ledger.
@@ -86,17 +116,51 @@ pub struct Relayer<P: RpcProvider> {
     seen: HashMap<String, (String, usize)>,
     /// tx hash -> ledger index; blocks replay of one envelope under new keys.
     by_hash: HashMap<String, usize>,
+    /// Crash-consistent idempotency and spend-cap state (issue #746).
+    store: Box<dyn SpendStore>,
 }
 
 impl<P: RpcProvider> Relayer<P> {
     pub fn new(cfg: RelayerConfig, provider: P) -> Self {
+        Self::with_store(cfg, provider, Box::new(MemorySpendStore::new()))
+    }
+
+    /// Build a relayer backed by a caller-supplied [`SpendStore`] (e.g. a
+    /// shared Postgres store so replicas enforce caps together).
+    pub fn with_store(cfg: RelayerConfig, provider: P, store: Box<dyn SpendStore>) -> Self {
         Relayer {
             cfg,
             provider,
             ledger: Vec::new(),
             seen: HashMap::new(),
             by_hash: HashMap::new(),
+            store,
         }
+    }
+
+    /// The persistent spend store, for inspection and reconciliation.
+    pub fn store(&self) -> &dyn SpendStore {
+        self.store.as_ref()
+    }
+
+    /// Reconcile reservations left open by a previous process: poll each
+    /// submitted hash and move it to a final state. Returns the number of
+    /// entries resolved. Unresolved entries stay open and keep counting
+    /// against the caps.
+    pub fn reconcile(&mut self) -> usize {
+        let mut resolved = 0;
+        for row in self.store.open() {
+            let state = match self.provider.get_transaction(&row.tx_hash) {
+                Ok(TxState::Accepted { ledger }) => ReservationState::Accepted { ledger },
+                Ok(TxState::Rejected { reason }) => ReservationState::Rejected { reason },
+                Ok(TxState::Expired { .. }) => ReservationState::Abandoned,
+                _ => continue,
+            };
+            if self.store.transition(&row.idempotency_key, state).is_ok() {
+                resolved += 1;
+            }
+        }
+        resolved
     }
 
     /// The auditable record of every sponsored submission, in order.
@@ -131,6 +195,16 @@ impl<P: RpcProvider> Relayer<P> {
         if req.fee > self.cfg.max_fee_per_tx {
             return Err(RelayError::FeeTooHigh);
         }
+        // Strict envelope validation (issue #747): the sponsor must never pay
+        // for work outside the allowlisted invocation set.
+        let sim = self
+            .provider
+            .simulate(&req.sponsored)
+            .map_err(|e| RelayError::SimulationMismatch(e.to_string()))?;
+        self.cfg
+            .tx_policy
+            .validate(&req.sponsored, &sim, req.fee)
+            .map_err(RelayError::from)?;
         let mine = || self.ledger.iter().filter(|e| e.attester == req.attester);
         let recent = mine()
             .filter(|e| e.at + self.cfg.window_secs > req.now)
