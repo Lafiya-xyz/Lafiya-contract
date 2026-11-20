@@ -6,23 +6,55 @@
 
 use soroban_sdk::Env;
 
+use crate::time::{Ledgers, Seconds};
+
+/// Declared ledger close-time assumption used when converting between
+/// [`Seconds`] and [`Ledgers`] for TTL policy. See
+/// `docs/architecture/storage-versioning.md` for the rationale.
+pub const TTL_CLOSE_TIME: Seconds = Seconds::new(5);
+
+/// Safety factor applied to the close-time assumption when converting a
+/// validity window into a ledger count. A value of `2` means we assume the
+/// ledger can close up to 50% faster than declared, so a validity window
+/// always maps to *more* ledgers than the nominal conversion.
+pub const TTL_SAFETY_FACTOR: u32 = 2;
+
 /// Instance storage must be extended when it has less than this many ledger
 /// seconds left. Typical value is ~6 days (518,400 seconds).
-pub const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+pub const INSTANCE_LIFETIME_THRESHOLD_SECONDS: Seconds = Seconds::new(518_400);
 
 /// When extending instance storage TTL, bump it by this many ledger seconds.
 /// Typical value is ~18 days (1,555,200 seconds).
-pub const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
+pub const INSTANCE_BUMP_AMOUNT_SECONDS: Seconds = Seconds::new(1_555_200);
 
 /// Maximum horizon (in ledger seconds) that any single TTL extension may
 /// reach. Extensions are clamped to this bound so that permissionless callers
 /// cannot pin entries indefinitely. Typical value is ~1 year (31,536,000
 /// seconds).
-pub const MAX_TTL_HORIZON: u32 = 31_536_000;
+pub const MAX_TTL_HORIZON_SECONDS: Seconds = Seconds::new(31_536_000);
+
+/// Instance storage must be extended when it has less than this many ledger
+/// seconds left, as a raw `u32` for Soroban storage APIs.
+pub const INSTANCE_LIFETIME_THRESHOLD: u32 = INSTANCE_LIFETIME_THRESHOLD_SECONDS.as_u32();
+
+/// When extending instance storage TTL, bump it by this many ledger seconds,
+/// as a raw `u32` for Soroban storage APIs.
+pub const INSTANCE_BUMP_AMOUNT: u32 = INSTANCE_BUMP_AMOUNT_SECONDS.as_u32();
+
+/// Maximum horizon (in ledger seconds) that any single TTL extension may
+/// reach, as a raw `u32` for Soroban storage APIs.
+pub const MAX_TTL_HORIZON: u32 = MAX_TTL_HORIZON_SECONDS.as_u32();
 
 /// Minimum horizon (in ledger seconds) an extension request must reach.
 /// Requests below this are rejected rather than silently shortened.
 pub const MIN_TTL_HORIZON: u32 = INSTANCE_BUMP_AMOUNT;
+
+/// Convert a validity window in [`Seconds`] into the number of [`Ledgers`]
+/// that must be retained so the entry outlives its validity even if the
+/// ledger closes up to 50% faster than the declared assumption.
+pub fn ledgers_covering(validity: Seconds) -> Ledgers {
+    validity.to_ledgers_with_safety(TTL_CLOSE_TIME, TTL_SAFETY_FACTOR)
+}
 
 /// Extend the instance storage TTL if it falls below the threshold.
 /// Call this at the end of any state-changing operation.
@@ -88,12 +120,10 @@ where
 /// `restore` helper. It is intentionally conservative: it assumes a fixed
 /// per-entry footprint and the network base rent rate.
 pub fn rent_per_entry_stroops(horizon: u32) -> u64 {
-    // Approximate ledger close time in seconds.
-    const SECONDS_PER_LEDGER: u64 = 5;
     // Approximate rent per ledger for a small persistent entry, in stroops.
     const RENT_PER_LEDGER_STROOPS: u64 = 1;
-    let ledgers = (horizon as u64) / SECONDS_PER_LEDGER;
-    ledgers.saturating_mul(RENT_PER_LEDGER_STROOPS)
+    let ledgers = Seconds::new(horizon).to_ledgers(TTL_CLOSE_TIME);
+    (ledgers.as_u64()).saturating_mul(RENT_PER_LEDGER_STROOPS)
 }
 
 /// Estimate the total rent (in stroops) for `count` persistent entries kept
@@ -179,5 +209,62 @@ mod tests {
         assert!(one > 0);
         assert_eq!(rent_for_entries_stroops(10, MAX_TTL_HORIZON), one * 10);
         assert_eq!(rent_for_entries_stroops(0, MAX_TTL_HORIZON), 0);
+    }
+
+    #[test]
+    fn typed_constants_match_raw_accessors() {
+        assert_eq!(INSTANCE_LIFETIME_THRESHOLD, 518_400);
+        assert_eq!(INSTANCE_BUMP_AMOUNT, 1_555_200);
+        assert_eq!(MAX_TTL_HORIZON, 31_536_000);
+        assert_eq!(INSTANCE_LIFETIME_THRESHOLD_SECONDS.as_u32(), 518_400);
+        assert_eq!(INSTANCE_BUMP_AMOUNT_SECONDS.as_u32(), 1_555_200);
+        assert_eq!(MAX_TTL_HORIZON_SECONDS.as_u32(), 31_536_000);
+    }
+
+    #[test]
+    fn instance_ttl_covers_validity_at_faster_close_time() {
+        // The instance bump must retain the entry for at least its declared
+        // validity window even if ledgers close 50% faster than assumed.
+        let required = ledgers_covering(INSTANCE_BUMP_AMOUNT_SECONDS);
+        let provided = Seconds::new(INSTANCE_BUMP_AMOUNT).to_ledgers_with_safety(
+            TTL_CLOSE_TIME,
+            TTL_SAFETY_FACTOR,
+        );
+        assert!(
+            provided >= required,
+            "instance bump ({}) must cover validity ({}) at a faster close time",
+            provided.as_u64(),
+            required.as_u64()
+        );
+    }
+
+    #[test]
+    fn instance_threshold_covers_validity_at_faster_close_time() {
+        let required = ledgers_covering(INSTANCE_LIFETIME_THRESHOLD_SECONDS);
+        let provided = Seconds::new(INSTANCE_LIFETIME_THRESHOLD).to_ledgers_with_safety(
+            TTL_CLOSE_TIME,
+            TTL_SAFETY_FACTOR,
+        );
+        assert!(
+            provided >= required,
+            "instance threshold ({}) must cover validity ({}) at a faster close time",
+            provided.as_u64(),
+            required.as_u64()
+        );
+    }
+
+    #[test]
+    fn max_horizon_covers_validity_at_faster_close_time() {
+        let required = ledgers_covering(MAX_TTL_HORIZON_SECONDS);
+        let provided = Seconds::new(MAX_TTL_HORIZON).to_ledgers_with_safety(
+            TTL_CLOSE_TIME,
+            TTL_SAFETY_FACTOR,
+        );
+        assert!(
+            provided >= required,
+            "max horizon ({}) must cover validity ({}) at a faster close time",
+            provided.as_u64(),
+            required.as_u64()
+        );
     }
 }

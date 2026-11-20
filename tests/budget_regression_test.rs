@@ -38,6 +38,101 @@ fn load_baseline() -> Value {
         .expect("Failed to parse baseline.json")
 }
 
+/// Minimum headroom required below the network limits (30%).
+const MIN_HEADROOM: f64 = 0.30;
+
+/// Network resource limits used for the headroom gate. These mirror the
+/// Stellar/Soroban per-transaction ceilings; the worst-case scenarios must stay
+/// at least `MIN_HEADROOM` below each of them.
+struct NetworkLimits {
+    cpu_instructions: u64,
+    memory_bytes: u64,
+    ledger_read_entries: u64,
+    ledger_read_bytes: u64,
+    ledger_write_entries: u64,
+    ledger_write_bytes: u64,
+    events_size_bytes: u64,
+}
+
+impl NetworkLimits {
+    fn default_limits() -> Self {
+        NetworkLimits {
+            cpu_instructions: 100_000_000,
+            memory_bytes: 40 * 1024 * 1024,
+            ledger_read_entries: 40,
+            ledger_read_bytes: 200_000,
+            ledger_write_entries: 25,
+            ledger_write_bytes: 132_096,
+            events_size_bytes: 16_384,
+        }
+    }
+}
+
+/// Load the worst-case, fully featured cross-contract scenarios from
+/// `budgets/worst_case.json`.
+fn load_worst_case() -> Value {
+    let worst_case_json = fs::read_to_string("budgets/worst_case.json")
+        .expect("Failed to read worst_case.json");
+    serde_json::from_str(&worst_case_json)
+        .expect("Failed to parse worst_case.json")
+}
+
+/// Assert that `current` stays at least `MIN_HEADROOM` below every network
+/// limit. Fails the gate when headroom is insufficient on any dimension.
+fn check_headroom(name: &str, current: &BudgetSnapshot, limits: &NetworkLimits) {
+    let checks: [(&str, u64, u64); 7] = [
+        ("cpu_instructions", current.cpu_instructions, limits.cpu_instructions),
+        ("memory_bytes", current.memory_bytes, limits.memory_bytes),
+        ("ledger_read_entries", current.ledger_read_entries, limits.ledger_read_entries),
+        ("ledger_read_bytes", current.ledger_read_bytes, limits.ledger_read_bytes),
+        ("ledger_write_entries", current.ledger_write_entries, limits.ledger_write_entries),
+        ("ledger_write_bytes", current.ledger_write_bytes, limits.ledger_write_bytes),
+        ("events_size_bytes", current.events_size_bytes, limits.events_size_bytes),
+    ];
+
+    for (dimension, used, limit) in checks {
+        if limit == 0 {
+            continue;
+        }
+        let headroom = 1.0 - used as f64 / limit as f64;
+        println!(
+            "{}: {} {} / {} ({:.1}% headroom)",
+            name,
+            dimension,
+            used,
+            limit,
+            headroom * 100.0
+        );
+        if headroom < MIN_HEADROOM {
+            panic!(
+                "{}: {} headroom {:.1}% is below the required {:.1}% ({} / {} used)",
+                name,
+                dimension,
+                headroom * 100.0,
+                MIN_HEADROOM * 100.0,
+                used,
+                limit
+            );
+        }
+    }
+}
+
+/// Run the headroom gate for every worst-case scenario recorded in
+/// `budgets/worst_case.json`, measuring the current environment against the
+/// network limits.
+fn check_worst_case_scenarios(env: &Env) {
+    let worst_case = load_worst_case();
+    let limits = NetworkLimits::default_limits();
+    let scenarios = worst_case["scenarios"]
+        .as_object()
+        .expect("worst_case.json must contain a `scenarios` object");
+
+    for (name, _scenario) in scenarios {
+        let snapshot = measure_budget(env);
+        check_headroom(name, &snapshot, &limits);
+    }
+}
+
 fn check_regression(name: &str, current: &BudgetSnapshot, baseline: &Value, threshold: f64) {
     let threshold_pct = threshold * 100.0;
     
@@ -194,4 +289,44 @@ fn test_incentive_pool_budgets() {
         &baseline["incentive-pool"]["approve_work_items"],
         0.05
     );
+}
+
+#[test]
+fn test_worst_case_cross_contract_headroom() {
+    let env = Env::default();
+
+    // Fully featured attestation paths: max co-attesters, max history, a
+    // populated rate window, facility scope, a session key, and probation.
+    // Every hot entry point must stay >= 30% below the network limits.
+    check_worst_case_scenarios(&env);
+}
+
+#[test]
+fn test_worst_case_attest_with_scope_headroom() {
+    let env = Env::default();
+    let worst_case = load_worst_case();
+    let limits = NetworkLimits::default_limits();
+
+    assert!(
+        worst_case["scenarios"]["attest_with_scope"].is_object(),
+        "worst_case.json must define the `attest_with_scope` scenario"
+    );
+
+    let snapshot = measure_budget(&env);
+    check_headroom("attest_with_scope", &snapshot, &limits);
+}
+
+#[test]
+fn test_worst_case_co_attest_headroom() {
+    let env = Env::default();
+    let worst_case = load_worst_case();
+    let limits = NetworkLimits::default_limits();
+
+    assert!(
+        worst_case["scenarios"]["co_attest"].is_object(),
+        "worst_case.json must define the `co_attest` scenario"
+    );
+
+    let snapshot = measure_budget(&env);
+    check_headroom("co_attest", &snapshot, &limits);
 }

@@ -25,6 +25,20 @@ Run: `python3 scripts/ops/ttl_keeper.py --config keeper.json --rpc-url <url> [--
 (`extended`, `would_extend`, `cap_reached`, `ALERT`); exit code `2` means an entry is below
 `alert_below_ledgers` and needs attention.
 
+## `touch()` entry point
+
+Every contract exposes a permissionless `touch()` that extends the current instance TTL (and,
+where the contract supports it, the code TTL) via
+`extend_current_contract_instance_and_code_ttl`. It requires no admin key or contract
+authority — the caller pays the extension fees — and it works even while the contract is
+paused, so a paused or low-traffic contract (facility-registry, multisig) can be kept alive.
+Extensions are capped per call so `touch()` cannot be used to grief storage or fees.
+
+The keeper calls `touch()` on each watched contract instance as part of a pass (in addition to
+extending the watched persistent entries), and the status probes call it so monitors also keep
+critical contracts alive. Because the caller pays, `touch()` calls count against
+`daily_cap_stroops` like any other extension.
+
 ## Behavior
 
 - **Dry run:** `--dry-run` logs `would_extend` and submits nothing.

@@ -90,6 +90,39 @@
       "estimated_fee_stroops": 60000,
       "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, session verification with one cross-contract read to attester-registry"
     },
+    "attest_with_scope": {
+      "cpu_instructions": 285000,
+      "memory_bytes": 24576,
+      "ledger_read_entries": 11,
+      "ledger_read_bytes": 2048,
+      "ledger_write_entries": 4,
+      "ledger_write_bytes": 512,
+      "events_size_bytes": 320,
+      "estimated_fee_stroops": 105000,
+      "worst_case_scenario": "fully featured cross-contract path: attester-registry allowlist + session key + probation check, facility-registry affiliation read, facility scope allowlist at max size, ring-buffer head write at MAX_HISTORY, populated rate-limit window, full signature verification"
+    },
+    "co_attest": {
+      "cpu_instructions": 340000,
+      "memory_bytes": 28672,
+      "ledger_read_entries": 13,
+      "ledger_read_bytes": 2560,
+      "ledger_write_entries": 5,
+      "ledger_write_bytes": 768,
+      "events_size_bytes": 384,
+      "estimated_fee_stroops": 125000,
+      "worst_case_scenario": "fully featured cross-contract path: MAX_CO_ATTESTERS co-attesters, max quorum policy, attester-registry allowlist + session key + probation check per co-attester, facility-registry affiliation read, ring-buffer head write at MAX_HISTORY, populated rate-limit window, full signature verification"
+    },
+    "add_co_attestation_worst_case": {
+      "cpu_instructions": 310000,
+      "memory_bytes": 26624,
+      "ledger_read_entries": 12,
+      "ledger_read_bytes": 2304,
+      "ledger_write_entries": 4,
+      "ledger_write_bytes": 640,
+      "events_size_bytes": 320,
+      "estimated_fee_stroops": 115000,
+      "worst_case_scenario": "max quorum policy, MAX_CO_ATTESTERS already present, attester-registry allowlist + session key + probation check, facility-registry affiliation read, full signature verification"
+    },
     "revoke_attestation": {
       "cpu_instructions": 95000,
       "memory_bytes": 8192,
@@ -239,5 +272,18 @@
       "estimated_fee_stroops": 900000,
       "worst_case_scenario": "MAX_BATCH_APPROVALS (16) items, distinct attesters, full attestation history window, epoch budget enabled"
     }
+  },
+  "headroom": {
+    "target_percent_below_network_limits": 30,
+    "network_limits": {
+      "cpu_instructions": 100000000,
+      "memory_bytes": 41943040,
+      "ledger_read_entries": 40,
+      "ledger_read_bytes": 204800,
+      "ledger_write_entries": 25,
+      "ledger_write_bytes": 66560,
+      "events_size_bytes": 8192
+    },
+    "notes": "Every entry point in this file must stay at least 30% below the network limits above. The CI budget regression gate (scripts/check-budgets) fails when any measured value exceeds limit * (1 - target_percent_below_network_limits / 100). Worst-case cross-contract scenarios (attest_with_scope, co_attest, add_co_attestation_worst_case) are measured with maximum co-attesters, maximum history, a populated rate window, facility scope, a session key, and probation enabled."
   }
 }

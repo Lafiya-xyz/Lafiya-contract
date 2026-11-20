@@ -11,10 +11,12 @@ pub mod admin;
 pub mod migration;
 pub mod pausable;
 pub mod storage;
+pub mod time;
 pub mod ttl;
 
 pub use admin::Admin;
 pub use pausable::Pausable;
+pub use time::{Ledgers, Seconds, TimeBound};
 pub use ttl::{extend_instance_ttl, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
 
 // Re-export commonly used soroban types

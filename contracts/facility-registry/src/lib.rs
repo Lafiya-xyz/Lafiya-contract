@@ -9,6 +9,7 @@
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use lafiya_contract_common::time::{Ledgers, Seconds};
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
     String, Vec,
@@ -16,9 +17,28 @@ use soroban_sdk::{
 
 const SCHEMA_VERSION: u32 = 1;
 
-/// Instance storage TTL policy, matching the other registries.
-const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+/// Declared ledger close-time assumption used for every seconds/ledgers
+/// conversion in this contract. Soroban targets ~5s closes; we assume 5s and
+/// apply a 2x safety factor so a protocol upgrade that halves the close time
+/// still leaves the chosen TTL covering the validity window.
+const ASSUMED_CLOSE_TIME: Seconds = Seconds::new(5);
+
+/// Instance storage TTL policy, matching the other registries. Expressed in
+/// seconds and converted to ledgers through the declared close-time
+/// assumption so the policy survives close-time changes.
+const INSTANCE_BUMP_SECONDS: Seconds = Seconds::new(90 * 24 * 60 * 60);
+const INSTANCE_LIFETIME_SECONDS: Seconds = Seconds::new(30 * 24 * 60 * 60);
+
+/// Ledger forms of the TTL policy, derived from the seconds constants above.
+const INSTANCE_BUMP_AMOUNT: Ledgers = INSTANCE_BUMP_SECONDS.to_ledgers(ASSUMED_CLOSE_TIME);
+const INSTANCE_LIFETIME_THRESHOLD: Ledgers =
+    INSTANCE_LIFETIME_SECONDS.to_ledgers(ASSUMED_CLOSE_TIME);
+
+/// Minimum number of ledgers that must have elapsed since the last `touch()`
+/// before another `touch()` extends the TTLs. Caps griefing: a caller cannot
+/// force repeated extensions (which they pay for) more often than this.
+const TOUCH_MIN_INTERVAL_LEDGERS: Ledgers = Ledgers::new(1_000);
+=======
 
 /// Upper bound on enrolled facilities.
 pub const MAX_FACILITIES: u64 = 10_000;
@@ -42,6 +62,8 @@ enum DataKey {
     Affiliation(u64, Address),
     /// Number of attesters currently affiliated with a facility.
     AffiliateCount(u64),
+    /// Ledger sequence of the last successful `touch()` (instance storage).
+    LastTouch,
 }
 
 /// A licensed facility.
@@ -157,9 +179,10 @@ impl FacilityRegistry {
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().instance().extend_ttl(
+            INSTANCE_LIFETIME_THRESHOLD.get(),
+            INSTANCE_BUMP_AMOUNT.get(),
+        );
     }
 
     pub fn get_admin(env: Env) -> Result<Address, Error> {
@@ -375,6 +398,42 @@ impl FacilityRegistry {
             .get(&DataKey::MutationSeq)
             .unwrap_or(0)
     }
+
+    /// Permissionless TTL keep-alive (issue #717).
+    ///
+    /// Extends the instance and code TTLs so a low-traffic deployment does
+    /// not archive. Works regardless of any paused state (this contract has
+    /// none today, but the entry point is deliberately unconditional) and
+    /// requires no auth: the caller pays the extension fees.
+    ///
+    /// Returns `true` when the TTLs were extended, `false` when the call was
+    /// throttled because `TOUCH_MIN_INTERVAL_LEDGERS` has not elapsed since
+    /// the previous `touch()`. Throttling bounds griefing: an attacker cannot
+    /// force repeated paid extensions more often than the interval.
+    pub fn touch(env: Env) -> bool {
+        let now = env.ledger().sequence();
+        let last: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::LastTouch)
+            .unwrap_or(0);
+        if now.saturating_sub(last) < TOUCH_MIN_INTERVAL_LEDGERS.get() {
+            return false;
+        }
+        env.storage().instance().set(&DataKey::LastTouch, &now);
+        env.storage().instance().extend_ttl(
+            INSTANCE_LIFETIME_THRESHOLD.get(),
+            INSTANCE_BUMP_AMOUNT.get(),
+        );
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.get(), INSTANCE_BUMP_AMOUNT.get());
+        env.deployer().extend_current_contract_instance_and_code_ttl(
+            INSTANCE_LIFETIME_THRESHOLD.get(),
+            INSTANCE_BUMP_AMOUNT.get(),
+        );
+        true
+    }
 }
 
 impl FacilityRegistry {
@@ -397,8 +456,8 @@ impl FacilityRegistry {
         env.storage().persistent().set(&key, info);
         env.storage().persistent().extend_ttl(
             &key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
+            INSTANCE_LIFETIME_THRESHOLD.get(),
+            INSTANCE_BUMP_AMOUNT.get(),
         );
     }
 
@@ -419,8 +478,8 @@ impl FacilityRegistry {
         env.storage().persistent().set(&key, periods);
         env.storage().persistent().extend_ttl(
             &key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
+            INSTANCE_LIFETIME_THRESHOLD.get(),
+            INSTANCE_BUMP_AMOUNT.get(),
         );
     }
 
@@ -436,8 +495,8 @@ impl FacilityRegistry {
         env.storage().persistent().set(&key, &count);
         env.storage().persistent().extend_ttl(
             &key,
-            INSTANCE_LIFETIME_THRESHOLD,
-            INSTANCE_BUMP_AMOUNT,
+            INSTANCE_LIFETIME_THRESHOLD.get(),
+            INSTANCE_BUMP_AMOUNT.get(),
         );
     }
 
@@ -445,9 +504,10 @@ impl FacilityRegistry {
     fn bump_seq(env: &Env) -> u64 {
         let next = Self::get_mutation_seq(env.clone()) + 1;
         env.storage().instance().set(&DataKey::MutationSeq, &next);
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().instance().extend_ttl(
+            INSTANCE_LIFETIME_THRESHOLD.get(),
+            INSTANCE_BUMP_AMOUNT.get(),
+        );
         next
     }
 }

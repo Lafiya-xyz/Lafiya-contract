@@ -24,6 +24,16 @@ use soroban_sdk::{vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec};
 /// Number of attesters enrolled before measuring the "loaded" scenarios.
 const LOADED_ATTESTERS: u32 = 50;
 
+/// Number of co-attesters used by the worst-case cross-contract scenarios.
+const MAX_CO_ATTESTERS: u32 = 10;
+
+/// Number of prior attestations written before measuring "max history" paths.
+const MAX_HISTORY: u32 = 50;
+
+/// Number of attestations recorded inside the rate-limit window before the
+/// worst-case rate-limited paths are measured.
+const RATE_WINDOW_FILL: u32 = 20;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "lafiya-bench",
@@ -250,6 +260,263 @@ fn attestation_registry(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Worst-case, fully featured attestation paths: every cross-contract call
+/// (attester-registry allowlist/session/probation, facility-registry
+/// affiliation) plus consent, rate-limit and quorum bookkeeping, with storage
+/// at realistic sizes (max co-attesters, max history, populated rate window).
+///
+/// Every setup call is best effort so that commits predating a feature still
+/// measure the paths they do have instead of failing the whole scenario.
+fn attestation_registry_worst_case(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let attesters = std::fs::read(dir.join("attester_registry.wasm"))?;
+    let facilities = std::fs::read(dir.join("facility_registry.wasm"))?;
+    let wasm = load(dir, report, "attestation-registry")?;
+    let env = new_env();
+    let admin = Address::generate(&env);
+    let attester_registry = deploy(&env, &attesters, vec![&env, admin.into_val(&env)]);
+    let facility_registry = deploy(&env, &facilities, vec![&env, admin.into_val(&env)]);
+    let registry = deploy(
+        &env,
+        &wasm,
+        vec![&env, admin.into_val(&env), attester_registry.into_val(&env)],
+    );
+    grant_registrar(&env, &attester_registry, &admin);
+
+    // Enrol the primary attester and the maximum number of co-attesters.
+    let attester = Address::generate(&env);
+    let co_attesters: std::vec::Vec<Address> = (0..MAX_CO_ATTESTERS)
+        .map(|_| Address::generate(&env))
+        .collect();
+    let mut enrol: std::vec::Vec<(&Address, &str, Vec<Val>)> = std::vec::Vec::new();
+    for who in std::iter::once(&attester).chain(co_attesters.iter()) {
+        enrol.push((
+            &attester_registry,
+            "add_attester",
+            vec![&env, admin.into_val(&env), who.into_val(&env)],
+        ));
+    }
+    // Best effort: commits that predate roles let the admin enrol directly.
+    let _ = report.setup(&env, "attestation-registry/worst_case", &enrol);
+
+    // Facility scope: register the facility and grant the attester affiliation.
+    let facility = Address::generate(&env);
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &facility_registry,
+        &Symbol::new(&env, "register_facility"),
+        vec![&env, admin.into_val(&env), facility.into_val(&env)],
+    );
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &facility_registry,
+        &Symbol::new(&env, "add_affiliation"),
+        vec![
+            &env,
+            admin.into_val(&env),
+            attester.into_val(&env),
+            facility.into_val(&env),
+        ],
+    );
+
+    // Session key and probation: best effort for commits that predate them.
+    let session_key = BytesN::from_array(&env, &[9; 32]);
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &attester_registry,
+        &Symbol::new(&env, "register_session_key"),
+        vec![
+            &env,
+            attester.into_val(&env),
+            session_key.clone().into_val(&env),
+        ],
+    );
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &attester_registry,
+        &Symbol::new(&env, "set_probation"),
+        vec![
+            &env,
+            admin.into_val(&env),
+            attester.into_val(&env),
+            true.into_val(&env),
+        ],
+    );
+
+    // Max history: write prior attestations so the registry's storage is full.
+    let patient = Address::generate(&env);
+    let mut history: std::vec::Vec<(&Address, &str, Vec<Val>)> = std::vec::Vec::new();
+    for i in 0..MAX_HISTORY {
+        let record = BytesN::from_array(&env, &[(i % 251) as u8; 32]);
+        let consent = vec![
+            &env,
+            patient.into_val(&env),
+            attester.into_val(&env),
+            record.clone().into_val(&env),
+            1_000_000u64.into_val(&env),
+        ];
+        let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+            &registry,
+            &Symbol::new(&env, "consent_attestation"),
+            consent,
+        );
+        history.push((
+            &registry,
+            "attest",
+            vec![
+                &env,
+                attester.into_val(&env),
+                patient.into_val(&env),
+                record.into_val(&env),
+            ],
+        ));
+    }
+    let _ = report.setup(&env, "attestation-registry/worst_case", &history);
+
+    // Populated rate window: fill the attester's rate window before measuring.
+    let mut rate_fill: std::vec::Vec<(&Address, &str, Vec<Val>)> = std::vec::Vec::new();
+    for i in 0..RATE_WINDOW_FILL {
+        let record = BytesN::from_array(&env, &[(200 + (i % 50)) as u8; 32]);
+        let consent = vec![
+            &env,
+            patient.into_val(&env),
+            attester.into_val(&env),
+            record.clone().into_val(&env),
+            1_000_000u64.into_val(&env),
+        ];
+        let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+            &registry,
+            &Symbol::new(&env, "consent_attestation"),
+            consent,
+        );
+        rate_fill.push((
+            &registry,
+            "attest",
+            vec![
+                &env,
+                attester.into_val(&env),
+                patient.into_val(&env),
+                record.into_val(&env),
+            ],
+        ));
+    }
+    let _ = report.setup(&env, "attestation-registry/worst_case", &rate_fill);
+
+    // Worst-case `attest`: every feature enabled, storage fully populated.
+    let record = BytesN::from_array(&env, &[42; 32]);
+    let consent = vec![
+        &env,
+        patient.into_val(&env),
+        attester.into_val(&env),
+        record.clone().into_val(&env),
+        1_000_000u64.into_val(&env),
+    ];
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &registry,
+        &Symbol::new(&env, "consent_attestation"),
+        consent,
+    );
+    report.measure(
+        &env,
+        "attestation-registry/attest_worst_case",
+        &registry,
+        "attest",
+        vec![
+            &env,
+            attester.into_val(&env),
+            patient.into_val(&env),
+            record.into_val(&env),
+        ],
+    );
+
+    // Worst-case `attest_with_scope`: facility scope plus every feature.
+    let scope_record = BytesN::from_array(&env, &[43; 32]);
+    let scope_consent = vec![
+        &env,
+        patient.into_val(&env),
+        attester.into_val(&env),
+        scope_record.clone().into_val(&env),
+        1_000_000u64.into_val(&env),
+    ];
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &registry,
+        &Symbol::new(&env, "consent_attestation"),
+        scope_consent,
+    );
+    report.measure(
+        &env,
+        "attestation-registry/attest_with_scope_worst_case",
+        &registry,
+        "attest_with_scope",
+        vec![
+            &env,
+            attester.into_val(&env),
+            patient.into_val(&env),
+            scope_record.into_val(&env),
+            facility.into_val(&env),
+        ],
+    );
+
+    // Worst-case `co_attest`: maximum number of co-attesters on one record.
+    let co_record = BytesN::from_array(&env, &[44; 32]);
+    let co_consent = vec![
+        &env,
+        patient.into_val(&env),
+        attester.into_val(&env),
+        co_record.clone().into_val(&env),
+        1_000_000u64.into_val(&env),
+    ];
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &registry,
+        &Symbol::new(&env, "consent_attestation"),
+        co_consent,
+    );
+    let _ = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+        &registry,
+        &Symbol::new(&env, "attest"),
+        vec![
+            &env,
+            attester.into_val(&env),
+            patient.into_val(&env),
+            co_record.clone().into_val(&env),
+        ],
+    );
+    let mut co_fill: std::vec::Vec<(&Address, &str, Vec<Val>)> = std::vec::Vec::new();
+    for co in co_attesters.iter().take(MAX_CO_ATTESTERS.saturating_sub(1) as usize) {
+        co_fill.push((
+            &registry,
+            "co_attest",
+            vec![
+                &env,
+                co.into_val(&env),
+                co_record.clone().into_val(&env),
+            ],
+        ));
+    }
+    let _ = report.setup(&env, "attestation-registry/co_attest_worst_case", &co_fill);
+    if let Some(last) = co_attesters.last() {
+        report.measure(
+            &env,
+            "attestation-registry/co_attest_worst_case",
+            &registry,
+            "co_attest",
+            vec![&env, last.into_val(&env), co_record.into_val(&env)],
+        );
+    }
+
+    // Worst-case reads over the fully populated registry.
+    report.measure(
+        &env,
+        "attestation-registry/get_attestation_worst_case",
+        &registry,
+        "get_attestation",
+        vec![&env, record.into_val(&env)],
+    );
+    report.measure(
+        &env,
+        "attestation-registry/is_verified_worst_case",
+        &registry,
+        "is_verified",
+        vec![&env, record.into_val(&env)],
+    );
+    Ok(())
+}
+
 fn multisig_account(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
     let wasm = load(dir, report, "multisig-account")?;
     let env = new_env();
@@ -325,6 +592,10 @@ fn main() -> anyhow::Result<()> {
             attester_registry as fn(&Path, &mut Report) -> anyhow::Result<()>,
         ),
         ("attestation-registry", attestation_registry),
+        (
+            "attestation-registry-worst-case",
+            attestation_registry_worst_case,
+        ),
         ("multisig-account", multisig_account),
         ("incentive-pool", incentive_pool),
     ] {

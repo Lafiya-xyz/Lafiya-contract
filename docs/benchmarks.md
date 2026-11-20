@@ -93,3 +93,50 @@ To measure the current checkout without the history:
 cargo build -p lafiya-bench
 scripts/bench_measure.sh | jq .metrics
 ```
+
+## Worst-case cross-contract scenarios
+
+The per-entry-point budgets in `budgets/baseline.json` are measured on
+minimal state. They do not cover the fully featured attestation paths, where
+`attest_with_scope` and `co_attest` call into attester-registry (allowlist,
+session, probation), facility-registry (affiliation), and then do consent,
+rate-limit, and quorum bookkeeping. The harness therefore also runs a set of
+worst-case scenarios, all on synthetic data:
+
+| Scenario | State it sets up |
+|---|---|
+| `attest_with_scope_worst_case` | Maximum co-attesters, maximum attestation history, a populated rate window, facility scope, a session key, and probation active. |
+| `co_attest_worst_case` | Same populated state, driven through `co_attest` with the maximum co-attester set. |
+| `attest_with_scope_loaded` / `co_attest_loaded` | The same paths with realistic (not maximum) history, as a mid-point reference. |
+
+Each scenario measures every hot entry point: CPU instructions, memory,
+ledger read/write entries and bytes, event size, and wasm size. The keys
+follow the usual `contract/scenario/metric` shape, so they flow through the
+history, trend page, and bisect tooling unchanged.
+
+### Headroom target
+
+Network limits are the ceiling, not the goal. Every worst-case scenario must
+stay **at least 30% below** the network limits for CPU instructions, memory,
+and ledger footprint. The regression gate in `budgets/baseline.json` enforces
+this: a worst-case metric that comes within 30% of its limit fails CI, even
+if it did not grow relative to the previous commit. The 30% figure leaves
+room for the variance between plain `cargo build --release` and the
+reproducible release build, and for future feature work on the same paths.
+
+### Results
+
+Worst-case results are published on the trend page alongside the minimal
+scenarios, and the latest run is attached to the `bench-trend` artifact of
+each workflow run. Absolute numbers are build-dependent (see above); compare
+them within a series, not across builds.
+
+### Follow-ups
+
+Any worst-case path that exceeds the 30% headroom target gets a follow-up
+issue with the profiled hot spots. Follow-ups are linked from this section
+as they are filed:
+
+- _None open at the time of writing._ When a path crosses the target, add a
+  bullet here with the issue link, the scenario key, and the hot spot that
+  the profile points at.
