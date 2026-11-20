@@ -1,0 +1,89 @@
+name: RPC conformance
+
+# Nightly read-only conformance probes against public Soroban testnet RPC
+# providers (issue #749). Catches schema/behaviour drift between providers
+# before it reaches the CLI or indexer, and keeps capability measurements as
+# artifacts for provider scoring. Never signs or submits anything.
+
+on:
+  schedule:
+    - cron: "17 3 * * *" # nightly, off the hour
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: rpc-conformance
+  cancel-in-progress: false
+
+env:
+  # At least two independent public providers. Override with a repository
+  # variable (space-separated NAME=URL pairs) to add or swap providers.
+  RPC_PROVIDERS: >-
+    ${{ vars.LAFIYA_RPC_CONFORMANCE_PROVIDERS ||
+        'sdf=https://soroban-testnet.stellar.org futurenet=https://rpc-futurenet.stellar.org' }}
+
+jobs:
+  probe:
+    name: Probe public providers
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Fetch previous measurements
+        run: |
+          mkdir -p out
+          # Previous run's artifact, if any; a missing baseline is not an error.
+          gh run download --repo "$GITHUB_REPOSITORY" \
+            --name rpc-conformance-measurements --dir previous 2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+      - name: Probe (read-only)
+        id: probe
+        run: |
+          args=()
+          for spec in $RPC_PROVIDERS; do args+=(--provider "$spec"); done
+          set +e
+          python3 scripts/rpc_conformance.py "${args[@]}" \
+            --previous previous/measurements.json --out out
+          code=$?
+          set -e
+          echo "code=$code" >> "$GITHUB_OUTPUT"
+          cat out/drift.md >> "$GITHUB_STEP_SUMMARY"
+          # 2 means every provider was unreachable: an outage, not drift.
+          if [ "$code" -eq 2 ]; then
+            echo "::error::All RPC providers were unreachable"
+            exit 1
+          fi
+      - name: Upload capability measurements
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpc-conformance-measurements
+          path: out/
+          retention-days: 90
+      - name: Open or update drift issue
+        if: steps.probe.outputs.code == '1' && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          title="Nightly RPC conformance drift"
+          {
+            echo "Read-only conformance probes against public Soroban RPC providers"
+            echo "detected schema or behaviour changes: $RUN_URL"
+            echo ""
+            cat out/drift.md
+            echo ""
+            echo "Measurements are attached to the run as \`rpc-conformance-measurements\`."
+          } > body.md
+          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number --jq '.[0].number')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file body.md
+          else
+            gh issue create --title "$title" --body-file body.md
+          fi
