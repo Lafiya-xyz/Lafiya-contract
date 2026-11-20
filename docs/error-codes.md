@@ -29,6 +29,10 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `16` | `InvalidRegion` | The region is not a valid ISO 3166-2 style code such as `NG-LA`. |
 | `17` | `UnknownIssuer` | The credential issuer is not in the issuer registry, or was revoked. |
 | `18` | `InvalidCredential` | The credential is expired, not yet valid, or issued to another subject. |
+| `19` | `DuplicateLicense` | The licence credential (canonical licence hash) is already enrolled under a different attester address. One licence may back at most one active attester identity; release the existing enrollment (or wait out the removal cool-down) before re-enrolling. See `docs/specs/` for the licence-hash canonicalization rules. |
+| `20` | `LifetimeQuotaExceeded` | The registrar's windowed lifetime-enrollment quota has been reached. Unlike `RegionalQuotaExceeded` (which counts currently active attesters), this cap counts every enrollment in the rolling window, so remove/re-enroll churn cannot bypass it. |
+| `21` | `InvalidRotation` | The requested licence/attester rotation is not a valid transition (e.g. rotating to an address that already holds a licence, or rotating a licence that is not currently enrolled). |
+| `22` | `InvalidQuotaSchedule` | The registrar quota schedule is invalid (e.g. a window of zero ledgers, a cap of zero, or a lifetime cap below the active cap). |
 
 ## `attestation-registry`
 

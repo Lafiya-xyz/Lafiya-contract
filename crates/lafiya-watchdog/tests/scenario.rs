@@ -205,6 +205,103 @@ fn incentive_pool_scenario_reaches_the_webhook() {
     assert!(rx.try_recv().is_err());
 }
 
+/// A registrar that churns enrollments consumes its windowed quota; crossing
+/// the 80% threshold must raise `RegistrarQuotaConsumed` (issue #676).
+#[test]
+fn registrar_quota_consumed_scenario_reaches_the_webhook() {
+    let (url, rx) = mock_webhook();
+    let mut cfg = config(url);
+    cfg.contracts = vec!["CREG".into()];
+    cfg.rules = vec![];
+    cfg.sinks = vec![SinkConfig::Webhook {
+        url: cfg.sinks[0].clone().url(),
+        format: "generic".into(),
+        min_severity: Some(Severity::High),
+    }];
+    let mut engine = Engine::new(&cfg);
+
+    let registrar = "GREG";
+    let scenario = [
+        // Churn: enroll, remove, re-enroll the same attester repeatedly.
+        ev("CREG", "attester_added", 10, &["GA"]),
+        ev("CREG", "attester_removed", 11, &["GA"]),
+        ev("CREG", "attester_added", 12, &["GA"]),
+        ev("CREG", "attester_removed", 13, &["GA"]),
+        ev("CREG", "attester_added", 14, &["GA"]),
+        // The registrar reports its windowed quota consumption.
+        ev(
+            "CREG",
+            "registrar_quota_consumed",
+            15,
+            &[registrar, "8", "10"],
+        ),
+    ];
+    let alerts: Vec<_> = scenario.iter().flat_map(|e| engine.evaluate(e)).collect();
+
+    for alert in &alerts {
+        assert!(sinks::dispatch(&cfg.sinks, alert).is_empty());
+    }
+
+    let kinds: Vec<String> = alerts.iter().map(|a| a.kind.clone()).collect();
+    assert!(
+        kinds.iter().any(|k| k == rules::REGISTRAR_QUOTA_CONSUMED),
+        "missing {} in {kinds:?}",
+        rules::REGISTRAR_QUOTA_CONSUMED
+    );
+
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        body["kind"].as_str().unwrap(),
+        rules::REGISTRAR_QUOTA_CONSUMED
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+/// A scheduled removal whose time has passed while the attester is still
+/// active must raise `ScheduledRemovalOverdue` (issue #680).
+#[test]
+fn scheduled_removal_overdue_scenario_reaches_the_webhook() {
+    let (url, rx) = mock_webhook();
+    let mut cfg = config(url);
+    cfg.contracts = vec!["CREG".into()];
+    cfg.rules = vec![];
+    cfg.sinks = vec![SinkConfig::Webhook {
+        url: cfg.sinks[0].clone().url(),
+        format: "generic".into(),
+        min_severity: Some(Severity::Critical),
+    }];
+    let mut engine = Engine::new(&cfg);
+
+    let scenario = [
+        // A removal is scheduled, then the attester rotates keys so the
+        // schedule must follow the new key.
+        ev("CREG", "attester_added", 10, &["GA"]),
+        ev("CREG", "removal_scheduled", 11, &["GA", "20"]),
+        ev("CREG", "attester_rotated", 12, &["GA", "GB"]),
+        // The scheduled ledger passes but the attester is still active.
+        ev("CREG", "removal_overdue", 21, &["GB", "20"]),
+    ];
+    let alerts: Vec<_> = scenario.iter().flat_map(|e| engine.evaluate(e)).collect();
+
+    for alert in &alerts {
+        assert!(sinks::dispatch(&cfg.sinks, alert).is_empty());
+    }
+
+    let kinds: Vec<String> = alerts.iter().map(|a| a.kind.clone()).collect();
+    assert!(
+        kinds.iter().any(|k| k == rules::SCHEDULED_REMOVAL_OVERDUE),
+        "missing {} in {kinds:?}",
+        rules::SCHEDULED_REMOVAL_OVERDUE
+    );
+
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        body["kind"].as_str().unwrap(),
+        rules::SCHEDULED_REMOVAL_OVERDUE
+    );
+    assert!(rx.try_recv().is_err());
+}
+
 /// Requires a running quickstart (`stellar container start local`) with the
 /// Lafiya contracts deployed and the scenario in docs/runbooks/watchdog.md
 /// executed. Set `LAFIYA_WATCHDOG_RPC` and `LAFIYA_WATCHDOG_CONTRACTS`

@@ -197,6 +197,13 @@ address), `amount`.
 Topics: `attester`. Data: `recipient`, `effective_at`. The new recipient is
 used for claims from `effective_at` (now + 48h).
 
+### `PayoutAddressMigrated`
+Topics: `previous`, `new`. Data: `recipient`, `effective_at`. Emitted when an
+attester rotates keys: the payout binding of `previous` is migrated to `new`
+so that work items approved for the old key remain claimable by the new
+identity. Claims for old-key work items are paid to the migrated recipient;
+the old key can no longer claim after rotation.
+
 ### `AttestationRegistryRepointed`
 Topics: `previous` (optional), `new`.
 
@@ -293,6 +300,80 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | Field | Type | Location |
 |---|---|---|
 | `attester` | `Address` | topic_list |
+| `seq` | `u64` | data |
+
+### `AttesterRotated`
+
+- **Prefix topics:** `attester_rotated`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `previous` | `Address` | topic_list |
+| `new` | `Address` | topic_list |
+| `rotated_at` | `u64` | data |
+| `migrated_scheduled_removal` | `bool` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+### `AttesterRemovalScheduled`
+
+- **Prefix topics:** `attester_removal_scheduled`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `scheduled_at` | `u64` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+### `AttesterRemovalRescheduled`
+
+- **Prefix topics:** `attester_removal_rescheduled`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `previous` | `Address` | topic_list |
+| `new` | `Address` | topic_list |
+| `scheduled_at` | `u64` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+### `AttesterRemovalCancelled`
+
+- **Prefix topics:** `attester_removal_cancelled`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `reason` | `Symbol` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+### `RegistrarQuotaConsumed`
+
+- **Prefix topics:** `registrar_quota_consumed`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `registrar` | `Address` | topic_list |
+| `active_count` | `u32` | data |
+| `active_cap` | `u32` | data |
+| `lifetime_enrollments` | `u64` | data |
+| `window_enrollments` | `u32` | data |
+| `window_cap` | `u32` | data |
+| `window_ledgers` | `u32` | data |
+| `threshold_bps` | `u32` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 | `seq` | `u64` | data |
 
 ### `AttesterSuspended`

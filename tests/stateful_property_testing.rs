@@ -30,6 +30,12 @@ struct ReferenceModel {
     ttl: HashMap<String, u32>,
     /// Maximum TTL horizon
     max_ttl: u32,
+    /// Rotation links: old key -> (new key, rotated_at ledger)
+    rotations: HashMap<String, (String, u32)>,
+    /// Scheduled removals: attester -> scheduled ledger
+    scheduled_removals: HashMap<String, u32>,
+    /// Current ledger offset (monotonic clock for the model)
+    ledger: u32,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,7 +60,93 @@ impl ReferenceModel {
             disputes: HashSet::new(),
             ttl: HashMap::new(),
             max_ttl: 1000,
+            rotations: HashMap::new(),
+            scheduled_removals: HashMap::new(),
+            ledger: 0,
         }
+    }
+
+    /// Advance the model clock to `ledger` (monotonic).
+    fn advance_ledger(&mut self, ledger: u32) {
+        if ledger > self.ledger {
+            self.ledger = ledger;
+        }
+    }
+
+    /// Model operation: RotateAttester.
+    ///
+    /// Migrates metadata, tier, probation counters, bond and any scheduled
+    /// removal to the new key atomically. The old key is retained in the
+    /// rotation map so historical validity can be resolved.
+    fn rotate_attester(&mut self, previous: &str, new: &str) -> Result<(), String> {
+        if self.paused {
+            return Err("Contract paused".to_string());
+        }
+        if !self.attesters.contains(previous) {
+            return Err("Attester not registered".to_string());
+        }
+        if self.attesters.contains(new) {
+            return Err("New key already registered".to_string());
+        }
+
+        let rotated_at = self.ledger;
+
+        // Migrate active/suspended membership.
+        self.attesters.remove(previous);
+        self.attesters.insert(new.to_string());
+        if self.suspended.remove(previous) {
+            self.suspended.insert(new.to_string());
+        }
+
+        // Migrate any scheduled removal so it is never silently lost.
+        if let Some(at) = self.scheduled_removals.remove(previous) {
+            self.scheduled_removals.insert(new.to_string(), at);
+        }
+
+        self.rotations
+            .insert(previous.to_string(), (new.to_string(), rotated_at));
+        Ok(())
+    }
+
+    /// Model operation: ScheduleRemoval.
+    fn schedule_removal(&mut self, attester: &str, at: u32) -> Result<(), String> {
+        if self.paused {
+            return Err("Contract paused".to_string());
+        }
+        if !self.attesters.contains(attester) {
+            return Err("Attester not registered".to_string());
+        }
+        if at <= self.ledger {
+            return Err("Removal must be scheduled in the future".to_string());
+        }
+        self.scheduled_removals.insert(attester.to_string(), at);
+        Ok(())
+    }
+
+    /// Model operation: execute any scheduled removals whose time has passed.
+    fn execute_due_removals(&mut self) {
+        let due: Vec<String> = self
+            .scheduled_removals
+            .iter()
+            .filter(|(_, at)| **at <= self.ledger)
+            .map(|(addr, _)| addr.clone())
+            .collect();
+        for addr in due {
+            self.scheduled_removals.remove(&addr);
+            self.attesters.remove(&addr);
+            self.suspended.remove(&addr);
+        }
+    }
+
+    /// Historical validity: was `attester` a valid attester at ledger `t`?
+    ///
+    /// A rotated-away key remains valid for `t < rotated_at` and is invalid
+    /// from the rotation onwards.
+    fn is_attester_at(&self, attester: &str, t: u32) -> bool {
+        if let Some((_, rotated_at)) = self.rotations.get(attester) {
+            return t < *rotated_at;
+        }
+        self.attesters.contains(attester)
     }
 
     /// Model operation: Attest
@@ -121,6 +213,8 @@ impl ReferenceModel {
 
         self.attesters.remove(address);
         self.suspended.remove(address);
+        // Cancellation on remove: a schedule for a removed attester is dropped.
+        self.scheduled_removals.remove(address);
         Ok(())
     }
 
@@ -314,6 +408,26 @@ impl ReferenceModel {
             before,
             after
         );
+    }
+
+    /// Invariant check: a scheduled removal is never silently lost.
+    ///
+    /// Every schedule must target a currently active attester, or be
+    /// resolvable through a rotation link to an active attester.
+    fn check_schedule_not_lost(&self) {
+        for (addr, _at) in &self.scheduled_removals {
+            let active = self.attesters.contains(addr)
+                || self
+                    .rotations
+                    .get(addr)
+                    .map(|(new, _)| self.attesters.contains(new))
+                    .unwrap_or(false);
+            assert!(
+                active,
+                "Scheduled removal stranded on inactive attester {}",
+                addr
+            );
+        }
     }
 
     /// Invariant check: TTL never decreases
@@ -515,4 +629,162 @@ fn ttl_extension_is_monotonic_and_capped() {
     model.check_ttl_monotonic("HASH_1", model.max_ttl);
 
     println!("✓ TTL extension monotonicity passed");
+}
+
+#[test]
+fn rotation_preserves_historical_validity() {
+    let mut model = ReferenceModel::new("ADMIN".to_string());
+    model.add_attester("OLD").expect("add attester");
+    model.advance_ledger(10);
+
+    // Attest with the old key before rotation.
+    model.attest("HASH_1", "OLD", vec![1, 2, 3]).ok();
+    assert!(model.is_attester_at("OLD", 10));
+
+    // Rotate at ledger 20.
+    model.advance_ledger(20);
+    model.rotate_attester("OLD", "NEW").expect("rotate");
+
+    // Historical validity: pre-rotation attestations stay verifiable.
+    assert!(model.is_attester_at("OLD", 10));
+    assert!(model.is_attester_at("OLD", 19));
+    // Post-rotation use of the old key is rejected.
+    assert!(!model.is_attester_at("OLD", 20));
+    assert!(!model.is_attester_at("OLD", 21));
+    assert!(model.is_attester_at("NEW", 20));
+    assert!(model.attest("HASH_2", "OLD", vec![4]).is_err());
+    assert!(model.attest("HASH_2", "NEW", vec![4]).is_ok());
+
+    model.check_suspension_invariant();
+    println!("✓ Rotation historical validity passed");
+}
+
+#[test]
+fn rotation_migrates_scheduled_removal() {
+    let mut model = ReferenceModel::new("ADMIN".to_string());
+    model.add_attester("OLD").expect("add attester");
+    model.advance_ledger(5);
+    model.schedule_removal("OLD", 50).expect("schedule");
+
+    model.advance_ledger(10);
+    model.rotate_attester("OLD", "NEW").expect("rotate");
+
+    // The schedule follows the new key and is not stranded.
+    assert_eq!(model.scheduled_removals.get("NEW"), Some(&50));
+    assert!(!model.scheduled_removals.contains_key("OLD"));
+    model.check_schedule_not_lost();
+
+    // The removal still fires at the scheduled time.
+    model.advance_ledger(50);
+    model.execute_due_removals();
+    assert!(!model.attesters.contains("NEW"));
+    assert!(model.scheduled_removals.is_empty());
+    model.check_schedule_not_lost();
+
+    println!("✓ Rotation migrates scheduled removal");
+}
+
+#[test]
+fn scheduled_removal_state_machine_transitions() {
+    // (description, setup, expected schedule target after transition)
+    struct Case {
+        name: &'static str,
+        rotate: bool,
+        suspend: bool,
+        remove_and_readd: bool,
+        expect_schedule_on: Option<&'static str>,
+    }
+
+    let cases = vec![
+        Case {
+            name: "plain schedule",
+            rotate: false,
+            suspend: false,
+            remove_and_readd: false,
+            expect_schedule_on: Some("OLD"),
+        },
+        Case {
+            name: "rotate before due",
+            rotate: true,
+            suspend: false,
+            remove_and_readd: false,
+            expect_schedule_on: Some("NEW"),
+        },
+        Case {
+            name: "suspend before due",
+            rotate: false,
+            suspend: true,
+            remove_and_readd: false,
+            expect_schedule_on: Some("OLD"),
+        },
+        Case {
+            name: "remove and re-add cancels schedule",
+            rotate: false,
+            suspend: false,
+            remove_and_readd: true,
+            expect_schedule_on: None,
+        },
+    ];
+
+    for case in cases {
+        let mut model = ReferenceModel::new("ADMIN".to_string());
+        model.add_attester("OLD").expect("add attester");
+        model.advance_ledger(5);
+        model.schedule_removal("OLD", 50).expect("schedule");
+
+        if case.suspend {
+            model.suspend_attester("OLD").expect("suspend");
+        }
+        if case.rotate {
+            model.advance_ledger(10);
+            model.rotate_attester("OLD", "NEW").expect("rotate");
+        }
+        if case.remove_and_readd {
+            model.advance_ledger(15);
+            model.remove_attester("OLD").expect("remove");
+            model.add_attester("OLD").expect("re-add");
+        }
+
+        match case.expect_schedule_on {
+            Some(target) => {
+                assert_eq!(
+                    model.scheduled_removals.get(target),
+                    Some(&50),
+                    "case: {}",
+                    case.name
+                );
+                model.check_schedule_not_lost();
+            }
+            None => {
+                assert!(
+                    model.scheduled_removals.is_empty(),
+                    "case: {}",
+                    case.name
+                );
+            }
+        }
+    }
+
+    println!("✓ Scheduled removal state machine transitions passed");
+}
+
+#[test]
+fn scheduled_removal_not_executed_while_paused() {
+    let mut model = ReferenceModel::new("ADMIN".to_string());
+    model.add_attester("OLD").expect("add attester");
+    model.advance_ledger(5);
+    model.schedule_removal("OLD", 50).expect("schedule");
+
+    model.pause().expect("pause");
+    model.advance_ledger(50);
+    // While paused the schedule is retained, not silently dropped.
+    assert_eq!(model.scheduled_removals.get("OLD"), Some(&50));
+    model.check_schedule_not_lost();
+
+    model.unpause().expect("unpause");
+    model.execute_due_removals();
+    assert!(!model.attesters.contains("OLD"));
+    assert!(model.scheduled_removals.is_empty());
+
+    println!("✓ Scheduled removal respects pause");
 }

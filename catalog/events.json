@@ -584,6 +584,171 @@
     },
     {
       "contract": "attester-registry",
+      "name": "AttesterRotated",
+      "prefix_topics": [
+        "attester_rotated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "previous",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "new",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "rotated_at",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "removal_migrated",
+          "type": "bool",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "AttesterRemovalMigrated",
+      "prefix_topics": [
+        "attester_removal_migrated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "previous",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "new",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "effective_at",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "ScheduledRemovalOverdue",
+      "prefix_topics": [
+        "scheduled_removal_overdue"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "effective_at",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "observed_at",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "RegistrarQuotaConsumed",
+      "prefix_topics": [
+        "registrar_quota_consumed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "registrar",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "active_count",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "active_cap",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "lifetime_enrollments",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "window_enrollments",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "window_cap",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "window_ledgers",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "RegistrarQuotaThresholdReached",
+      "prefix_topics": [
+        "registrar_quota_threshold_reached"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "registrar",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "active_count",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "active_cap",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "window_enrollments",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "window_cap",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "threshold_bps",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
       "name": "Initialized",
       "prefix_topics": [
         "initialized"

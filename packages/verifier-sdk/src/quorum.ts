@@ -23,7 +23,84 @@ export interface QuorumOptions {
   k?: number;
   /** Providers more than this many ledgers behind the newest are excluded. Default 2. */
   maxLedgerSkew?: number;
+  /**
+   * Reject co-attestations whose attesters share a licence or facility
+   * identity (see {@link assertDistinctAttesters}). Default true.
+   */
+  enforceDistinctAttesters?: boolean;
 }
+
+/**
+ * Thrown when co-attestations are not from distinct humans, i.e. two or more
+ * attesters share a licence hash or facility identity. The verifier maps it to
+ * `unavailable`; it is never a "verified" verdict.
+ */
+export class QuorumDistinctnessError extends QuorumError {
+  constructor(
+    readonly reason: "licence" | "facility",
+    message: string,
+  ) {
+    super("disagreement", message);
+    this.name = "QuorumDistinctnessError";
+  }
+}
+
+/**
+ * Identity data used to check that co-attesters are distinct humans.
+ *
+ * Distinctness rule (issue #679): a quorum must be made up of attesters that
+ * do not share a licence hash or a facility identity. One health worker (or a
+ * stolen licence number) enrolled under several addresses must not be able to
+ * satisfy a 2-of-N quorum alone. When the data is unavailable for an attester
+ * the check is skipped for that attester, so distinctness is enforced only
+ * where the chain exposes the identity.
+ */
+export interface AttesterIdentity {
+  /** Canonical, deployment-salted licence hash, if known. */
+  licenseHash?: string;
+  /** Facility identity the attester is bound to, if known. */
+  facilityId?: string;
+}
+
+/** Looks up identity data for an attester address; may return null if unknown. */
+export type AttesterIdentityLookup = (attester: string) => Promise<AttesterIdentity | null> | AttesterIdentity | null;
+
+/**
+ * Throws {@link QuorumDistinctnessError} if any two attesters share a licence
+ * hash or facility identity. Attesters without identity data are ignored.
+ */
+export function assertDistinctAttesters(
+  attesters: readonly string[],
+  identities: ReadonlyMap<string, AttesterIdentity | null | undefined>,
+): void {
+  const seenLicences = new Map<string, string>();
+  const seenFacilities = new Map<string, string>();
+  for (const attester of attesters) {
+    const identity = identities.get(attester);
+    if (!identity) continue;
+    if (identity.licenseHash) {
+      const prior = seenLicences.get(identity.licenseHash);
+      if (prior !== undefined && prior !== attester) {
+        throw new QuorumDistinctnessError(
+          "licence",
+          `attesters ${prior} and ${attester} share a licence hash`,
+        );
+      }
+      seenLicences.set(identity.licenseHash, attester);
+    }
+    if (identity.facilityId) {
+      const prior = seenFacilities.get(identity.facilityId);
+      if (prior !== undefined && prior !== attester) {
+        throw new QuorumDistinctnessError(
+          "facility",
+          `attesters ${prior} and ${attester} share a facility identity`,
+        );
+      }
+      seenFacilities.set(identity.facilityId, attester);
+    }
+  }
+}
+=======
 
 export interface QuorumMetrics {
   reads: number;
@@ -57,21 +134,50 @@ export class QuorumChainReader implements ChainReader {
   };
   private readonly k: number;
   private readonly maxLedgerSkew: number;
+  private readonly enforceDistinctAttesters: boolean;
+  private readonly identityLookup?: AttesterIdentityLookup;
 
   constructor(
     private readonly providers: QuorumProvider[],
     options: QuorumOptions = {},
+    identityLookup?: AttesterIdentityLookup,
   ) {
     this.k = Math.max(1, options.k ?? 2);
     this.maxLedgerSkew = options.maxLedgerSkew ?? 2;
+    this.enforceDistinctAttesters = options.enforceDistinctAttesters ?? true;
+    this.identityLookup = identityLookup;
   }
 
   getAttestation(trust: NetworkTrust, recordHash: string): Promise<OnChainAttestation | null> {
     return this.quorum(trust, (r) => r.getAttestation(trust, recordHash));
   }
 
-  getAttestationHistory(trust: NetworkTrust, recordHash: string): Promise<OnChainAttestation[]> {
-    return this.quorum(trust, (r) => r.getAttestationHistory(trust, recordHash));
+  async getAttestationHistory(trust: NetworkTrust, recordHash: string): Promise<OnChainAttestation[]> {
+    const history = await this.quorum(trust, (r) => r.getAttestationHistory(trust, recordHash));
+    await this.checkDistinctness(history);
+    return history;
+  }
+
+  /**
+   * Enforces the distinctness rule on a set of co-attestations when identity
+   * data is available. Throws {@link QuorumDistinctnessError} on a shared
+   * licence hash or facility identity.
+   */
+  private async checkDistinctness(history: readonly OnChainAttestation[]): Promise<void> {
+    if (!this.enforceDistinctAttesters || !this.identityLookup) return;
+    const attesters = [...new Set(history.map((a) => a.attester))];
+    if (attesters.length < 2) return;
+    const identities = new Map<string, AttesterIdentity | null>();
+    await Promise.all(
+      attesters.map(async (attester) => {
+        try {
+          identities.set(attester, await this.identityLookup!(attester));
+        } catch {
+          identities.set(attester, null);
+        }
+      }),
+    );
+    assertDistinctAttesters(attesters, identities);
   }
 
   getAttesterStatus(trust: NetworkTrust, attester: string): Promise<AttesterState | null> {

@@ -131,6 +131,238 @@
   },
   {
     "kind": "function_v0",
+    "name": "get_attester_rotation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "get_attester_rotation",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "udt": {
+                "name": "AttesterRotation"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_attester_trust_revoked_after",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "get_attester_trust_revoked_after",
+      "outputs": [
+        {
+          "option": {
+            "value_type": "u64"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "is_attester_at",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "name": "timestamp",
+          "type": "u64"
+        }
+      ],
+      "name": "is_attester_at",
+      "outputs": [
+        "bool"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "rotate_attester",
+    "spec": {
+      "inputs": [
+        {
+          "name": "previous",
+          "type": "address"
+        },
+        {
+          "name": "new",
+          "type": "address"
+        }
+      ],
+      "name": "rotate_attester",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_license_owner",
+    "spec": {
+      "inputs": [
+        {
+          "name": "license_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "get_license_owner",
+      "outputs": [
+        {
+          "option": {
+            "value_type": "address"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_regional_registrar_count",
+    "spec": {
+      "inputs": [
+        {
+          "name": "registrar",
+          "type": "address"
+        }
+      ],
+      "name": "get_regional_registrar_count",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "udt": {
+                "name": "RegistrarQuota"
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "set_regional_registrar",
+    "spec": {
+      "inputs": [
+        {
+          "name": "registrar",
+          "type": "address"
+        },
+        {
+          "name": "quota",
+          "type": {
+            "udt": {
+              "name": "RegistrarQuota"
+            }
+          }
+        }
+      ],
+      "name": "set_regional_registrar",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "schedule_removal",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "name": "at",
+          "type": "u64"
+        }
+      ],
+      "name": "schedule_removal",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_scheduled_removal",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "get_scheduled_removal",
+      "outputs": [
+        {
+          "option": {
+            "value_type": "u64"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "cancel_scheduled_removal",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "cancel_scheduled_removal",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_attester_info",
     "spec": {
       "inputs": [
@@ -542,6 +774,34 @@
         {
           "name": "BatchTooLarge",
           "value": 8
+        },
+        {
+          "name": "DuplicateLicense",
+          "value": 9
+        },
+        {
+          "name": "LicenseCooldown",
+          "value": 10
+        },
+        {
+          "name": "RotationNotAllowed",
+          "value": 11
+        },
+        {
+          "name": "RegistrarQuotaExceeded",
+          "value": 12
+        },
+        {
+          "name": "RegistrarWindowQuotaExceeded",
+          "value": 13
+        },
+        {
+          "name": "ScheduledRemovalNotFound",
+          "value": 14
+        },
+        {
+          "name": "InvalidScheduleTime",
+          "value": 15
         }
       ],
       "lib": "",
@@ -645,6 +905,117 @@
       ],
       "prefix_topics": [
         "attester_removed"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttesterRotated",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttesterRotated",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "previous",
+          "type": "address"
+        },
+        {
+          "location": "topic_list",
+          "name": "new",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "rotated_at",
+          "type_": "u64"
+        }
+      ],
+      "prefix_topics": [
+        "attester_rotated"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "RegistrarQuotaConsumed",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "RegistrarQuotaConsumed",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "registrar",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "active_count",
+          "type_": "u32"
+        },
+        {
+          "location": "data",
+          "name": "lifetime_enrollments",
+          "type_": "u32"
+        },
+        {
+          "location": "data",
+          "name": "window_enrollments",
+          "type_": "u32"
+        },
+        {
+          "location": "data",
+          "name": "threshold_crossed",
+          "type_": "bool"
+        }
+      ],
+      "prefix_topics": [
+        "registrar_quota_consumed"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "RemovalScheduled",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "RemovalScheduled",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "at",
+          "type_": "u64"
+        }
+      ],
+      "prefix_topics": [
+        "removal_scheduled"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "RemovalScheduleCancelled",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "RemovalScheduleCancelled",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "prefix_topics": [
+        "removal_schedule_cancelled"
       ]
     }
   },
@@ -755,6 +1126,54 @@
       "prefix_topics": [
         "upgraded"
       ]
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "AttesterRotation",
+    "spec": {
+      "fields": [
+        {
+          "name": "previous",
+          "type": "address"
+        },
+        {
+          "name": "new",
+          "type": "address"
+        },
+        {
+          "name": "rotated_at",
+          "type": "u64"
+        }
+      ],
+      "lib": "",
+      "name": "AttesterRotation"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "RegistrarQuota",
+    "spec": {
+      "fields": [
+        {
+          "name": "active_cap",
+          "type": "u32"
+        },
+        {
+          "name": "lifetime_cap",
+          "type": "u32"
+        },
+        {
+          "name": "window_cap",
+          "type": "u32"
+        },
+        {
+          "name": "window_seconds",
+          "type": "u64"
+        }
+      ],
+      "lib": "",
+      "name": "RegistrarQuota"
     }
   },
   {

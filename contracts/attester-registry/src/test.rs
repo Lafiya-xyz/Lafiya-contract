@@ -1412,3 +1412,360 @@ fn revoke_session_key_is_idempotent() {
         Err(Ok(Error::SessionNotFound))
     );
 }
+
+// ---------------------------------------------------------------------------
+// #675 — historical validity across `rotate_attester`.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn is_attester_at_is_true_before_rotation_and_false_after() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let old_key = Address::generate(&env);
+    let new_key = Address::generate(&env);
+    client.add_attester(&admin, &old_key);
+
+    env.ledger().set_timestamp(100);
+    let rotated_at = 500;
+    env.ledger().set_timestamp(rotated_at);
+    client.rotate_attester(&admin, &old_key, &new_key);
+
+    // Pre-rotation attestations by the old key stay verifiable.
+    assert!(client.is_attester_at(&old_key, &0));
+    assert!(client.is_attester_at(&old_key, &(rotated_at - 1)));
+    // From the rotation instant onwards the old key is no longer valid.
+    assert!(!client.is_attester_at(&old_key, &rotated_at));
+    assert!(!client.is_attester_at(&old_key, &(rotated_at + 1)));
+
+    // The new key is valid from the rotation instant onwards.
+    assert!(!client.is_attester_at(&new_key, &(rotated_at - 1)));
+    assert!(client.is_attester_at(&new_key, &rotated_at));
+    assert!(client.is_attester_at(&new_key, &(rotated_at + 1)));
+
+    // The rotation link is exposed for verifiers.
+    assert_eq!(client.get_attester_rotation(&old_key), Some(new_key.clone()));
+}
+
+#[test]
+fn post_rotation_use_of_old_key_is_rejected() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let old_key = Address::generate(&env);
+    let new_key = Address::generate(&env);
+    client.add_attester(&admin, &old_key);
+    client.rotate_attester(&admin, &old_key, &new_key);
+
+    // The old key is no longer an active attester.
+    assert!(!client.is_attester(&old_key));
+    assert!(client.is_attester(&new_key));
+
+    // Writes from the old key are rejected.
+    let session_pk = BytesN::from_array(&env, &[7u8; 32]);
+    let scope = Symbol::new(&env, "attest");
+    assert_eq!(
+        client.try_delegate_session_key(
+            &old_key,
+            &session_pk,
+            &(env.ledger().timestamp() + 1_000),
+            &scope,
+        ),
+        Err(Ok(Error::AttesterNotFound))
+    );
+
+    // The old key cannot rotate again.
+    let third = Address::generate(&env);
+    assert_eq!(
+        client.try_rotate_attester(&admin, &old_key, &third),
+        Err(Ok(Error::AttesterNotFound))
+    );
+}
+
+#[test]
+fn rotate_attester_migrates_state_atomically() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let old_key = Address::generate(&env);
+    let new_key = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[4u8; 32]);
+    let region = String::from_str(&env, "NG-LA");
+    client.add_attester_with_info(
+        &admin,
+        &old_key,
+        &Some(license_hash.clone()),
+        &Some(region.clone()),
+        &Some(0),
+        &Some(10_000),
+    );
+    client.schedule_removal(&admin, &old_key, &5_000);
+
+    client.rotate_attester(&admin, &old_key, &new_key);
+
+    // Metadata migrated to the new key.
+    let info = client.get_attester_info(&new_key).unwrap();
+    assert_eq!(info.license_hash, Some(license_hash.clone()));
+    assert_eq!(info.region, Some(region.clone()));
+    assert_eq!(info.valid_from, Some(0));
+    assert_eq!(info.valid_until, Some(10_000));
+
+    // The old key no longer carries the metadata.
+    assert_eq!(client.get_attester_info(&old_key), None);
+
+    // The scheduled removal followed the new key.
+    assert_eq!(client.get_scheduled_removal(&old_key), None);
+    assert_eq!(client.get_scheduled_removal(&new_key), Some(5_000));
+
+    // The licence index now points at the new key.
+    assert_eq!(client.get_license_owner(&license_hash), Some(new_key.clone()));
+
+    // The active count is unchanged by a rotation.
+    assert_eq!(client.get_attester_count(), 1);
+}
+
+// ---------------------------------------------------------------------------
+// #676 — regional registrar quota: live vs windowed (cumulative) semantics.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn registrar_quota_tracks_active_and_lifetime_enrollments() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &2);
+
+    let first = Address::generate(&env);
+    client.add_attester(&registrar, &first);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 1);
+    assert_eq!(client.get_regional_registrar_lifetime_enrollments(&registrar), 1);
+
+    // Removing frees the live slot but not the lifetime counter.
+    client.remove_attester(&admin, &first);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 0);
+    assert_eq!(client.get_regional_registrar_lifetime_enrollments(&registrar), 1);
+}
+
+#[test]
+fn registrar_churn_cannot_exceed_windowed_enrollment_cap() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &1);
+    client.set_regional_registrar_window_cap(&registrar, &2);
+
+    // Two enroll/remove cycles consume the windowed cap.
+    for _ in 0..2 {
+        let attester = Address::generate(&env);
+        client.add_attester(&registrar, &attester);
+        client.remove_attester(&admin, &attester);
+    }
+
+    // The live quota has room, but the windowed cap is exhausted.
+    let churned = Address::generate(&env);
+    assert_eq!(
+        client.try_add_attester(&registrar, &churned),
+        Err(Ok(Error::RegionalWindowQuotaExceeded))
+    );
+    assert!(!client.is_attester(&churned));
+}
+
+#[test]
+fn registrar_quota_consumed_event_is_emitted() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&registrar, &String::from_str(&env, "NG-LA"), &5);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&registrar, &attester);
+
+    let events = env.events().all();
+    let expected = RegistrarQuotaConsumed {
+        registrar: registrar.clone(),
+        active_count: 1,
+        lifetime_enrollments: 1,
+        window_enrollments: 1,
+        active_cap: 5,
+        window_cap: 5,
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    assert!(events
+        .events()
+        .iter()
+        .any(|e| e == &expected.to_xdr(&env, &client.address)));
+}
+
+// ---------------------------------------------------------------------------
+// #679 — one licence credential cannot be enrolled under multiple addresses.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn duplicate_license_enrollment_is_rejected() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let license_hash = BytesN::from_array(&env, &[5u8; 32]);
+    let first = Address::generate(&env);
+    client.add_attester_with_info(
+        &admin,
+        &first,
+        &Some(license_hash.clone()),
+        &None,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_license_owner(&license_hash), Some(first.clone()));
+
+    let second = Address::generate(&env);
+    assert_eq!(
+        client.try_add_attester_with_info(
+            &admin,
+            &second,
+            &Some(license_hash.clone()),
+            &None,
+            &None,
+            &None,
+        ),
+        Err(Ok(Error::DuplicateLicense))
+    );
+    assert_eq!(client.get_attester_info(&second), None);
+}
+
+#[test]
+fn duplicate_license_on_update_is_rejected() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let license_hash = BytesN::from_array(&env, &[6u8; 32]);
+    let first = Address::generate(&env);
+    client.add_attester_with_info(
+        &admin,
+        &first,
+        &Some(license_hash.clone()),
+        &None,
+        &None,
+        &None,
+    );
+
+    let second = Address::generate(&env);
+    client.add_attester(&admin, &second);
+    assert_eq!(
+        client.try_update_attester_info(
+            &admin,
+            &second,
+            &Some(license_hash.clone()),
+            &None,
+            &None,
+            &None,
+        ),
+        Err(Ok(Error::DuplicateLicense))
+    );
+}
+
+#[test]
+fn removing_attester_releases_license_index() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let license_hash = BytesN::from_array(&env, &[7u8; 32]);
+    let first = Address::generate(&env);
+    client.add_attester_with_info(
+        &admin,
+        &first,
+        &Some(license_hash.clone()),
+        &None,
+        &None,
+        &None,
+    );
+    client.remove_attester(&admin, &first);
+    assert_eq!(client.get_license_owner(&license_hash), None);
+
+    // The licence can be re-enrolled under a new address after removal.
+    let second = Address::generate(&env);
+    client.add_attester_with_info(
+        &admin,
+        &second,
+        &Some(license_hash.clone()),
+        &None,
+        &None,
+        &None,
+    );
+    assert_eq!(client.get_license_owner(&license_hash), Some(second));
+}
+
+// ---------------------------------------------------------------------------
+// #680 — scheduled removals interacting with rotation, pause, re-enrollment.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn scheduled_removal_transitions_table() {
+    // Each row exercises one transition of the scheduled-removal state machine.
+    // (name, action, expected schedule after action)
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    // schedule -> rotate: the schedule follows the new key.
+    let old_key = Address::generate(&env);
+    let new_key = Address::generate(&env);
+    client.add_attester(&admin, &old_key);
+    client.schedule_removal(&admin, &old_key, &1_000);
+    client.rotate_attester(&admin, &old_key, &new_key);
+    assert_eq!(client.get_scheduled_removal(&old_key), None);
+    assert_eq!(client.get_scheduled_removal(&new_key), Some(1_000));
+
+    // schedule -> suspend: the schedule is retained.
+    let suspended = Address::generate(&env);
+    client.add_attester(&admin, &suspended);
+    client.schedule_removal(&admin, &suspended, &2_000);
+    client.suspend_attester(&admin, &suspended);
+    assert_eq!(client.get_scheduled_removal(&suspended), Some(2_000));
+
+    // suspend -> reinstate: the schedule is retained.
+    client.reinstate_attester(&admin, &suspended);
+    assert_eq!(client.get_scheduled_removal(&suspended), Some(2_000));
+
+    // schedule -> remove: the schedule is cancelled.
+    let removed = Address::generate(&env);
+    client.add_attester(&admin, &removed);
+    client.schedule_removal(&admin, &removed, &3_000);
+    client.remove_attester(&admin, &removed);
+    assert_eq!(client.get_scheduled_removal(&removed), None);
+
+    // remove -> re-add: the schedule does not resurrect.
+    client.add_attester(&admin, &removed);
+    assert_eq!(client.get_scheduled_removal(&removed), None);
+
+    // pause does not drop a pending schedule.
+    let paused = Address::generate(&env);
+    client.add_attester(&admin, &paused);
+    client.schedule_removal(&admin, &paused, &4_000);
+    client.pause(&admin);
+    assert_eq!(client.get_scheduled_removal(&paused), Some(4_000));
+    client.unpause(&admin);
+    assert_eq!(client.get_scheduled_removal(&paused), Some(4_000));
+}
+
+#[test]
+fn scheduled_removal_is_never_silently_lost() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &1_000);
+
+    // Suspending and reinstating must not drop the schedule.
+    client.suspend_attester(&admin, &attester);
+    client.reinstate_attester(&admin, &attester);
+    assert_eq!(client.get_scheduled_removal(&attester), Some(1_000));
+
+    // Rotating must carry the schedule to the new key.
+    let new_key = Address::generate(&env);
+    client.rotate_attester(&admin, &attester, &new_key);
+    assert_eq!(client.get_scheduled_removal(&new_key), Some(1_000));
+}
