@@ -9,17 +9,22 @@ extern crate rustc_span;
 
 use clippy_utils::diagnostics::span_lint;
 use rustc_hir::intravisit::{walk_expr, FnKind, Visitor};
-use rustc_hir::{BinOpKind, Body, Expr, ExprKind, FnDecl};
+use rustc_hir::{BinOpKind, Body, Expr, ExprKind, FnDecl, ItemKind, Node};
 use rustc_lint::{LateContext, LateLintPass};
 use rustc_middle::ty::TyKind;
-use rustc_span::{def_id::LocalDefId, Span};
+use rustc_span::{def_id::LocalDefId, Span, Symbol};
 
 dylint_linting::dylint_library!();
 
 #[unsafe(no_mangle)]
 pub fn register_lints(sess: &rustc_session::Session, store: &mut rustc_lint::LintStore) {
     dylint_linting::init_config(sess);
-    store.register_lints(&[PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+    store.register_lints(&[
+        PERSISTENT_SET_WITHOUT_TTL,
+        STORAGE_IN_LOOP,
+        UNCHECKED_AMOUNT_ARITHMETIC,
+        GOVERNANCE_PRIMITIVE_REDEFINED,
+    ]);
     store.register_late_lint_pass(Box::new(|_| Box::new(LafiyaLints)));
 }
 
@@ -35,7 +40,42 @@ rustc_session::declare_lint! {
     /// `+ - *` on an i128/u128 amount.
     pub UNCHECKED_AMOUNT_ARITHMETIC, Warn, "unchecked arithmetic on an amount type"
 }
-rustc_session::declare_lint_pass!(LafiyaLints => [PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+rustc_session::declare_lint! {
+    /// Local redefinition of a governance primitive (admin, pause, TTL, migration)
+    /// that should come from `lafiya-contract-common`.
+    pub GOVERNANCE_PRIMITIVE_REDEFINED, Warn, "governance primitive redefined outside lafiya-contract-common"
+}
+rustc_session::declare_lint_pass!(LafiyaLints => [
+    PERSISTENT_SET_WITHOUT_TTL,
+    STORAGE_IN_LOOP,
+    UNCHECKED_AMOUNT_ARITHMETIC,
+    GOVERNANCE_PRIMITIVE_REDEFINED,
+]);
+
+/// Crate that owns the shared governance modules.
+const COMMON_CRATE: &str = "lafiya_contract_common";
+
+/// Name fragments that identify governance primitives.
+const GOVERNANCE_FRAGMENTS: &[&str] = &[
+    "admin",
+    "pause",
+    "paused",
+    "ttl",
+    "bump_amount",
+    "bump_threshold",
+    "migrat",
+];
+
+/// Returns true if `name` looks like a governance primitive.
+fn is_governance_name(name: Symbol) -> bool {
+    let name = name.as_str().to_ascii_lowercase();
+    GOVERNANCE_FRAGMENTS.iter().any(|frag| name.contains(frag))
+}
+
+/// Returns true if the current crate is the common crate itself (which may define them).
+fn is_common_crate(cx: &LateContext<'_>) -> bool {
+    cx.tcx.crate_name(rustc_hir::def_id::LOCAL_CRATE).as_str() == COMMON_CRATE
+}
 
 /// `x.storage().persistent().set(..)` etc: returns the storage kind and method.
 fn storage_call<'a>(e: &'a Expr<'_>) -> Option<(&'a str, &'a str)> {
@@ -86,6 +126,24 @@ impl<'tcx> Visitor<'tcx> for Scan<'_, 'tcx> {
 }
 
 impl<'tcx> LateLintPass<'tcx> for LafiyaLints {
+    fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx rustc_hir::Item<'tcx>) {
+        if is_common_crate(cx) {
+            return;
+        }
+        // Only flag items defined at the crate root of a contract, not imports/uses.
+        if !matches!(item.kind, ItemKind::Fn { .. } | ItemKind::Const(..) | ItemKind::Static(..)) {
+            return;
+        }
+        if is_governance_name(item.ident.name) {
+            span_lint(
+                cx,
+                GOVERNANCE_PRIMITIVE_REDEFINED,
+                item.span,
+                "governance primitive redefined locally; use lafiya-contract-common",
+            );
+        }
+    }
+
     fn check_fn(&mut self, cx: &LateContext<'tcx>, _: FnKind<'tcx>, _: &'tcx FnDecl<'tcx>, body: &'tcx Body<'tcx>, _: Span, _: LocalDefId) {
         let mut scan = Scan { cx, loop_depth: 0, persistent_sets: vec![], has_extend_ttl: false };
         scan.visit_expr(body.value);

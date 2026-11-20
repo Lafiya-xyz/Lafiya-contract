@@ -12,6 +12,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parent.parent
 INDEXER = ROOT / "crates" / "lafiya-indexer"
+CONFORMANCE = ROOT / "scripts" / "conformance"
 
 
 def resolve(spec, node):
@@ -55,6 +56,43 @@ def check(spec, contract):
             for f in it["requiredItemFields"]:
                 if f not in item.get("properties", {}):
                     errors.append(f'{tag}: {it["itemSchema"]}.{f} missing')
+    return errors
+
+
+def load_extractor():
+    """Import extract_interface.py from scripts/conformance without packaging it."""
+    if str(CONFORMANCE) not in sys.path:
+        sys.path.insert(0, str(CONFORMANCE))
+    import extract_interface  # noqa: E402
+
+    return extract_interface
+
+
+def check_contract_interfaces(provider_wasm, consumer_wasm):
+    """Compare shared interface traits in a consumer against the provider spec.
+
+    The provider wasm is parsed with extract_interface.py; every function the
+    consumer expects from the provider must exist with an identical signature.
+    Any drift (e.g. the historical is_session_valid mismatch) is reported as a
+    breaking change so CI fails before it becomes a runtime host error.
+    """
+    extractor = load_extractor()
+    provider = extractor.extract(provider_wasm)
+    consumer = extractor.extract(consumer_wasm)
+    errors = []
+    for trait_name, expected in consumer.get("interfaces", {}).items():
+        actual = provider.get("interfaces", {}).get(trait_name)
+        if actual is None:
+            errors.append(f"consumer trait '{trait_name}' not found in provider spec")
+            continue
+        for fn_name, sig in expected.items():
+            if fn_name not in actual:
+                errors.append(f"{trait_name}::{fn_name} missing from provider")
+            elif actual[fn_name] != sig:
+                errors.append(
+                    f"{trait_name}::{fn_name} signature drift: "
+                    f"consumer={sig} provider={actual[fn_name]}"
+                )
     return errors
 
 

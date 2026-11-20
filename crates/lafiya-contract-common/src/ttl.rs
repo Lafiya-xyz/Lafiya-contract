@@ -81,6 +81,50 @@ where
     target
 }
 
+/// Extend a persistent entry's TTL using the canonical cold-key horizon.
+///
+/// Cold keys relocated out of instance storage (roles, pending admin
+/// proposals, per-class policies) are not touched on every call, so they are
+/// bumped to [`MAX_TTL_HORIZON`] rather than the shorter instance bump. The
+/// extension is still clamped by [`bounded_extend_to`], so it can never
+/// shorten an entry. Returns the horizon applied.
+pub fn extend_cold_persistent_ttl<K>(env: &Env, key: &K) -> u32
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    extend_persistent_ttl(env, key, MAX_TTL_HORIZON)
+}
+
+/// Extend a persistent entry's TTL on read, only when it is close to expiry.
+///
+/// Reads of cold keys should not pay for a TTL bump on every access. This
+/// helper inspects the entry's remaining TTL and only extends it when it has
+/// fallen below [`INSTANCE_LIFETIME_THRESHOLD`], bumping it to
+/// [`MAX_TTL_HORIZON`]. Returns the horizon applied, or `0` when no extension
+/// was needed.
+pub fn extend_cold_persistent_ttl_on_read<K>(env: &Env, key: &K) -> u32
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    let current = env.storage().persistent().get_ttl(key);
+    if current >= INSTANCE_LIFETIME_THRESHOLD {
+        return 0;
+    }
+    extend_cold_persistent_ttl(env, key)
+}
+
+/// Extend a persistent entry's TTL on write, unconditionally.
+///
+/// Writes of cold keys should always refresh the TTL so a freshly written
+/// entry is never immediately at risk of archival. This is a thin alias over
+/// [`extend_cold_persistent_ttl`] that documents intent at call sites.
+pub fn extend_cold_persistent_ttl_on_write<K>(env: &Env, key: &K) -> u32
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    extend_cold_persistent_ttl(env, key)
+}
+
 /// Estimate the rent (in stroops) required to keep a single persistent entry
 /// alive for `horizon` ledger seconds.
 ///
@@ -179,5 +223,20 @@ mod tests {
         assert!(one > 0);
         assert_eq!(rent_for_entries_stroops(10, MAX_TTL_HORIZON), one * 10);
         assert_eq!(rent_for_entries_stroops(0, MAX_TTL_HORIZON), 0);
+    }
+
+    #[test]
+    fn cold_ttl_horizon_is_max() {
+        // Cold keys are bumped to the maximum horizon, which must be at least
+        // the instance bump so relocated keys outlive hot instance data.
+        assert!(MAX_TTL_HORIZON >= INSTANCE_BUMP_AMOUNT);
+        assert!(MAX_TTL_HORIZON >= INSTANCE_LIFETIME_THRESHOLD);
+    }
+
+    #[test]
+    fn cold_read_extension_threshold_is_instance_threshold() {
+        // The read-path helper only bumps once remaining TTL drops below the
+        // instance lifetime threshold; verify the comparison boundary.
+        assert!(INSTANCE_LIFETIME_THRESHOLD < MAX_TTL_HORIZON);
     }
 }

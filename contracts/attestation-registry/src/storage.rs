@@ -16,17 +16,21 @@ use soroban_sdk::Env;
 impl StorageKey for DataKey {
     fn durability(&self) -> Durability {
         match self {
+            // Hot, bounded configuration: read on nearly every call.
             DataKey::Admin
             | DataKey::EventSeq
-            | DataKey::PendingAdmin
             | DataKey::AttesterRegistry
             | DataKey::SchemaVersion
             | DataKey::Paused
-            | DataKey::PendingAdminExpiresAt
             | DataKey::RateLimit
-            | DataKey::Role(..)
             | DataKey::MaxAttestationAge => Durability::Instance,
-            DataKey::Attestation(..)
+            // Cold or unbounded-growth keys: relocated out of the instance
+            // entry so they are not paid for on every invocation. Each has
+            // its own persistent TTL, extended on write.
+            DataKey::PendingAdmin
+            | DataKey::PendingAdminExpiresAt
+            | DataKey::Role(..)
+            | DataKey::Attestation(..)
             | DataKey::AttestationSequence(..)
             | DataKey::AttestationCount(..)
             | DataKey::RateLimitOverride(..)
@@ -149,6 +153,25 @@ mod tests {
                 assert!(!has(&env, key));
             }
         });
+    }
+
+    #[test]
+    fn cold_keys_are_not_instance_scoped() {
+        // Guards the instance-footprint relocation: these keys must never
+        // regress back into the instance entry.
+        let env = lafiya_test_utils::new_env();
+        let cold = std::vec![
+            DataKey::PendingAdmin,
+            DataKey::PendingAdminExpiresAt,
+            DataKey::Role(Role::Guardian, Address::generate(&env)),
+        ];
+        for key in cold.iter() {
+            assert_eq!(
+                key.durability(),
+                Durability::Persistent,
+                "cold key must be persistent"
+            );
+        }
     }
 
     #[test]

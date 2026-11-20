@@ -9,10 +9,28 @@
 //! *new* layout iff `i < cursor`, otherwise in the *old* layout. Because the
 //! cursor only advances inside `step`, routing is deterministic for any
 //! interleaving of writes and steps, so no item is lost or migrated twice.
+//!
+//! ## Instance-to-persistent relocation
+//!
+//! Issue #712 moves cold keys (roles, pending proposals, per-class policies)
+//! out of instance storage into persistent storage. That relocation is a
+//! *copy* migration: the source entry stays readable until the whole walk
+//! completes, so dual-read routing is not needed and readers keep working
+//! throughout. `Relocation` drives it with the same cursor/state machine as
+//! `Migration`, and `SCHEMA_VERSION` is bumped so the upgrade harness can
+//! assert the layout change.
 
 /// Hard cap on items migrated per `step`; keeps each call inside the
 /// per-transaction footprint limit regardless of what the caller passes.
 pub const MAX_STEP_ITEMS: u32 = 25;
+
+/// Storage schema version. Bumped whenever a stored `#[contracttype]` layout
+/// or a key's durability class changes. Issue #712 relocates cold keys from
+/// instance to persistent storage, so the version moves from 1 to 2.
+pub const SCHEMA_VERSION: u32 = 2;
+
+/// Version written by contracts before the instance-to-persistent relocation.
+pub const PREVIOUS_SCHEMA_VERSION: u32 = 1;
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum Phase {
@@ -116,6 +134,66 @@ impl Migration {
     /// Contracts reject non-migration state changes while this is true.
     pub fn is_paused_for_writes(&self) -> bool {
         self.phase == Phase::Running
+    }
+}
+
+/// Chunked copy of cold keys from instance storage to persistent storage.
+///
+/// Unlike `Migration`, the source entry is never removed mid-walk: the copy
+/// is additive, so a partially relocated contract still serves reads from
+/// the instance entry. `finish` (admin-gated by the caller) removes the
+/// instance entries once every key has been copied.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct Relocation {
+    inner: Migration,
+}
+
+impl Relocation {
+    pub const fn idle() -> Self {
+        Self {
+            inner: Migration::idle(),
+        }
+    }
+
+    /// Start relocating `total` cold keys (admin-gated by the caller).
+    pub fn begin(&mut self, total: u32) -> Result<(), MigrationError> {
+        self.inner.begin(total)
+    }
+
+    /// Copy up to `max_items` (clamped to `MAX_STEP_ITEMS`) keys, calling
+    /// `copy(index)` for each. `copy` must write the persistent entry and
+    /// leave the instance entry in place. Permissionless.
+    /// Returns the number of keys copied.
+    pub fn step<F: FnMut(u32)>(
+        &mut self,
+        max_items: u32,
+        mut copy: F,
+    ) -> Result<u32, MigrationError> {
+        self.inner.step(max_items, |index| copy(index))
+    }
+
+    /// Whether `index` has already been copied to persistent storage.
+    pub fn is_relocated(&self, index: u32) -> bool {
+        self.inner.layout(index) == Layout::New
+    }
+
+    pub fn phase(&self) -> Phase {
+        self.inner.phase()
+    }
+
+    pub fn cursor(&self) -> u32 {
+        self.inner.cursor()
+    }
+
+    /// True once every key has been copied; the caller may then remove the
+    /// instance entries and record `SCHEMA_VERSION`.
+    pub fn is_ready_to_finish(&self) -> bool {
+        self.inner.phase() == Phase::Complete
+    }
+
+    /// Contracts reject non-migration state changes while this is true.
+    pub fn is_paused_for_writes(&self) -> bool {
+        self.inner.is_paused_for_writes()
     }
 }
 
@@ -234,5 +312,62 @@ mod tests {
         assert!(!m.is_paused_for_writes());
         m.begin(0).unwrap();
         assert_eq!(m.phase(), Phase::Complete);
+    }
+
+    #[test]
+    fn schema_version_bumped_for_relocation() {
+        assert_eq!(SCHEMA_VERSION, PREVIOUS_SCHEMA_VERSION + 1);
+    }
+
+    #[test]
+    fn relocation_copies_without_losing_source() {
+        let total = 60u32;
+        // Instance storage: the cold keys as they exist before the upgrade.
+        let mut instance: BTreeMap<u32, u64> = (0..total).map(|i| (i, u64::from(i) * 7)).collect();
+        let mut persistent: BTreeMap<u32, u64> = BTreeMap::new();
+
+        let mut r = Relocation::idle();
+        assert_eq!(r.step(1, |_| {}), Err(MigrationError::NotRunning));
+        r.begin(total).unwrap();
+        assert!(r.is_paused_for_writes());
+        assert_eq!(r.begin(1), Err(MigrationError::AlreadyRunning));
+
+        while r.phase() == Phase::Running {
+            let mut copied = Vec::new();
+            r.step(MAX_STEP_ITEMS, |i| copied.push(i)).unwrap();
+            for i in copied {
+                // Copy, do not move: the instance entry must still be readable.
+                let v = *instance.get(&i).unwrap();
+                persistent.insert(i, v);
+            }
+            // Every key is readable from at least one location at all times.
+            for i in 0..total {
+                let readable = instance.contains_key(&i) || persistent.contains_key(&i);
+                assert!(readable, "key {i} unreadable mid-relocation");
+            }
+        }
+
+        assert!(r.is_ready_to_finish());
+        assert!(!r.is_paused_for_writes());
+        assert_eq!(r.cursor(), total);
+        assert_eq!(persistent.len() as u32, total);
+        for i in 0..total {
+            assert!(r.is_relocated(i));
+            assert_eq!(persistent.get(&i), instance.get(&i));
+        }
+
+        // `finish`: drop the instance entries now that the copy is complete.
+        instance.clear();
+        assert!(instance.is_empty());
+        assert_eq!(persistent.len() as u32, total);
+    }
+
+    #[test]
+    fn relocation_of_empty_set_completes_immediately() {
+        let mut r = Relocation::idle();
+        r.begin(0).unwrap();
+        assert_eq!(r.phase(), Phase::Complete);
+        assert!(r.is_ready_to_finish());
+        assert!(!r.is_paused_for_writes());
     }
 }

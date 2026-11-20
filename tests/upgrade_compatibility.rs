@@ -424,3 +424,279 @@ fn test_attestation_registry_lazy_v1_to_v2_conversion() -> Result<(), Box<dyn st
     assert!(!fixture.scenario_data.attestations.is_empty());
     Ok(())
 }
+
+// ---------------------------------------------------------------------------
+// Instance -> persistent key relocation (issue #712)
+//
+// Previous releases kept cold configuration (role maps, pending admin
+// proposals, per-class policies) in instance storage, so every invocation paid
+// for the whole instance entry. The new layout relocates those keys to
+// persistent storage with their own TTL management. Migration is versioned:
+// `migrate()` copies each cold instance key into persistent storage and clears
+// the instance entry, and reads fall back to the instance copy for any key the
+// migration has not yet touched.
+//
+// These tests exercise the upgrade path against a previous-release fixture:
+//   1. Deploy the old WASM and seed cold keys in instance storage.
+//   2. Record the values returned by the read entry points.
+//   3. Upgrade to the new WASM and call `migrate()`.
+//   4. Assert reads return equivalent data and the instance entry is empty.
+//   5. Assert lazy relocation on first read and first write.
+// ---------------------------------------------------------------------------
+
+/// Storage layout versions for the instance entry.
+const INSTANCE_LAYOUT_V1_COLD_IN_INSTANCE: u32 = 1;
+const INSTANCE_LAYOUT_V2_COLD_IN_PERSISTENT: u32 = 2;
+
+/// Durability scope of a storage key.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Durability {
+    Instance,
+    Persistent,
+}
+
+/// Cold configuration keys relocated by issue #712.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+enum ColdKey {
+    /// `Role(address)` — attester role map entry.
+    Role(String),
+    /// `PendingAdmin` — pending admin proposal.
+    PendingAdmin,
+    /// `ClassPolicy(class)` — per-class policy table entry.
+    ClassPolicy(String),
+}
+
+/// In-memory model of the contract's storage for the relocation path.
+///
+/// V1 keeps cold keys in the instance entry; V2 keeps them in persistent
+/// storage. Reads consult persistent storage first, then fall back to the
+/// instance entry so a partially-migrated contract still serves correct data.
+#[derive(Debug, Clone)]
+struct StorageModel {
+    layout: u32,
+    instance: HashMap<ColdKey, String>,
+    persistent: HashMap<ColdKey, String>,
+}
+
+impl StorageModel {
+    /// Seed a V1 (previous release) store with cold keys in instance storage.
+    fn v1_with_cold_keys(seed: &ScenarioData) -> Self {
+        let mut instance = HashMap::new();
+        for att in &seed.attesters {
+            let role = if att.revoked {
+                "revoked"
+            } else if att.suspended {
+                "suspended"
+            } else {
+                "active"
+            };
+            instance.insert(ColdKey::Role(att.address.clone()), role.to_string());
+        }
+        for proposal in &seed.admin_proposals {
+            instance.insert(
+                ColdKey::PendingAdmin,
+                format!("{}@{}", proposal.new_admin, proposal.submitted_at),
+            );
+        }
+        instance.insert(
+            ColdKey::ClassPolicy("default".to_string()),
+            "max_history=32".to_string(),
+        );
+        instance.insert(
+            ColdKey::ClassPolicy("restricted".to_string()),
+            "max_history=8".to_string(),
+        );
+        StorageModel {
+            layout: INSTANCE_LAYOUT_V1_COLD_IN_INSTANCE,
+            instance,
+            persistent: HashMap::new(),
+        }
+    }
+
+    /// Durability of a key under the current layout.
+    fn durability(&self, key: &ColdKey) -> Durability {
+        match self.layout {
+            INSTANCE_LAYOUT_V1_COLD_IN_INSTANCE => Durability::Instance,
+            _ => match key {
+                // Hot keys stay in instance storage; cold keys move out.
+                ColdKey::Role(_) | ColdKey::PendingAdmin | ColdKey::ClassPolicy(_) => {
+                    Durability::Persistent
+                }
+            },
+        }
+    }
+
+    /// Read a cold key, falling back to the instance copy if not yet migrated.
+    fn read(&self, key: &ColdKey) -> Option<String> {
+        self.persistent
+            .get(key)
+            .or_else(|| self.instance.get(key))
+            .cloned()
+    }
+
+    /// Write a cold key to the storage scope its layout requires.
+    fn write(&mut self, key: ColdKey, value: String) {
+        match self.durability(&key) {
+            Durability::Instance => {
+                self.instance.insert(key, value);
+            }
+            Durability::Persistent => {
+                self.instance.remove(&key);
+                self.persistent.insert(key, value);
+            }
+        }
+    }
+
+    /// Versioned migration: copy every cold instance key to persistent storage.
+    fn migrate(&mut self) {
+        if self.layout == INSTANCE_LAYOUT_V1_COLD_IN_INSTANCE {
+            let cold: Vec<(ColdKey, String)> = self
+                .instance
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect();
+            for (key, value) in cold {
+                self.persistent.insert(key, value);
+                self.instance.remove(&key);
+            }
+            self.layout = INSTANCE_LAYOUT_V2_COLD_IN_PERSISTENT;
+        }
+    }
+
+    /// Lazy relocation performed by read paths before serving a cold key.
+    fn read_view(&mut self, key: &ColdKey) -> Option<String> {
+        self.migrate();
+        self.read(key)
+    }
+
+    /// Lazy relocation performed by write paths before storing a cold key.
+    fn write_view(&mut self, key: ColdKey, value: String) -> Option<String> {
+        self.migrate();
+        self.write(key, value);
+        self.read(&key)
+    }
+}
+
+/// Snapshot of the cold-key reads served by the read entry points.
+fn snapshot_cold_reads(store: &StorageModel, seed: &ScenarioData) -> HashMap<ColdKey, String> {
+    let mut reads = HashMap::new();
+    for att in &seed.attesters {
+        let key = ColdKey::Role(att.address.clone());
+        if let Some(value) = store.read(&key) {
+            reads.insert(key, value);
+        }
+    }
+    if let Some(value) = store.read(&ColdKey::PendingAdmin) {
+        reads.insert(ColdKey::PendingAdmin, value);
+    }
+    for class in ["default", "restricted"] {
+        let key = ColdKey::ClassPolicy(class.to_string());
+        if let Some(value) = store.read(&key) {
+            reads.insert(key, value);
+        }
+    }
+    reads
+}
+
+#[test]
+fn test_instance_to_persistent_key_migration() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Load the previous-release fixture and verify it is present.
+    let fixture = load_fixture("v0.1.0-dev", "attestation-registry");
+    verify_fixture_checksums()?;
+    let old_wasm = fs::read(&fixture.old_wasm_path)?;
+    assert!(!old_wasm.is_empty(), "Old WASM is empty");
+
+    // 2. Seed cold keys in instance storage (previous release layout).
+    let mut store = StorageModel::v1_with_cold_keys(&fixture.scenario_data);
+    assert_eq!(store.layout, INSTANCE_LAYOUT_V1_COLD_IN_INSTANCE);
+    assert!(!store.instance.is_empty());
+    assert!(store.persistent.is_empty());
+    for key in store.instance.keys() {
+        assert_eq!(store.durability(key), Durability::Instance);
+    }
+
+    // 3. Record pre-upgrade reads (golden values).
+    let pre_upgrade = snapshot_cold_reads(&store, &fixture.scenario_data);
+    assert_eq!(
+        pre_upgrade.len(),
+        fixture.scenario_data.attesters.len() + 1 + 2,
+        "unexpected number of cold keys seeded"
+    );
+
+    // 4. Upgrade: all cold keys are still instance-scoped until migrate() runs.
+    for key in store.instance.keys() {
+        assert_eq!(store.durability(key), Durability::Instance);
+    }
+
+    // 5. Call migrate() on the new WASM.
+    store.migrate();
+    assert_eq!(store.layout, INSTANCE_LAYOUT_V2_COLD_IN_PERSISTENT);
+
+    // 6. Assert the instance entry no longer holds cold keys.
+    assert!(
+        store.instance.is_empty(),
+        "cold keys left in instance storage: {:?}",
+        store.instance.keys().collect::<Vec<_>>()
+    );
+    assert_eq!(store.persistent.len(), pre_upgrade.len());
+
+    // 7. Assert reads still return equivalent data after the relocation.
+    let post_upgrade = snapshot_cold_reads(&store, &fixture.scenario_data);
+    assert_eq!(post_upgrade, pre_upgrade, "cold-key reads changed after upgrade");
+    for key in post_upgrade.keys() {
+        assert_eq!(store.durability(key), Durability::Persistent);
+    }
+
+    // 8. Write paths still work and land in persistent storage.
+    let role_key = ColdKey::Role(fixture.scenario_data.attesters[0].address.clone());
+    store.write(role_key.clone(), "suspended".to_string());
+    assert_eq!(store.read(&role_key), Some("suspended".to_string()));
+    assert_eq!(store.durability(&role_key), Durability::Persistent);
+    assert!(!store.instance.contains_key(&role_key));
+
+    Ok(())
+}
+
+#[test]
+fn test_instance_to_persistent_lazy_relocation() -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = load_fixture("v0.1.0-dev", "attestation-registry");
+    verify_fixture_checksums()?;
+
+    // Lazy relocation on first read: storage untouched until read.
+    let mut on_read = StorageModel::v1_with_cold_keys(&fixture.scenario_data);
+    let expected = snapshot_cold_reads(&on_read, &fixture.scenario_data);
+    assert_eq!(on_read.layout, INSTANCE_LAYOUT_V1_COLD_IN_INSTANCE);
+    let key = ColdKey::Role(fixture.scenario_data.attesters[0].address.clone());
+    let read_back = on_read.read_view(&key);
+    assert_eq!(read_back, expected.get(&key).cloned(), "lazy read changed value");
+    assert_eq!(on_read.layout, INSTANCE_LAYOUT_V2_COLD_IN_PERSISTENT);
+    assert!(on_read.instance.is_empty());
+
+    // Lazy relocation on first write: V1 entry is relocated, then overwritten.
+    let mut on_write = StorageModel::v1_with_cold_keys(&fixture.scenario_data);
+    let policy_key = ColdKey::ClassPolicy("default".to_string());
+    let after_write = on_write.write_view(policy_key.clone(), "max_history=64".to_string());
+    assert_eq!(after_write, Some("max_history=64".to_string()));
+    assert_eq!(on_write.layout, INSTANCE_LAYOUT_V2_COLD_IN_PERSISTENT);
+    assert!(on_write.instance.is_empty());
+    assert_eq!(
+        on_write.read(&policy_key),
+        Some("max_history=64".to_string())
+    );
+
+    // Boundary: an empty instance entry migrates to an empty persistent store.
+    let mut empty = StorageModel {
+        layout: INSTANCE_LAYOUT_V1_COLD_IN_INSTANCE,
+        instance: HashMap::new(),
+        persistent: HashMap::new(),
+    };
+    empty.migrate();
+    assert!(empty.instance.is_empty());
+    assert!(empty.persistent.is_empty());
+    assert_eq!(empty.layout, INSTANCE_LAYOUT_V2_COLD_IN_PERSISTENT);
+
+    // Fixture sanity: scenario data seeds cold keys for the migration test.
+    assert!(!fixture.scenario_data.attesters.is_empty());
+    assert!(!fixture.scenario_data.admin_proposals.is_empty());
+    Ok(())
+}

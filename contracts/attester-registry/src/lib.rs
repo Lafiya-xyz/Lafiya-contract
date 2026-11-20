@@ -31,6 +31,7 @@
 )]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use lafiya_interfaces::attester_registry::AttesterRegistryInterface;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
@@ -1990,6 +1991,36 @@ impl AttesterRegistry {
             &DataKey::AttesterStatusChangeCount(attester.clone()),
             &sequence,
         );
+    }
+}
+
+/// Compile-time assertion that this contract's public interface satisfies the
+/// shared `lafiya_interfaces::attester_registry::AttesterRegistryInterface`
+/// trait that consumers (e.g. `attestation-registry`, `incentive-pool`) are
+/// generated against. If a provider signature drifts from the shared trait,
+/// this `impl` fails to compile, turning runtime host errors into build errors.
+///
+/// The trait is implemented by delegating to the `#[contractimpl]` inherent
+/// methods above; the compiler checks each signature against the trait.
+impl AttesterRegistryInterface for AttesterRegistry {
+    fn is_attester(env: Env, attester: Address) -> bool {
+        AttesterRegistry::is_attester(env, attester)
+    }
+
+    fn is_session_valid(env: Env, session_pk: BytesN<32>, scope: Symbol) -> Result<(), Error> {
+        AttesterRegistry::is_session_valid(env, session_pk, scope)
+    }
+
+    fn get_attester_info(env: Env, attester: Address) -> Option<AttesterInfo> {
+        AttesterRegistry::get_attester_info(env, attester)
+    }
+
+    fn get_admin(env: Env) -> Result<Address, Error> {
+        AttesterRegistry::get_admin(env)
+    }
+
+    fn get_interface(env: Env) -> InterfaceInfo {
+        AttesterRegistry::get_interface(env)
     }
 }
 

@@ -93,6 +93,44 @@ pub struct Scenario {
     pub revocations: Vec<RecordSpec>,
     /// Bulk-generated attesters and attestations (e.g. the `pilot` scenario).
     pub generate: Option<Generate>,
+    /// Cold configuration seeded so instance-footprint measurements reflect a
+    /// production-like deployment (roles, pending proposals, policies).
+    #[serde(default)]
+    pub cold: ColdSpec,
+}
+
+/// Cold keys that historically lived in instance storage. Seeding them makes
+/// `cargo xtask sandbox footprint` measure a realistic instance entry.
+#[derive(Deserialize, Debug, Default, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct ColdSpec {
+    /// Role grants (`Role(..)` keys) to seed, one per entry.
+    #[serde(default)]
+    pub roles: Vec<RoleSpec>,
+    /// Pending admin proposals to leave open (one per contract).
+    #[serde(default)]
+    pub pending_proposals: usize,
+    /// Per-class policy entries to seed.
+    #[serde(default)]
+    pub policies: Vec<PolicySpec>,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct RoleSpec {
+    /// Scenario key name that receives the role.
+    pub holder: String,
+    /// Role name, e.g. `issuer`, `revoker`, `auditor`.
+    pub role: String,
+}
+
+#[derive(Deserialize, Debug, Clone)]
+#[serde(deny_unknown_fields)]
+pub struct PolicySpec {
+    /// Policy class, e.g. `attest`, `revoke`, `disclose`.
+    pub class: String,
+    /// Opaque policy payload (synthetic only).
+    pub value: String,
 }
 
 #[derive(Deserialize, Debug)]
@@ -207,6 +245,19 @@ impl Scenario {
                 bail!("attester `{}`: region must be 1-32 chars", a.name);
             }
         }
+        for r in &self.cold.roles {
+            if !names.contains(r.holder.as_str()) {
+                bail!("role for unknown key `{}`", r.holder);
+            }
+            if r.role.is_empty() || r.role.len() > 32 {
+                bail!("role for `{}`: role must be 1-32 chars", r.holder);
+            }
+        }
+        for p in &self.cold.policies {
+            if p.class.is_empty() || p.class.len() > 32 {
+                bail!("policy class must be 1-32 chars");
+            }
+        }
         Ok(())
     }
 
@@ -221,6 +272,9 @@ impl Scenario {
             names.push(self.final_admin().to_string());
         }
         names.extend(self.attesters.iter().map(|a| a.name.clone()));
+        names.extend(self.cold.roles.iter().map(|r| r.holder.clone()));
+        names.sort();
+        names.dedup();
         names
     }
 }
@@ -304,6 +358,12 @@ pub struct Observed {
     pub history: BTreeMap<String, Vec<String>>,
     /// Records whose revocation was already applied on this deployment.
     pub revoked: BTreeSet<String>,
+    /// `(holder, role)` pairs already granted on chain.
+    pub roles: BTreeSet<(String, String)>,
+    /// Policy classes already seeded on chain.
+    pub policies: BTreeSet<String>,
+    /// Whether a pending admin proposal is already open.
+    pub pending_proposal: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +376,12 @@ pub enum Step {
     Suspend(String),
     Remove(String),
     TransferAdmin(String),
+    /// Grant `role` to the scenario key `holder` (cold key seeding).
+    GrantRole { holder: String, role: String },
+    /// Leave a pending admin proposal open on both registries.
+    ProposeAdmin(String),
+    /// Seed a per-class policy entry (cold key seeding).
+    SetPolicy { class: String, value: String },
 }
 
 /// `attestation-registry` keeps only the latest `MAX_HISTORY` entries per record.
@@ -403,7 +469,28 @@ pub fn plan(s: &Scenario, obs: &Observed) -> Vec<Step> {
         }
     }
 
-    // Phase 4: admin transfer last, so the admin steps above run as one key.
+    // Phase 4: cold configuration (roles, policies, pending proposals).
+    for r in &s.cold.roles {
+        if !obs.roles.contains(&(r.holder.clone(), r.role.clone())) {
+            steps.push(Step::GrantRole {
+                holder: r.holder.clone(),
+                role: r.role.clone(),
+            });
+        }
+    }
+    for p in &s.cold.policies {
+        if !obs.policies.contains(&p.class) {
+            steps.push(Step::SetPolicy {
+                class: p.class.clone(),
+                value: p.value.clone(),
+            });
+        }
+    }
+    if s.cold.pending_proposals > 0 && !obs.pending_proposal {
+        steps.push(Step::ProposeAdmin(s.final_admin().to_string()));
+    }
+
+    // Phase 5: admin transfer last, so the admin steps above run as one key.
     let admin_now = obs.admin.as_deref().unwrap_or(&s.admin.initial);
     if admin_now != s.final_admin() {
         steps.push(Step::TransferAdmin(s.final_admin().to_string()));
@@ -546,6 +633,9 @@ impl Chain {
             }
         }
         obs.revoked = read_revoked(dir, &self.attestation_registry);
+        obs.roles = read_roles(dir, &self.attester_registry);
+        obs.policies = read_policies(dir, &self.attestation_registry);
+        obs.pending_proposal = read_pending_proposal(dir, &self.attester_registry);
         Ok(obs)
     }
 
@@ -654,6 +744,44 @@ impl Chain {
                     }
                     admin = to.clone();
                 }
+                Step::GrantRole { holder, role } => {
+                    invoke(
+                        reg,
+                        &admin,
+                        true,
+                        "grant_role",
+                        &[
+                            ("account", self.addr(holder)),
+                            ("role", &format!("\"{role}\"")),
+                        ],
+                    )?;
+                    mark_role(dir, reg, holder, role)?;
+                }
+                Step::SetPolicy { class, value } => {
+                    invoke(
+                        &self.attestation_registry,
+                        &admin,
+                        true,
+                        "set_policy",
+                        &[
+                            ("class", &format!("\"{class}\"")),
+                            ("value", &format!("\"{value}\"")),
+                        ],
+                    )?;
+                    mark_policy(dir, &self.attestation_registry, class)?;
+                }
+                Step::ProposeAdmin(to) => {
+                    // Leave the proposal open so the pending-proposal key is
+                    // populated for the footprint measurement.
+                    invoke(
+                        reg,
+                        &admin,
+                        true,
+                        "propose_admin",
+                        &[("new_admin", self.addr(to))],
+                    )?;
+                    mark_pending_proposal(dir, reg)?;
+                }
                 Step::Attest { .. } => unreachable!(),
             }
         }
@@ -753,6 +881,62 @@ fn mark_revoked(dir: &Path, contract: &str, record: &str) -> Result<()> {
         .append(true)
         .open(revoked_path(dir, contract))?;
     writeln!(f, "{record}")?;
+    Ok(())
+}
+
+fn roles_path(dir: &Path, contract: &str) -> PathBuf {
+    dir.join(format!(".roles-{contract}"))
+}
+
+fn read_roles(dir: &Path, contract: &str) -> BTreeSet<(String, String)> {
+    std::fs::read_to_string(roles_path(dir, contract))
+        .unwrap_or_default()
+        .lines()
+        .filter_map(|l| l.split_once('\t'))
+        .map(|(h, r)| (h.to_string(), r.to_string()))
+        .collect()
+}
+
+fn mark_role(dir: &Path, contract: &str, holder: &str, role: &str) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(roles_path(dir, contract))?;
+    writeln!(f, "{holder}\t{role}")?;
+    Ok(())
+}
+
+fn policies_path(dir: &Path, contract: &str) -> PathBuf {
+    dir.join(format!(".policies-{contract}"))
+}
+
+fn read_policies(dir: &Path, contract: &str) -> BTreeSet<String> {
+    std::fs::read_to_string(policies_path(dir, contract))
+        .map(|s| s.lines().map(str::to_string).collect())
+        .unwrap_or_default()
+}
+
+fn mark_policy(dir: &Path, contract: &str, class: &str) -> Result<()> {
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(policies_path(dir, contract))?;
+    writeln!(f, "{class}")?;
+    Ok(())
+}
+
+fn pending_proposal_path(dir: &Path, contract: &str) -> PathBuf {
+    dir.join(format!(".pending-proposal-{contract}"))
+}
+
+fn read_pending_proposal(dir: &Path, contract: &str) -> bool {
+    pending_proposal_path(dir, contract).exists()
+}
+
+fn mark_pending_proposal(dir: &Path, contract: &str) -> Result<()> {
+    std::fs::write(pending_proposal_path(dir, contract), b"1")?;
     Ok(())
 }
 
@@ -1055,7 +1239,13 @@ fn down(dir: &Path) -> Result<()> {
         .output();
     for entry in std::fs::read_dir(dir).into_iter().flatten().flatten() {
         let name = entry.file_name().to_string_lossy().to_string();
-        if name == ".env.local" || name == "fixtures.json" || name.starts_with(".revoked-") {
+        if name == ".env.local"
+            || name == "fixtures.json"
+            || name.starts_with(".revoked-")
+            || name.starts_with(".roles-")
+            || name.starts_with(".policies-")
+            || name.starts_with(".pending-proposal-")
+        {
             std::fs::remove_file(entry.path())?;
         }
     }
@@ -1105,6 +1295,13 @@ mod tests {
                     obs.revoked.insert(r.clone());
                 }
                 Step::TransferAdmin(to) => obs.admin = Some(to.clone()),
+                Step::GrantRole { holder, role } => {
+                    obs.roles.insert((holder.clone(), role.clone()));
+                }
+                Step::SetPolicy { class, .. } => {
+                    obs.policies.insert(class.clone());
+                }
+                Step::ProposeAdmin(_) => obs.pending_proposal = true,
             }
         }
     }
@@ -1185,6 +1382,40 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("unknown attester `b`"));
+    }
+
+    #[test]
+    fn cold_config_seeding_is_idempotent() {
+        let s = Scenario::parse(
+            "[[attesters]]\nname = \"a\"\n\
+             [[cold.roles]]\nholder = \"a\"\nrole = \"issuer\"\n\
+             [[cold.policies]]\nclass = \"attest\"\nvalue = \"allow\"\n\
+             [cold]\npending_proposals = 1\n",
+        )
+        .unwrap();
+        let mut obs = Observed::default();
+        let steps = plan(&s, &obs);
+        assert!(steps.contains(&Step::GrantRole {
+            holder: "a".into(),
+            role: "issuer".into()
+        }));
+        assert!(steps.contains(&Step::SetPolicy {
+            class: "attest".into(),
+            value: "allow".into()
+        }));
+        assert!(steps.contains(&Step::ProposeAdmin(s.final_admin().to_string())));
+        simulate(&s, &mut obs, &steps);
+        assert_eq!(plan(&s, &obs), vec![]);
+    }
+
+    #[test]
+    fn rejects_role_for_unknown_key() {
+        let err = Scenario::parse(
+            "[[attesters]]\nname = \"a\"\n\
+             [[cold.roles]]\nholder = \"b\"\nrole = \"issuer\"\n",
+        )
+        .unwrap_err();
+        assert!(format!("{err:#}").contains("role for unknown key `b`"));
     }
 
     #[test]

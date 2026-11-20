@@ -27,29 +27,11 @@
 
 mod storage;
 
+use lafiya_interfaces::AttesterRegistryClient;
 use soroban_sdk::{
-    contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
-    panic_with_error, Address, BytesN, Env, String, Symbol, Vec,
+    contract, contracterror, contractevent, contractimpl, contracttype, panic_with_error, Address,
+    BytesN, Env, String, Symbol, Vec,
 };
-
-/// The subset of the `attester-registry` contract this crate calls. Kept
-/// as a trait interface (rather than a direct crate dependency) so that
-/// `attester-registry`'s own contract implementation never links into this
-/// crate's wasm — only the typed cross-contract call it generates does.
-#[contractclient(name = "AttesterRegistryClient")]
-pub trait AttesterRegistryInterface {
-    fn is_attester(env: Env, attester: Address) -> bool;
-    fn is_attester_for_region(env: Env, attester: Address, region: String) -> bool;
-    fn get_attester_trust_revoked_after(env: Env, attester: Address) -> Option<u64>;
-    /// Resolve a delegated session key to its owning attester and validate
-    /// that it is unexpired and permitted to perform `scope`. Returns the
-    /// owning attester on success, or a registry error code on failure.
-    fn is_session_valid(
-        env: Env,
-        session_pk: Address,
-        scope: Symbol,
-    ) -> Result<Address, u32>;
-}
 
 /// Maximum number of distinct attester slots retained per record hash.
 /// Repeat submissions refresh an attester's existing slot; a new attester
@@ -1330,6 +1312,11 @@ impl AttestationRegistry {
             .instance()
             .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
         Ok(())
+    }
+
+    /// The configured `facility-registry`, if any.
+    pub fn get_facility_registry(env: Env) -> Option<Address> {
+        env.storage().instance().get(&DataKey::FacilityRegistry)
     }
 
     /// The configured `facility-registry`, if any.

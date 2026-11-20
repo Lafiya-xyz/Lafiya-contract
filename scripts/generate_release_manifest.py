@@ -31,6 +31,7 @@ from pathlib import Path
 from typing import Any
 
 from check_wasm_meta import meta_digest, read_meta
+from check_storage_layout import layout_digest, parse_udts
 
 Json = dict[str, Any]
 
@@ -66,6 +67,18 @@ def storage_schema_version(crate_dir: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def storage_layout_info(crate_dir: str) -> Json:
+    """Digest of the contract's storage-reachable UDT definitions (see
+    scripts/check_storage_layout.py). The compatibility checker compares this
+    against the latest released manifest entry to detect breaking layout
+    changes; the digest is null when the crate has no parseable UDTs."""
+    lib_rs = ROOT / crate_dir / "src" / "lib.rs"
+    if not lib_rs.is_file():
+        return {"udt_count": 0, "digest": None}
+    udts = parse_udts(lib_rs.read_text(encoding="utf-8"))
+    return {"udt_count": len(udts), "digest": layout_digest(udts) if udts else None}
+
+
 def wasm_info(stem: str) -> Json:
     wasm_path = WASM_DIR / f"{stem}.wasm"
     if not wasm_path.is_file():
@@ -89,6 +102,7 @@ def build_contracts() -> list[Json]:
                 "crate_path": crate_dir,
                 "package_version": workspace_version(),
                 "storage_schema_version": storage_schema_version(crate_dir),
+                "storage_layout": storage_layout_info(crate_dir),
                 "wasm": wasm_info(stem),
             }
         )

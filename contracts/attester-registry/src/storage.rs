@@ -16,17 +16,23 @@ use soroban_sdk::Env;
 impl StorageKey for DataKey {
     fn durability(&self) -> Durability {
         match self {
+            // Hot, bounded configuration: read on nearly every call, so it
+            // stays in the single instance entry.
             DataKey::Admin
             | DataKey::EventSeq
-            | DataKey::PendingAdmin
             | DataKey::SchemaVersion
             | DataKey::Paused
             | DataKey::MaxAttesters
-            | DataKey::AttesterCount
+            | DataKey::AttesterCount => Durability::Instance,
+            // Cold or unbounded-growth keys: pending admin proposals, role
+            // maps and regional registrar maps are relocated to persistent
+            // storage with their own TTL management so they do not inflate
+            // the per-call instance read cost.
+            DataKey::PendingAdmin
             | DataKey::PendingAdminExpiresAt
             | DataKey::Role(..)
-            | DataKey::RegionalRegistrar(..) => Durability::Instance,
-            DataKey::Attester(..)
+            | DataKey::RegionalRegistrar(..)
+            | DataKey::Attester(..)
             | DataKey::Suspended(..)
             | DataKey::AttesterRotation(..)
             | DataKey::AttesterStatusChange(..)
@@ -61,20 +67,20 @@ mod tests {
         std::vec![
             DataKey::Admin,
             DataKey::EventSeq,
-            DataKey::PendingAdmin,
-            DataKey::Attester(Address::generate(env)),
-            DataKey::Suspended(Address::generate(env)),
             DataKey::SchemaVersion,
             DataKey::Paused,
             DataKey::MaxAttesters,
             DataKey::AttesterCount,
+            DataKey::PendingAdmin,
             DataKey::PendingAdminExpiresAt,
+            DataKey::Role(Role::Registrar, Address::generate(env)),
+            DataKey::RegionalRegistrar(Address::generate(env)),
+            DataKey::Attester(Address::generate(env)),
+            DataKey::Suspended(Address::generate(env)),
             DataKey::AttesterRotation(Address::generate(env)),
             DataKey::AttesterStatusChange(Address::generate(env), 1),
             DataKey::AttesterStatusChangeCount(Address::generate(env)),
-            DataKey::Role(Role::Registrar, Address::generate(env)),
             DataKey::AttesterValidity(Address::generate(env)),
-            DataKey::RegionalRegistrar(Address::generate(env)),
             DataKey::RegionalRegistrarCount(Address::generate(env)),
             DataKey::RegionalAttester(Address::generate(env)),
         ]
