@@ -49,11 +49,13 @@ Releases are cut by automation; humans approve at the gates marked **(gate)**.
    `.github/workflows/release-manifest.yml`:
    reproducible wasm build → `SHA256SUMS` → provenance-metadata assertion →
    `generate_release_manifest.py` → `validate_release_manifest.py` → manifest
-   hashes checked against `SHA256SUMS` → bindings built and packed → signed SLSA
-   provenance (`actions/attest-build-provenance`) for each `.wasm` and
-   `release-manifest.json` → GitHub Release with the wasm, `SHA256SUMS`, manifest,
-   provenance bundle, bindings tarballs, and notes → a follow-up PR copying the
-   wasm into the upgrade-compatibility fixtures (`tests/fixtures/upgrade-compat/vX.Y.Z/`).
+   hashes checked against `SHA256SUMS` → bindings built and packed → `lafiya-cli`
+   built for Linux, macOS, and Windows (see [CLI Release Artifacts](#cli-release-artifacts))
+   → signed SLSA provenance (`actions/attest-build-provenance`) for each `.wasm`,
+   `release-manifest.json`, and each CLI archive → GitHub Release with the wasm,
+   `SHA256SUMS`, manifest, provenance bundle, bindings tarballs, the per-platform
+   CLI archives, and notes → a follow-up PR copying the wasm into the
+   upgrade-compatibility fixtures (`tests/fixtures/upgrade-compat/vX.Y.Z/`).
    A tag pushed by hand runs the same pipeline.
    - npm publishing of the bindings stays off until [PUBLISHING.md](../PUBLISHING.md)'s
      prerequisites are met; the tarballs are attached to the release instead.
@@ -66,9 +68,68 @@ Releases are cut by automation; humans approve at the gates marked **(gate)**.
 
 Actions → *Release* → *Run workflow* on any branch (or fork), with `dry_run`
 checked (the default). It builds the full artifact set — wasm, `SHA256SUMS`,
-manifest, bindings tarballs, `RELEASE_NOTES.md` — and uploads it as the
-`release-<ref>` workflow artifact, without attesting, creating a release, or
-opening the fixtures PR.
+manifest, bindings tarballs, the per-platform `lafiya-cli` archives,
+`RELEASE_NOTES.md` — and uploads it as the `release-<ref>` workflow artifact,
+without attesting, creating a release, or opening the fixtures PR.
+
+---
+
+## CLI Release Artifacts
+
+`lafiya-cli` is a first-class release artifact on all three supported operating
+systems. The `cli-artifacts` job in `.github/workflows/release-manifest.yml`
+builds it once per target and attaches the archives to the same GitHub Release
+as the wasm and bindings, so a single release covers contracts and tooling.
+
+### Targets and archive names
+
+| OS | Rust target | Archive |
+| --- | --- | --- |
+| Linux (x86_64) | `x86_64-unknown-linux-gnu` | `lafiya-cli-x86_64-unknown-linux-gnu.tar.gz` |
+| macOS (Intel) | `x86_64-apple-darwin` | `lafiya-cli-x86_64-apple-darwin.tar.gz` |
+| macOS (Apple Silicon) | `aarch64-apple-darwin` | `lafiya-cli-aarch64-apple-darwin.tar.gz` |
+| Windows (x86_64) | `x86_64-pc-windows-msvc` | `lafiya-cli-x86_64-pc-windows-msvc.zip` |
+
+Each archive contains the `lafiya-cli` binary (`lafiya-cli.exe` on Windows), the
+`README.md`, and `LICENSE`. Unix archives are `.tar.gz`; the Windows archive is a
+`.zip` so it unpacks with Explorer's built-in support.
+
+### How they are built
+
+- The job runs on a matrix of `ubuntu-latest`, `macos-latest`, and
+  `windows-latest` runners, one per target above, using the toolchain pinned in
+  `rust-toolchain.toml` (the same pin as the wasm build).
+- Each job runs `cargo build --release -p lafiya-cli --all-features` and then
+  `cargo test -p lafiya-cli --all-features` on its native runner before packing,
+  so a release never ships a binary whose tests fail on that OS.
+- The same matrix (build + test, all features) runs on every PR in `ci.yml`, so
+  platform regressions are caught before the tag.
+- Archives are produced by `cargo xtask cli-artifacts --target <target>`, which
+  packs the binary and writes a per-archive `.sha256` file. The job then appends
+  those hashes to the release's `SHA256SUMS` and attests each archive with
+  `actions/attest-build-provenance`.
+- The release manifest's `cli` field lists each archive name, target, and
+  SHA-256, so downstream tooling can pin a CLI build the same way it pins wasm.
+
+### Verifying a CLI archive
+
+```bash
+# 1. Download the archive for your OS from the GitHub Release, then check its
+#    hash against the release's SHA256SUMS.
+sha256sum lafiya-cli-x86_64-unknown-linux-gnu.tar.gz
+grep lafiya-cli-x86_64-unknown-linux-gnu.tar.gz SHA256SUMS
+
+# 2. Verify signed build provenance (same workflow and commit as the wasm).
+gh attestation verify lafiya-cli-x86_64-unknown-linux-gnu.tar.gz \
+  --repo Lafiya-xyz/Lafiya-contract
+
+# 3. Unpack and confirm the binary reports the release version.
+tar xzf lafiya-cli-x86_64-unknown-linux-gnu.tar.gz
+./lafiya-cli --version   # lafiya-cli X.Y.Z
+```
+
+On Windows, use `Get-FileHash -Algorithm SHA256 <file>` and `Expand-Archive`
+in place of `sha256sum` and `tar`; `gh attestation verify` works the same way.
 
 ---
 

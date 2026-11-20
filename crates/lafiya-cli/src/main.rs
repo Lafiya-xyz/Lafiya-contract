@@ -570,7 +570,23 @@ enum AuditSub {
     /// Print the audit log (LAFIYA_AUDIT_LOG or ~/.lafiya/audit.jsonl)
     Show,
     /// Verify the audit log hash chain
-    Verify,
+    VerifyLog,
+    /// Export a reproducible, self-contained evidence bundle for a record hash
+    Export {
+        /// Hex string of 32-byte record hash (64 chars)
+        record_hash: String,
+        /// Write the bundle to this file instead of stdout
+        #[arg(long)]
+        out: Option<PathBuf>,
+        /// Sign the bundle manifest with this stellar identity (or G... address)
+        #[arg(long)]
+        sign_with: Option<String>,
+    },
+    /// Re-check an exported evidence bundle against RPC and its manifest hashes
+    Verify {
+        /// Path to the bundle file produced by `audit export`
+        bundle: PathBuf,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -681,9 +697,13 @@ fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let _log_guard = logging::init(cli.log_format, cli.verbose);
 
-    // The audit log is local and needs no network config.
+    // `audit show` / `audit verify-log` are local and need no network config.
+    // `audit export` / `audit verify` need the resolved network + RPC, so they
+    // fall through to the main dispatch below.
     if let Commands::Audit { sub } = &cli.command {
-        return run_audit(sub);
+        if matches!(sub, AuditSub::Show | AuditSub::VerifyLog) {
+            return run_audit(sub);
+        }
     }
 
     if let Commands::Rehearsal { sub } = &cli.command {
@@ -765,7 +785,56 @@ fn main() -> anyhow::Result<()> {
     }
 
     match cli.command {
-        Commands::Audit { .. } => {}     // handled above
+        Commands::Audit { sub } => match sub {
+            AuditSub::Show | AuditSub::VerifyLog => {} // handled above
+            AuditSub::Export {
+                record_hash,
+                out,
+                sign_with,
+            } => {
+                let _span =
+                    tracing::info_span!("audit.export", network = %cli.network).entered();
+                validate_record_hash("record_hash", &record_hash)
+                    .context("invalid record hash (expected a hex encoded 32-byte hash)")?;
+                let signer = match sign_with {
+                    Some(s) => {
+                        validate_source_account(&s).context(
+                            "invalid --sign-with (expected a stellar identity name or G... address)",
+                        )?;
+                        Some(s)
+                    }
+                    None => None,
+                };
+                let bundle = audit::export_bundle(&network_cfg, &record_hash, signer.as_deref())?;
+                let json = audit::render_bundle(&bundle)?;
+                match &out {
+                    Some(path) => {
+                        std::fs::write(path, &json)
+                            .with_context(|| format!("writing bundle to {path:?}"))?;
+                        println!("Wrote evidence bundle to {}", path.display());
+                    }
+                    None => println!("{json}"),
+                }
+            }
+            AuditSub::Verify { bundle } => {
+                let _span =
+                    tracing::info_span!("audit.verify", network = %cli.network).entered();
+                let raw = std::fs::read_to_string(&bundle)
+                    .with_context(|| format!("reading bundle {bundle:?}"))?;
+                let report = audit::verify_bundle(&network_cfg, &raw)?;
+                if report.is_ok() {
+                    println!(
+                        "OK: bundle verified ({} check(s)) for record {}",
+                        report.checks, report.record_hash
+                    );
+                } else {
+                    for err in &report.errors {
+                        eprintln!("ERROR: {err}");
+                    }
+                    anyhow::bail!("{} error(s) found in evidence bundle", report.errors.len());
+                }
+            }
+        },
         Commands::Rehearsal { .. } => {} // handled above
         Commands::Trust { .. } => {
             anyhow::bail!("`trust` is not available in this build")
@@ -1764,10 +1833,13 @@ fn run_audit(sub: &AuditSub) -> anyhow::Result<()> {
                 eprintln!("no audit records in {}", path.display());
             }
         }
-        AuditSub::Verify => match audit::verify(&records) {
+        AuditSub::VerifyLog => match audit::verify(&records) {
             Ok(n) => println!("OK: {n} records verified in {}", path.display()),
             Err(e) => anyhow::bail!("audit log {} is broken: {e}", path.display()),
         },
+        AuditSub::Export { .. } | AuditSub::Verify { .. } => {
+            anyhow::bail!("`audit export`/`audit verify` require a resolved network")
+        }
     }
     Ok(())
 }
@@ -1815,6 +1887,18 @@ fn deployment_summary(cfg: &NetworkConfig) -> String {
 /// locates `config/networks.toml`: relative to the current working directory.
 fn deployments_dir() -> PathBuf {
     PathBuf::from("deployments")
+}
+
+/// Platform-appropriate base directory for lafiya state (config, audit log).
+///
+/// Uses the `dirs` crate so Windows resolves to `%APPDATA%`/`%LOCALAPPDATA%`
+/// and macOS to `~/Library/Application Support`, instead of a hardcoded
+/// Unix `~/.lafiya` path.
+fn lafiya_state_dir() -> PathBuf {
+    dirs::config_dir()
+        .or_else(dirs::home_dir)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("lafiya")
 }
 
 fn wasm_sha256_hex(path: &std::path::Path) -> anyhow::Result<String> {
@@ -2999,6 +3083,55 @@ mod tests {
             message.to_uppercase().contains("EXTEND_TO"),
             "expected error to name the missing `extend_to` argument, got: {message}"
         );
+    }
+
+    #[test]
+    fn audit_export_parses_record_hash_and_out() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "audit",
+            "export",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+            "--out",
+            "bundle.json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Audit {
+                sub: AuditSub::Export { out, .. },
+            } => assert_eq!(out, Some(PathBuf::from("bundle.json"))),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn audit_export_missing_record_hash_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "audit", "export"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("RECORD_HASH"),
+            "expected error to name the missing `record_hash` argument, got: {message}"
+        );
+    }
+
+    #[test]
+    fn audit_verify_parses_bundle_path() {
+        let cli =
+            Cli::try_parse_from(["lafiya-cli", "audit", "verify", "bundle.json"]).unwrap();
+        match cli.command {
+            Commands::Audit {
+                sub: AuditSub::Verify { bundle },
+            } => assert_eq!(bundle, PathBuf::from("bundle.json")),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn lafiya_state_dir_is_absolute_or_relative_fallback() {
+        // Must never panic and must end with the `lafiya` component.
+        let dir = lafiya_state_dir();
+        assert_eq!(dir.file_name().and_then(|s| s.to_str()), Some("lafiya"));
     }
 
     #[test]

@@ -71,6 +71,55 @@ lafiya-cli man --out-dir /usr/local/share/man/man1
 Registry subcommands operate on the attester registry. Run
 `lafiya-cli registry --help` for the full list.
 
+## `audit` subcommands
+
+The `audit` subcommands produce and verify self-contained, reproducible evidence
+bundles for a record hash. See the
+[evidence bundle format spec](../../specs/audit-evidence-bundle.md) for the
+canonical JSON layout, manifest, and verification rules.
+
+| Subcommand | Description |
+| --- | --- |
+| `audit export <RECORD_HASH>` | Collect contract reads at a pinned ledger plus relevant events with tx hashes and write a deterministic bundle. |
+| `audit verify <BUNDLE>` | Re-check a bundle against RPC, detecting tampering and on-chain mismatches. |
+
+```sh
+# Export a bundle pinned at a ledger, optionally signed with an operator key
+lafiya-cli audit export 0xabc... --ledger 123456 --out bundle.json --sign-key operator.key
+
+# Verify a bundle against the current chain state
+lafiya-cli audit verify bundle.json
+```
+
+Bundles are deterministic: the same ledger produces byte-identical output. The
+bundle contains no PII.
+
+## `rehearsal` subcommands
+
+The `rehearsal` subcommands execute scripted admin operations against a local
+fork of live-network state. See the
+[fork-and-execute rehearsal spec](../../specs/rehearsal-fork-execute.md) for the
+script format, state diffs, and invariant reports.
+
+| Subcommand | Description |
+| --- | --- |
+| `rehearsal fork` | Fetch contract instance, code, and ledger entries and load them into a local snapshot. |
+| `rehearsal run <SCRIPT>` | Execute a scripted sequence of operations and print events, errors, invariant results, and the storage diff. |
+
+```sh
+# Fork current testnet state and run a scripted sequence, gating on invariants
+lafiya-cli rehearsal fork --network testnet
+lafiya-cli rehearsal run ops.yaml --assert
+```
+
+## Golden XDR fixtures
+
+Mutating subcommands have committed golden fixtures pinning the exact unsigned
+transaction envelope XDR for fixed inputs. Regenerate them explicitly with
+`UPDATE_GOLDEN=1`; mismatches print a decoded, semantic diff. See the
+[golden XDR fixtures spec](../../specs/golden-xdr-fixtures.md) for details.
+=======
+
 ## `pool` subcommands
 
 The `pool` subcommands drive every entry point of the incentive pool with

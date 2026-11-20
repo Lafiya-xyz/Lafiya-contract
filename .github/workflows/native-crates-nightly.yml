@@ -72,9 +72,29 @@ jobs:
           RUSTFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
           RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
 
+  cli-cross-platform:
+    name: lafiya-cli (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: cli-${{ matrix.os }}
+      # Exercises the platform-specific config-path resolution, secret-file
+      # permission checks (ACL on Windows, mode bits elsewhere) and ANSI
+      # handling. All features so the keyring backends are compiled too.
+      - run: cargo test -p lafiya-cli --all-features --locked
+
   report:
     name: Report failures
-    needs: [miri, sanitizers]
+    needs: [miri, sanitizers, cli-cross-platform]
     if: failure() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:

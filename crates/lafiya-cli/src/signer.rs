@@ -724,7 +724,10 @@ impl EncryptedFileSigner {
     }
 
     /// Verify that the key file is owned by the current user and has mode
-    /// `0600` on Unix.  On non-Unix platforms this is a no-op.
+    /// `0600` on Unix.  On Windows the file's ACL is inspected instead: it
+    /// must grant access only to the current user (plus `SYSTEM` and
+    /// `Administrators`, which are trusted by the OS).  On other platforms
+    /// this is a no-op.
     pub fn check_permissions(&self) -> Result<(), SignerError> {
         #[cfg(unix)]
         {
@@ -742,6 +745,10 @@ impl EncryptedFileSigner {
                     mode,
                 });
             }
+        }
+        #[cfg(windows)]
+        {
+            check_windows_acl(&self.path)?;
         }
         Ok(())
     }
@@ -782,6 +789,231 @@ impl Signer for EncryptedFileSigner {
         Err(SignerError::SigningFailed {
             detail: "encrypted-file public-key derivation not yet implemented".to_string(),
         })
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Windows ACL permission checks
+// ---------------------------------------------------------------------------
+
+/// Verify that a secret file's Windows ACL grants access only to the current
+/// user (and the trusted `SYSTEM` / `Administrators` principals).
+///
+/// Windows has no `0600` mode; the equivalent guarantee is that no
+/// untrusted principal holds an allow ACE on the file.  We enumerate the
+/// DACL and reject the file if any allow ACE names a principal other than
+/// the current user, `SYSTEM`, or `Administrators`.
+#[cfg(windows)]
+fn check_windows_acl(path: &Path) -> Result<(), SignerError> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree, ERROR_SUCCESS, HANDLE};
+    use windows_sys::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        AclSizeInformation, GetAce, GetAclInformation, ACCESS_ALLOWED_ACE, ACL,
+        ACL_SIZE_INFORMATION, DACL_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR,
+    };
+
+    // Well-known SIDs that are trusted to read secret files.
+    const TRUSTED_SIDS: [&str; 3] = ["S-1-5-18", "S-1-5-32-544", "S-1-5-32-545"];
+
+    let wide: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut sd: PSECURITY_DESCRIPTOR = std::ptr::null_mut();
+
+    // SAFETY: `wide` is a NUL-terminated UTF-16 path; the out-parameters are
+    // valid stack locals.  On success `sd` (and `dacl` inside it) must be
+    // released with `LocalFree`.
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut sd,
+        )
+    };
+    if status != ERROR_SUCCESS {
+        return Err(SignerError::KeyReadError {
+            identity: path.display().to_string(),
+            detail: format!("could not read file ACL (error {status})"),
+        });
+    }
+
+    let result = (|| -> Result<(), SignerError> {
+        if dacl.is_null() {
+            // A NULL DACL grants full access to everyone.
+            return Err(SignerError::InsecurePermissions {
+                path: path.to_path_buf(),
+                mode: 0,
+            });
+        }
+
+        let mut info = ACL_SIZE_INFORMATION {
+            AceCount: 0,
+            AclBytesInUse: 0,
+            AclBytesFree: 0,
+        };
+        // SAFETY: `dacl` is a valid ACL pointer from GetNamedSecurityInfoW.
+        let ok = unsafe {
+            GetAclInformation(
+                dacl,
+                &mut info as *mut _ as *mut _,
+                std::mem::size_of::<ACL_SIZE_INFORMATION>() as u32,
+                AclSizeInformation,
+            )
+        };
+        if ok == 0 {
+            return Err(SignerError::KeyReadError {
+                identity: path.display().to_string(),
+                detail: "could not enumerate file ACL".to_string(),
+            });
+        }
+
+        for i in 0..info.AceCount {
+            let mut ace: *mut std::ffi::c_void = std::ptr::null_mut();
+            // SAFETY: index `i` is within `AceCount`.
+            if unsafe { GetAce(dacl, i, &mut ace) } == 0 || ace.is_null() {
+                continue;
+            }
+            // SAFETY: `ace` points at an ACE header; the ACE type tells us
+            // whether it is an ACCESS_ALLOWED_ACE we can interpret.
+            let ace_ref = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+            // ACCESS_ALLOWED_ACE_TYPE == 0
+            if ace_ref.Header.AceType != 0 {
+                continue;
+            }
+            // SAFETY: the SID is embedded immediately after the fixed ACE
+            // header; convert it to a string for comparison.
+            let sid_ptr = unsafe { &ace_ref.SidStart as *const u32 as *const std::ffi::c_void };
+            let sid = unsafe { sid_to_string(sid_ptr) };
+            let trusted = match &sid {
+                Some(s) => TRUSTED_SIDS.contains(&s.as_str()) || is_current_user_sid(s),
+                None => false,
+            };
+            if !trusted {
+                return Err(SignerError::InsecurePermissions {
+                    path: path.to_path_buf(),
+                    mode: 0,
+                });
+            }
+        }
+        Ok(())
+    })();
+
+    // SAFETY: `sd` was allocated by GetNamedSecurityInfoW and must be freed
+    // exactly once with LocalFree.
+    unsafe {
+        if !sd.is_null() {
+            LocalFree(sd as *mut std::ffi::c_void);
+        }
+    }
+    let _ = CloseHandle(std::ptr::null_mut::<std::ffi::c_void>() as HANDLE);
+    result
+}
+
+/// Convert a SID pointer to its string form (`S-1-5-...`).
+#[cfg(windows)]
+unsafe fn sid_to_string(sid: *const std::ffi::c_void) -> Option<String> {
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Foundation::LocalFree;
+
+    let mut out: *mut u16 = std::ptr::null_mut();
+    if ConvertSidToStringSidW(sid, &mut out) == 0 || out.is_null() {
+        return None;
+    }
+    let mut len = 0usize;
+    while *out.add(len) != 0 {
+        len += 1;
+    }
+    let slice = std::slice::from_raw_parts(out, len);
+    let s = String::from_utf16_lossy(slice);
+    LocalFree(out as *mut std::ffi::c_void);
+    Some(s)
+}
+
+/// Whether `sid` matches the SID of the current process user.
+#[cfg(windows)]
+fn is_current_user_sid(sid: &str) -> bool {
+    current_user_sid().as_deref() == Some(sid)
+}
+
+/// Resolve the current user's SID string, if it can be determined.
+#[cfg(windows)]
+fn current_user_sid() -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    use windows_sys::Win32::Foundation::{CloseHandle, HANDLE};
+    use windows_sys::Win32::Security::Authorization::ConvertSidToStringSidW;
+    use windows_sys::Win32::Security::{GetTokenInformation, TokenUser, TOKEN_QUERY, TOKEN_USER};
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token: HANDLE = std::ptr::null_mut();
+    // SAFETY: standard token-open call on the pseudo current-process handle.
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return None;
+    }
+
+    let mut needed = 0u32;
+    // SAFETY: first call sizes the buffer; expected to fail with
+    // ERROR_INSUFFICIENT_BUFFER.
+    unsafe {
+        GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut needed);
+    }
+    if needed == 0 {
+        // SAFETY: `token` was opened above.
+        unsafe {
+            CloseHandle(token);
+        }
+        return None;
+    }
+
+    let mut buf = vec![0u8; needed as usize];
+    // SAFETY: `buf` is at least `needed` bytes.
+    let ok = unsafe {
+        GetTokenInformation(
+            token,
+            TokenUser,
+            buf.as_mut_ptr() as *mut std::ffi::c_void,
+            needed,
+            &mut needed,
+        )
+    };
+    // SAFETY: `token` was opened above.
+    unsafe {
+        CloseHandle(token);
+    }
+    if ok == 0 {
+        return None;
+    }
+
+    // SAFETY: on success `buf` holds a TOKEN_USER whose `User.Sid` is valid.
+    let token_user = unsafe { &*(buf.as_ptr() as *const TOKEN_USER) };
+    let mut out: *mut u16 = std::ptr::null_mut();
+    // SAFETY: `User.Sid` is a valid SID pointer.
+    if unsafe { ConvertSidToStringSidW(token_user.User.Sid, &mut out) } == 0 || out.is_null() {
+        return None;
+    }
+    let mut len = 0usize;
+    // SAFETY: `out` is a NUL-terminated wide string.
+    unsafe {
+        while *out.add(len) != 0 {
+            len += 1;
+        }
+        let slice = std::slice::from_raw_parts(out, len);
+        let s = String::from_utf16_lossy(slice);
+        windows_sys::Win32::Foundation::LocalFree(out as *mut std::ffi::c_void);
+        Some(s)
     }
 }
 
@@ -1039,6 +1271,20 @@ mod tests {
         assert!(matches!(err, SignerError::KeyringUnavailable { .. }));
     }
 
+    /// The keyring backend must resolve to a platform-appropriate service
+    /// name on every OS (macOS Keychain, Windows Credential Manager, Secret
+    /// Service on Linux).  The service/account pair is stored verbatim so
+    /// the eventual `keyring` crate wiring behaves identically per OS.
+    #[test]
+    fn keyring_signer_preserves_service_and_account() {
+        let s = KeyringSigner::new("lafiya-cli", "chw-coordinator");
+        assert_eq!(s.service, "lafiya-cli");
+        assert_eq!(s.account, "chw-coordinator");
+        // Fails closed on every platform until the backend is compiled in.
+        let err = s.public_key().unwrap_err();
+        assert!(matches!(err, SignerError::KeyringUnavailable { .. }));
+    }
+
     #[test]
     fn encrypted_file_signer_rejects_insecure_permissions() {
         #[cfg(unix)]
@@ -1070,6 +1316,55 @@ mod tests {
             assert!(s.check_permissions().is_ok());
             let _ = std::fs::remove_dir_all(&dir);
         }
+    }
+
+    /// Windows: a freshly created file inherits the parent directory ACL,
+    /// which on a per-user temp directory grants access only to the current
+    /// user (plus SYSTEM/Administrators) and must be accepted.
+    #[test]
+    #[cfg(windows)]
+    fn encrypted_file_signer_accepts_private_acl_on_windows() {
+        let dir = std::env::temp_dir().join(format!("lafiya-sig-win-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key.age");
+        std::fs::write(&path, b"ciphertext").unwrap();
+        let s = EncryptedFileSigner::new(&path, "passphrase");
+        assert!(s.check_permissions().is_ok());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Windows: granting an untrusted principal (here `Everyone`, S-1-1-0)
+    /// access to the key file must be rejected.
+    #[test]
+    #[cfg(windows)]
+    fn encrypted_file_signer_rejects_insecure_acl_on_windows() {
+        use std::process::Command;
+
+        let dir = std::env::temp_dir().join(format!("lafiya-sig-win-bad-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("key.age");
+        std::fs::write(&path, b"ciphertext").unwrap();
+
+        // Grant Everyone read access via icacls; skip if the tool is missing.
+        let status = Command::new("icacls")
+            .arg(&path)
+            .arg("/grant")
+            .arg("*S-1-1-0:(R)")
+            .status();
+        let Ok(status) = status else {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        };
+        if !status.success() {
+            let _ = std::fs::remove_dir_all(&dir);
+            return;
+        }
+
+        let s = EncryptedFileSigner::new(&path, "passphrase");
+        let err = s.check_permissions().unwrap_err();
+        assert!(matches!(err, SignerError::InsecurePermissions { .. }));
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

@@ -14,6 +14,7 @@
 
 use crate::auth_decode;
 use crate::preview::{self, PreviewOptions};
+use crate::rpc_client::DeterministicBuild;
 use anyhow::{bail, Context};
 use lafiya_config::NetworkConfig;
 use lafiya_rpc_resilience::xdr::apply_ledger_bounds;
@@ -35,6 +36,20 @@ use stellar_xdr::{
     Signature, TransactionEnvelope, WriteXdr,
 };
 
+/// Options controlling whether a mutating command submits or only builds.
+///
+/// `--build-only` / `--dry-run` (issue #733) makes the command print the
+/// unsigned envelope XDR (base64) built from a deterministic source account,
+/// sequence, fee, and network, then exit without simulating, signing, or
+/// submitting. This is what the golden-fixture harness exercises.
+#[derive(Debug, Clone, Default)]
+pub struct BuildOptions {
+    /// When set, build the unsigned envelope with the injected deterministic
+    /// inputs and print it instead of submitting.
+    pub build_only: Option<DeterministicBuild>,
+}
+=======
+
 /// How many times an expired transaction is rebuilt before giving up.
 const MAX_REBUILDS: u32 = 2;
 
@@ -54,6 +69,26 @@ pub fn run_bounded(
     window: u32,
     opts: &PreviewOptions,
 ) -> anyhow::Result<()> {
+    run_bounded_with(cfg, invoke, window, opts, &BuildOptions::default())
+}
+
+/// Like [`run_bounded`], but honors [`BuildOptions`].
+///
+/// When `build.build_only` is set, the unsigned envelope is built with the
+/// injected deterministic inputs and printed as base64; nothing is simulated,
+/// signed, or submitted. The normal submission flow is unchanged.
+pub fn run_bounded_with(
+    cfg: &NetworkConfig,
+    invoke: Vec<String>,
+    window: u32,
+    opts: &PreviewOptions,
+    build: &BuildOptions,
+) -> anyhow::Result<()> {
+    if let Some(det) = &build.build_only {
+        let unsigned = build_deterministic(cfg, &invoke, det)?;
+        println!("{unsigned}");
+        return Ok(());
+    }
     for attempt in 0..=MAX_REBUILDS {
         let mut rpc = SorobanRpc::new(&cfg.rpc_url);
         let latest = rpc
@@ -166,6 +201,27 @@ pub fn run_extend_ttl(
     extend_to: u32,
     window: u32,
 ) -> anyhow::Result<()> {
+    run_extend_ttl_with(
+        cfg,
+        contract_id,
+        source,
+        record_hash,
+        extend_to,
+        window,
+        &BuildOptions::default(),
+    )
+}
+
+/// Like [`run_extend_ttl`], but honors [`BuildOptions`].
+pub fn run_extend_ttl_with(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    record_hash: &str,
+    extend_to: u32,
+    window: u32,
+    build: &BuildOptions,
+) -> anyhow::Result<()> {
     if extend_to == 0 {
         bail!("extend_to must be a positive ledger sequence");
     }
@@ -180,7 +236,7 @@ pub fn run_extend_ttl(
             extend_to.to_string(),
         ],
     );
-    run_bounded(cfg, invoke, window)
+    run_bounded_with(cfg, invoke, window, &PreviewOptions::default(), build)
 }
 
 /// Build, bound, sign, and submit a patient-initiated `dispute` invocation.
@@ -196,6 +252,30 @@ pub fn run_dispute(
     patient: &str,
     signature: &str,
     window: u32,
+) -> anyhow::Result<()> {
+    run_dispute_with(
+        cfg,
+        contract_id,
+        source,
+        record_hash,
+        patient,
+        signature,
+        window,
+        &BuildOptions::default(),
+    )
+}
+
+/// Like [`run_dispute`], but honors [`BuildOptions`].
+#[allow(clippy::too_many_arguments)]
+pub fn run_dispute_with(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    record_hash: &str,
+    patient: &str,
+    signature: &str,
+    window: u32,
+    build: &BuildOptions,
 ) -> anyhow::Result<()> {
     if signature.is_empty() {
         bail!("dispute requires a patient signature over the commitment");
@@ -213,7 +293,7 @@ pub fn run_dispute(
             signature.to_string(),
         ],
     );
-    run_bounded(cfg, invoke, window)
+    run_bounded_with(cfg, invoke, window, &PreviewOptions::default(), build)
 }
 
 /// Restore archived attestation entries, then extend their TTL.
@@ -229,6 +309,30 @@ pub fn run_restore(
     extend_to: u32,
     window: u32,
 ) -> anyhow::Result<()> {
+    run_restore_with(
+        cfg,
+        contract_id,
+        source,
+        record_hash,
+        extend_to,
+        window,
+        &BuildOptions::default(),
+    )
+}
+
+/// Like [`run_restore`], but honors [`BuildOptions`].
+///
+/// In build-only mode only the restore transaction is built and printed; the
+/// follow-up TTL extension is not built (it would be a second envelope).
+pub fn run_restore_with(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    record_hash: &str,
+    extend_to: u32,
+    window: u32,
+    build: &BuildOptions,
+) -> anyhow::Result<()> {
     if extend_to == 0 {
         bail!("extend_to must be a positive ledger sequence");
     }
@@ -243,10 +347,32 @@ pub fn run_restore(
             MAX_RESTORE_ENTRIES.to_string(),
         ],
     );
-    run_bounded(cfg, restore, window)
+    run_bounded_with(cfg, restore, window, &PreviewOptions::default(), build)
         .with_context(|| format!("restoring archived attestation {record_hash} failed"))?;
+    if build.build_only.is_some() {
+        return Ok(());
+    }
     println!("Attestation {record_hash} restored; extending TTL to ledger {extend_to}");
     run_extend_ttl(cfg, contract_id, source, record_hash, extend_to, window)
+}
+
+/// Build an unsigned envelope for `invoke` using the injected deterministic
+/// source account, sequence, fee, and network, returning it as base64 XDR.
+///
+/// This is the deterministic build path used by `--build-only` / `--dry-run`
+/// (issue #733). It never touches the network.
+fn build_deterministic(
+    cfg: &NetworkConfig,
+    invoke: &[String],
+    det: &DeterministicBuild,
+) -> anyhow::Result<String> {
+    let source = invoke
+        .iter()
+        .position(|a| a == "--source")
+        .and_then(|i| invoke.get(i + 1))
+        .map(String::as_str)
+        .unwrap_or(&det.source_account);
+    det.build_unsigned_envelope(cfg, source, invoke)
 }
 
 /// Assemble a `stellar contract invoke` argument list.
@@ -617,5 +743,34 @@ mod tests {
         // The preview module reuses `auth_decode::decode_entry`; ensure the
         // symbol is reachable from this crate.
         let _ = auth_decode::decode_entry;
+    }
+
+    #[test]
+    fn build_only_skips_submission_and_prints_envelope() {
+        // With a deterministic build injected, `run_bounded_with` must not
+        // touch the network: it prints the unsigned envelope and returns.
+        let cfg = NetworkConfig {
+            rpc_url: "http://127.0.0.1:1".into(),
+            network_passphrase: "Test SDF Network ; September 2015".into(),
+            ..Default::default()
+        };
+        let det = DeterministicBuild::fixture();
+        let build = BuildOptions {
+            build_only: Some(det),
+        };
+        let invoke = invoke_args(
+            "C1",
+            "GSOURCE",
+            "extend_attestation_ttl",
+            &[
+                "--record_hash".to_string(),
+                "abc".to_string(),
+                "--extend_to".to_string(),
+                "42".to_string(),
+            ],
+        );
+        // No RPC is reachable; success proves the network was never used.
+        run_bounded_with(&cfg, invoke, 10, &PreviewOptions::default(), &build)
+            .expect("build-only must not require a network");
     }
 }
