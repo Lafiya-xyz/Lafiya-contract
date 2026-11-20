@@ -13,6 +13,13 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
+/// Version of the `verify-card --json` output schema.
+///
+/// Bump this whenever a field is removed, renamed, or changes meaning.
+/// Additive fields do not require a bump. The schema is documented in
+/// `docs/verify-card-json.md` and is stable for machine consumers.
+pub const VERIFY_CARD_SCHEMA_VERSION: u32 = 1;
+
 /// Hash of the (nonexistent) record before the first one.
 pub const GENESIS: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 

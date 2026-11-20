@@ -282,6 +282,175 @@ pub fn local_override_path(config_path: &Path) -> PathBuf {
     config_path.with_file_name("networks.local.toml")
 }
 
+/// `config/profile.toml` next to the given `networks.toml`.
+///
+/// Holds the active named profile selected with `lafiya-cli profile use <name>`.
+pub fn profile_path(config_path: &Path) -> PathBuf {
+    config_path.with_file_name("profile.toml")
+}
+
+/// Environment variable that overrides the persisted active profile.
+pub const PROFILE_ENV_VAR: &str = "LAFIYA_PROFILE";
+
+/// The active named profile, as selected by `lafiya-cli profile use <name>`.
+///
+/// The profile is a *selection* of a network, not a network definition: it is
+/// persisted in `config/profile.toml` and may be overridden per invocation by
+/// `--network` or [`PROFILE_ENV_VAR`]. It is always resolved against
+/// `config/networks.toml`, so a profile naming an unknown network fails closed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveProfile {
+    /// Profile (network) name, e.g. `local`, `testnet`, `mainnet`.
+    pub name: String,
+    /// Where the selection came from.
+    pub source: Source,
+}
+
+impl ActiveProfile {
+    /// Whether this profile targets mainnet, which requires extra guard rails.
+    pub fn is_mainnet(&self) -> bool {
+        is_mainnet(&self.name)
+    }
+}
+
+/// Whether `network` names mainnet.
+///
+/// Matching is case-insensitive and accepts the common spellings `mainnet`,
+/// `main-net` and `main_net` so a typo cannot silently bypass guard rails.
+pub fn is_mainnet(network: &str) -> bool {
+    matches!(
+        network.to_ascii_lowercase().replace(['-', '_'], "").as_str(),
+        "mainnet" | "pubnet" | "public"
+    )
+}
+
+/// Read the persisted active profile from `config/profile.toml`.
+///
+/// Returns `Ok(None)` when the file does not exist. Unknown keys are rejected
+/// so a typo cannot silently leave the profile unset.
+pub fn load_profile(config_path: &Path) -> Result<Option<ActiveProfile>, ConfigError> {
+    let path = profile_path(config_path);
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(&path).map_err(|source| ConfigError::ReadError {
+        path: path.clone(),
+        source,
+    })?;
+    let table: toml::Table = toml::from_str(&content).map_err(|e| ConfigError::ParseError {
+        path: path.clone(),
+        source: Box::new(e),
+    })?;
+    for key in table.keys() {
+        if key != "profile" {
+            return Err(unknown_key(
+                &path.display().to_string(),
+                key.clone(),
+                key,
+                &["profile"],
+            ));
+        }
+    }
+    let Some(value) = table.get("profile") else {
+        return Ok(None);
+    };
+    let name = value
+        .as_str()
+        .ok_or_else(|| ConfigError::OverrideNotString {
+            location: path.display().to_string(),
+            key: "profile".to_string(),
+        })?
+        .trim();
+    if name.is_empty() {
+        return Err(ConfigError::EmptyProfile {
+            path: path.display().to_string(),
+        });
+    }
+    Ok(Some(ActiveProfile {
+        name: name.to_string(),
+        source: Source::File(path),
+    }))
+}
+
+/// Persist `name` as the active profile in `config/profile.toml`.
+///
+/// The profile must name a network defined in `config/networks.toml`; this
+/// fails closed rather than writing a selection that cannot be resolved.
+pub fn save_profile(config_path: &Path, name: &str) -> Result<ActiveProfile, ConfigError> {
+    let name = name.trim();
+    if name.is_empty() {
+        return Err(ConfigError::EmptyProfile {
+            path: profile_path(config_path).display().to_string(),
+        });
+    }
+    let networks = load_networks(Some(config_path))?;
+    get_network(&networks, name)?;
+    let path = profile_path(config_path);
+    let content = format!("profile = \"{}\"\n", toml_escape(name));
+    fs::write(&path, content).map_err(|source| ConfigError::WriteError {
+        path: path.clone(),
+        source,
+    })?;
+    Ok(ActiveProfile {
+        name: name.to_string(),
+        source: Source::File(path),
+    })
+}
+
+/// Resolve the active profile for this invocation.
+///
+/// Precedence, highest first: `--network` flag, [`PROFILE_ENV_VAR`], the
+/// persisted `config/profile.toml`. Returns `Ok(None)` when nothing selects a
+/// profile, leaving the choice to the caller.
+pub fn resolve_profile(
+    config_path: &Path,
+    flag: Option<&str>,
+    env: impl Fn(&str) -> Option<String>,
+) -> Result<Option<ActiveProfile>, ConfigError> {
+    if let Some(name) = flag {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ConfigError::EmptyProfile {
+                path: "--network flag".to_string(),
+            });
+        }
+        return Ok(Some(ActiveProfile {
+            name: name.to_string(),
+            source: Source::Flag,
+        }));
+    }
+    if let Some(name) = env(PROFILE_ENV_VAR) {
+        let name = name.trim();
+        if name.is_empty() {
+            return Err(ConfigError::EmptyProfile {
+                path: format!("env {PROFILE_ENV_VAR}"),
+            });
+        }
+        return Ok(Some(ActiveProfile {
+            name: name.to_string(),
+            source: Source::Env(PROFILE_ENV_VAR.to_string()),
+        }));
+    }
+    load_profile(config_path)
+}
+
+/// Escape a value for inclusion in a double-quoted TOML basic string.
+fn toml_escape(value: &str) -> String {
+    let mut out = String::with_capacity(value.len());
+    for c in value.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => out.push_str(&format!("\\u{:04X}", c as u32)),
+            c => out.push(c),
+        }
+    }
+    out
+}
+
 /// Environment variable overriding `key` (an [`OVERRIDE_KEYS`] entry) for `network`,
 /// e.g. `LAFIYA_TESTNET_RPC_URL` or `LAFIYA_TESTNET_ATTESTER_REGISTRY`.
 pub fn env_var_name(network: &str, key: &str) -> String {
@@ -638,5 +807,91 @@ attestation_registry = ""
     fn plain_values_pass_through_resolver() {
         let resolver = SecretResolver::with_defaults();
         assert_eq!(resolver.resolve("https://x.example").unwrap(), "https://x.example");
+    }
+
+    #[test]
+    fn profile_round_trips() {
+        let dir = setup(None);
+        let path = dir.path().join("networks.toml");
+        assert_eq!(load_profile(&path).unwrap(), None);
+
+        let saved = save_profile(&path, "testnet").unwrap();
+        assert_eq!(saved.name, "testnet");
+        assert!(matches!(saved.source, Source::File(_)));
+
+        let loaded = load_profile(&path).unwrap().unwrap();
+        assert_eq!(loaded.name, "testnet");
+        assert_eq!(loaded, saved);
+    }
+
+    #[test]
+    fn profile_must_name_a_known_network() {
+        let dir = setup(None);
+        let path = dir.path().join("networks.toml");
+        let err = save_profile(&path, "miannet").unwrap_err().to_string();
+        assert!(err.contains("miannet"), "{err}");
+        assert!(!profile_path(&path).exists());
+    }
+
+    #[test]
+    fn empty_profile_is_rejected() {
+        let dir = setup(None);
+        let path = dir.path().join("networks.toml");
+        let err = save_profile(&path, "  ").unwrap_err().to_string();
+        assert!(err.contains("profile"), "{err}");
+    }
+
+    #[test]
+    fn profile_unknown_key_is_rejected() {
+        let dir = setup(None);
+        fs::write(dir.path().join("profile.toml"), "profil = \"testnet\"\n").unwrap();
+        let err = load_profile(&dir.path().join("networks.toml"))
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("unknown key `profil`"), "{err}");
+        assert!(err.contains("did you mean `profile`?"), "{err}");
+    }
+
+    #[test]
+    fn profile_resolution_precedence() {
+        let dir = setup(None);
+        let path = dir.path().join("networks.toml");
+        save_profile(&path, "testnet").unwrap();
+
+        let env = |k: &str| (k == PROFILE_ENV_VAR).then(|| "local".to_string());
+
+        let from_file = resolve_profile(&path, None, |_| None).unwrap().unwrap();
+        assert_eq!(from_file.name, "testnet");
+        assert!(matches!(from_file.source, Source::File(_)));
+
+        let from_env = resolve_profile(&path, None, env).unwrap().unwrap();
+        assert_eq!(from_env.name, "local");
+        assert_eq!(from_env.source, Source::Env(PROFILE_ENV_VAR.into()));
+
+        let from_flag = resolve_profile(&path, Some("mainnet"), env).unwrap().unwrap();
+        assert_eq!(from_flag.name, "mainnet");
+        assert_eq!(from_flag.source, Source::Flag);
+    }
+
+    #[test]
+    fn no_profile_selected() {
+        let dir = setup(None);
+        let path = dir.path().join("networks.toml");
+        assert_eq!(resolve_profile(&path, None, |_| None).unwrap(), None);
+    }
+
+    #[test]
+    fn mainnet_detection() {
+        for name in ["mainnet", "Mainnet", "MAINNET", "main-net", "main_net", "pubnet"] {
+            assert!(is_mainnet(name), "{name}");
+        }
+        for name in ["testnet", "local", "futurenet", "main"] {
+            assert!(!is_mainnet(name), "{name}");
+        }
+        let profile = ActiveProfile {
+            name: "mainnet".to_string(),
+            source: Source::Flag,
+        };
+        assert!(profile.is_mainnet());
     }
 }

@@ -364,4 +364,53 @@ export function decodeIncentivePoolEvent(
   }
 }
 
+/**
+ * A single Rust-generated round-trip fixture for the #727 cross-language
+ * ScVal encoding test. `xdr` is the base64-encoded ScVal produced by the Rust
+ * generator; `json` is the same value rendered as JSON for debugging.
+ */
+export interface ScValRoundTripFixture {
+  /** The contracttype name this fixture exercises. */
+  readonly type: string;
+  /** Base64-encoded ScVal as produced by the Rust generator. */
+  readonly xdr: string;
+  /** JSON rendering of the same value, for diagnostics only. */
+  readonly json: unknown;
+}
+
+/**
+ * Decodes a base64-encoded ScVal, re-encodes it, and asserts byte-exact
+ * equality. Returns the decoded native value so callers can assert on it.
+ *
+ * This is the TS half of the #727 round-trip: the Rust generator produces the
+ * fixture, TS decodes and re-encodes it, and any mismatch (i128/u64 BigInt
+ * handling, `Option<Vec<…>>`, enum tuple variants, map key ordering) throws.
+ */
+export function roundTripScVal(fixture: ScValRoundTripFixture): unknown {
+  const decoded = xdr.ScVal.fromXDR(fixture.xdr, "base64");
+  const reencoded = decoded.toXDR("base64");
+  if (reencoded !== fixture.xdr) {
+    throw new Error(
+      `ScVal round-trip mismatch for ${fixture.type}: ` +
+        `expected ${fixture.xdr}, got ${reencoded}`,
+    );
+  }
+  return scValToNative(decoded);
+}
+
+/**
+ * Runs the TS half of the #727 round-trip over every Rust-generated fixture
+ * and asserts byte-exact equality in both directions. Returns the decoded
+ * native values keyed by contracttype name.
+ */
+export function roundTripAllScVals(
+  fixtures: readonly ScValRoundTripFixture[],
+): Record<string, unknown> {
+  const decoded: Record<string, unknown> = {};
+  for (const fixture of fixtures) {
+    decoded[fixture.type] = roundTripScVal(fixture);
+  }
+  return decoded;
+}
+
 export default IncentivePoolClient;

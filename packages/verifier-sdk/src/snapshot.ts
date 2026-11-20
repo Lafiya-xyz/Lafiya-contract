@@ -196,4 +196,54 @@ export class SnapshotCache {
       return null;
     }
   }
+
+  /** The cached envelope as-is (no integrity check), or `null` if absent/unreadable. */
+  async peek(network: string): Promise<SnapshotEnvelope | null> {
+    return this.current(network);
+  }
+}
+
+/** A snapshot opened for offline use, with the ledger it was sealed at. */
+export interface LoadedSnapshot {
+  envelope: SnapshotEnvelope;
+  reader: OfflineChainReader;
+  ledger: number;
+  /** Ledger distance from the reference ledger, or `null` if no reference was given. */
+  staleness: number | null;
+}
+
+export interface LoadSnapshotOptions extends OpenOptions {
+  /** Current ledger (e.g. from RPC) used to compute staleness; omit when unknown. */
+  referenceLedger?: number;
+}
+
+/**
+ * Parse, integrity-check (and optionally signature-check) a serialized snapshot
+ * envelope and return a reader plus staleness. Throws {@link SnapshotError} on
+ * malformed input, schema mismatch, hash mismatch, or a failed signature check.
+ */
+export async function loadSnapshot(
+  raw: string,
+  opts: LoadSnapshotOptions = {},
+): Promise<LoadedSnapshot> {
+  let envelope: SnapshotEnvelope;
+  try {
+    envelope = JSON.parse(raw) as SnapshotEnvelope;
+  } catch {
+    throw new SnapshotError("snapshot is not valid JSON");
+  }
+  if (!envelope || typeof envelope !== "object") {
+    throw new SnapshotError("snapshot is not an object");
+  }
+  const reader = await openSnapshot(envelope, opts);
+  const staleness =
+    typeof opts.referenceLedger === "number" ? opts.referenceLedger - envelope.ledger : null;
+  return { envelope, reader, ledger: envelope.ledger, staleness };
+}
+
+/** Human-readable staleness note for reports; never throws. */
+export function describeStaleness(staleness: number | null): string {
+  if (staleness === null) return "staleness unknown (no reference ledger)";
+  if (staleness <= 0) return "snapshot is current";
+  return `snapshot is ${staleness} ledger${staleness === 1 ? "" : "s"} behind`;
 }

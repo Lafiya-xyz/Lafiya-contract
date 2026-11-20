@@ -77,6 +77,12 @@ pub const JSON_SCHEMAS: &[JsonSchemaDoc] = &[
         description: "Output of `lafiya version --json`.",
         body: VERSION_SCHEMA,
     },
+    JsonSchemaDoc {
+        id: "verify-card",
+        version: SCHEMA_VERSION,
+        description: "Output of `lafiya verify-card --json`.",
+        body: VERIFY_CARD_SCHEMA,
+    },
 ];
 
 const PREVIEW_SCHEMA: &str = r#"{
@@ -183,6 +189,79 @@ const VERSION_SCHEMA: &str = r#"{
     "schema_version": { "type": "string", "const": "1.0.0" },
     "kind": { "type": "string", "const": "version" },
     "version": { "type": "string" }
+  }
+}"#;
+
+/// Schema for `lafiya verify-card --json` (#730).
+///
+/// The verdict is produced by `lafiya-verification-model`, so this document
+/// mirrors that model's normative verdict values and reason codes. Only
+/// commitments are ever emitted; plaintext patient data is never included.
+const VERIFY_CARD_SCHEMA: &str = r#"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lafiya.dev/schemas/verify-card-1.0.0.json",
+  "title": "lafiya verify-card --json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "verdict", "reasons", "source"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "kind": { "type": "string", "const": "verify-card" },
+    "verdict": {
+      "type": "string",
+      "enum": ["valid", "expired", "revoked", "not_yet_valid", "untrusted_issuer", "invalid_signature", "malformed", "unknown"]
+    },
+    "reasons": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "message"],
+        "properties": {
+          "code": { "type": "string" },
+          "message": { "type": "string" },
+          "detail": { "type": ["object", "null"] }
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["online", "snapshot"] },
+        "rpc_endpoint": { "type": ["string", "null"] },
+        "quorum": { "type": ["integer", "null"], "minimum": 1 },
+        "snapshot": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["path", "signed", "staleness"],
+          "properties": {
+            "path": { "type": "string" },
+            "signed": { "type": "boolean" },
+            "staleness": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["age_seconds", "stale"],
+              "properties": {
+                "age_seconds": { "type": "integer", "minimum": 0 },
+                "stale": { "type": "boolean" },
+                "max_age_seconds": { "type": ["integer", "null"], "minimum": 0 }
+              }
+            }
+          }
+        }
+      }
+    },
+    "commitments": {
+      "type": ["object", "null"],
+      "additionalProperties": true,
+      "description": "Commitments only; never plaintext patient data."
+    },
+    "warnings": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
   }
 }"#;
 
@@ -516,7 +595,21 @@ mod tests {
         assert!(schema_for("preview").is_some());
         assert!(schema_for("pool.read").is_some());
         assert!(schema_for("config").is_some());
+        assert!(schema_for("verify-card").is_some());
         assert!(schema_for("does-not-exist").is_none());
+    }
+
+    #[test]
+    fn verify_card_schema_is_versioned_and_documented() {
+        let doc = schema_for("verify-card").expect("verify-card schema missing");
+        assert_eq!(doc.version, SCHEMA_VERSION);
+        assert!(doc.description.contains("verify-card"));
+        for needle in ["verdict", "reasons", "staleness", "schema_version"] {
+            assert!(
+                doc.body.contains(needle),
+                "verify-card schema missing `{needle}`"
+            );
+        }
     }
 
     #[test]

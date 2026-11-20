@@ -301,6 +301,17 @@ pub trait RpcClient: Send + Sync {
     /// Fetch the network passphrase and latest ledger from the RPC node.
     fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError>;
 
+    /// Fetch the network passphrase reported by the RPC node.
+    ///
+    /// This is the pre-signing guard rail for issue #729: before any
+    /// mutating operation is signed, the caller compares the returned
+    /// passphrase against the active network profile and refuses to sign on
+    /// a mismatch.  Implementations should fail closed (return an error)
+    /// rather than guessing when the node does not report a passphrase.
+    fn get_network_passphrase(&self) -> Result<String, RpcClientError> {
+        self.get_network_info().map(|info| info.network_passphrase)
+    }
+
     /// High-level convenience: simulate → assemble → sign auth entries →
     /// sign envelope → send → poll.
     ///
@@ -409,6 +420,14 @@ impl RpcClient for NativeRpcClient {
         })
     }
 
+    fn get_network_passphrase(&self) -> Result<String, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::get_network_passphrase — add stellar-xdr + HTTP client \
+                     (issue #395)"
+                .to_string(),
+        })
+    }
+
     fn sign_and_submit(
         &self,
         _unsigned_xdr: &str,
@@ -512,6 +531,14 @@ impl RpcClient for StellarCliClient {
     fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError> {
         Err(RpcClientError::StellarCli {
             detail: "get_network_info is not directly available via the stellar CLI subprocess path"
+                .to_string(),
+        })
+    }
+
+    fn get_network_passphrase(&self) -> Result<String, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "get_network_passphrase is not directly available via the stellar CLI \
+                     subprocess path"
                 .to_string(),
         })
     }
@@ -850,6 +877,9 @@ mod tests {
                 Err(_) => Err(RpcClientError::Transport { detail: "mock".into() }),
             }
         }
+        fn get_network_passphrase(&self) -> Result<String, RpcClientError> {
+            self.get_network_info().map(|info| info.network_passphrase)
+        }
         fn sign_and_submit(
             &self,
             _unsigned_xdr: &str,
@@ -949,6 +979,45 @@ mod tests {
         };
         let check = check_instance_ttl(&client, "key", DEFAULT_MAX_INSTANCE_LEDGER_DRIFT);
         assert_eq!(check.severity, DoctorSeverity::Error);
+    }
+
+    #[test]
+    fn network_passphrase_defaults_to_network_info() {
+        let client = MockRpcClient {
+            network: Ok(healthy_network()),
+            entries: Ok(vec![]),
+        };
+        assert_eq!(
+            client.get_network_passphrase().unwrap(),
+            "Test SDF Network ; September 2015"
+        );
+    }
+
+    #[test]
+    fn network_passphrase_fails_closed_when_unreachable() {
+        let client = MockRpcClient {
+            network: Err(RpcClientError::Transport { detail: "down".into() }),
+            entries: Ok(vec![]),
+        };
+        assert!(client.get_network_passphrase().is_err());
+    }
+
+    #[test]
+    fn network_passphrase_not_implemented_on_native() {
+        let client = NativeRpcClient::new("https://example.org", "Test Net");
+        assert!(matches!(
+            client.get_network_passphrase().unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+    }
+
+    #[test]
+    fn network_passphrase_not_available_on_stellar_cli() {
+        let client = make_rpc_client("https://example.org", "Test Net", true);
+        assert!(matches!(
+            client.get_network_passphrase().unwrap_err(),
+            RpcClientError::StellarCli { .. }
+        ));
     }
 
     #[test]

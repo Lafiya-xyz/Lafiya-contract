@@ -114,3 +114,54 @@ export class Client extends ContractClient {
     
   }
 }
+
+/**
+ * Round-trip test helpers for #727.
+ *
+ * These helpers decode a Rust-generated ScVal fixture (XDR base64) using the
+ * contract spec, re-encode it, and assert byte-exact equality. They are used by
+ * the TS round-trip tests to fuzz the encoding of every `#[contracttype]`
+ * across the Rust/TypeScript language boundary in both directions.
+ *
+ * Fixtures are produced by the Rust generator (see
+ * `bindings/multisig-account/test/fixtures/`); only synthetic data is used.
+ */
+export interface RoundTripFixture {
+  /** The name of the contracttype this fixture exercises. */
+  type: string;
+  /** XDR base64 of the ScVal produced by the Rust bindings. */
+  xdr: string;
+}
+
+/**
+ * Decode an XDR base64 ScVal, re-encode it, and return the re-encoded base64.
+ *
+ * Throws if the decoded value cannot be re-encoded, which surfaces any
+ * mismatch between the Rust and TypeScript bindings.
+ */
+export function roundTripScVal(xdr: string): string {
+  const spec = new ContractSpec([
+    "AAAABAAAAEdFcnJvcnMgcmV0dXJuZWQgYnkgdGhlIG11bHRpc2lnLWFjY291bnQgY29udHJhY3QncyBwdWJsaWMgZW50cnkgcG9pbnRzLgAAAAAAAAAABUVycm9yAAAAAAAABwAAAD1UaGUgY29uZmlndXJlZCB0aHJlc2hvbGQgaXMgemVybyBvciBleGNlZWRzIHRoZSBzaWduZXIgY291bnQuAAAAAAAAEEludmFsaWRUaHJlc2hvbGQAAAABAAAAOFRoZSBzaWduZXIgY29uZmlndXJhdGlvbiBjb250YWlucyBkdXBsaWNhdGUgcHVibGljIGtleXMuAAAAD0R1cGxpY2F0ZVNpZ25lcgAAAAACAAAAP1RoZSBzdXBwbGllZCBzaWduYXR1cmUgY291bnQgaXMgYmVsb3cgdGhlIGNvbmZpZ3VyZWQgdGhyZXNob2xkLgAAAAAQTm90RW5vdWdoU2lnbmVycwAAAAMAAAA8U2lnbmF0dXJlcyBhcmUgbm90IHN0cmljdGx5IG9yZGVyZWQgYnkgYXNjZW5kaW5nIHB1YmxpYyBrZXkuAAAAEUJhZFNpZ25hdHVyZU9yZGVyAAAAAAAABAAAAEhBIHNpZ25hdHVyZSBjb3JyZXNwb25kcyB0byBhIHB1YmxpYyBrZXkgdGhhdCBpcyBub3QgYSBjb25maWd1cmVkIHNpZ25lci4AAAANVW5rbm93blNpZ25lcgAAAAAAAAUAAABQVGhlIGNvbnRyYWN0IGhhcyBub3QgYmVlbiBpbml0aWFsaXplZDsgdGhyZXNob2xkIG9yIHNpZ25lciBjb3VudCBpcyB1bmF2YWlsYWJsZS4AAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAYAAABBVGhlIHN1cHBsaWVkIHNpZ25hdHVyZSBjb3VudCBleGNlZWRzIHRoZSBjb25maWd1cmVkIHNpZ25lciBjb3VudC4AAAAAAAAOVG9vTWFueVNpZ25lcnMAAAAAAAc=",
+    "AAAAAQAAAD9BIHNpbmdsZSBlZDI1NTE5IHNpZ25hdHVyZSBmcm9tIG9uZSBzaWduZXIgaW4gdGhlIG11bHRpc2lnIHNldC4AAAAAAAAAAAlTaWduYXR1cmUAAAAAAAACAAAAOFRoZSBwdWJsaWMga2V5IG9mIHRoZSBzaWduZXIgd2hvIGNyZWF0ZWQgdGhpcyBzaWduYXR1cmUuAAAACnB1YmxpY19rZXkAAAAAA+4AAAAgAAAAHFRoZSBlZDI1NTE5IHNpZ25hdHVyZSBieXRlcy4AAAAJc2lnbmF0dXJlAAAAAAAD7gAAAEA=",
+    "AAAAAAAAAqBWZXJpZnkgdGhlIGF1dGhvcml6YXRpb24gb2YgYSB0cmFuc2FjdGlvbiBieSBjaGVja2luZyBOLW9mLU0gZWQyNTUxOSBzaWduYXR1cmVzLgoKVmVyaWZpZXMgdGhhdCB0aGUgc3VwcGxpZWQgc2lnbmF0dXJlcyBtZWV0IHRoZSBjb25maWd1cmVkIHRocmVzaG9sZCBhbmQgZWFjaCBiZWxvbmdzIHRvCmFuIGF1dGhvcml6ZWQgc2lnbmVyLCB3aXRoIHNpZ25hdHVyZXMgb3JkZXJlZCBpbiBhc2NlbmRpbmcgcHVibGljLWtleSBvcmRlci4KCiMgQXJndW1lbnRzCiogYHNpZ25hdHVyZV9wYXlsb2FkYCDigJQgQSAzMi1ieXRlIGhhc2ggb2YgdGhlIHRyYW5zYWN0aW9uIHRvIGF1dGhvcml6ZS4KKiBgc2lnbmF0dXJlc2Ag4oCUIEEgdmVjdG9yIG9mIGVkMjU1MTkgc2lnbmF0dXJlcywgZWFjaCB3aXRoIGEgcHVibGljIGtleSBhbmQgc2lnbmF0dXJlIGJ5dGVzLCBvcmRlcmVkIGJ5IGFzY2VuZGluZyBwdWJsaWMga2V5LgoqIGBfYXV0aF9jb250ZXh0c2Ag4oCUIEludGVudGlvbmFsbHkgdW51c2VkOyBzZWUgW0FEUi0wMDA3XSguLi9hZHIvMDAwNy11bnNjb3BlZC1tdWx0aXNpZy1hdXRob3JpemF0aW9uLm1kKSBmb3Igd2h5IHRoaXMgYWNjb3VudCBkb2VzIG5vdCBzY29wZSBhdXRob3JpemF0aW9uIHRvIHNwZWNpZmljIGNvbnRyYWN0cyBvciBmdW5jdGlvbnMgZHVyaW5nIHByZS1hbHBoYS4AAAAMX19jaGVja19hdXRoAAAAAwAAAAAAAAARc2lnbmF0dXJlX3BheWxvYWQAAAAAAAPuAAAAIAAAAAAAAAAKc2lnbmF0dXJlcwAAAAAD6gAAB9AAAAAJU2lnbmF0dXJlAAAAAAAAAAAAAA1hdXRoX2NvbnRleHRzAAAAAAAD6gAAB9AAAAAHQ29udGV4dAAAAAABAAAD6QAAAAIAAAAD",
+    "AAAAAAAAAUdJbml0aWFsaXplIHRoZSBtdWx0aXNpZyBhY2NvdW50IHdpdGggYSBzZXQgb2YgYXV0aG9yaXplZCBzaWduZXJzIGFuZCBhIHNpZ25hdHVyZSB0aHJlc2hvbGQuCgojIEFyZ3VtZW50cwoqIGBzaWduZXJzYCDigJQgQSB2ZWN0b3Igb2YgZWQyNTUxOSBwdWJsaWMga2V5cyAoMzIgYnl0ZXMgZWFjaCkgYXV0aG9yaXplZCB0byBzaWduIHRyYW5zYWN0aW9ucy4KKiBgdGhyZXNob2xkYCDigJQgVGhlIG1pbmltdW0gbnVtYmVyIG9mIHNpZ25hdHVyZXMgcmVxdWlyZWQgdG8gYXV0aG9yaXplIGEgdHJhbnNhY3Rpb247IG11c3QgYmUgPiAwIGFuZCDiiaQgdGhlIHNpZ25lciBjb3VudC4AAAAADV9fY29uc3RydWN0b3IAAAAAAAACAAAAAAAAAAdzaWduZXJzAAAAA+oAAAPuAAAAIAAAAAAAAAAJdGhyZXNob2xkAAAAAAAABAAAAAA=",
+  ]);
+  const scVal = spec.funcArgsToScVals("__check_auth", [
+    Buffer.from(xdr, "base64"),
+  ]);
+  // Re-encode the decoded value and return its base64 representation.
+  return Buffer.from(scVal[0].toXDR()).toString("base64");
+}
+
+/**
+ * Assert that a Rust-generated fixture round-trips byte-exactly through the
+ * TypeScript bindings.
+ */
+export function assertRoundTrip(fixture: RoundTripFixture): void {
+  const reencoded = roundTripScVal(fixture.xdr);
+  if (reencoded !== fixture.xdr) {
+    throw new Error(
+      `Round-trip mismatch for ${fixture.type}: expected ${fixture.xdr}, got ${reencoded}`
+    );
+  }
+}

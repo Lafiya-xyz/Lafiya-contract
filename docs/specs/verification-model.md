@@ -194,7 +194,7 @@ The truth table **MUST** include cases for quorum satisfaction and non-satisfact
 distinct-attester no-op rule, monotonicity of the count under revocation, the `Disputed`
 state and its precedence, and status-list-based `Revoked`/`Indeterminate` results.
 
-## 6. Versioning
+## 9. Versioning
 
 `model_version` in the truth table follows semantic versioning:
 
@@ -205,7 +205,68 @@ state and its precedence, and status-list-based `Revoked`/`Indeterminate` result
 
 Implementations **SHOULD** report the model version they implement.
 
-## 7. Differential testing
+## 7. `lafiya-cli verify-card`
+
+`lafiya-cli verify-card <payload|image>` is the human-facing entry point to this model.
+It **MUST** produce the same verdict as any other implementation for the same inputs
+(section 5) and **MUST** be covered by the conformance vectors in CI.
+
+### 7.1 Inputs
+
+- A raw QR payload string, or a path to a PNG/JPEG image containing the QR code
+  (decoded with `rqrr`). The payload is decoded with `lafiya-qr`.
+- Disclosed fields, when supplied, are used to recompute the *record commitment*
+  ([LRC-1](../glossary.md#lrc-1-lafiya-record-commitment-v1)); otherwise only the
+  commitment from the payload is used.
+
+### 7.2 Modes
+
+| Mode | Chain state source | Notes |
+|---|---|---|
+| Online (default) | RPC reads of `attestation-registry` and `attester-registry` | Quorum reads **MAY** be enabled with `--quorum`. |
+| Offline | A signed snapshot file (`--snapshot <file>`) | No network access; the verifier **MUST NOT** claim a live check. |
+
+An offline evaluation **MUST** return the same verdict as the online evaluation of the
+snapshot's state, with the qualifier `as_of_bundle` (section 2), and **MUST** report the
+snapshot's staleness: the snapshot date and its age relative to the verifier clock. A
+snapshot whose signature cannot be validated, or whose age exceeds the configured
+maximum, **MUST** yield `Indeterminate`.
+
+### 7.3 Output
+
+By default the command prints a human-readable verdict, the precedence reason that
+matched (section 3), the quorum summary for `Verified` (section 6), any annotations
+(section 2.1), and, in offline mode, the snapshot date and staleness.
+
+With `--json` it prints a single object with this stable, versioned schema:
+
+```json
+{
+  "schema_version": "1",
+  "model_version": "1.1.0",
+  "verdict": "Verified",
+  "reason": "verified",
+  "qualifier": "as_of_bundle",
+  "quorum": { "distinct_attesters": 2, "threshold": 2, "satisfied": true },
+  "annotations": { "attester_tier": "Nurse", "attestation_class": null },
+  "snapshot": { "as_of": "2025-01-01T00:00:00Z", "age_seconds": 3600, "stale": false },
+  "warnings": []
+}
+```
+
+- `schema_version` is bumped on any breaking change to this object; consumers **MUST**
+  check it. `model_version` reports the model version implemented (section 6).
+- `verdict`, `reason`, and `qualifier` use the same names as the truth table.
+- `snapshot` is `null` in online mode.
+
+### 7.4 Privacy
+
+The command **MUST NOT** print patient data. It prints commitments only. If the payload
+unexpectedly contains plaintext fields, the command **MUST** warn (via `warnings`) and
+**MUST NOT** echo the plaintext.
+
+## 8. Differential testing
+=======
 
 The truth table pins chosen cases; it cannot show that two implementations agree
 everywhere else. `scripts/differential_verification.py` runs the reference, the
@@ -241,7 +302,8 @@ When adding an input, an enum value, or a verdict:
    `Reason`, `evaluate`) and `packages/verifier-sdk/src/model.ts`
    (`ModelInput`, `MODEL_VERDICTS`, `ModelReason`, `evaluateModel`), and the
    `MODEL_VERSION` constants. The Rust `Input` rejects unknown fields, so a
-   forgotten input fails loudly.
+   forgotten input fails loudly. Update the `verify-card` JSON schema
+   (section 7.3) if the output shape changes.
 3. Run `python3 scripts/verification_model.py`, `cargo test -p
    lafiya-verification-model`, `pnpm test` in `packages/verifier-sdk`, then
    `pnpm build` there and `python3 scripts/differential_verification.py`.

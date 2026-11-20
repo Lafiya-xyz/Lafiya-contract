@@ -32,7 +32,7 @@
 //! threat model covering each backend.
 
 use std::fmt;
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, IsTerminal, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 
@@ -265,6 +265,14 @@ pub enum SignerError {
     ExternalSignerFailed { detail: String },
     /// A plaintext key was supplied without `--allow-plaintext-key`.
     PlaintextKeyRejected,
+    /// A mainnet mutation was attempted without the required confirmation.
+    MainnetConfirmationRequired { detail: String },
+    /// A mainnet mutation was attempted from a non-TTY without
+    /// `--yes-i-know-this-is-mainnet`.
+    MainnetNonTtyRefused { detail: String },
+    /// The configured network passphrase did not match the one reported by
+    /// the RPC endpoint.
+    NetworkPassphraseMismatch { expected: String, actual: String },
 }
 
 impl fmt::Display for SignerError {
@@ -308,6 +316,18 @@ impl fmt::Display for SignerError {
                 f,
                 "refusing to use a plaintext key from env/config; \
                  pass --allow-plaintext-key to override (insecure)"
+            ),
+            SignerError::MainnetConfirmationRequired { detail } => write!(
+                f,
+                "mainnet operation requires explicit confirmation: {detail}"
+            ),
+            SignerError::MainnetNonTtyRefused { detail } => write!(
+                f,
+                "refusing mainnet operation on a non-TTY stdout: {detail}"
+            ),
+            SignerError::NetworkPassphraseMismatch { expected, actual } => write!(
+                f,
+                "network passphrase mismatch: configured '{expected}', RPC reports '{actual}'"
             ),
         }
     }
@@ -565,6 +585,132 @@ impl PlaintextKeyPolicy {
             )),
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// Mainnet guard rails
+// ---------------------------------------------------------------------------
+
+/// The Stellar mainnet network passphrase.
+pub const MAINNET_PASSPHRASE: &str = "Public Global Stellar Network ; September 2015";
+
+/// The Stellar testnet network passphrase.
+pub const TESTNET_PASSPHRASE: &str = "Test SDF Network ; September 2015";
+
+/// Guard rails that must be satisfied before any mutating operation is
+/// signed for a given network.
+///
+/// Mainnet operations are deliberately hard to perform by accident: the
+/// operator must either type the network name interactively or pass
+/// `--confirm-network mainnet`, and non-TTY invocations additionally require
+/// `--yes-i-know-this-is-mainnet`.  The network passphrase is then verified
+/// against the RPC endpoint before the payload is handed to the signer.
+#[derive(Debug, Clone, Default)]
+pub struct MainnetGuard {
+    /// Value of `--confirm-network <name>`, if supplied.
+    pub confirm_network: Option<String>,
+    /// Whether `--yes-i-know-this-is-mainnet` was supplied.
+    pub yes_i_know_this_is_mainnet: bool,
+}
+
+impl MainnetGuard {
+    /// Build a guard from the parsed CLI flags.
+    pub fn new(confirm_network: Option<String>, yes_i_know_this_is_mainnet: bool) -> Self {
+        Self {
+            confirm_network,
+            yes_i_know_this_is_mainnet,
+        }
+    }
+
+    /// Whether `network` is mainnet (matched by name or passphrase).
+    pub fn is_mainnet(network: &str) -> bool {
+        let n = network.trim();
+        n.eq_ignore_ascii_case("mainnet")
+            || n.eq_ignore_ascii_case("public")
+            || n == MAINNET_PASSPHRASE
+    }
+
+    /// Enforce the confirmation requirements for a mutating operation on
+    /// `network`.
+    ///
+    /// Non-mainnet networks are always allowed.  For mainnet, the operator
+    /// must supply `--confirm-network mainnet` (or type the network name when
+    /// stdin is a TTY), and when stdout is not a TTY the explicit
+    /// `--yes-i-know-this-is-mainnet` flag is mandatory.
+    pub fn check_confirmation(&self, network: &str) -> Result<(), SignerError> {
+        if !Self::is_mainnet(network) {
+            return Ok(());
+        }
+
+        let confirmed_by_flag = self
+            .confirm_network
+            .as_deref()
+            .map(|c| Self::is_mainnet(c))
+            .unwrap_or(false);
+
+        if !confirmed_by_flag {
+            // Fall back to an interactive typed confirmation when possible.
+            let stdin_is_tty = std::io::stdin().is_terminal();
+            if !stdin_is_tty {
+                return Err(SignerError::MainnetConfirmationRequired {
+                    detail: "pass --confirm-network mainnet (stdin is not a TTY, \
+                             so the network name cannot be typed)"
+                        .to_string(),
+                });
+            }
+            let typed = prompt_typed_network_name()?;
+            if !typed.trim().eq_ignore_ascii_case("mainnet") {
+                return Err(SignerError::MainnetConfirmationRequired {
+                    detail: format!(
+                        "typed confirmation '{typed}' did not match 'mainnet'"
+                    ),
+                });
+            }
+        }
+
+        if !std::io::stdout().is_terminal() && !self.yes_i_know_this_is_mainnet {
+            return Err(SignerError::MainnetNonTtyRefused {
+                detail: "pass --yes-i-know-this-is-mainnet to allow mainnet \
+                         operations when stdout is not a TTY"
+                    .to_string(),
+            });
+        }
+
+        Ok(())
+    }
+
+    /// Verify that the configured network passphrase matches the one the RPC
+    /// endpoint reports, before any signing takes place.
+    ///
+    /// `rpc_passphrase` is the passphrase obtained from the RPC endpoint
+    /// (e.g. via `getNetwork`).  A mismatch is a hard error so a mainnet
+    /// profile can never sign against a testnet endpoint (or vice versa).
+    pub fn verify_passphrase(
+        configured: &str,
+        rpc_passphrase: &str,
+    ) -> Result<(), SignerError> {
+        if configured.trim() == rpc_passphrase.trim() {
+            Ok(())
+        } else {
+            Err(SignerError::NetworkPassphraseMismatch {
+                expected: configured.trim().to_string(),
+                actual: rpc_passphrase.trim().to_string(),
+            })
+        }
+    }
+}
+
+/// Prompt on stderr for the operator to type the network name.
+fn prompt_typed_network_name() -> Result<String, SignerError> {
+    eprint!("Type the network name to confirm (mainnet): ");
+    let _ = std::io::stderr().flush();
+    let mut line = String::new();
+    std::io::stdin()
+        .read_line(&mut line)
+        .map_err(|e| SignerError::MainnetConfirmationRequired {
+            detail: format!("could not read confirmation from stdin: {e}"),
+        })?;
+    Ok(line.trim().to_string())
 }
 
 /// A secret key held in a zeroizing buffer.
@@ -1006,6 +1152,69 @@ mod tests {
         let payload = [0u8; 32];
         let err = s.sign(&payload).unwrap_err();
         assert!(matches!(err, SignerError::SigningFailed { .. }));
+    }
+
+    #[test]
+    fn mainnet_guard_allows_non_mainnet() {
+        let guard = MainnetGuard::default();
+        assert!(guard.check_confirmation("testnet").is_ok());
+        assert!(guard.check_confirmation("local").is_ok());
+    }
+
+    #[test]
+    fn mainnet_guard_requires_confirmation_without_tty() {
+        // Tests run with non-TTY stdin/stdout, so the typed fallback is
+        // unavailable and the flag path must be exercised.
+        let guard = MainnetGuard::default();
+        let err = guard.check_confirmation("mainnet").unwrap_err();
+        assert!(matches!(
+            err,
+            SignerError::MainnetConfirmationRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn mainnet_guard_requires_explicit_flag_on_non_tty() {
+        let guard = MainnetGuard::new(Some("mainnet".to_string()), false);
+        let err = guard.check_confirmation("mainnet").unwrap_err();
+        assert!(matches!(err, SignerError::MainnetNonTtyRefused { .. }));
+    }
+
+    #[test]
+    fn mainnet_guard_accepts_explicit_flag_on_non_tty() {
+        let guard = MainnetGuard::new(Some("mainnet".to_string()), true);
+        assert!(guard.check_confirmation("mainnet").is_ok());
+    }
+
+    #[test]
+    fn mainnet_guard_rejects_wrong_confirm_network() {
+        let guard = MainnetGuard::new(Some("testnet".to_string()), true);
+        let err = guard.check_confirmation("mainnet").unwrap_err();
+        assert!(matches!(
+            err,
+            SignerError::MainnetConfirmationRequired { .. }
+        ));
+    }
+
+    #[test]
+    fn mainnet_guard_detects_mainnet_by_passphrase() {
+        assert!(MainnetGuard::is_mainnet(MAINNET_PASSPHRASE));
+        assert!(!MainnetGuard::is_mainnet(TESTNET_PASSPHRASE));
+    }
+
+    #[test]
+    fn passphrase_verification_accepts_match() {
+        assert!(MainnetGuard::verify_passphrase(MAINNET_PASSPHRASE, MAINNET_PASSPHRASE).is_ok());
+    }
+
+    #[test]
+    fn passphrase_verification_rejects_mismatch() {
+        let err =
+            MainnetGuard::verify_passphrase(MAINNET_PASSPHRASE, TESTNET_PASSPHRASE).unwrap_err();
+        assert!(matches!(
+            err,
+            SignerError::NetworkPassphraseMismatch { .. }
+        ));
     }
 
     #[test]

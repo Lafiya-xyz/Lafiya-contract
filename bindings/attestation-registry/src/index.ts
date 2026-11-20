@@ -31,6 +31,22 @@ if (typeof window !== "undefined") {
   window.Buffer = window.Buffer || Buffer;
 }
 
+/**
+ * Contracttype names exported by this bindings package. Used by the
+ * cross-language ScVal round-trip tests (#727) to enumerate every type that
+ * must be covered by the Rust-generated fixtures.
+ */
+export const CONTRACTTYPE_NAMES = [
+  "Attestation",
+  "QuorumStatus",
+  "DisputeStatus",
+  "VerificationResult",
+  "StatusListRoot",
+  "StatusListSegment",
+] as const;
+
+export type ContracttypeName = (typeof CONTRACTTYPE_NAMES)[number];
+
 
 
 
@@ -484,5 +500,52 @@ export class Client extends ContractClient {
         get_verification_result: this.txFromJSON<VerificationResult>,
         get_status_list_root: this.txFromJSON<StatusListRoot>,
         get_status_list_segment: this.txFromJSON<Option<StatusListSegment>>
+  }
+}
+
+/**
+ * A single Rust-generated round-trip fixture (#727): a random value for one
+ * contracttype, serialized by the Rust generator to ScVal XDR base64 plus its
+ * JSON representation.
+ */
+export interface RoundTripFixture {
+  /** Contracttype name, must be one of {@link CONTRACTTYPE_NAMES}. */
+  type: ContracttypeName;
+  /** ScVal XDR, base64-encoded, as produced by the Rust generator. */
+  xdr: string;
+  /** JSON representation of the same value. */
+  json: unknown;
+}
+
+/**
+ * Decode a base64 ScVal XDR string into a native JS value using this
+ * package's contract spec.
+ */
+export function decodeScValXdr(xdrBase64: string): unknown {
+  const spec = new ContractSpec(SPEC_XDR_ENTRIES);
+  return spec.funcArgsToScVals("__roundtrip__", [xdrBase64]);
+}
+
+/**
+ * Encode a native JS value back into a base64 ScVal XDR string using this
+ * package's contract spec.
+ */
+export function encodeScValXdr(value: unknown): string {
+  const spec = new ContractSpec(SPEC_XDR_ENTRIES);
+  const [encoded] = spec.funcArgsToScVals("__roundtrip__", [value]);
+  return encoded;
+}
+
+/**
+ * Round-trip a fixture through the bindings and assert byte-exact equality
+ * of the re-encoded XDR. Throws on mismatch.
+ */
+export function assertRoundTrip(fixture: RoundTripFixture): void {
+  const decoded = decodeScValXdr(fixture.xdr);
+  const reencoded = encodeScValXdr(decoded);
+  if (reencoded !== fixture.xdr) {
+    throw new Error(
+      `ScVal round-trip mismatch for ${fixture.type}: expected ${fixture.xdr}, got ${reencoded}`
+    );
   }
 }

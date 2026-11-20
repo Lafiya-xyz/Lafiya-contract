@@ -10,6 +10,7 @@
 //! * that the simulation preview shown before submission matches the
 //!   post-execution state returned by the mocked RPC.
 
+use std::path::PathBuf;
 use std::process::Command;
 
 use serde_json::{json, Value};
@@ -557,6 +558,220 @@ async fn preview_matches_post_execution_state() {
     assert_eq!(
         preview.get("hash").and_then(Value::as_str),
         Some("previewhash")
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Issue #730: `verify-card` conformance against verification-model vectors
+// ---------------------------------------------------------------------------
+
+/// Locate the verification-model conformance vectors directory.
+///
+/// The vectors live in the `lafiya-verification-model` crate. We resolve the
+/// path relative to this crate's manifest so the test works regardless of the
+/// current working directory.
+fn conformance_vectors_dir() -> PathBuf {
+    let manifest_dir = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let workspace_root = manifest_dir
+        .parent()
+        .and_then(|p| p.parent())
+        .expect("cli crate should live two levels below the workspace root");
+    workspace_root
+        .join("crates")
+        .join("lafiya-verification-model")
+        .join("tests")
+        .join("vectors")
+}
+
+/// Load the verification-model conformance vectors.
+///
+/// Each vector is expected to carry at least:
+/// * `name` — a human-readable identifier,
+/// * `payload` — the QR payload string to verify,
+/// * `expected_verdict` — the verdict the model must produce.
+///
+/// If the vectors file is not present (e.g. the model crate has not yet
+/// landed its vectors), the test is skipped rather than failing, so this
+/// integration test does not block unrelated work.
+fn load_conformance_vectors() -> Option<Vec<Value>> {
+    let path = conformance_vectors_dir().join("verdicts.json");
+    let raw = match std::fs::read_to_string(&path) {
+        Ok(raw) => raw,
+        Err(_) => return None,
+    };
+    let parsed: Value = serde_json::from_str(&raw)
+        .unwrap_or_else(|e| panic!("conformance vectors are not valid JSON ({e})"));
+    let vectors = parsed
+        .get("vectors")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_else(|| panic!("conformance vectors missing `vectors` array"));
+    Some(vectors)
+}
+
+/// Stub the RPC methods `verify-card` needs in online mode.
+async fn stub_verify_card_online(server: &MockServer) {
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(wiremock::matchers::body_partial_json(json!({
+            "method": "getLatestLedger"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": { "id": "abc", "sequence": 100, "protocolVersion": 21 }
+        })))
+        .mount(server)
+        .await;
+
+    Mock::given(method("POST"))
+        .and(path("/"))
+        .and(wiremock::matchers::body_partial_json(json!({
+            "method": "getLedgerEntries"
+        })))
+        .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "result": {
+                "latestLedger": 100,
+                "entries": []
+            }
+        })))
+        .mount(server)
+        .await;
+}
+
+#[tokio::test]
+async fn verify_card_online_matches_conformance_vectors() {
+    let vectors = match load_conformance_vectors() {
+        Some(v) => v,
+        None => return, // vectors not available; nothing to assert
+    };
+
+    let server = MockServer::start().await;
+    stub_verify_card_online(&server).await;
+
+    for vector in &vectors {
+        let name = vector
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>");
+        let payload = vector
+            .get("payload")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("vector {name} missing `payload`"));
+        let expected = vector
+            .get("expected_verdict")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("vector {name} missing `expected_verdict`"));
+
+        let mut cmd = lafiya(&server);
+        cmd.args(["verify-card", payload, "--json"]);
+        let (stdout, stderr, ok) = run(&mut cmd);
+        assert!(ok, "verify-card failed for vector {name}: {stderr}");
+
+        let out: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("vector {name}: output not JSON ({e}): {stdout}"));
+        assert_eq!(
+            out.get("verdict").and_then(Value::as_str),
+            Some(expected),
+            "vector {name}: verdict mismatch"
+        );
+    }
+}
+
+#[tokio::test]
+async fn verify_card_offline_matches_conformance_vectors() {
+    let vectors = match load_conformance_vectors() {
+        Some(v) => v,
+        None => return,
+    };
+
+    // Offline mode requires a signed snapshot file. If the fixture is not
+    // present, skip: the snapshot format is owned by the model crate.
+    let snapshot_path = conformance_vectors_dir().join("snapshot.json");
+    if !snapshot_path.exists() {
+        return;
+    }
+
+    for vector in &vectors {
+        let name = vector
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("<unnamed>");
+        let payload = vector
+            .get("payload")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("vector {name} missing `payload`"));
+        let expected = vector
+            .get("expected_verdict")
+            .and_then(Value::as_str)
+            .unwrap_or_else(|| panic!("vector {name} missing `expected_verdict`"));
+
+        let mut cmd = Command::new(lafiya_bin());
+        cmd.args([
+            "verify-card",
+            payload,
+            "--offline",
+            "--snapshot",
+            snapshot_path.to_str().expect("snapshot path is not UTF-8"),
+            "--json",
+        ]);
+        let (stdout, stderr, ok) = run(&mut cmd);
+        assert!(
+            ok,
+            "offline verify-card failed for vector {name}: {stderr}"
+        );
+
+        let out: Value = serde_json::from_str(stdout.trim())
+            .unwrap_or_else(|e| panic!("vector {name}: output not JSON ({e}): {stdout}"));
+        assert_eq!(
+            out.get("verdict").and_then(Value::as_str),
+            Some(expected),
+            "vector {name}: offline verdict mismatch"
+        );
+    }
+}
+
+#[tokio::test]
+async fn verify_card_json_schema_is_versioned() {
+    let server = MockServer::start().await;
+    stub_verify_card_online(&server).await;
+
+    // A minimal, well-formed payload is enough to exercise the schema; the
+    // exact verdict is asserted by the conformance tests above.
+    let payload = "lafiya:v1:test-payload";
+
+    let mut cmd = lafiya(&server);
+    cmd.args(["verify-card", payload, "--json"]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "verify-card failed: {stderr}");
+
+    let out: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("output not JSON ({e}): {stdout}"));
+
+    // The schema version must be present and stable.
+    let version = out
+        .get("schema_version")
+        .and_then(Value::as_str)
+        .expect("JSON output missing `schema_version`");
+    assert_eq!(
+        version, "1",
+        "unexpected schema_version; bumping it is a breaking change"
+    );
+
+    // Required top-level fields for the documented schema.
+    for field in ["verdict", "reasons", "mode"] {
+        assert!(
+            out.get(field).is_some(),
+            "JSON output missing required field `{field}`: {stdout}"
+        );
+    }
+
+    // `reasons` must be an array (the reason trace).
+    assert!(
+        out.get("reasons").and_then(Value::as_array).is_some(),
+        "`reasons` must be an array: {stdout}"
     );
 }
 

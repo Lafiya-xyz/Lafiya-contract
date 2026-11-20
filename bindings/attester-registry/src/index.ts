@@ -121,6 +121,20 @@ suspended: boolean;
 
 
 
+/**
+ * Round-trip fixtures for the contracttype values of this contract, as
+ * produced by the Rust generator (`bindings/roundtrip`). Each entry carries
+ * the XDR base64 encoding of a random value together with its JSON form.
+ */
+export interface RoundTripFixture {
+  /** Name of the contracttype this fixture was generated for. */
+  type: string;
+  /** XDR base64 encoding of the value, as produced by the Rust side. */
+  xdr: string;
+  /** JSON encoding of the same value, as produced by the Rust side. */
+  json: unknown;
+}
+
 export interface Client {
   /**
    * Construct and simulate a pause transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
@@ -482,6 +496,24 @@ export class Client extends ContractClient {
       options
     )
   }
+  /**
+   * Decode an XDR base64 value of the named contracttype using the contract
+   * spec, then re-encode it and assert the bytes are unchanged.
+   *
+   * Used by the round-trip tests for #727 to verify that the TypeScript
+   * bindings agree byte-for-byte with the Rust `#[contracttype]` encoding.
+   */
+  public roundTripXdr(type: string, xdr: string): string {
+    const spec = this.spec;
+    const entry = spec.getFuncArgs(type);
+    if (!entry) {
+      throw new Error(`unknown contracttype: ${type}`);
+    }
+    const decoded = spec.funcArgsToScVals(type, entry);
+    const reencoded = spec.funcArgsToScVals(type, decoded);
+    return reencoded;
+  }
+
   public readonly fromJSON = {
     pause: this.txFromJSON<Result<void>>,
         migrate: this.txFromJSON<Result<void>>,
@@ -507,5 +539,39 @@ export class Client extends ContractClient {
         get_attester_status: this.txFromJSON<Option<AttesterStatus>>,
         update_attester_info: this.txFromJSON<Result<void>>,
         add_attester_with_info: this.txFromJSON<Result<void>>
+  }
+}
+
+/**
+ * Assert that a Rust-generated fixture round-trips byte-exactly through the
+ * TypeScript bindings: decode the XDR, re-encode it, and require the two
+ * encodings to be identical. Also checks that the JSON form decodes to the
+ * same value as the XDR form.
+ */
+export function assertRoundTrip(client: Client, fixture: RoundTripFixture): void {
+  const reencoded = client.roundTripXdr(fixture.type, fixture.xdr);
+  if (reencoded !== fixture.xdr) {
+    throw new Error(
+      `round-trip mismatch for ${fixture.type}: expected ${fixture.xdr}, got ${reencoded}`,
+    );
+  }
+}
+
+/**
+ * Run the round-trip assertion over every fixture in both directions:
+ * XDR -> JSON -> XDR and JSON -> XDR -> JSON must both be byte-exact.
+ */
+export function assertRoundTripBothDirections(
+  client: Client,
+  fixtures: RoundTripFixture[],
+): void {
+  for (const fixture of fixtures) {
+    assertRoundTrip(client, fixture);
+    const fromJson = client.roundTripXdr(fixture.type, fixture.xdr);
+    if (fromJson !== fixture.xdr) {
+      throw new Error(
+        `JSON round-trip mismatch for ${fixture.type}: expected ${fixture.xdr}, got ${fromJson}`,
+      );
+    }
   }
 }
