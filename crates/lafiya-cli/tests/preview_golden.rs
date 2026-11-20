@@ -154,6 +154,43 @@ fn fixture(command: &str) -> SimulationResult {
                 vec!["pause".to_string()],
             )]),
         },
+        "incentive_pool_deploy" => SimulationResult {
+            success: true,
+            ledger_entries: vec![
+                LedgerEntryChange {
+                    key: "config:admin".to_string(),
+                    before: None,
+                    after: Some("\"GADMIN...ADMIN\"".to_string()),
+                },
+                LedgerEntryChange {
+                    key: "config:approver".to_string(),
+                    before: None,
+                    after: Some("\"GAPPROVER...APPROVER\"".to_string()),
+                },
+                LedgerEntryChange {
+                    key: "config:token".to_string(),
+                    before: None,
+                    after: Some("\"GUSDC...TOKEN\"".to_string()),
+                },
+                LedgerEntryChange {
+                    key: "config:attester_registry".to_string(),
+                    before: None,
+                    after: Some("\"GATTESTER...REGISTRY\"".to_string()),
+                },
+            ],
+            balance_changes: vec![],
+            events: vec![EventChange {
+                contract: "incentive-pool".to_string(),
+                topics: vec!["initialized".to_string()],
+                data: "{\"admin\":\"GADMIN...ADMIN\",\"approver\":\"GAPPROVER...APPROVER\"}"
+                    .to_string(),
+            }],
+            auth: AuthTree::new(vec![AuthNode::leaf(
+                "admin",
+                "GADMIN...ADMIN",
+                vec!["__constructor".to_string()],
+            )]),
+        },
         "pool_claim" => SimulationResult {
             success: true,
             ledger_entries: vec![
@@ -225,6 +262,40 @@ fn golden_ops_pause() {
 #[test]
 fn golden_pool_claim() {
     check_command("pool_claim");
+}
+
+#[test]
+fn golden_incentive_pool_deploy() {
+    check_command("incentive_pool_deploy");
+}
+
+/// The incentive-pool is configured atomically at deploy time via
+/// `__constructor`; the preview must show the constructor arguments and must
+/// not contain a separate `initialize` step.
+#[test]
+fn incentive_pool_deploy_preview_has_no_initialize_step() {
+    let sim = fixture("incentive_pool_deploy");
+    let preview = Preview::from_simulation(&sim);
+
+    let text = render_preview_text(&preview);
+    assert!(
+        text.contains("__constructor"),
+        "deploy preview should show constructor invocation: {text}"
+    );
+    assert!(
+        !text.contains("initialize"),
+        "deploy preview must not contain a separate initialize step: {text}"
+    );
+
+    let json = render_preview_json(&preview).expect("render json");
+    assert!(
+        json.contains("__constructor"),
+        "deploy preview json should show constructor invocation: {json}"
+    );
+    assert!(
+        !json.contains("initialize"),
+        "deploy preview json must not contain a separate initialize step: {json}"
+    );
 }
 
 /// Sanity check: the JSON export must be valid JSON and round-trip the

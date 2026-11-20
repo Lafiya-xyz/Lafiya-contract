@@ -1543,11 +1543,16 @@ impl AttesterRegistry {
     /// Whether `attester` is allowlisted, not suspended, and within its validity
     /// window. Callable by anyone, including other contracts.
     pub fn is_attester(env: Env, attester: Address) -> bool {
+        // Cross-contract call: use the non-panicking `try_` variant so a
+        // missing, archived, or mid-upgrade credential-issuer contract fails
+        // closed (treated as revoked) instead of trapping the host.
         let issuer_revoked = env
             .storage()
             .persistent()
             .get::<_, BytesN<32>>(&DataKey::AttesterIssuer(attester.clone()))
-            .is_some_and(|issuer| !Self::is_credential_issuer(env.clone(), issuer));
+            .is_some_and(|issuer| {
+                !Self::is_credential_issuer(env.clone(), issuer).unwrap_or(false)
+            });
         if issuer_revoked {
             return false;
         }

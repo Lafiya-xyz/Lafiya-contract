@@ -19,7 +19,12 @@ dylint_linting::dylint_library!();
 #[unsafe(no_mangle)]
 pub fn register_lints(sess: &rustc_session::Session, store: &mut rustc_lint::LintStore) {
     dylint_linting::init_config(sess);
-    store.register_lints(&[PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+    store.register_lints(&[
+        PERSISTENT_SET_WITHOUT_TTL,
+        STORAGE_IN_LOOP,
+        UNCHECKED_AMOUNT_ARITHMETIC,
+        NON_TRY_CROSS_CONTRACT_CALL,
+    ]);
     store.register_late_lint_pass(Box::new(|_| Box::new(LafiyaLints)));
 }
 
@@ -35,7 +40,58 @@ rustc_session::declare_lint! {
     /// `+ - *` on an i128/u128 amount.
     pub UNCHECKED_AMOUNT_ARITHMETIC, Warn, "unchecked arithmetic on an amount type"
 }
-rustc_session::declare_lint_pass!(LafiyaLints => [PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+rustc_session::declare_lint! {
+    /// Non-`try_` cross-contract client call (panics instead of returning a typed error).
+    pub NON_TRY_CROSS_CONTRACT_CALL, Warn, "non-try_ cross-contract client call; use try_ and map failures to a typed error"
+}
+rustc_session::declare_lint_pass!(LafiyaLints => [
+    PERSISTENT_SET_WITHOUT_TTL,
+    STORAGE_IN_LOOP,
+    UNCHECKED_AMOUNT_ARITHMETIC,
+    NON_TRY_CROSS_CONTRACT_CALL
+]);
+
+/// Returns true if `name` looks like a cross-contract client method that has a
+/// `try_`-prefixed counterpart (e.g. `is_attester` -> `try_is_attester`).
+fn is_panicking_client_method(name: &str) -> bool {
+    if name.starts_with("try_") {
+        return false;
+    }
+    // Soroban client methods are snake_case; the panicking variants are the
+    // ones without the `try_` prefix. We flag the well-known registry/contract
+    // query and mutation entry points used across the workspace.
+    matches!(
+        name,
+        "is_attester"
+            | "is_payout_eligible"
+            | "get_attester"
+            | "get_attestation"
+            | "get_reputation"
+            | "get_pool"
+            | "get_claim"
+            | "get_balance"
+            | "get_admin"
+            | "get_config"
+            | "register_attester"
+            | "revoke_attester"
+            | "set_payout_address"
+            | "claim"
+            | "deposit"
+            | "withdraw"
+            | "transfer"
+    )
+}
+
+/// Detect `client.method(..)` where `client` is a cross-contract client.
+/// We approximate by checking the receiver type name ends with `Client`.
+fn is_client_receiver<'tcx>(cx: &LateContext<'tcx>, recv: &Expr<'tcx>) -> bool {
+    let ty = cx.typeck_results().expr_ty(recv);
+    let name = match ty.kind() {
+        TyKind::Adt(def, _) => cx.tcx.item_name(def.did()).as_str().to_string(),
+        _ => return false,
+    };
+    name.ends_with("Client")
+}
 
 /// `x.storage().persistent().set(..)` etc: returns the storage kind and method.
 fn storage_call<'a>(e: &'a Expr<'_>) -> Option<(&'a str, &'a str)> {
@@ -66,6 +122,17 @@ impl<'tcx> Visitor<'tcx> for Scan<'_, 'tcx> {
             }
             if method == "extend_ttl" {
                 self.has_extend_ttl = true;
+            }
+        }
+        if let ExprKind::MethodCall(seg, recv, _, _) = e.kind {
+            let method = seg.ident.name.as_str();
+            if is_panicking_client_method(method) && is_client_receiver(self.cx, recv) {
+                span_lint(
+                    self.cx,
+                    NON_TRY_CROSS_CONTRACT_CALL,
+                    e.span,
+                    "non-try_ cross-contract client call; use try_ and map failures to a typed error",
+                );
             }
         }
         if let ExprKind::Binary(op, l, _) = e.kind {

@@ -101,15 +101,6 @@ fn get_schema_version() -> u32
 
 Query the current storage schema version of the contract.
 
-### `initialize`
-
-```rust
-fn initialize(admin: Address) -> Result<(), Error>
-```
-
-Set the admin address authorized to manage the allowlist. Can only
-be called once; the caller must authorize as the given `admin`.
-
 ### `is_attester`
 
 ```rust
@@ -118,6 +109,11 @@ fn is_attester(attester: Address) -> bool
 
 Whether `attester` is currently allowlisted (and not suspended). Callable by anyone,
 including other contracts (e.g. `attestation-registry`).
+
+Consumers such as `incentive-pool` must call this through the generated
+`try_is_attester` client method and map transport or contract failures to a
+typed error (e.g. `AttesterRegistryUnavailable`) rather than letting a
+panicking client call trap the transaction.
 
 ### `is_paused`
 
@@ -288,8 +284,8 @@ state, as returned by `get_attester_status`.
 
 | Code | Name | Description |
 | --- | --- | --- |
-| 1 | `NotInitialized` | `initialize` has not been called yet; call `initialize(admin: Address)` before using the contract. |
-| 2 | `AlreadyInitialized` | `initialize` was called more than once. |
+| 1 | `NotInitialized` | The contract has not been configured yet. Configuration happens atomically in the contract constructor (`__constructor`), so this indicates a legacy or misconfigured instance. |
+| 2 | `AlreadyInitialized` | Reserved for legacy instances that were configured more than once. New deployments configure the contract exactly once, in the constructor. |
 | 3 | `NoPendingTransfer` | `accept_admin` was called with no pending admin transfer. Admin transfer is a two-step flow: the current admin must first call `propose_admin` to nominate a successor, then the nominated address must call `accept_admin` to complete the transfer. This error is returned when `accept_admin` is called before a corresponding `propose_admin` call has set a pending admin. |
 | 4 | `ContractPaused` | The requested operation is blocked while the contract is paused. |
 | 5 | `AllowlistFull` | The allowlist is at its configured maximum size. Raise the cap via `set_max_attesters`, or free a slot via `remove_attester`. |
@@ -307,7 +303,7 @@ state, as returned by `get_attester_status`.
 | `AttesterReinstated` | `"attester_reinstated"`, `attester: Address` |  | Emitted when a suspended attester is reinstated. |
 | `AttesterRemoved` | `"attester_removed"`, `attester: Address` |  | Emitted when an attester is removed from the allowlist. |
 | `AttesterSuspended` | `"attester_suspended"`, `attester: Address` |  | Emitted when an attester is suspended. |
-| `Initialized` | `"initialized"`, `admin: Address` |  | Emitted once, when the contract is initialized. |
+| `Initialized` | `"initialized"`, `admin: Address` |  | Emitted once, when the contract is configured by its constructor. |
 | `Paused` | `"paused"`, `by: Address` |  | Emitted when state-changing operations are paused. |
 | `Unpaused` | `"unpaused"`, `by: Address` |  | Emitted when state-changing operations are unpaused. |
 | `Upgraded` | `"upgraded"`, `new_wasm_hash: BytesN<32>` |  | Emitted when the contract is upgraded to new wasm. |

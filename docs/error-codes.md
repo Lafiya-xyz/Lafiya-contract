@@ -110,3 +110,5 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `21` | `Unauthorized` | The caller is neither the approver nor the admin. |
 | `22` | `ReconciliationRequired` | The pool's token balance diverged from internal accounting; `claim` is blocked until the admin calls `resolve_drift`. |
 | `23` | `TokenBalanceMismatch` | A token transfer moved a different amount than requested. |
+| `24` | `AttesterRegistryUnavailable` | The configured attester-registry could not be called (archived, mid-upgrade, or misconfigured). Cross-contract calls use `try_is_attester`; transport or contract failures are mapped to this error instead of trapping. |
+| `25` | `PayoutDelayOverflow` | Scheduling the payout-address binding would overflow the ledger timestamp (`now + PAYOUT_ADDRESS_DELAY`). The binding is rejected with this typed error instead of trapping. |

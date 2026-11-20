@@ -17,6 +17,9 @@ pub const WATCHDOG_FAILING: &str = "watchdog_failing";
 pub const ATTESTATION_EXPIRING: &str = "attestation_expiring";
 /// A patient-initiated dispute overlay was recorded on an attestation.
 pub const ATTESTATION_DISPUTED: &str = "attestation_disputed";
+/// A payout address binding was scheduled for an attester that still has
+/// pending work items; operations must contact the CHW out of band.
+pub const PAYOUT_ADDRESS_SCHEDULED: &str = "payout_address_scheduled";
 
 pub struct Engine {
     rules: Vec<EventRule>,
@@ -31,6 +34,9 @@ pub struct Engine {
     expiry_threshold_ledgers: Option<u32>,
     /// Whether disputes should be surfaced as alerts.
     alert_on_dispute: bool,
+    /// Attesters that currently have pending work items, so a scheduled
+    /// payout binding can be escalated out of band.
+    pending_work_attesters: BTreeMap<String, u32>,
 }
 
 /// Default rules from the issue: privileged changes are critical, pause
@@ -113,6 +119,7 @@ impl Engine {
             expected_wasm: BTreeMap::new(),
             expiry_threshold_ledgers: cfg.attestation_expiry_threshold_ledgers,
             alert_on_dispute: cfg.alert_on_dispute,
+            pending_work_attesters: BTreeMap::new(),
         }
         fresh
     }
@@ -196,6 +203,43 @@ impl Engine {
                 format!("attestation disputed on {}", e.contract),
                 e,
             ));
+        }
+
+        // Track pending work items per attester so a payout binding change
+        // can be escalated to operations.
+        match e.name.as_str() {
+            "work_item_proposed" => {
+                if let Some(attester) = e.topics.first() {
+                    *self.pending_work_attesters.entry(attester.clone()).or_insert(0) += 1;
+                }
+            }
+            "work_item_endorsed" | "work_item_rejected" => {
+                if let Some(attester) = e.topics.first() {
+                    if let Some(count) = self.pending_work_attesters.get_mut(attester) {
+                        *count = count.saturating_sub(1);
+                        if *count == 0 {
+                            self.pending_work_attesters.remove(attester);
+                        }
+                    }
+                }
+            }
+            "payout_address_scheduled" => {
+                // The attester is the first topic of the event.
+                if let Some(attester) = e.topics.first() {
+                    if self.pending_work_attesters.contains_key(attester) {
+                        alerts.push(self.alert(
+                            PAYOUT_ADDRESS_SCHEDULED,
+                            Severity::High,
+                            format!(
+                                "payout address scheduled for attester {attester} with pending work items on {}; contact the CHW out of band",
+                                e.contract
+                            ),
+                            e,
+                        ));
+                    }
+                }
+            }
+            _ => {}
         }
 
         if let Some(rate) = &self.rate {
@@ -614,5 +658,29 @@ mod tests {
         assert!(Engine::new(&c)
             .evaluate(&ev("attestation_disputed", 1, &[]))
             .is_empty());
+    }
+
+    #[test]
+    fn payout_schedule_with_pending_work_is_flagged() {
+        let mut e = Engine::new(&cfg());
+        e.evaluate(&ev("work_item_proposed", 1, &["GATT"]));
+        let a = e.evaluate(&ev("payout_address_scheduled", 2, &["GATT"]));
+        assert!(kinds(&a).contains(&(PAYOUT_ADDRESS_SCHEDULED, Severity::High)));
+    }
+
+    #[test]
+    fn payout_schedule_without_pending_work_is_silent() {
+        let mut e = Engine::new(&cfg());
+        let a = e.evaluate(&ev("payout_address_scheduled", 1, &["GATT"]));
+        assert!(!kinds(&a).contains(&(PAYOUT_ADDRESS_SCHEDULED, Severity::High)));
+    }
+
+    #[test]
+    fn payout_schedule_after_work_cleared_is_silent() {
+        let mut e = Engine::new(&cfg());
+        e.evaluate(&ev("work_item_proposed", 1, &["GATT"]));
+        e.evaluate(&ev("work_item_endorsed", 2, &["GATT"]));
+        let a = e.evaluate(&ev("payout_address_scheduled", 3, &["GATT"]));
+        assert!(!kinds(&a).contains(&(PAYOUT_ADDRESS_SCHEDULED, Severity::High)));
     }
 }

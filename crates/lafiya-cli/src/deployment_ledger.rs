@@ -70,7 +70,14 @@ pub struct DeploymentRecord {
     pub release_version: String,
     pub operator: String,
     pub prev_record_sha256: Option<String>,
+    /// Constructor arguments passed atomically at deploy time (e.g.
+    /// `incentive-pool`'s `admin`, `approver`, `token`, `attester_registry`).
+    /// Recorded so the deploy is auditable without a separate `initialize`
+    /// event; `None` for contracts deployed without constructor args.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constructor_args: Option<serde_json::Value>,
 }
+=======
 
 /// sha256 of the exact bytes that will be (or were) written as one line,
 /// i.e. the record serialized without its own `prev_record_sha256` echoed
@@ -330,6 +337,25 @@ pub fn verify(deployments_dir: &Path, network: &str) -> Result<VerifyReport, Str
             ));
         }
 
+        // `incentive-pool` is configured atomically via `__constructor`, so a
+        // `deploy` record for it must carry the constructor args; a separate
+        // `initialize` event is no longer valid for it.
+        if record.contract_kind == "incentive-pool" {
+            if record.event == DeployEvent::Initialize {
+                report.errors.push(format!(
+                    "line {}: incentive-pool no longer has an initialize step (configuration happens via __constructor at deploy)",
+                    i + 1
+                ));
+            }
+            if record.event == DeployEvent::Deploy && record.constructor_args.is_none() {
+                report.errors.push(format!(
+                    "line {}: incentive-pool deploy record is missing constructor_args",
+                    i + 1
+                ));
+            }
+        }
+=======
+
         if let Some(ledger) = record.ledger {
             if let Some(&last) = last_ledger_by_contract.get(&record.contract_id) {
                 if ledger < last {
@@ -379,8 +405,10 @@ mod tests {
             release_version: "0.1.0".into(),
             operator: op.into(),
             prev_record_sha256: None,
+            constructor_args: None,
         }
     }
+=======
 
     #[test]
     fn append_chains_hashes_and_verify_passes() {
@@ -488,6 +516,54 @@ mod tests {
         assert_eq!(finding.severity, Severity::Warning);
         assert!(!finding.is_blocking());
         assert!(finding.remediation.is_some());
+    }
+
+    #[test]
+    fn verify_flags_incentive_pool_initialize_event() {
+        let dir = tempdir().unwrap();
+        let mut record = sample("alice");
+        record.contract_kind = "incentive-pool".into();
+        record.event = DeployEvent::Initialize;
+        append(dir.path(), "testnet", record).unwrap();
+
+        let report = verify(dir.path(), "testnet").unwrap();
+        assert!(!report.is_ok());
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.contains("no longer has an initialize step")));
+    }
+
+    #[test]
+    fn verify_flags_incentive_pool_deploy_without_constructor_args() {
+        let dir = tempdir().unwrap();
+        let mut record = sample("alice");
+        record.contract_kind = "incentive-pool".into();
+        append(dir.path(), "testnet", record).unwrap();
+
+        let report = verify(dir.path(), "testnet").unwrap();
+        assert!(!report.is_ok());
+        assert!(report
+            .errors
+            .iter()
+            .any(|e| e.contains("missing constructor_args")));
+    }
+
+    #[test]
+    fn verify_accepts_incentive_pool_deploy_with_constructor_args() {
+        let dir = tempdir().unwrap();
+        let mut record = sample("alice");
+        record.contract_kind = "incentive-pool".into();
+        record.constructor_args = Some(serde_json::json!({
+            "admin": "GADMIN",
+            "approver": "GAPPROVER",
+            "token": "CTOKEN",
+            "attester_registry": "CREGISTRY",
+        }));
+        append(dir.path(), "testnet", record).unwrap();
+
+        let report = verify(dir.path(), "testnet").unwrap();
+        assert!(report.is_ok(), "unexpected errors: {:?}", report.errors);
     }
 
     #[test]

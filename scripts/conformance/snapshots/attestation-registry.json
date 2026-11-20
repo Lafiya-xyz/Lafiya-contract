@@ -441,31 +441,6 @@
   },
   {
     "kind": "function_v0",
-    "name": "initialize",
-    "spec": {
-      "inputs": [
-        {
-          "name": "admin",
-          "type": "address"
-        },
-        {
-          "name": "attester_registry",
-          "type": "address"
-        }
-      ],
-      "name": "initialize",
-      "outputs": [
-        {
-          "result": {
-            "error_type": "error",
-            "ok_type": "void"
-          }
-        }
-      ]
-    }
-  },
-  {
-    "kind": "function_v0",
     "name": "is_paused",
     "spec": {
       "inputs": [],

@@ -8,7 +8,10 @@
 //! * client-side cap pre-checks that mirror contract errors,
 //! * rendered output for the read-only pool commands,
 //! * that the simulation preview shown before submission matches the
-//!   post-execution state returned by the mocked RPC.
+//!   post-execution state returned by the mocked RPC,
+//! * that the pool is deployed through `__constructor` arguments and that no
+//!   `initialize` command is exposed (issue #690),
+//! * that `cancel-payout-address` submits (issue #691).
 
 use std::process::Command;
 
@@ -239,6 +242,73 @@ async fn pool_unpause_submits() {
     let (stdout, stderr, ok) = run(&mut cmd);
     assert!(ok, "unpause failed: {stderr}");
     assert!(stdout.contains("ddd444"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_cancel_payout_address_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "eee555").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "cancel-payout-address",
+        "--pool",
+        POOL_ID,
+        "--attester",
+        SOURCE,
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "cancel-payout-address failed: {stderr}");
+    assert!(stdout.contains("eee555"), "got: {stdout}");
+}
+
+// ---------------------------------------------------------------------------
+// Issue #690: constructor-based deploy, no callable `initialize`
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_deploy_passes_constructor_args() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "fff666").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "deploy",
+        "--wasm",
+        "incentive_pool.wasm",
+        "--admin",
+        SOURCE,
+        "--approver",
+        SOURCE,
+        "--token",
+        POOL_ID,
+        "--attester-registry",
+        POOL_ID,
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "deploy failed: {stderr}");
+    assert!(stdout.contains("fff666"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_initialize_command_does_not_exist() {
+    // The deploy-then-initialize window is closed: there must be no
+    // `pool initialize` subcommand to front-run.
+    let server = MockServer::start().await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args(["pool", "initialize", "--pool", POOL_ID, "--yes"]);
+    let (_stdout, stderr, ok) = run(&mut cmd);
+    assert!(!ok, "expected `pool initialize` to be rejected");
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("initialize") || lower.contains("unrecognized") || lower.contains("invalid"),
+        "expected unknown-subcommand error, got: {stderr}"
+    );
 }
 
 // ---------------------------------------------------------------------------

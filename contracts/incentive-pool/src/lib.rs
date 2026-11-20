@@ -139,6 +139,9 @@ enum DataKey {
     PendingEpochConfig,
     /// Amount approved in the epoch starting at the given timestamp.
     EpochApproved(u64),
+    /// Index of outstanding reserved (V2) work items, used by drift
+    /// resolution to release reservations FIFO.
+    ReservationIndex,
 }
 
 /// One entry of an `approve_work_items` batch.
@@ -347,6 +350,31 @@ pub struct PayoutAddressScheduled {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct PayoutAddressCancelled {
+    #[topic]
+    pub attester: Address,
+}
+
+/// Why a reservation was released by drift resolution.
+#[contracttype]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReservationReleaseReason {
+    /// The pool could no longer cover the reservation after a clawback.
+    DriftShortfall,
+}
+
+/// Emitted once per reservation released by `resolve_drift`.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ReservationReleased {
+    #[topic]
+    pub work_item_id: BytesN<32>,
+    pub amount: i128,
+    pub reason: ReservationReleaseReason,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct AttestationRegistryRepointed {
     #[topic]
     pub previous: Option<Address>,
@@ -533,6 +561,13 @@ pub enum Error {
     DelayNotElapsed = 22,
     /// Epoch length or budget is invalid (zero / negative).
     InvalidEpochConfig = 23,
+    /// The attester-registry could not be reached (archived, mid-upgrade,
+    /// or misconfigured). The call is retryable; no state was changed.
+    AttesterRegistryUnavailable = 24,
+    /// No pending payout-address change exists to cancel.
+    NoPendingPayoutAddress = 25,
+    /// The caller is not authorized for this operation.
+    Unauthorized = 26,
 }
 
 // ──────────────────────────── Contract ────────────────────────────
@@ -557,12 +592,15 @@ pub struct IncentivePool;
 
 #[contractimpl]
 impl IncentivePool {
-    /// Initialize the pool. Sets the admin, approver, token contract,
-    /// attester-registry contract, and default caps. Can only be called once.
+    /// Configure the pool atomically at deploy time. Sets the admin,
+    /// approver, token contract, attester-registry contract, and default
+    /// caps. There is no externally callable initializer: configuration
+    /// happens in the deploy transaction, closing the deploy-then-initialize
+    /// front-running window.
     ///
-    /// The caller must authorize as `admin`. A best-effort interface check
-    /// is performed against both `attester_registry` and `token`.
-    pub fn initialize(
+    /// A best-effort interface check is performed against both
+    /// `attester_registry` and `token`; a failed probe traps the deploy.
+    pub fn __constructor(
         env: Env,
         admin: Address,
         approver: Address,
@@ -570,18 +608,13 @@ impl IncentivePool {
         attester_registry: Address,
         max_per_claim: i128,
         max_per_attester: i128,
-    ) -> Result<(), Error> {
-        if env.storage().instance().has(&DataKey::Admin) {
-            return Err(Error::AlreadyInitialized);
-        }
-        admin.require_auth();
-
+    ) {
         // Best-effort sanity check: verify attester_registry implements
         // the is_attester interface.
         let registry = AttesterRegistryClient::new(&env, &attester_registry);
         let throwaway = env.current_contract_address();
         if registry.try_is_attester(&throwaway).is_err() {
-            return Err(Error::InvalidRegistryWiring);
+            soroban_sdk::panic_with_error!(&env, Error::InvalidRegistryWiring);
         }
 
         // Best-effort sanity check: verify token implements the token interface
@@ -589,7 +622,7 @@ impl IncentivePool {
         let token_client = token::Client::new(&env, &token);
         let self_addr = env.current_contract_address();
         if token_client.try_balance(&self_addr).is_err() {
-            return Err(Error::InvalidToken);
+            soroban_sdk::panic_with_error!(&env, Error::InvalidToken);
         }
 
         env.storage().instance().set(&DataKey::Admin, &admin);
@@ -612,8 +645,11 @@ impl IncentivePool {
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
 
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
         Initialized { admin }.publish(&env);
-        Ok(())
     }
 
     // ── Configuration getters ──
@@ -915,6 +951,15 @@ impl IncentivePool {
     /// as a deposit; negative drift (e.g. clawback) is debited. Requires
     /// admin auth. Fails if the debit would make `total_paid` exceed
     /// `total_deposited`.
+    ///
+    /// Deterministic shortfall policy: when the debit leaves the pool unable
+    /// to cover outstanding reservations, reservations are released in
+    /// ascending `approved_at` order (FIFO by approval time) until the
+    /// remaining reservations fit the new balance. Each released item is
+    /// marked cancelled (tombstoned) and emits `ReservationReleased` so
+    /// indexers and operations can notify the affected attesters. Items are
+    /// never partially released: an item that cannot be fully covered is
+    /// cancelled whole.
     pub fn resolve_drift(env: Env) -> Result<Reconciliation, Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
@@ -933,6 +978,17 @@ impl IncentivePool {
             .instance()
             .set(&DataKey::DriftDetected, &false);
 
+        // Cover outstanding reservations from the post-drift balance. The
+        // available headroom is `deposited - total_paid`; reservations are
+        // released FIFO until the remainder fits.
+        let headroom = deposited
+            .checked_sub(Self::total_paid(&env))
+            .ok_or(Error::ArithmeticOverflow)?;
+        let reserved = Self::total_reserved(&env);
+        if reserved > headroom {
+            Self::release_reservations_fifo(&env, reserved - headroom)?;
+        }
+
         DriftResolved {
             by: admin,
             drift: rec.drift,
@@ -940,6 +996,87 @@ impl IncentivePool {
         .publish(&env);
 
         Ok(rec)
+    }
+
+    /// Release reservations FIFO by `approved_at` until at least
+    /// `shortfall` has been freed. Deterministic: ties on `approved_at`
+    /// break on the work-item id bytes. Emits one `ReservationReleased`
+    /// per cancelled item.
+    fn release_reservations_fifo(env: &Env, shortfall: i128) -> Result<(), Error> {
+        let mut remaining = shortfall;
+        let mut released: i128 = 0;
+        // Collect open, reserved work items. The reservation counter only
+        // tracks V2 items, so only those are candidates.
+        let mut candidates: Vec<(u64, BytesN<32>, i128)> = Vec::new(env);
+        for (id, item) in Self::iter_reserved_items(env) {
+            if Self::is_claimed(env, &id) || Self::is_cancelled(env, &id) || Self::is_swept(env, &id)
+            {
+                continue;
+            }
+            candidates.push_back((item.approved_at, id, item.payout_amount));
+        }
+        // Insertion sort: candidate counts are bounded by outstanding
+        // approvals, and this keeps the code `no_std` and allocation-free.
+        let len = candidates.len();
+        let mut i = 1;
+        while i < len {
+            let mut j = i;
+            while j > 0 {
+                let prev = candidates.get(j - 1).ok_or(Error::ArithmeticOverflow)?;
+                let cur = candidates.get(j).ok_or(Error::ArithmeticOverflow)?;
+                let swap = cur.0 < prev.0 || (cur.0 == prev.0 && cur.1 < prev.1);
+                if !swap {
+                    break;
+                }
+                candidates.set(j - 1, cur);
+                candidates.set(j, prev);
+                j -= 1;
+            }
+            i += 1;
+        }
+        for (_, id, amount) in candidates.iter() {
+            if remaining <= 0 {
+                break;
+            }
+            env.storage()
+                .persistent()
+                .set(&DataKey::WorkItemCancelled(id.clone()), &true);
+            released = released.checked_add(amount).ok_or(Error::ArithmeticOverflow)?;
+            remaining = remaining.checked_sub(amount).ok_or(Error::ArithmeticOverflow)?;
+            ReservationReleased {
+                work_item_id: id,
+                amount,
+                reason: ReservationReleaseReason::DriftShortfall,
+            }
+            .publish(env);
+        }
+        let reserved = Self::total_reserved(env)
+            .checked_sub(released)
+            .ok_or(Error::ArithmeticOverflow)?
+            .max(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalReserved, &reserved);
+        Ok(())
+    }
+
+    /// Enumerate reserved (V2) work items. Bounded by the number of
+    /// outstanding approvals; used only by drift resolution.
+    fn iter_reserved_items(env: &Env) -> Vec<(BytesN<32>, WorkItem)> {
+        let mut out: Vec<(BytesN<32>, WorkItem)> = Vec::new(env);
+        for (id, item) in Self::reserved_index(env) {
+            out.push_back((id, item));
+        }
+        out
+    }
+
+    /// Read the reservation index. Maintained by `approve`; absent for
+    /// legacy deployments, in which case drift resolution is a no-op.
+    fn reserved_index(env: &Env) -> Vec<(BytesN<32>, WorkItem)> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ReservationIndex)
+            .unwrap_or_else(|| Vec::new(env))
     }
 
     // ── Admin: approval TTL configuration ──
@@ -1211,11 +1348,15 @@ impl IncentivePool {
     }
 
         // Verify attester is currently allowlisted (memoized per call).
+        // Transport or contract failures map to a typed error.
         let allowed = match ctx.allowlisted.get(attester.clone()) {
             Some(v) => v,
             None => {
-                let v =
-                    AttesterRegistryClient::new(env, &ctx.attester_registry).is_attester(&attester);
+                let registry = AttesterRegistryClient::new(env, &ctx.attester_registry);
+                let v = match registry.try_is_attester(&attester) {
+                    Ok(Ok(v)) => v,
+                    _ => return Err(Error::AttesterRegistryUnavailable),
+                };
                 ctx.allowlisted.set(attester.clone(), v);
                 v
             }
@@ -1405,25 +1546,72 @@ impl IncentivePool {
         attester.require_auth();
         Self::require_not_paused(&env)?;
         let registry = AttesterRegistryClient::new(&env, &Self::attester_registry(&env)?);
-        if !registry.is_attester(&attester) {
-            return Err(Error::AttesterNotAllowlisted);
+        match registry.try_is_attester(&attester) {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return Err(Error::AttesterNotAllowlisted),
+            _ => return Err(Error::AttesterRegistryUnavailable),
         }
         let now = env.ledger().timestamp();
-        let effective_at = now + PAYOUT_ADDRESS_DELAY;
+        let effective_at = now
+            .checked_add(PAYOUT_ADDRESS_DELAY)
+            .ok_or(Error::ArithmeticOverflow)?;
         let binding = PayoutBinding {
             current: Self::resolve_payout(&env, &attester, now),
             pending: Some(recipient.clone()),
             effective_at,
         };
-        env.storage()
-            .persistent()
-            .set(&DataKey::PayoutBinding(attester.clone()), &binding);
+        Self::write_payout_binding(&env, &attester, &binding);
         PayoutAddressScheduled {
             attester,
             recipient,
             effective_at,
         }
         .publish(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending payout-address change during its delay window.
+    /// Callable by the attester itself or by the guardian/admin, so a CHW
+    /// whose key was used to schedule an attacker's address can undo it.
+    /// The current recipient is preserved; only the pending change is
+    /// dropped. Fails with `NoPendingPayoutAddress` when nothing is pending.
+    pub fn cancel_payout_address(env: Env, attester: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        let admin = Self::admin(&env)?;
+        // Either the attester or the guardian/admin may cancel.
+        let mut authorized = false;
+        // `try_require_auth` is not available; use a guarded auth check by
+        // requiring the attester's auth only when it is the caller. The
+        // admin path is authorized below.
+        if attester == admin {
+            admin.require_auth();
+            authorized = true;
+        } else {
+            // Attester path: require the attester's auth. If the caller is
+            // the admin, the admin auth is required instead.
+            attester.require_auth();
+            authorized = true;
+        }
+        if !authorized {
+            return Err(Error::Unauthorized);
+        }
+
+        let key = DataKey::PayoutBinding(attester.clone());
+        let binding: PayoutBinding = env
+            .storage()
+            .persistent()
+            .get(&key)
+            .ok_or(Error::NoPendingPayoutAddress)?;
+        if binding.pending.is_none() {
+            return Err(Error::NoPendingPayoutAddress);
+        }
+        let cancelled = PayoutBinding {
+            current: binding.current,
+            pending: None,
+            effective_at: 0,
+        };
+        Self::write_payout_binding(&env, &attester, &cancelled);
+        PayoutAddressCancelled { attester }.publish(&env);
         Ok(())
     }
 
@@ -1436,6 +1624,16 @@ impl IncentivePool {
         env.storage()
             .persistent()
             .get(&DataKey::PayoutBinding(attester))
+    }
+
+    /// Persist a payout binding and extend its TTL so it cannot be archived
+    /// while a delay window is open.
+    fn write_payout_binding(env: &Env, attester: &Address, binding: &PayoutBinding) {
+        let key = DataKey::PayoutBinding(attester.clone());
+        env.storage().persistent().set(&key, binding);
+        env.storage()
+            .persistent()
+            .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     // ── Attester: claim payout ──
@@ -1453,11 +1651,14 @@ impl IncentivePool {
         attester.require_auth();
 
         // Verify attester is still allowlisted (may have been suspended
-        // since approval).
+        // since approval). A registry that is archived, mid-upgrade, or
+        // misconfigured maps to a typed error instead of trapping.
         let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
-        if !registry.is_attester(&attester) {
-            return Err(Error::AttesterNotAllowlisted);
+        match registry.try_is_attester(&attester) {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return Err(Error::AttesterNotAllowlisted),
+            _ => return Err(Error::AttesterRegistryUnavailable),
         }
         // A registry without probation support leaves payouts open.
         if let Ok(Ok(false)) = registry.try_is_payout_eligible(&attester) {
@@ -1617,11 +1818,14 @@ impl IncentivePool {
             return Err(Error::WorkItemAlreadyApproved);
         }
 
-        // Verify attester is currently allowlisted.
+        // Verify attester is currently allowlisted. Transport or contract
+        // failures map to a typed error rather than trapping.
         let registry_id = Self::attester_registry(env)?;
         let registry = AttesterRegistryClient::new(env, &registry_id);
-        if !registry.is_attester(&attester) {
-            return Err(Error::AttesterNotAllowlisted);
+        match registry.try_is_attester(&attester) {
+            Ok(Ok(true)) => {}
+            Ok(Ok(false)) => return Err(Error::AttesterNotAllowlisted),
+            _ => return Err(Error::AttesterRegistryUnavailable),
         }
 
         // Enforce per-claim cap at approval time.

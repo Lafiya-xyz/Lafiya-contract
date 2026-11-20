@@ -41,6 +41,14 @@ const MAX_REBUILDS: u32 = 2;
 /// Maximum number of ledger entries a single restore footprint may cover.
 const MAX_RESTORE_ENTRIES: usize = 32;
 
+/// Functions that must never be submitted as a follow-up transaction.
+///
+/// Contracts configure themselves atomically at deploy through their
+/// `__constructor` (issue #690). A post-deploy `initialize` call would reopen
+/// the deploy-then-initialize front-running window, so the CLI refuses to
+/// submit one.
+const FORBIDDEN_FUNCTIONS: &[&str] = &["initialize"];
+
 /// Build, bound, sign, and submit a `stellar contract invoke` argument list
 /// (as produced by `invoke_args`), rebuilding it if it expires.
 ///
@@ -54,6 +62,13 @@ pub fn run_bounded(
     window: u32,
     opts: &PreviewOptions,
 ) -> anyhow::Result<()> {
+    if let Some(function) = invoked_function(&invoke) {
+        if FORBIDDEN_FUNCTIONS.contains(&function) {
+            bail!(
+                "refusing to submit `{function}`: contracts configure themselves atomically at deploy via their constructor (issue #690); there is no post-deploy initializer"
+            );
+        }
+    }
     for attempt in 0..=MAX_REBUILDS {
         let mut rpc = SorobanRpc::new(&cfg.rpc_url);
         let latest = rpc
@@ -247,6 +262,15 @@ pub fn run_restore(
         .with_context(|| format!("restoring archived attestation {record_hash} failed"))?;
     println!("Attestation {record_hash} restored; extending TTL to ledger {extend_to}");
     run_extend_ttl(cfg, contract_id, source, record_hash, extend_to, window)
+}
+
+/// The function name in a `stellar contract invoke ... -- <function> ...` list.
+fn invoked_function(invoke: &[String]) -> Option<&str> {
+    invoke
+        .iter()
+        .position(|a| a == "--")
+        .and_then(|i| invoke.get(i + 1))
+        .map(String::as_str)
 }
 
 /// Assemble a `stellar contract invoke` argument list.
@@ -522,6 +546,27 @@ mod tests {
         let envelope = sample_envelope();
         let bundle = SignatureBundle::new("not-the-checksum", "AAAAAA==", "deadbeef", vec![]);
         assert!(bundle.assemble(&envelope, "Test SDF Network ; September 2015").is_err());
+    }
+
+    #[test]
+    fn invoked_function_reads_name_after_separator() {
+        let invoke = invoke_args("C1", "GSOURCE", "initialize", &[]);
+        assert_eq!(invoked_function(&invoke), Some("initialize"));
+        let invoke = invoke_args("C1", "GSOURCE", "add_attester", &[]);
+        assert_eq!(invoked_function(&invoke), Some("add_attester"));
+    }
+
+    #[test]
+    fn initialize_submission_is_refused() {
+        let cfg = NetworkConfig {
+            rpc_url: "http://localhost".into(),
+            network_passphrase: "Test SDF Network ; September 2015".into(),
+            ..Default::default()
+        };
+        let invoke = invoke_args("C1", "GSOURCE", "initialize", &[]);
+        let err = run_bounded(&cfg, invoke, 10, &PreviewOptions::default())
+            .expect_err("initialize must never be submitted");
+        assert!(err.to_string().contains("initialize"));
     }
 
     #[test]

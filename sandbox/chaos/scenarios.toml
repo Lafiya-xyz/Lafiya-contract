@@ -83,3 +83,99 @@ fault = "lying_rpc"
 command = ["python3", "sandbox/chaos/probe.py", "{rpc_url}"]
 expect_exit = 2
 expect_output = ["rejected"]
+
+# incentive-pool is configured atomically at deploy via __constructor
+# (admin, approver, token, attester_registry, ...). There is no initialize
+# call, so the deploy step below must succeed in a single transaction.
+[[scenario]]
+name = "incentive_pool_constructor_deploy"
+fault = "none"
+command = [
+  "python3", "sandbox/chaos/deploy_incentive_pool.py",
+  "{rpc_url}",
+  "--admin", "{admin}",
+  "--approver", "{approver}",
+  "--token", "{usdc_sac}",
+  "--attester-registry", "{attester_registry}",
+]
+expect_exit = 0
+expect_output = ["deployed", "configured"]
+
+# A pending payout binding is scheduled, then cancelled by the attester
+# within the delay window; the binding must be gone afterwards.
+[[scenario]]
+name = "payout_binding_cancel_by_attester"
+fault = "none"
+command = [
+  "python3", "sandbox/chaos/payout_binding.py",
+  "{rpc_url}",
+  "--action", "schedule-then-cancel",
+  "--canceller", "attester",
+]
+expect_exit = 0
+expect_output = ["scheduled", "cancelled"]
+
+# Same as above, but the guardian/admin performs the cancellation.
+[[scenario]]
+name = "payout_binding_cancel_by_guardian"
+fault = "none"
+command = [
+  "python3", "sandbox/chaos/payout_binding.py",
+  "{rpc_url}",
+  "--action", "schedule-then-cancel",
+  "--canceller", "guardian",
+]
+expect_exit = 0
+expect_output = ["scheduled", "cancelled"]
+
+# Partial clawback against the pool leaves reservations uncovered; drift is
+# detected and claims fail closed until resolve_drift runs.
+[[scenario]]
+name = "clawback_partial_drift"
+fault = "none"
+command = [
+  "python3", "sandbox/chaos/clawback.py",
+  "{rpc_url}",
+  "--mode", "partial",
+]
+expect_exit = 2
+expect_output = ["drift detected"]
+
+# Full clawback drains the pool; every claim must fail closed.
+[[scenario]]
+name = "clawback_full_drift"
+fault = "none"
+command = [
+  "python3", "sandbox/chaos/clawback.py",
+  "{rpc_url}",
+  "--mode", "full",
+]
+expect_exit = 2
+expect_output = ["drift detected"]
+
+# Clawback racing an in-flight claim: the claim must fail closed rather than
+# pay out against a balance that no longer covers it.
+[[scenario]]
+name = "clawback_during_claim"
+fault = "none"
+command = [
+  "python3", "sandbox/chaos/clawback.py",
+  "{rpc_url}",
+  "--mode", "during_claim",
+]
+expect_exit = 2
+expect_output = ["reconciliation required"]
+
+# After resolve_drift applies the deterministic policy, the pool is consistent
+# again and the probe reports synced.
+[[scenario]]
+name = "clawback_resolve_drift"
+fault = "none"
+command = [
+  "python3", "sandbox/chaos/clawback.py",
+  "{rpc_url}",
+  "--mode", "partial",
+  "--resolve",
+]
+expect_exit = 0
+expect_output = ["resolved", "synced"]

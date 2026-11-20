@@ -4,11 +4,14 @@
 set -e
 
 # Lafiya Smart Contract Deployment Script
-# Deploys both contracts with their security-sensitive constructor arguments.
+# Deploys all contracts with their security-sensitive constructor arguments.
+# Configuration happens atomically at deploy time via each contract's
+# `__constructor`; there is no separate `initialize` step to front-run.
 
 NETWORK="testnet"
 IDENTITY=""
 ADMIN_ADDRESS=""
+TOKEN_ADDRESS=""
 YES=false
 
 # Help message
@@ -17,13 +20,14 @@ show_help() {
     echo ""
     echo "Options:"
     echo "  -i, --identity <identity>       stellar-cli identity name to use for deployment (or set STELLAR_IDENTITY)"
-    echo "  -a, --admin-address <address>   Admin address for both contracts (defaults to the identity's address)"
+    echo "  -a, --admin-address <address>   Admin address for all contracts (defaults to the identity's address)"
+    echo "  -t, --token-address <address>   USDC token contract address for incentive-pool (or set TOKEN_ADDRESS)"
     echo "  -n, --network <network>         Stellar network (default: testnet)"
     echo "  -y, --yes                       Skip interactive confirmation prompt"
     echo "  -h, --help                      Show this help message"
     echo ""
     echo "Example:"
-    echo "  $0 --identity my-testnet-account"
+    echo "  $0 --identity my-testnet-account --token-address C...USDC"
 }
 
 # Parse command line options
@@ -35,6 +39,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -a|--admin-address)
             ADMIN_ADDRESS="$2"
+            shift 2
+            ;;
+        -t|--token-address)
+            TOKEN_ADDRESS="$2"
             shift 2
             ;;
         -n|--network)
@@ -85,6 +93,17 @@ if [ -z "$ADMIN_ADDRESS" ]; then
     fi
 fi
 
+# Fallback to environment variable for token address if not provided via CLI
+if [ -z "$TOKEN_ADDRESS" ]; then
+    TOKEN_ADDRESS="$TOKEN_ADDRESS_ENV"
+fi
+
+if [ -z "$TOKEN_ADDRESS" ]; then
+    echo "Error: Token address is required for incentive-pool. Specify it with -t/--token-address or the TOKEN_ADDRESS environment variable." >&2
+    show_help >&2
+    exit 1
+fi
+
 # Print configuration and ask for confirmation
 echo "=========================================================="
 echo "           Lafiya Soroban Contract Deployment"
@@ -92,6 +111,8 @@ echo "=========================================================="
 echo "Network:       $NETWORK"
 echo "Identity:      $IDENTITY"
 echo "Admin Address: $ADMIN_ADDRESS"
+echo "Approver:      $ADMIN_ADDRESS"
+echo "Token Address: $TOKEN_ADDRESS"
 echo "=========================================================="
 echo ""
 
@@ -110,6 +131,7 @@ cargo build --workspace --release --target wasm32v1-none
 # Paths to the compiled WASM files
 ATTESTER_WASM="target/wasm32v1-none/release/attester_registry.wasm"
 ATTESTATION_WASM="target/wasm32v1-none/release/attestation_registry.wasm"
+INCENTIVE_POOL_WASM="target/wasm32v1-none/release/incentive_pool.wasm"
 
 # Verify built files exist
 if [ ! -f "$ATTESTER_WASM" ]; then
@@ -118,6 +140,10 @@ if [ ! -f "$ATTESTER_WASM" ]; then
 fi
 if [ ! -f "$ATTESTATION_WASM" ]; then
     echo "Error: $ATTESTATION_WASM not found after build." >&2
+    exit 1
+fi
+if [ ! -f "$INCENTIVE_POOL_WASM" ]; then
+    echo "Error: $INCENTIVE_POOL_WASM not found after build." >&2
     exit 1
 fi
 
@@ -151,7 +177,28 @@ fi
 echo "attestation-registry deployed successfully. ID: $ATTESTATION_REGISTRY_ID"
 echo ""
 
-# 4. Save deployment details to deployments/<network>.json
+# 4. Deploy incentive-pool
+# All configuration (admin, approver, token, attester_registry) is supplied as
+# constructor arguments, so the contract is fully configured in the same
+# transaction that creates it. There is no callable `initialize` afterwards.
+echo "Deploying incentive-pool..."
+INCENTIVE_POOL_ID=$(stellar contract deploy \
+    --wasm "$INCENTIVE_POOL_WASM" \
+    --source-account "$IDENTITY" \
+    --network "$NETWORK" \
+    -- --admin "$ADMIN_ADDRESS" \
+       --approver "$ADMIN_ADDRESS" \
+       --token "$TOKEN_ADDRESS" \
+       --attester_registry "$ATTESTER_REGISTRY_ID")
+
+if [ -z "$INCENTIVE_POOL_ID" ]; then
+    echo "Error: Failed to deploy incentive-pool." >&2
+    exit 1
+fi
+echo "incentive-pool deployed successfully. ID: $INCENTIVE_POOL_ID"
+echo ""
+
+# 5. Save deployment details to deployments/<network>.json
 mkdir -p deployments
 DEPLOYMENTS_FILE="deployments/${NETWORK}.json"
 
@@ -160,7 +207,10 @@ cat <<EOF > "$DEPLOYMENTS_FILE"
   "network": "$NETWORK",
   "attester_registry": "$ATTESTER_REGISTRY_ID",
   "attestation_registry": "$ATTESTATION_REGISTRY_ID",
+  "incentive_pool": "$INCENTIVE_POOL_ID",
   "admin": "$ADMIN_ADDRESS",
+  "approver": "$ADMIN_ADDRESS",
+  "token": "$TOKEN_ADDRESS",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF

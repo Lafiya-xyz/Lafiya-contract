@@ -53,6 +53,9 @@ pub enum Op {
     SetMaxPerAttester(i128),
     Suspend(u8),
     Reinstate(u8),
+    SchedulePayout(u8),
+    CancelPayout(u8),
+    ResolveDrift,
 }
 
 pub fn op_strategy() -> impl Strategy<Value = Op> {
@@ -71,6 +74,9 @@ pub fn op_strategy() -> impl Strategy<Value = Op> {
         1 => (1i128..=1_500).prop_map(Op::SetMaxPerAttester),
         1 => att.clone().prop_map(Op::Suspend),
         1 => att.prop_map(Op::Reinstate),
+        2 => att.clone().prop_map(Op::SchedulePayout),
+        2 => att.prop_map(Op::CancelPayout),
+        1 => Just(Op::ResolveDrift),
     ]
 }
 
@@ -85,6 +91,8 @@ struct Model {
     paused: bool,
     max_claim: i128,
     max_attester: i128,
+    /// Attesters with a pending (scheduled, not yet effective) payout binding.
+    pending_payout: [bool; ATTESTERS],
 }
 
 pub struct Harness {
@@ -107,16 +115,18 @@ pub fn harness() -> Harness {
         .register_stellar_asset_contract_v2(Address::generate(&env))
         .address();
     soroban_sdk::token::StellarAssetClient::new(&env, &token_id).mint(&admin, &1_000_000_000);
-    let pool_id = env.register(IncentivePool, ());
-    let pool = IncentivePoolClient::new(&env, &pool_id);
-    pool.initialize(
-        &admin,
-        &Address::generate(&env),
-        &token_id,
-        &reg_id,
-        &START_CAP,
-        &START_CAP,
+    let pool_id = env.register(
+        IncentivePool,
+        (
+            admin.clone(),
+            Address::generate(&env),
+            token_id.clone(),
+            reg_id.clone(),
+            START_CAP,
+            START_CAP,
+        ),
     );
+    let pool = IncentivePoolClient::new(&env, &pool_id);
     let attesters: Vec<Address> = (0..ATTESTERS)
         .map(|_| {
             let a = Address::generate(&env);
@@ -222,8 +232,51 @@ impl Model {
             Op::SetMaxPerClaim(m) => self.max_claim = m,
             Op::SetMaxPerAttester(m) => self.max_attester = m,
             Op::Suspend(_) | Op::Reinstate(_) => {}
+            Op::SchedulePayout(a) => {
+                paused()?;
+                if self.suspended[a as usize] {
+                    return Err(Error::AttesterNotAllowlisted);
+                }
+                self.pending_payout[a as usize] = true;
+            }
+            Op::CancelPayout(a) => {
+                paused()?;
+                if !self.pending_payout[a as usize] {
+                    return Err(Error::NoPendingPayoutBinding);
+                }
+                self.pending_payout[a as usize] = false;
+            }
+            Op::ResolveDrift => {
+                paused()?;
+                if !self.drifted() {
+                    return Err(Error::NoDriftDetected);
+                }
+                // Deterministic policy: reservations that can no longer be
+                // covered are cancelled FIFO by approval order.
+                let available = self.deposited - self.paid;
+                let mut reserved = 0i128;
+                let mut to_cancel: Vec<u8> = Vec::new();
+                for (item, (_, amount)) in self.items.iter() {
+                    if self.claimed.contains(item) {
+                        continue;
+                    }
+                    reserved += *amount;
+                    if reserved > available {
+                        to_cancel.push(*item);
+                    }
+                }
+                for item in to_cancel {
+                    self.items.remove(&item);
+                }
+            }
         }
         Ok(())
+    }
+
+    /// True when the pool's token balance is below what the internal totals
+    /// say it should be (e.g. after an issuer clawback).
+    fn drifted(&self) -> bool {
+        self.deposited - self.paid < 0
     }
 }
 
@@ -270,6 +323,16 @@ pub fn replay(ops: Vec<Op>) {
                 }
                 Ok(())
             }
+            Op::SchedulePayout(a) => {
+                let i = a as usize;
+                let payout = Address::generate(&h.env);
+                outcome!(h.pool.try_set_payout_address(&h.attesters[i], &payout))
+            }
+            Op::CancelPayout(a) => {
+                let i = a as usize;
+                outcome!(h.pool.try_cancel_payout_address(&h.attesters[i]))
+            }
+            Op::ResolveDrift => outcome!(h.pool.try_resolve_drift(&h.admin)),
         };
         let expected = m.step(op);
         assert_eq!(actual, expected, "step {n} {op:?} diverged from model");
@@ -293,8 +356,75 @@ pub fn replay(ops: Vec<Op>) {
         }
         for (i, a) in h.attesters.iter().enumerate() {
             assert_eq!(h.pool.get_attester_total_claimed(a), m.per_attester[i]);
+            // A pending binding must be readable and cancellable, and its
+            // persistent entry must have a live TTL.
+            if m.pending_payout[i] {
+                assert!(
+                    h.pool.get_payout_binding(a).is_some(),
+                    "step {n}: pending binding for attester {i} missing"
+                );
+            }
         }
     }
+}
+
+/// A scheduled payout binding survives the full delay window: its persistent
+/// entry is TTL-extended on write and remains readable just before it applies.
+#[test]
+fn payout_binding_ttl_survives_delay() {
+    let h = harness();
+    let attester = h.attesters.first().unwrap();
+    let payout = Address::generate(&h.env);
+    h.pool.set_payout_address(&attester, &payout);
+    assert!(h.pool.get_payout_binding(&attester).is_some());
+    // Advance to just before the delay elapses; the binding must still exist.
+    h.env.ledger().set_sequence_number(
+        h.env.ledger().sequence() + (PAYOUT_ADDRESS_DELAY / 5) as u32,
+    );
+    assert!(h.pool.get_payout_binding(&attester).is_some());
+}
+
+/// A pending binding can be cancelled by the attester within the delay.
+#[test]
+fn payout_binding_cancelled_by_attester() {
+    let h = harness();
+    let attester = h.attesters.first().unwrap();
+    h.pool
+        .set_payout_address(&attester, &Address::generate(&h.env));
+    h.pool.cancel_payout_address(&attester);
+    assert!(h.pool.get_payout_binding(&attester).is_none());
+}
+
+/// A pending binding can be vetoed by the guardian/admin within the delay.
+#[test]
+fn payout_binding_cancelled_by_guardian() {
+    let h = harness();
+    let attester = h.attesters.first().unwrap();
+    h.pool
+        .set_payout_address(&attester, &Address::generate(&h.env));
+    h.pool.cancel_payout_address(&h.admin, &attester);
+    assert!(h.pool.get_payout_binding(&attester).is_none());
+}
+
+/// A clawback against the pool leaves custody below the internal totals; the
+/// deterministic drift policy cancels the reservations it can no longer cover.
+#[test]
+fn drift_resolution_after_clawback() {
+    let h = harness();
+    h.pool.fund(&100);
+    h.pool
+        .approve_work_item(&item_id(&h.env, 0), &h.attesters[0], &60);
+    h.pool
+        .approve_work_item(&item_id(&h.env, 1), &h.attesters[1], &60);
+    // Issuer claws back part of the pool balance.
+    soroban_sdk::token::StellarAssetClient::new(&h.env, &h.token.address)
+        .clawback(&h.pool.address, &50);
+    assert!(h.pool.is_drift_detected());
+    h.pool.resolve_drift(&h.admin);
+    // The first reservation (FIFO) is kept, the second is cancelled.
+    assert!(!h.pool.is_work_item_claimed(&item_id(&h.env, 0)));
+    assert!(h.pool.try_claim(&item_id(&h.env, 0)).is_ok());
+    assert!(h.pool.try_claim(&item_id(&h.env, 1)).is_err());
 }
 
 proptest! {

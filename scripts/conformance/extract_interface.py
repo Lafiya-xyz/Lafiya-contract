@@ -23,12 +23,25 @@ from typing import Any
 
 KIND_ORDER = {
     "function_v0": 0,
-    "udt_error_enum_v0": 1,
-    "event_v0": 2,
-    "udt_struct_v0": 3,
-    "udt_union_v0": 4,
-    "udt_enum_v0": 5,
+    "constructor_v0": 1,
+    "udt_error_enum_v0": 2,
+    "event_v0": 3,
+    "udt_struct_v0": 4,
+    "udt_union_v0": 5,
+    "udt_enum_v0": 6,
 }
+
+# Contracts that configure themselves atomically at deploy time via a
+# `__constructor` (see issue #690). Their snapshots must expose a
+# `constructor_v0` entry and must NOT expose a callable `initialize`.
+CONSTRUCTOR_CONTRACTS = (
+    "incentive-pool",
+)
+
+# Legacy initializer entrypoints that must never reappear on contracts that
+# moved to `__constructor` -- a deploy-then-initialize window is a
+# front-running hole (an attacker can call `initialize` first).
+FORBIDDEN_INITIALIZERS = ("initialize",)
 
 # Contracts whose interface snapshots feed the generated TypeScript bindings
 # and the `packages/events` decoder spec. Kept in sync with the drift gate in
@@ -55,6 +68,10 @@ def _strip_docs(node: Any) -> Any:
 def _entry_name(kind: str, body: dict[str, Any]) -> str:
     if kind == "function_v0":
         return str(body["name"])
+    if kind == "constructor_v0":
+        # Constructors are unnamed in the spec; give them a stable label so
+        # they sort deterministically and show up in snapshot diffs.
+        return "__constructor"
     return str(body.get("name", ""))
 
 
@@ -90,6 +107,45 @@ def extract_events(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def extract_views(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter an interface snapshot down to its callable view functions."""
     return [entry for entry in snapshot if entry["kind"] == "function_v0"]
+
+
+def extract_constructors(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter an interface snapshot down to its constructor entries."""
+    return [entry for entry in snapshot if entry["kind"] == "constructor_v0"]
+
+
+def check_constructor_contract(
+    contract: str, snapshot: list[dict[str, Any]]
+) -> list[str]:
+    """Validate the constructor/initializer invariants for one contract.
+
+    Returns a list of human-readable problems (empty when the snapshot is
+    consistent). Contracts listed in `CONSTRUCTOR_CONTRACTS` must expose
+    exactly one constructor and no callable `initialize`; every other
+    contract must not expose a constructor.
+    """
+    problems: list[str] = []
+    constructors = extract_constructors(snapshot)
+    function_names = {entry["name"] for entry in extract_views(snapshot)}
+
+    if contract in CONSTRUCTOR_CONTRACTS:
+        if len(constructors) != 1:
+            problems.append(
+                f"{contract}: expected exactly one constructor_v0 entry, "
+                f"found {len(constructors)}"
+            )
+        for name in FORBIDDEN_INITIALIZERS:
+            if name in function_names:
+                problems.append(
+                    f"{contract}: callable `{name}` must not be exported "
+                    "(configuration happens in __constructor)"
+                )
+    elif constructors:
+        problems.append(
+            f"{contract}: unexpected constructor_v0 entry "
+            "(add it to CONSTRUCTOR_CONTRACTS if intentional)"
+        )
+    return problems
 
 
 def require_stellar_cli() -> None:
@@ -141,18 +197,32 @@ def extract(wasm_path: Path) -> list[dict[str, Any]]:
 
 
 def main() -> None:
-    if len(sys.argv) not in (2, 3):
-        sys.exit(f"usage: {sys.argv[0]} <path-to-wasm> [events|views]")
+    if len(sys.argv) not in (2, 3, 4):
+        sys.exit(
+            f"usage: {sys.argv[0]} <path-to-wasm> [events|views|constructors] "
+            "[contract-name]"
+        )
 
     snapshot = extract(Path(sys.argv[1]))
-    if len(sys.argv) == 3:
+    if len(sys.argv) >= 3:
         section = sys.argv[2]
         if section == "events":
             snapshot = extract_events(snapshot)
         elif section == "views":
             snapshot = extract_views(snapshot)
+        elif section == "constructors":
+            snapshot = extract_constructors(snapshot)
         else:
-            sys.exit(f"error: unknown section {section!r} (expected 'events' or 'views')")
+            sys.exit(
+                f"error: unknown section {section!r} "
+                "(expected 'events', 'views' or 'constructors')"
+            )
+
+    if len(sys.argv) == 4:
+        contract = sys.argv[3]
+        problems = check_constructor_contract(contract, extract(Path(sys.argv[1])))
+        if problems:
+            sys.exit("error: " + "\n".join(problems))
 
     json.dump(snapshot, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")

@@ -180,6 +180,61 @@ pub struct PoolRules {
     /// Alert when the pool is paused.
     #[serde(default = "default_pool_paused_severity")]
     pub pool_paused_severity: Severity,
+    /// Alert when `set_payout_address` schedules a new payout recipient for an
+    /// attester that still has pending work items, so operations can contact
+    /// the CHW out of band (issue #691).
+    #[serde(default)]
+    pub payout_address_scheduled: Option<PayoutAddressScheduledRule>,
+}
+
+/// Watchdog rule for `PayoutAddressScheduled` events (issue #691).
+///
+/// A payout-address change is delayed by `PAYOUT_ADDRESS_DELAY` (48h) on
+/// chain; this rule surfaces the pending change through an independent
+/// channel so the CHW can be reached before the binding takes effect.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PayoutAddressScheduledRule {
+    /// Only alert for attesters that still have at least this many pending
+    /// work items. `0` alerts for every scheduled payout address.
+    #[serde(default = "default_min_pending_work_items")]
+    pub min_pending_work_items: usize,
+    /// Event name emitted by the pool when a payout address is scheduled.
+    #[serde(default = "default_payout_scheduled_event")]
+    pub event: String,
+    /// Optional dedicated notification channel (e.g. an on-call webhook URL)
+    /// used instead of the regular sinks for this rule.
+    #[serde(default)]
+    pub notify_url: Option<String>,
+    /// Minimum seconds between notifications for the same attester, so a
+    /// repeated schedule does not spam the channel.
+    #[serde(default = "default_payout_notify_interval")]
+    pub notify_interval_secs: u64,
+    #[serde(default = "default_high")]
+    pub severity: Severity,
+}
+
+impl Default for PayoutAddressScheduledRule {
+    fn default() -> Self {
+        PayoutAddressScheduledRule {
+            min_pending_work_items: default_min_pending_work_items(),
+            event: default_payout_scheduled_event(),
+            notify_url: None,
+            notify_interval_secs: default_payout_notify_interval(),
+            severity: Severity::High,
+        }
+    }
+}
+
+fn default_min_pending_work_items() -> usize {
+    1
+}
+
+fn default_payout_scheduled_event() -> String {
+    "payout_address_scheduled".into()
+}
+
+fn default_payout_notify_interval() -> u64 {
+    3600
 }
 
 fn default_large_withdrawal_severity() -> Severity {
