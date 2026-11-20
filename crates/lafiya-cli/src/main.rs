@@ -109,7 +109,8 @@ enum Commands {
         #[arg(value_enum)]
         contract: InterfaceTarget,
     },
-    /// Incentive pool operations (fund, approve, claim, withdraw, caps, pause)
+    /// Incentive pool operations (fund, approve, claim, withdraw, caps, pause,
+    /// payout-address lifecycle)
     Pool {
         #[command(subcommand)]
         sub: PoolSub,
@@ -358,6 +359,20 @@ enum PoolSub {
     },
     /// Query whether the pool is paused
     IsPaused,
+    /// Cancel a pending payout-address binding during the delay window
+    ///
+    /// Callable by the attester or by a guardian/admin. Use this if an
+    /// attester key is compromised and an attacker scheduled their own
+    /// payout address.
+    ///
+    /// Example: `lafiya-cli pool cancel-payout-address --attester G... --source guardian-id --yes`
+    CancelPayoutAddress {
+        /// Attester address (G...) whose pending binding should be cancelled
+        #[arg(long)]
+        attester: String,
+        #[command(flatten)]
+        opts: SubmitOpts,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1200,8 +1215,12 @@ fn main() -> anyhow::Result<()> {
             }
             if dry_run {
                 println!(
-                    "[dry-run] Would deploy attester-registry and attestation-registry to {}",
+                    "[dry-run] Would deploy attester-registry, attestation-registry and incentive-pool to {}",
                     cli.network
+                );
+                println!(
+                    "[dry-run] incentive-pool is configured atomically via its __constructor \
+                     (admin, approver, token, attester_registry); no separate initialize call"
                 );
             }
         }
@@ -2535,6 +2554,27 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
         PoolSub::IsPaused => {
             pool_query(cfg, contract_id, "is_paused", &[])?;
         }
+        PoolSub::CancelPayoutAddress { attester, opts } => {
+            validate_address("attester address", &attester)
+                .context("invalid attester address")?;
+            let source = validated_source(opts.source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "cancel_payout_address",
+                &["--attester", &attester],
+            );
+            submit_with_preview(
+                cfg,
+                contract_id,
+                "cancel_payout_address",
+                &[&attester],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
     }
     Ok(())
 }
@@ -2998,6 +3038,39 @@ mod tests {
         assert!(
             message.to_uppercase().contains("EXTEND_TO"),
             "expected error to name the missing `extend_to` argument, got: {message}"
+        );
+    }
+
+    #[test]
+    fn pool_cancel_payout_address_parses_attester() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "pool",
+            "cancel-payout-address",
+            "--attester",
+            ATTESTER_ADDR,
+            "--yes",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Pool {
+                sub: PoolSub::CancelPayoutAddress { attester, opts },
+            } => {
+                assert_eq!(attester, ATTESTER_ADDR);
+                assert!(opts.yes);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn pool_cancel_payout_address_missing_attester_names_the_argument() {
+        let err = Cli::try_parse_from(["lafiya-cli", "pool", "cancel-payout-address"])
+            .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("ATTESTER"),
+            "expected error to name the missing `attester` argument, got: {message}"
         );
     }
 

@@ -29,6 +29,14 @@ use soroban_sdk::{
     panic_with_error, Bytes, BytesN, Env, Symbol, Vec,
 };
 
+// NOTE: This contract makes no cross-contract client calls. All external
+// interaction is via `env.crypto()` host functions (ed25519/secp256r1
+// verification), which are not contract clients and cannot trap on a
+// missing/archived counterparty contract. If a cross-contract client call is
+// ever added here, it MUST use the `try_` variant and map failures to a typed
+// `Error` variant (enforced by the `no_panicking_cross_contract_call` Dylint
+// lint in `lints/`).
+
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {

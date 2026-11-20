@@ -297,6 +297,28 @@
       "i18n_key": "err.attester.batch_too_large",
       "since": "0.1.0",
       "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 1,
+      "name": "AttesterRegistryUnavailable",
+      "doc": "The configured `attester-registry` contract could not be reached or returned an error (archived, mid-upgrade, or misconfigured). The call is retryable once the registry is available; check the registry wiring and network configuration.",
+      "severity": "operator",
+      "retryable": true,
+      "i18n_key": "err.incentive.attester_registry_unavailable",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 2,
+      "name": "PayoutDelayOverflow",
+      "doc": "Computing the payout binding's effective ledger (`now + PAYOUT_ADDRESS_DELAY`) overflowed the ledger range. This indicates a corrupted or out-of-range ledger sequence; no binding was scheduled.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.incentive.payout_delay_overflow",
+      "since": "0.3.0",
+      "deprecated": null
     }
   ]
 }

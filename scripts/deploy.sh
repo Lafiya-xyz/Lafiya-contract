@@ -1,7 +1,10 @@
 #!/usr/bin/env bash
 # Lafiya - Deployment Script
-# Deploys attester-registry and attestation-registry to selected network,
-# using config/networks.toml for RPC URL and passphrase.
+# Deploys attester-registry, attestation-registry and incentive-pool to the
+# selected network, using config/networks.toml for RPC URL and passphrase.
+#
+# All contracts are configured atomically at deploy time through their
+# `__constructor`; there is no separate `initialize` invocation to front-run.
 #
 # Usage:
 #   ./scripts/deploy.sh --network testnet [--source <identity-or-secret-env>] [--admin <address>]
@@ -30,6 +33,8 @@ source "$SCRIPT_DIR/lib/validate.sh"
 NETWORK="testnet"
 SOURCE_ACCOUNT="${STELLAR_ACCOUNT:-}"
 ADMIN_ADDRESS="${ADMIN_ADDRESS:-}"
+APPROVER_ADDRESS="${APPROVER_ADDRESS:-}"
+TOKEN_ADDRESS="${TOKEN_ADDRESS:-}"
 CONFIG_PATH="$REPO_ROOT/config/networks.toml"
 DRY_RUN="false"
 BUILD_ONLY="false"
@@ -49,6 +54,10 @@ Options:
                         Required unless --dry-run or --build-only is used
   --admin <address>     Admin address (G...) for contracts (defaults to source account address)
                         Or set ADMIN_ADDRESS env var
+  --approver <address>  Approver address (G...) for incentive-pool (defaults to admin)
+                        Or set APPROVER_ADDRESS env var
+  --token <address>     USDC token contract address (C...) for incentive-pool
+                        Or set TOKEN_ADDRESS env var
   --config <path>       Path to networks.toml (default: config/networks.toml)
   --dry-run             Show what would be done without deploying
   --build-only          Only build WASM, don't deploy
@@ -77,6 +86,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --admin)
             ADMIN_ADDRESS="$2"
+            shift 2
+            ;;
+        --approver)
+            APPROVER_ADDRESS="$2"
+            shift 2
+            ;;
+        --token)
+            TOKEN_ADDRESS="$2"
             shift 2
             ;;
         --config)
@@ -111,6 +128,12 @@ fi
 if [[ -n "$ADMIN_ADDRESS" ]]; then
     lafiya_validate_account_address "admin address" "$ADMIN_ADDRESS" || exit 1
 fi
+if [[ -n "$APPROVER_ADDRESS" ]]; then
+    lafiya_validate_account_address "approver address" "$APPROVER_ADDRESS" || exit 1
+fi
+if [[ -n "$TOKEN_ADDRESS" ]]; then
+    lafiya_validate_contract_id "token address" "$TOKEN_ADDRESS" || exit 1
+fi
 if [[ ! -f "$CONFIG_PATH" ]]; then
     echo "ERROR: config file not found: $CONFIG_PATH" >&2
     exit 1
@@ -134,6 +157,7 @@ echo "    RPC URL: $LAFIYA_RPC_URL"
 echo "    Passphrase: $LAFIYA_NETWORK_PASSPHRASE"
 echo "    Existing attester-registry: ${LAFIYA_ATTESTER_REGISTRY_ID:-<none>}"
 echo "    Existing attestation-registry: ${LAFIYA_ATTESTATION_REGISTRY_ID:-<none>}"
+echo "    Existing incentive-pool: ${LAFIYA_INCENTIVE_POOL_ID:-<none>}"
 
 # Report a half-recorded profile: redeploying over it leaves stale IDs behind.
 if [[ -n "$LAFIYA_ATTESTER_REGISTRY_ID" ]]; then
@@ -141,6 +165,9 @@ if [[ -n "$LAFIYA_ATTESTER_REGISTRY_ID" ]]; then
 fi
 if [[ -n "$LAFIYA_ATTESTATION_REGISTRY_ID" ]]; then
     lafiya_validate_contract_id "existing attestation_registry ($NETWORK)" "$LAFIYA_ATTESTATION_REGISTRY_ID" || exit 1
+fi
+if [[ -n "$LAFIYA_INCENTIVE_POOL_ID" ]]; then
+    lafiya_validate_contract_id "existing incentive_pool ($NETWORK)" "$LAFIYA_INCENTIVE_POOL_ID" || exit 1
 fi
 if [[ -n "$LAFIYA_ATTESTER_REGISTRY_ID" && -z "$LAFIYA_ATTESTATION_REGISTRY_ID" ]] ||
    [[ -z "$LAFIYA_ATTESTER_REGISTRY_ID" && -n "$LAFIYA_ATTESTATION_REGISTRY_ID" ]]; then
@@ -209,11 +236,30 @@ if [[ -z "$ADMIN_ADDRESS" ]]; then
     fi
 fi
 
+# Resolve approver: if not supplied, default to the admin address.
+if [[ -z "$APPROVER_ADDRESS" ]]; then
+    APPROVER_ADDRESS="$ADMIN_ADDRESS"
+fi
+
+# The incentive-pool custodies USDC, so it must be told which token contract
+# to hold. It is configured atomically at deploy via its `__constructor`.
+if [[ -z "$TOKEN_ADDRESS" ]]; then
+    if [[ "$DRY_RUN" == "true" ]]; then
+        TOKEN_ADDRESS="<token-address-placeholder-for-dry-run>"
+    else
+        echo "ERROR: incentive-pool requires a token address. Provide --token C... or set TOKEN_ADDRESS" >&2
+        exit 1
+    fi
+fi
+
 echo "==> Deployer source: ${SOURCE_ACCOUNT:-<default>}"
 echo "==> Admin address: $ADMIN_ADDRESS"
+echo "==> Approver address: $APPROVER_ADDRESS"
+echo "==> Token address: $TOKEN_ADDRESS"
 
 ATTESTER_WASM="$REPO_ROOT/target/wasm32v1-none/release/attester_registry.wasm"
 ATTESTATION_WASM="$REPO_ROOT/target/wasm32v1-none/release/attestation_registry.wasm"
+INCENTIVE_POOL_WASM="$REPO_ROOT/target/wasm32v1-none/release/incentive_pool.wasm"
 
 if [[ "$DRY_RUN" != "true" ]]; then
     if [[ ! -f "$ATTESTER_WASM" ]]; then
@@ -223,6 +269,10 @@ if [[ "$DRY_RUN" != "true" ]]; then
     fi
     if [[ ! -f "$ATTESTATION_WASM" ]]; then
         echo "ERROR: WASM not found at $ATTESTATION_WASM" >&2
+        exit 1
+    fi
+    if [[ ! -f "$INCENTIVE_POOL_WASM" ]]; then
+        echo "ERROR: WASM not found at $INCENTIVE_POOL_WASM" >&2
         exit 1
     fi
 fi
@@ -293,56 +343,49 @@ record_deployment() {
     fi
 }
 
-initialize_contract() {
-    local contract_id="$1"
-    local func="$2"
-    shift 2
-    # remaining args are function args as passed
-
-    echo "==> Initializing $contract_id :: $func ..." >&2
-    if [[ "$DRY_RUN" == "true" ]]; then
-        echo "[DRY RUN] stellar contract invoke --id $contract_id -- $func $*" >&2
-        return
-    fi
-
-    stellar contract invoke \
-        --id "$contract_id" \
-        --rpc-url "$LAFIYA_RPC_URL" \
-        --network-passphrase "$LAFIYA_NETWORK_PASSPHRASE" \
-        "${STELLAR_SOURCE_ARGS[@]}" \
-        -- "$@"
-}
-
-# Deploy attester-registry
+# Deploy attester-registry. Its `__constructor` takes the admin address, so
+# the contract is configured in the same transaction that creates it.
 ATTESTER_ID="$(deploy_contract "$ATTESTER_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attester-registry" \
     --admin "$ADMIN_ADDRESS")"
 ATTESTER_ID="$(echo "$ATTESTER_ID" | tr -d '\n' | xargs)" # trim
 echo "    attester-registry ID: $ATTESTER_ID"
 [[ "$DRY_RUN" == "true" ]] || record_deployment deploy attester-registry "$ATTESTER_ID" "$ATTESTER_WASM"
 
-# Deploy attestation-registry
+# Deploy attestation-registry, configured atomically via its `__constructor`.
 ATTESTATION_ID="$(deploy_contract "$ATTESTATION_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "attestation-registry" \
     --admin "$ADMIN_ADDRESS" --attester_registry "$ATTESTER_ID")"
 ATTESTATION_ID="$(echo "$ATTESTATION_ID" | tr -d '\n' | xargs)"
 echo "    attestation-registry ID: $ATTESTATION_ID"
 [[ "$DRY_RUN" == "true" ]] || record_deployment deploy attestation-registry "$ATTESTATION_ID" "$ATTESTATION_WASM"
 
+# Deploy incentive-pool. Its `__constructor` takes admin, approver, token and
+# attester_registry, so there is no deploy-then-initialize window to front-run.
+INCENTIVE_POOL_ID="$(deploy_contract "$INCENTIVE_POOL_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "incentive-pool" \
+    --admin "$ADMIN_ADDRESS" --approver "$APPROVER_ADDRESS" --token "$TOKEN_ADDRESS" \
+    --attester_registry "$ATTESTER_ID")"
+INCENTIVE_POOL_ID="$(echo "$INCENTIVE_POOL_ID" | tr -d '\n' | xargs)"
+echo "    incentive-pool ID: $INCENTIVE_POOL_ID"
+[[ "$DRY_RUN" == "true" ]] || record_deployment deploy incentive-pool "$INCENTIVE_POOL_ID" "$INCENTIVE_POOL_WASM"
+
 # Guard against a truncated or noisy deploy output being written back to config.
 if [[ "$DRY_RUN" != "true" ]]; then
     lafiya_validate_contract_id "deployed attester_registry id" "$ATTESTER_ID" || exit 1
     lafiya_validate_contract_id "deployed attestation_registry id" "$ATTESTATION_ID" || exit 1
+    lafiya_validate_contract_id "deployed incentive_pool id" "$INCENTIVE_POOL_ID" || exit 1
 fi
 
 echo ""
 echo "==> Deployment complete for network: $NETWORK"
 echo "    attester_registry = \"$ATTESTER_ID\""
 echo "    attestation_registry = \"$ATTESTATION_ID\""
+echo "    incentive_pool = \"$INCENTIVE_POOL_ID\""
 echo ""
 echo "Next steps:"
 echo "  1. Update config/networks.toml:"
 echo "     [$NETWORK.contracts]"
 echo "     attester_registry = \"$ATTESTER_ID\""
 echo "     attestation_registry = \"$ATTESTATION_ID\""
+echo "     incentive_pool = \"$INCENTIVE_POOL_ID\""
 echo ""
 echo "  2. Verify with admin CLI:"
 echo "     ./scripts/admin.sh --network $NETWORK list-attesters"
@@ -354,9 +397,9 @@ if [[ "$DRY_RUN" != "true" ]]; then
     echo ""
     read -rp "Update config/networks.toml automatically? [y/N]: " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        python3 - "$CONFIG_PATH" "$NETWORK" "$ATTESTER_ID" "$ATTESTATION_ID" <<'PY'
+        python3 - "$CONFIG_PATH" "$NETWORK" "$ATTESTER_ID" "$ATTESTATION_ID" "$INCENTIVE_POOL_ID" <<'PY'
 import sys
-config_path, network, attester_id, attestation_id = sys.argv[1:5]
+config_path, network, attester_id, attestation_id, incentive_pool_id = sys.argv[1:6]
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -382,6 +425,7 @@ def update_section(text, net, key, value):
 
 text = update_section(text, network, "attester_registry", attester_id)
 text = update_section(text, network, "attestation_registry", attestation_id)
+text = update_section(text, network, "incentive_pool", incentive_pool_id)
 pathlib.Path(config_path).write_text(text)
 print(f"Updated {config_path}")
 PY

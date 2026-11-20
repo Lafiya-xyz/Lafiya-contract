@@ -52,21 +52,23 @@ export interface ContractEventSpec {
 export type ContractSpecEntry = ContractFunctionSpec | ContractEventSpec;
 
 /**
+ * Arguments accepted by the incentive-pool `__constructor`. Configuration is
+ * applied atomically at deploy time; there is no externally callable
+ * initializer.
+ */
+export interface IncentivePoolConstructorArgs {
+  readonly admin: Address;
+  readonly approver: Address;
+  readonly token: Address;
+  readonly attesterRegistry: Address;
+}
+
+/**
  * The full contract spec for the incentive-pool, in the order it appears in
  * the on-chain contract spec. Keep this in sync with `packages/events` and the
  * release manifest.
  */
 export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
-  {
-    kind: ContractEntryKind.Function,
-    name: "initialize",
-    doc: "Initializes the incentive pool with its admin and token.",
-    args: [
-      { name: "admin", type: "Address" },
-      { name: "token", type: "Address" },
-    ],
-    returns: "void",
-  },
   {
     kind: ContractEntryKind.Function,
     name: "deposit",
@@ -119,6 +121,44 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
     returns: "void",
   },
   {
+    kind: ContractEntryKind.Function,
+    name: "set_payout_address",
+    doc: "Schedules a new payout address for an attester after the delay.",
+    args: [
+      { name: "attester", type: "Address" },
+      { name: "payout_address", type: "Address" },
+    ],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "cancel_payout_address",
+    doc: "Cancels a pending payout address binding during the delay window.",
+    args: [{ name: "attester", type: "Address" }],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "get_payout_address",
+    doc: "Returns the active payout address for an attester, if any.",
+    args: [{ name: "attester", type: "Address" }],
+    returns: "Option<Address>",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "get_payout_binding",
+    doc: "Returns the pending payout binding for an attester, if any.",
+    args: [{ name: "attester", type: "Address" }],
+    returns: "Option<PayoutBinding>",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "resolve_payout",
+    doc: "Resolves the effective payout address for an attester.",
+    args: [{ name: "attester", type: "Address" }],
+    returns: "Address",
+  },
+  {
     kind: ContractEntryKind.Event,
     name: "initialized",
     doc: "Emitted when the pool is initialized.",
@@ -158,6 +198,23 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
       { name: "old_admin", type: "Address" },
       { name: "new_admin", type: "Address" },
     ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "payout_address_scheduled",
+    doc: "Emitted when a new payout address binding is scheduled.",
+    topics: ["payout_address_scheduled", "attester"],
+    data: [
+      { name: "payout_address", type: "Address" },
+      { name: "effective_at", type: "u64" },
+    ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "payout_address_cancelled",
+    doc: "Emitted when a pending payout address binding is cancelled.",
+    topics: ["payout_address_cancelled", "attester"],
+    data: [{ name: "cancelled_by", type: "Address" }],
   },
 ] as const;
 
@@ -202,13 +259,28 @@ export interface AdminChangedEvent {
   readonly newAdmin: Address;
 }
 
+/** Decoded payload of the `payout_address_scheduled` event. */
+export interface PayoutAddressScheduledEvent {
+  readonly attester: Address;
+  readonly payoutAddress: Address;
+  readonly effectiveAt: bigint;
+}
+
+/** Decoded payload of the `payout_address_cancelled` event. */
+export interface PayoutAddressCancelledEvent {
+  readonly attester: Address;
+  readonly cancelledBy: Address;
+}
+
 /** Union of every decoded incentive-pool event. */
 export type IncentivePoolEvent =
   | ({ readonly type: "initialized" } & InitializedEvent)
   | ({ readonly type: "deposit" } & DepositEvent)
   | ({ readonly type: "withdraw" } & WithdrawEvent)
   | ({ readonly type: "claim" } & ClaimEvent)
-  | ({ readonly type: "admin_changed" } & AdminChangedEvent);
+  | ({ readonly type: "admin_changed" } & AdminChangedEvent)
+  | ({ readonly type: "payout_address_scheduled" } & PayoutAddressScheduledEvent)
+  | ({ readonly type: "payout_address_cancelled" } & PayoutAddressCancelledEvent);
 
 /** Options for constructing an {@link IncentivePoolClient}. */
 export interface IncentivePoolClientOptions {
@@ -228,16 +300,19 @@ export class IncentivePoolClient {
     this.contract = new Contract(options.contractId);
   }
 
-  /** Builds an unsigned invocation of `initialize`. */
-  initialize(args: {
-    admin: Address;
-    token: Address;
-  }): xdr.Operation {
-    return this.contract.call(
-      "initialize",
+  /**
+   * Builds the constructor arguments for deploying the incentive-pool.
+   *
+   * The contract is configured atomically at deploy time via `__constructor`;
+   * there is no externally callable `initialize` function.
+   */
+  static constructorArgs(args: IncentivePoolConstructorArgs): xdr.ScVal[] {
+    return [
       args.admin.toScVal(),
+      args.approver.toScVal(),
       args.token.toScVal(),
-    );
+      args.attesterRegistry.toScVal(),
+    ];
   }
 
   /** Builds an unsigned invocation of `deposit`. */
@@ -280,6 +355,38 @@ export class IncentivePoolClient {
   /** Builds an unsigned invocation of `set_admin`. */
   setAdmin(args: { newAdmin: Address }): xdr.Operation {
     return this.contract.call("set_admin", args.newAdmin.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `set_payout_address`. */
+  setPayoutAddress(args: {
+    attester: Address;
+    payoutAddress: Address;
+  }): xdr.Operation {
+    return this.contract.call(
+      "set_payout_address",
+      args.attester.toScVal(),
+      args.payoutAddress.toScVal(),
+    );
+  }
+
+  /** Builds an unsigned invocation of `cancel_payout_address`. */
+  cancelPayoutAddress(args: { attester: Address }): xdr.Operation {
+    return this.contract.call("cancel_payout_address", args.attester.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `get_payout_address`. */
+  getPayoutAddress(args: { attester: Address }): xdr.Operation {
+    return this.contract.call("get_payout_address", args.attester.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `get_payout_binding`. */
+  getPayoutBinding(args: { attester: Address }): xdr.Operation {
+    return this.contract.call("get_payout_binding", args.attester.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `resolve_payout`. */
+  resolvePayout(args: { attester: Address }): xdr.Operation {
+    return this.contract.call("resolve_payout", args.attester.toScVal());
   }
 
   /** Builds a transaction for the given operation using the supplied source. */
@@ -357,6 +464,26 @@ export function decodeIncentivePoolEvent(
         type: "admin_changed",
         oldAdmin: Address.fromString(oldAdmin),
         newAdmin: Address.fromString(newAdmin),
+      };
+    }
+    case "payout_address_scheduled": {
+      const [payoutAddress, effectiveAt] = scValToNative(event.value) as [
+        string,
+        bigint,
+      ];
+      return {
+        type: "payout_address_scheduled",
+        attester: Address.fromString(String(topics[1])),
+        payoutAddress: Address.fromString(payoutAddress),
+        effectiveAt,
+      };
+    }
+    case "payout_address_cancelled": {
+      const cancelledBy = scValToNative(event.value) as string;
+      return {
+        type: "payout_address_cancelled",
+        attester: Address.fromString(String(topics[1])),
+        cancelledBy: Address.fromString(cancelledBy),
       };
     }
     default:

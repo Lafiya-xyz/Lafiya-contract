@@ -21,7 +21,7 @@
 # Usage: scripts/upgrade.sh --contract attester-registry --id C... --source ALICE [options]
 #
 # Options:
-#   --contract NAME              attester-registry | attestation-registry (required)
+#   --contract NAME              attester-registry | attestation-registry | incentive-pool (required)
 #   --id CONTRACT_ID             deployed contract id, C...                 (required, or CONTRACT_ID)
 #   --source IDENTITY_OR_SECRET  admin signer known to stellar-cli          (required, or SOURCE_ACCOUNT)
 #   --network NAME               stellar-cli network [default: testnet, or STELLAR_NETWORK]
@@ -78,9 +78,14 @@ done
 
 # ------------------------------------------------------------- validate ----
 case "$CONTRACT" in
-    attester-registry|attestation-registry) ;;
-    *) die "--contract must be attester-registry or attestation-registry" ;;
+    attester-registry|attestation-registry|incentive-pool) ;;
+    *) die "--contract must be attester-registry, attestation-registry or incentive-pool" ;;
 esac
+# NOTE: incentive-pool is configured atomically at deploy time via its
+# `__constructor` (admin, approver, token, attester_registry). There is no
+# externally callable `initialize`; upgrades must never attempt to call one.
+# Only `upgrade(new_wasm_hash)` and, for schema-changing releases, `migrate()`
+# are submitted here.
 [ -n "$CONTRACT_ID" ]    || die "missing --id CONTRACT_ID (or CONTRACT_ID env)"
 [ -n "$SOURCE_ACCOUNT" ] || die "missing --source ADMIN_IDENTITY (or SOURCE_ACCOUNT env)"
 if [ "$RUN_MIGRATE" -eq 1 ] && [ -z "$EXPECTED_SCHEMA_VERSION" ]; then

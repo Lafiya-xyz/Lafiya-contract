@@ -152,8 +152,72 @@ pub const ATTESTATION_REGISTRY: Requirement = Requirement {
 
 pub const INCENTIVE_POOL: Requirement = Requirement {
     contract_kind: "lafiya_incentive_pool",
-    min_interface_version: 1,
+    min_interface_version: 2,
 };
+
+/// Configuration that `incentive-pool` now receives atomically through its
+/// `__constructor` instead of a post-deploy `initialize` call.
+///
+/// The CLI never invokes `initialize` for the incentive pool: the contract has
+/// no externally callable initializer, so configuration must be supplied at
+/// deploy time. These fields are rendered into the deploy invocation.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncentivePoolConstructorArgs {
+    /// Hex-encoded admin address.
+    pub admin: String,
+    /// Hex-encoded approver address.
+    pub approver: String,
+    /// Hex-encoded USDC token contract address.
+    pub token: String,
+    /// Hex-encoded attester registry contract address.
+    pub attester_registry: String,
+}
+
+impl IncentivePoolConstructorArgs {
+    /// Render the `--` constructor arguments for `stellar contract deploy`.
+    ///
+    /// The order matches the contract's `__constructor` parameter list so the
+    /// deploy transaction configures the pool atomically.
+    pub fn to_deploy_args(&self) -> Vec<String> {
+        vec![
+            "--admin".to_string(),
+            self.admin.clone(),
+            "--approver".to_string(),
+            self.approver.clone(),
+            "--token".to_string(),
+            self.token.clone(),
+            "--attester_registry".to_string(),
+            self.attester_registry.clone(),
+        ]
+    }
+}
+
+/// Features the incentive-pool interface must advertise for this CLI build.
+///
+/// `constructor` replaces the removed `initialize` entry point;
+/// `cancel_payout_address` is the guardian/attester cancellation path for a
+/// pending payout binding.
+pub const INCENTIVE_POOL_REQUIRED_FEATURES: &[&str] = &["constructor", "cancel_payout_address"];
+
+/// Verify that an incentive-pool interface advertises the constructor-based
+/// configuration and the payout-binding cancellation entry point.
+pub fn check_incentive_pool_features(info: &InterfaceInfo) -> Result<(), String> {
+    if info.features.iter().any(|f| f == "initialize") {
+        return Err(
+            "incentive-pool advertises a callable initialize; this CLI requires \
+             constructor-based configuration"
+                .to_string(),
+        );
+    }
+    for feature in INCENTIVE_POOL_REQUIRED_FEATURES {
+        if !info.supports(feature) {
+            return Err(format!(
+                "incentive-pool interface is missing required feature {feature:?}"
+            ));
+        }
+    }
+    Ok(())
+}
 
 /// Check the raw `get_interface` output against `req`.
 ///
@@ -233,6 +297,67 @@ mod tests {
     fn rejects_garbage_output() {
         let err = negotiate("CDX", Some("not json"), ATTESTER_REGISTRY).unwrap_err();
         assert!(err.contains("unreadable"), "{err}");
+    }
+
+    const POOL: &str = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":2,
+        "features":["constructor","cancel_payout_address","pause"],
+        "schema_version":2,"event_version":1}"#;
+
+    #[test]
+    fn accepts_constructor_based_incentive_pool() {
+        let info = negotiate("CPOOL", Some(POOL), INCENTIVE_POOL).unwrap();
+        assert_eq!(info.interface_version, 2);
+        check_incentive_pool_features(&info).unwrap();
+    }
+
+    #[test]
+    fn rejects_incentive_pool_with_callable_initialize() {
+        let legacy = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":2,
+            "features":["initialize","cancel_payout_address"],
+            "schema_version":2,"event_version":1}"#;
+        let info = negotiate("CPOOL", Some(legacy), INCENTIVE_POOL).unwrap();
+        let err = check_incentive_pool_features(&info).unwrap_err();
+        assert!(err.contains("initialize"), "{err}");
+    }
+
+    #[test]
+    fn rejects_incentive_pool_missing_cancel_payout_address() {
+        let partial = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":2,
+            "features":["constructor"],"schema_version":2,"event_version":1}"#;
+        let info = negotiate("CPOOL", Some(partial), INCENTIVE_POOL).unwrap();
+        let err = check_incentive_pool_features(&info).unwrap_err();
+        assert!(err.contains("cancel_payout_address"), "{err}");
+    }
+
+    #[test]
+    fn rejects_incentive_pool_below_constructor_interface() {
+        let old = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":1,
+            "features":["initialize"],"schema_version":2,"event_version":1}"#;
+        let err = negotiate("CPOOL", Some(old), INCENTIVE_POOL).unwrap_err();
+        assert!(err.contains("requires >= v2"), "{err}");
+    }
+
+    #[test]
+    fn renders_constructor_deploy_args_in_order() {
+        let args = IncentivePoolConstructorArgs {
+            admin: "ADMIN".to_string(),
+            approver: "APPROVER".to_string(),
+            token: "TOKEN".to_string(),
+            attester_registry: "REGISTRY".to_string(),
+        };
+        assert_eq!(
+            args.to_deploy_args(),
+            argv(&[
+                "--admin",
+                "ADMIN",
+                "--approver",
+                "APPROVER",
+                "--token",
+                "TOKEN",
+                "--attester_registry",
+                "REGISTRY",
+            ])
+        );
     }
 
     fn argv(items: &[&str]) -> Vec<String> {

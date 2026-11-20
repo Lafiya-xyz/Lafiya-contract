@@ -205,6 +205,92 @@ fn incentive_pool_scenario_reaches_the_webhook() {
     assert!(rx.try_recv().is_err());
 }
 
+/// A scheduled payout binding for an attester with pending work items must
+/// raise the out-of-band CHW alert; the same event for an idle attester must
+/// not.
+#[test]
+fn payout_address_scheduled_alerts_only_for_attesters_with_pending_work() {
+    let (url, rx) = mock_webhook();
+    let mut cfg = config(url);
+    cfg.contracts = vec!["CPOOL".into(), "CREG".into()];
+    let mut engine = Engine::new(&cfg);
+
+    let busy = "GBUSY".to_string();
+    let idle = "GIDLE".to_string();
+    let scenario = [
+        // The busy attester has an outstanding work item.
+        ev("CPOOL", "pool_approved", 10, &[&busy, "1000"]),
+        // Both attesters schedule a new payout recipient.
+        ev("CPOOL", "payout_address_scheduled", 11, &[&busy, "GNEW"]),
+        ev("CPOOL", "payout_address_scheduled", 12, &[&idle, "GNEW"]),
+    ];
+    let alerts: Vec<_> = scenario.iter().flat_map(|e| engine.evaluate(e)).collect();
+
+    for alert in &alerts {
+        assert!(sinks::dispatch(&cfg.sinks, alert).is_empty());
+    }
+
+    let payout_alerts: Vec<_> = alerts
+        .iter()
+        .filter(|a| a.kind == rules::PAYOUT_ADDRESS_SCHEDULED)
+        .collect();
+    assert_eq!(
+        payout_alerts.len(),
+        1,
+        "expected exactly one payout alert in {:?}",
+        alerts.iter().map(|a| &a.kind).collect::<Vec<_>>()
+    );
+    let alert = payout_alerts[0];
+    assert_eq!(alert.severity, Severity::Critical);
+    assert!(
+        alert.message.contains(&busy),
+        "alert should name the busy attester: {}",
+        alert.message
+    );
+    assert!(
+        !alert.message.contains(&idle),
+        "idle attester must not be alerted: {}",
+        alert.message
+    );
+
+    // The critical alert reaches the webhook.
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        body["kind"].as_str().unwrap(),
+        rules::PAYOUT_ADDRESS_SCHEDULED
+    );
+    assert!(rx.try_recv().is_err());
+}
+
+/// A scheduled payout binding with no known pending work items is benign and
+/// must not page anyone.
+#[test]
+fn payout_address_scheduled_is_quiet_without_pending_work() {
+    let (url, rx) = mock_webhook();
+    let mut cfg = config(url);
+    cfg.contracts = vec!["CPOOL".into()];
+    let mut engine = Engine::new(&cfg);
+
+    let idle = "GIDLE".to_string();
+    let scenario = [
+        ev("CPOOL", "payout_address_scheduled", 10, &[&idle, "GNEW"]),
+        ev("CPOOL", "payout_address_scheduled", 11, &[&idle, "GNEW2"]),
+    ];
+    let alerts: Vec<_> = scenario.iter().flat_map(|e| engine.evaluate(e)).collect();
+
+    assert!(
+        !alerts
+            .iter()
+            .any(|a| a.kind == rules::PAYOUT_ADDRESS_SCHEDULED),
+        "unexpected payout alert: {:?}",
+        alerts.iter().map(|a| &a.kind).collect::<Vec<_>>()
+    );
+    for alert in &alerts {
+        assert!(sinks::dispatch(&cfg.sinks, alert).is_empty());
+    }
+    assert!(rx.try_recv().is_err());
+}
+
 /// Requires a running quickstart (`stellar container start local`) with the
 /// Lafiya contracts deployed and the scenario in docs/runbooks/watchdog.md
 /// executed. Set `LAFIYA_WATCHDOG_RPC` and `LAFIYA_WATCHDOG_CONTRACTS`

@@ -81,6 +81,66 @@ where
     target
 }
 
+/// TTL policy for a single persistent key class.
+///
+/// Each contract registers the persistent key classes it owns with the TTL
+/// keeper so that writes can extend the entry's lifetime using a consistent,
+/// bounded policy instead of ad-hoc constants.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PersistentKeyClass {
+    /// Human-readable name of the key class (used in diagnostics).
+    pub name: &'static str,
+    /// Horizon (ledger seconds) applied when the entry is written.
+    pub extend_to: u32,
+}
+
+impl PersistentKeyClass {
+    /// Create a new key class policy. `extend_to` is clamped to
+    /// `MAX_TTL_HORIZON`; values below `MIN_TTL_HORIZON` are raised to it so a
+    /// write can never shorten an entry's lifetime.
+    pub const fn new(name: &'static str, extend_to: u32) -> Self {
+        let horizon = if extend_to < MIN_TTL_HORIZON {
+            MIN_TTL_HORIZON
+        } else if extend_to > MAX_TTL_HORIZON {
+            MAX_TTL_HORIZON
+        } else {
+            extend_to
+        };
+        Self {
+            name,
+            extend_to: horizon,
+        }
+    }
+
+    /// Extend the TTL of `key` using this class's policy. Returns the horizon
+    /// applied.
+    pub fn extend<K>(&self, env: &Env, key: &K) -> u32
+    where
+        K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+    {
+        extend_persistent_ttl(env, key, self.extend_to)
+    }
+}
+
+/// Key class for `incentive-pool` payout bindings (`PayoutBinding`).
+///
+/// Payout bindings are written on `set_payout_address` and must outlive the
+/// `PAYOUT_ADDRESS_DELAY` window plus a comfortable margin so a pending
+/// binding cannot be archived before it can be resolved or cancelled.
+pub const INCENTIVE_POOL_PAYOUT_BINDING: PersistentKeyClass =
+    PersistentKeyClass::new("incentive-pool:PayoutBinding", INSTANCE_BUMP_AMOUNT);
+
+/// Extend the TTL of an `incentive-pool` payout binding entry.
+///
+/// Convenience wrapper around [`INCENTIVE_POOL_PAYOUT_BINDING`] for the
+/// contract's binding writes. Returns the horizon applied.
+pub fn extend_payout_binding_ttl<K>(env: &Env, key: &K) -> u32
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    INCENTIVE_POOL_PAYOUT_BINDING.extend(env, key)
+}
+
 /// Estimate the rent (in stroops) required to keep a single persistent entry
 /// alive for `horizon` ledger seconds.
 ///
@@ -171,6 +231,28 @@ mod tests {
         assert_eq!(bounded_extend_to(1_000, 500), 1_000);
         assert_eq!(bounded_extend_to(1_000, 2_000), 2_000);
         assert_eq!(bounded_extend_to(1_000, u32::MAX), MAX_TTL_HORIZON);
+    }
+
+    #[test]
+    fn persistent_key_class_clamps_horizon() {
+        let low = PersistentKeyClass::new("test:low", 0);
+        assert_eq!(low.extend_to, MIN_TTL_HORIZON);
+
+        let high = PersistentKeyClass::new("test:high", u32::MAX);
+        assert_eq!(high.extend_to, MAX_TTL_HORIZON);
+
+        let mid = PersistentKeyClass::new("test:mid", INSTANCE_BUMP_AMOUNT);
+        assert_eq!(mid.extend_to, INSTANCE_BUMP_AMOUNT);
+    }
+
+    #[test]
+    fn payout_binding_key_class_is_registered() {
+        assert_eq!(
+            INCENTIVE_POOL_PAYOUT_BINDING.name,
+            "incentive-pool:PayoutBinding"
+        );
+        assert!(INCENTIVE_POOL_PAYOUT_BINDING.extend_to >= MIN_TTL_HORIZON);
+        assert!(INCENTIVE_POOL_PAYOUT_BINDING.extend_to <= MAX_TTL_HORIZON);
     }
 
     #[test]

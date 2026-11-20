@@ -28,6 +28,46 @@ payload and encoding N-of-M signatures in the shape the contract expects.
 and reward accounting) and its events, so `lafiya-web` can both read pool state
 and decode pool events emitted on-chain.
 
+### incentive-pool: constructor and configuration
+
+The pool is configured atomically at deploy time through its `__constructor`;
+there is **no** `initialize` method in the generated client. The constructor
+takes the admin, approver, token, attester registry, and the remaining
+configuration arguments, and validates the `attester_registry` and `token`
+interfaces during deployment. Because configuration happens in the deploy
+transaction, there is no deploy-then-initialize window in which a third party
+could claim the admin or approver roles.
+
+When deploying from TypeScript, pass the constructor arguments to the deploy
+call rather than issuing a follow-up `initialize` invocation:
+
+```ts
+import { Client as IncentivePoolClient } from "@lafiya/contracts/bindings/incentive-pool";
+
+// Constructor args are supplied at deploy time; no initialize() call follows.
+const pool = await IncentivePoolClient.deploy(
+  {
+    admin: adminAddress,
+    approver: approverAddress,
+    token: usdcAddress,
+    attester_registry: attesterRegistryAddress,
+    // ...remaining configuration arguments
+  },
+  { publicKey: deployer.publicKey() },
+);
+```
+
+### incentive-pool: payout binding lifecycle
+
+`setPayoutAddress` schedules a new payout recipient `PAYOUT_ADDRESS_DELAY`
+(48h) in the future; the binding only takes effect once the delay elapses.
+`cancelPayoutAddress` cancels a pending binding during that delay window and is
+callable by the attester or by a guardian/admin, so a compromised attester key
+cannot unilaterally redirect payouts. `getPayoutBinding` exposes the pending
+binding (recipient and effective time) for display in `lafiya-web`, and
+`resolvePayout` returns the address currently in effect.
+=======
+
 `scripts/conformance/check_bindings_drift.py` covers `multisig-account`'s and
 `incentive-pool`'s bindings the same way it does the other two contracts. The
 drift gate runs in CI and fails when a contract's interface changes without the
