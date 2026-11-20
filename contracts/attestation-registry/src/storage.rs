@@ -38,7 +38,9 @@ impl StorageKey for DataKey {
             | DataKey::RecordRevoked(..)
             | DataKey::RevokedThroughSequence(..)
             | DataKey::PreviousRecordHash(..)
-            | DataKey::NextRecordHash(..) => Durability::Persistent,
+            | DataKey::NextRecordHash(..)
+            | DataKey::AttesterCounterReceipt(..)
+            | DataKey::AttesterCounterReceiptSeq(..) => Durability::Persistent,
             DataKey::RateWindow(..) => Durability::Temporary,
         }
     }
@@ -98,6 +100,8 @@ mod tests {
             DataKey::RevokedThroughSequence(BytesN::from_array(env, &[7; 32])),
             DataKey::PreviousRecordHash(BytesN::from_array(env, &[7; 32])),
             DataKey::NextRecordHash(BytesN::from_array(env, &[7; 32])),
+            DataKey::AttesterCounterReceipt(Address::generate(env), 1),
+            DataKey::AttesterCounterReceiptSeq(Address::generate(env)),
         ]
     }
 

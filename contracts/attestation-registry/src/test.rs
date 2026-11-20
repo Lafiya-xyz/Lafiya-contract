@@ -1792,3 +1792,245 @@ fn status_list_segment_and_root_accessors() {
     let segment = client.get_status_list_segment(&0);
     assert!(segment.is_some());
 }
+
+// ───────────────────────── Probation counters ─────────────────────────
+
+#[test]
+fn attest_increments_attester_probation_counters() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+
+    assert_eq!(
+        attester_registry.get_probation_counters(&attester),
+        attester_registry::ProbationCounters {
+            attestations: 0,
+            disputes_upheld: 0,
+            revocations: 0,
+        }
+    );
+
+    attest_with_consent(&env, &client, &attester, &hash(&env, 120));
+    attest_with_consent(&env, &client, &attester, &hash(&env, 121));
+
+    let counters = attester_registry.get_probation_counters(&attester);
+    assert_eq!(counters.attestations, 2);
+    assert_eq!(counters.disputes_upheld, 0);
+    assert_eq!(counters.revocations, 0);
+}
+
+#[test]
+fn batch_attest_increments_attester_probation_counters_per_request() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+
+    let mut requests = Vec::new(&env);
+    for i in 0..3u8 {
+        let patient = Address::generate(&env);
+        let record_hash = hash(&env, 130 + i);
+        let expires_at = env.ledger().timestamp() + 10_000;
+        client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+        requests.push_back(AttestationRequest {
+            attester: attester.clone(),
+            patient,
+            record_hash,
+            previous_record_hash: None,
+        });
+    }
+    client.batch_attest(&requests);
+
+    assert_eq!(
+        attester_registry
+            .get_probation_counters(&attester)
+            .attestations,
+        3
+    );
+}
+
+#[test]
+fn revoke_attestation_increments_attester_revocation_counter() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 140);
+    attest_with_consent(&env, &client, &attester, &record_hash);
+
+    client.revoke_attestation(&admin, &record_hash, &Symbol::new(&env, "audit"));
+
+    let counters = attester_registry.get_probation_counters(&attester);
+    assert_eq!(counters.attestations, 1);
+    assert_eq!(counters.revocations, 1);
+}
+
+#[test]
+fn upheld_dispute_increments_attester_dispute_counter() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 150);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    client.attest(&attester, &patient, &record_hash);
+
+    let signature = BytesN::from_array(&env, &[5u8; 64]);
+    client.dispute_attestation(&patient, &record_hash, &signature);
+    client.resolve_dispute(&admin, &record_hash, &true);
+
+    let counters = attester_registry.get_probation_counters(&attester);
+    assert_eq!(counters.disputes_upheld, 1);
+}
+
+#[test]
+fn rejected_dispute_does_not_increment_attester_dispute_counter() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 151);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    client.attest(&attester, &patient, &record_hash);
+
+    let signature = BytesN::from_array(&env, &[6u8; 64]);
+    client.dispute_attestation(&patient, &record_hash, &signature);
+    client.resolve_dispute(&admin, &record_hash, &false);
+
+    assert_eq!(
+        attester_registry
+            .get_probation_counters(&attester)
+            .disputes_upheld,
+        0
+    );
+}
+
+#[test]
+fn probation_counters_are_isolated_per_attester() {
+    let (env, client, attester_registry, admin) = setup();
+    let a = enroll(&env, &attester_registry, &admin);
+    let b = enroll(&env, &attester_registry, &admin);
+
+    attest_with_consent(&env, &client, &a, &hash(&env, 160));
+    attest_with_consent(&env, &client, &b, &hash(&env, 161));
+    attest_with_consent(&env, &client, &b, &hash(&env, 162));
+
+    assert_eq!(
+        attester_registry
+            .get_probation_counters(&a)
+            .attestations,
+        1
+    );
+    assert_eq!(
+        attester_registry
+            .get_probation_counters(&b)
+            .attestations,
+        2
+    );
+}
+
+// ───────────────────────── Bounded input validation ─────────────────────────
+
+#[test]
+fn consent_rejects_oversized_region_code() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 170);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    // Longer than the documented region-code bound.
+    let region = String::from_str(&env, "AAAAAAAAAAAAAAAAAAAA");
+
+    assert_eq!(
+        client.try_consent_attestation_with_region(
+            &patient,
+            &attester,
+            &record_hash,
+            &expires_at,
+            &region,
+        ),
+        Err(Ok(Error::InputTooLong))
+    );
+    assert_eq!(client.get_attestation(&record_hash), None);
+}
+
+#[test]
+fn consent_rejects_invalid_charset_region_code() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 171);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    let region = String::from_str(&env, "ab-cd");
+
+    assert_eq!(
+        client.try_consent_attestation_with_region(
+            &patient,
+            &attester,
+            &record_hash,
+            &expires_at,
+            &region,
+        ),
+        Err(Ok(Error::InvalidInputCharset))
+    );
+}
+
+#[test]
+fn revoke_rejects_oversized_reason() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 172);
+    attest_with_consent(&env, &client, &attester, &record_hash);
+    let reason = String::from_str(&env, &"x".repeat(MAX_REASON_LEN + 1));
+
+    assert_eq!(
+        client.try_revoke_attestation_with_reason(&admin, &record_hash, &reason),
+        Err(Ok(Error::InputTooLong))
+    );
+    assert!(client.get_attestation(&record_hash).is_some());
+}
+
+#[test]
+fn revoke_rejects_invalid_charset_reason() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 173);
+    attest_with_consent(&env, &client, &attester, &record_hash);
+    let reason = String::from_str(&env, "bad\u{0007}reason");
+
+    assert_eq!(
+        client.try_revoke_attestation_with_reason(&admin, &record_hash, &reason),
+        Err(Ok(Error::InvalidInputCharset))
+    );
+}
+
+#[test]
+fn dispute_rejects_oversized_signature_bytes() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 174);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+    client.attest(&attester, &patient, &record_hash);
+    let signature = Bytes::from_slice(&env, &[1u8; 65]);
+
+    assert_eq!(
+        client.try_dispute_attestation_bytes(&patient, &record_hash, &signature),
+        Err(Ok(Error::InputTooLong))
+    );
+}
+
+#[test]
+fn bounded_inputs_at_the_limit_are_accepted() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 175);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    let region = String::from_str(&env, &"A".repeat(MAX_REGION_LEN));
+
+    client.consent_attestation_with_region(
+        &patient,
+        &attester,
+        &record_hash,
+        &expires_at,
+        &region,
+    );
+    assert!(client.get_attestation(&record_hash).is_some());
+}

@@ -31,6 +31,8 @@
 )]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use lafiya_contract_common::validate;
+use soroban_sdk::token;
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
@@ -134,6 +136,16 @@ enum DataKey {
     SessionKey(BytesN<32>),
     /// Session key pks delegated by an attester.
     AttesterSessions(Address),
+    /// Bond token contract address, if bonds are enabled.
+    BondToken,
+    /// Total currently-bonded amount held by the contract.
+    BondTotal,
+    /// Slashed amount not yet swept to its destination.
+    BondSlashedUnswept,
+    /// Active versioned probation policy.
+    ProbationPolicy,
+    /// Per-attester probation counters.
+    ProbationCounters(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -340,6 +352,14 @@ pub enum Error {
     InvalidSessionScope = 20,
     /// The session key expiry is not in the future.
     InvalidSessionExpiry = 21,
+    /// A String/Bytes input exceeds its documented bound.
+    InputTooLong = 22,
+    /// A String input contains characters outside its allowed set.
+    InvalidCharset = 23,
+    /// The attester does not yet satisfy the probation promotion criteria.
+    ProbationCriteriaNotMet = 24,
+    /// The attester is not currently on probation.
+    NotOnProbation = 25,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -508,6 +528,78 @@ pub struct AttesterReinstated {
     pub schema_version: u32,
     /// Per-contract monotonic event sequence number (gap detection).
     pub seq: u64,
+}
+
+/// Emitted when an attester is promoted out of probation.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ProbationCompleted {
+    #[topic]
+    pub attester: Address,
+    pub policy_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
+}
+
+/// Versioned, objective criteria for exiting probation.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbationPolicy {
+    /// Policy version; bump on any criteria change.
+    pub version: u32,
+    /// Minimum attestations recorded while on probation.
+    pub min_attestations: u32,
+    /// Minimum tenure in seconds since enrollment.
+    pub min_tenure_seconds: u64,
+    /// Maximum upheld disputes permitted.
+    pub max_disputes_upheld: u32,
+    /// Maximum revocations permitted.
+    pub max_revocations: u32,
+}
+
+impl ProbationPolicy {
+    /// The default version-1 policy.
+    pub fn default_policy(_env: &Env) -> Self {
+        Self {
+            version: 1,
+            min_attestations: 10,
+            min_tenure_seconds: 7 * 24 * 60 * 60,
+            max_disputes_upheld: 0,
+            max_revocations: 0,
+        }
+    }
+
+    /// Whether `counters` satisfy every criterion at the current ledger time.
+    pub fn is_satisfied(&self, env: &Env, counters: &ProbationCounters) -> bool {
+        let tenure = env
+            .ledger()
+            .timestamp()
+            .saturating_sub(counters.enrolled_at);
+        counters.attestations >= self.min_attestations
+            && tenure >= self.min_tenure_seconds
+            && counters.disputes_upheld <= self.max_disputes_upheld
+            && counters.revocations <= self.max_revocations
+    }
+}
+
+/// Per-attester counters evaluated by `try_promote`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbationCounters {
+    pub attestations: u32,
+    pub disputes_upheld: u32,
+    pub revocations: u32,
+    pub enrolled_at: u64,
+}
+
+/// Result of `bond_reconcile`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BondReconcileReport {
+    pub ok: bool,
+    pub bonded: i128,
+    pub slashed_unswept: i128,
+    pub token_balance: i128,
 }
 
 /// Emitted when the contract is upgraded to new wasm.
@@ -770,6 +862,7 @@ impl AttesterRegistry {
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::validate_region(&Some(region.clone()))?;
+        Self::validate_ascii(&region, validate::MAX_REGION_LEN)?;
         let key = DataKey::RegionalRegistrar(registrar.clone());
         if let Some(current) = storage::get::<_, RegionalRegistrarInfo>(&env, &key) {
             let count = Self::regional_registrar_count(&env, &registrar);
@@ -999,6 +1092,9 @@ impl AttesterRegistry {
         let regional_scope = Self::registrar_scope(&env, &registrar)?;
         Self::require_not_paused(&env)?;
         Self::validate_region(&region)?;
+        if let Some(region) = region.as_ref() {
+            Self::validate_ascii(region, validate::MAX_REGION_LEN)?;
+        }
         Self::validate_validity_window(valid_from, valid_until)?;
         let region = Self::scoped_region(regional_scope.as_ref(), region)?;
         let already_present =
@@ -1077,6 +1173,9 @@ impl AttesterRegistry {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;
         Self::validate_region(&region)?;
+        if let Some(region) = region.as_ref() {
+            Self::validate_ascii(region, validate::MAX_REGION_LEN)?;
+        }
         Self::validate_validity_window(valid_from, valid_until)?;
         let existing: StoredAttesterInfo = storage::get(&env, &DataKey::Attester(attester.clone()))
             .filter(|info: &StoredAttesterInfo| !info.removed)
@@ -1325,12 +1424,102 @@ impl AttesterRegistry {
                 == storage::has(&env, &DataKey::PendingAdminExpiresAt),
             "pending_admin_inconsistent",
         );
+        let bond = Self::bond_reconcile(env.clone());
+        check(bond.ok, "bond_accounting_drift");
         InvariantReport {
             ok: violations.is_empty(),
-            checked: 4,
+            checked: 5,
             violations,
         }
     }
+
+    /// Reconcile bond accounting against the token balance held by the
+    /// contract. Read-only and permissionless.
+    ///
+    /// Invariant: `sum(bonds) + slashed_unswept == token.balance(contract)`.
+    /// When no bond token has been configured the module holds no funds and
+    /// the invariant is trivially satisfied.
+    pub fn bond_reconcile(env: Env) -> BondReconcileReport {
+        let bonded: i128 = storage::get(&env, &DataKey::BondTotal).unwrap_or(0);
+        let slashed: i128 = storage::get(&env, &DataKey::BondSlashedUnswept).unwrap_or(0);
+        let accounted = bonded.saturating_add(slashed);
+        let token: Option<Address> = storage::get(&env, &DataKey::BondToken);
+        let actual = match token {
+            Some(token) => {
+                let client = token::Client::new(&env, &token);
+                client.balance(&env.current_contract_address())
+            }
+            None => 0,
+        };
+        BondReconcileReport {
+            ok: accounted == actual,
+            bonded,
+            slashed_unswept: slashed,
+            token_balance: actual,
+        }
+    }
+
+    /// Permissionlessly promote an attester out of probation once the
+    /// versioned [`ProbationPolicy`] criteria are met. Refuses with
+    /// `Error::ProbationCriteriaNotMet` otherwise. The admin may still extend
+    /// probation via [`AttesterRegistry::extend_probation`].
+    pub fn try_promote(env: Env, attester: Address) -> Result<(), Error> {
+        let policy = Self::probation_policy(&env);
+        let counters = Self::probation_counters(&env, &attester);
+        if !probation::is_active(&env, &attester) {
+            return Err(Error::AttesterNotFound);
+        }
+        if !policy.is_satisfied(&env, &counters) {
+            return Err(Error::ProbationCriteriaNotMet);
+        }
+        probation::complete(&env, &attester);
+        ProbationCompleted {
+            attester,
+            policy_version: policy.version,
+            seq: storage::next_event_seq(&env),
+        }
+        .publish(&env);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// Admin-only extension of an attester's probation window. Requires the
+    /// admin's authorization and refuses once the attester has been promoted.
+    pub fn extend_probation(
+        env: Env,
+        attester: Address,
+        additional_seconds: u64,
+    ) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        probation::extend(&env, &attester, additional_seconds)?;
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// The active versioned probation policy.
+    pub fn get_probation_policy(env: Env) -> ProbationPolicy {
+        Self::probation_policy(&env)
+    }
+
+    /// Per-attester probation counters used by `try_promote`.
+    pub fn get_probation_counters(env: Env, attester: Address) -> ProbationCounters {
+        Self::probation_counters(&env, &attester)
+    }
+
+    fn probation_policy(env: &Env) -> ProbationPolicy {
+        storage::get(env, &DataKey::ProbationPolicy).unwrap_or(ProbationPolicy::default_policy(env))
+    }
+
+    fn probation_counters(env: &Env, attester: &Address) -> ProbationCounters {
+        storage::get(env, &DataKey::ProbationCounters(attester.clone()))
+            .unwrap_or(ProbationCounters {
+                attestations: 0,
+                disputes_upheld: 0,
+                revocations: 0,
+                enrolled_at: 0,
+            })
+    }
+=======
 
     /// Suspend an allowlisted attester. A global registrar may suspend any
     /// attester; a regional registrar may suspend only attesters in its region.
@@ -1350,6 +1539,8 @@ impl AttesterRegistry {
     ) -> Result<(), Error> {
         let regional_scope = Self::registrar_scope(&env, &registrar)?;
         Self::require_not_paused(&env)?;
+        let reason_text = reason.to_string();
+        Self::validate_ascii(&reason_text, validate::MAX_REASON_LEN)?;
         let mut info: StoredAttesterInfo = storage::get(&env, &DataKey::Attester(attester.clone()))
             .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
@@ -1609,25 +1800,18 @@ impl AttesterRegistry {
 
     fn validate_region(region: &Option<String>) -> Result<(), Error> {
         if let Some(region) = region {
-            let bytes = region.to_bytes();
-            if bytes.len() < 4 || bytes.len() > 7 || bytes.get(2) != Some(b'-') {
-                return Err(Error::InvalidRegion);
-            }
-            // loop-bound: LOCAL -- region length checked to 4..=7 bytes on the line above
-            for (index, byte) in bytes.iter().enumerate() {
-                let valid = if index == 2 {
-                    byte == b'-'
-                } else if index < 2 {
-                    byte.is_ascii_uppercase()
-                } else {
-                    byte.is_ascii_uppercase() || byte.is_ascii_digit()
-                };
-                if !valid {
-                    return Err(Error::InvalidRegion);
-                }
-            }
+            validate::region_code(region).map_err(|_| Error::InvalidRegion)?;
         }
         Ok(())
+    }
+
+    /// Validate a bounded ASCII string, mapping validator errors to typed
+    /// contract errors.
+    fn validate_ascii(value: &String, max: u32) -> Result<(), Error> {
+        validate::bounded_ascii(value, max).map_err(|err| match err {
+            validate::Error::TooLong => Error::InputTooLong,
+            validate::Error::InvalidCharset => Error::InvalidCharset,
+        })
     }
 
     /// Get `attester`'s metadata with computed validity status. The status
@@ -2006,3 +2190,7 @@ mod test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod governance_test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod probation_test;

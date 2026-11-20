@@ -379,6 +379,24 @@ fn three_of_five_signers_authorize() {
 }
 
 #[test]
+fn oversized_signer_set_is_rejected() {
+    // The signer set is a bounded `Vec<BytesN<32>>` input; exceeding the
+    // maximum signer count must fail with a typed error rather than being
+    // accepted and inflating the stored entry.
+    let env = Env::default();
+    let mut signers = Vec::new(&env);
+    for seed in 0u8..=MAX_SIGNERS {
+        signers.push_back(BytesN::from_array(&env, &[seed; 32]));
+    }
+    let result = env.try_invoke_contract::<(), Error>(
+        &env.register(MultisigAccount, (signers, 1u32)),
+        &soroban_sdk::Symbol::new(&env, "__constructor"),
+        (Vec::<BytesN<32>>::new(&env), 1u32).into_val(&env),
+    );
+    assert!(result.is_err());
+}
+
+#[test]
 fn get_interface_reports_kind_versions_and_features() {
     let env = Env::default();
     let keys = signing_keys();

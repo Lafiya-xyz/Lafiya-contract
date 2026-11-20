@@ -9,12 +9,16 @@
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use lafiya_contract_common::validate;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
     String, Vec,
 };
 
 const SCHEMA_VERSION: u32 = 1;
+
+/// Maximum length of the optional ISO 3166-2 region code stored on a facility.
+pub const MAX_REGION_LEN: u32 = 8;
 
 /// Instance storage TTL policy, matching the other registries.
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
@@ -89,6 +93,10 @@ pub enum Error {
     AffiliateLimitReached = 8,
     /// The pair already has `MAX_PERIODS` retained affiliation periods.
     PeriodLimitReached = 9,
+    /// A `String` / `Bytes` input exceeded its documented bound.
+    InputTooLong = 10,
+    /// A `String` input contained characters outside its allowed set.
+    InvalidCharset = 11,
 }
 
 #[contractevent]
@@ -188,6 +196,9 @@ impl FacilityRegistry {
             + 1;
         if id > MAX_FACILITIES {
             return Err(Error::FacilityLimitReached);
+        }
+        if let Some(region) = region.as_ref() {
+            validate::region_code(region).map_err(Self::map_validation_error)?;
         }
         env.storage().instance().set(&DataKey::FacilityCount, &id);
         Self::save_facility(
@@ -378,6 +389,14 @@ impl FacilityRegistry {
 }
 
 impl FacilityRegistry {
+    /// Map a shared validation failure onto this contract's typed error.
+    fn map_validation_error(err: validate::ValidationError) -> Error {
+        match err {
+            validate::ValidationError::TooLong => Error::InputTooLong,
+            validate::ValidationError::InvalidCharset => Error::InvalidCharset,
+        }
+    }
+
     fn admin(env: &Env) -> Result<Address, Error> {
         env.storage()
             .instance()

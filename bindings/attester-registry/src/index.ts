@@ -77,8 +77,33 @@ export const Errors = {
   /**
    * The supplied batch exceeds `BATCH_LIMIT` addresses.
    */
-  8: {message:"BatchTooLarge"}
+  8: {message:"BatchTooLarge"},
+  /**
+   * A `String` or `Bytes` input exceeds the maximum length allowed by the
+   * shared `validate` module (see `docs/storage-cost.md`).
+   */
+  9: {message:"InputTooLong"},
+  /**
+   * A `String` input contains characters outside the allowed ASCII
+   * character set for its field (e.g. a region code or a suspension reason).
+   */
+  10: {message:"InvalidCharset"},
+  /**
+   * A region code does not match the expected `region_code()` encoding.
+   */
+  11: {message:"InvalidRegionCode"},
+  /**
+   * `try_promote` was called for an attester that is not currently in
+   * probation (already promoted, never enrolled, or removed).
+   */
+  12: {message:"NotInProbation"},
+  /**
+   * `try_promote` was called before the attester met every criterion of the
+   * active probation policy (minimum attestations, tenure, disputes, etc.).
+   */
+  13: {message:"ProbationCriteriaNotMet"}
 }
+=======
 
 
 
@@ -115,6 +140,31 @@ info: AttesterInfo;
  */
 suspended: boolean;
 }
+
+
+
+/**
+ * Snapshot of the bond module's accounting, as returned by `bond_reconcile`.
+ */
+export interface BondReconciliation {
+  /**
+ * Sum of all outstanding attester bonds.
+ */
+total_bonds: i128;
+  /**
+ * Slashed funds that have not yet been swept to their destination.
+ */
+slashed_unswept: i128;
+  /**
+ * The contract's current balance of the bond token.
+ */
+token_balance: i128;
+  /**
+ * Whether `total_bonds + slashed_unswept == token_balance` holds.
+ */
+balanced: boolean;
+}
+=======
 
 
 
@@ -424,7 +474,35 @@ export interface Client {
   add_attester_with_info: ({attester, license_hash, region}: {attester: string, license_hash: Option<Buffer>, region: Option<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
   suspend_attester_with_reason: ({attester, reason}: {attester: string, reason: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
   get_attester_trust_revoked_after: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>
+
+  /**
+   * Construct and simulate a bond_reconcile transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Reconcile the bond module's accounting against the token balance held by
+   * the contract. Returns the sum of all outstanding bonds, the amount of
+   * slashed-but-unswept funds, the contract's token balance, and whether the
+   * invariant `sum(bonds) + slashed_unswept == token.balance(contract)`
+   * currently holds. Callable by anyone.
+   */
+  bond_reconcile: (options?: MethodOptions) => Promise<AssembledTransaction<BondReconciliation>>
+
+  /**
+   * Construct and simulate a try_promote transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Permissionlessly promote `attester` out of probation once every
+   * criterion of the active, versioned probation policy is met. Emits
+   * `ProbationCompleted` on success. Fails with `Error::NotInProbation`
+   * if the attester is not currently in probation, and with
+   * `Error::ProbationCriteriaNotMet` if any criterion is unmet.
+   */
+  try_promote: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a extend_probation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Extend an attester's probation by `additional_ledgers` ledgers. Requires
+   * the admin's authorization. Emits `ProbationExtended`.
+   */
+  extend_probation: ({attester, additional_ledgers}: {attester: string, additional_ledgers: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
 }
+=======
 export class Client extends ContractClient {
   static async deploy<T = Client>(
     /** Options for initializing a Client as well as for calling a method, with extras specific to deploying. */
@@ -506,6 +584,10 @@ export class Client extends ContractClient {
         reinstate_attester: this.txFromJSON<Result<void>>,
         get_attester_status: this.txFromJSON<Option<AttesterStatus>>,
         update_attester_info: this.txFromJSON<Result<void>>,
-        add_attester_with_info: this.txFromJSON<Result<void>>
+        add_attester_with_info: this.txFromJSON<Result<void>>,
+        bond_reconcile: this.txFromJSON<BondReconciliation>,
+        try_promote: this.txFromJSON<Result<void>>,
+        extend_probation: this.txFromJSON<Result<void>>
   }
 }
+=======

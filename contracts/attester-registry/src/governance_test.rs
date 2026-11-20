@@ -521,3 +521,153 @@ fn bond_config_validation() {
         .try_set_bond_config(&token, &1, &10, &2, &10, &r)
         .is_err());
 }
+
+// ── Slash destination and sweep authority (#677) ──
+
+#[test]
+fn slash_pays_only_the_configured_recipient() {
+    let f = bond_setup(1);
+    f.client.post_bond(&f.attester, &MIN_BOND);
+    let bystander = Address::generate(&f.env);
+    let case_id = f
+        .client
+        .propose_slash(&f.admin, &f.attester, &MIN_BOND, &evidence(&f.env));
+    f.client.execute_slash(&case_id);
+
+    // The configured recipient receives the slashed funds; nobody else does.
+    assert_eq!(f.token.balance(&f.recipient), MIN_BOND);
+    assert_eq!(f.token.balance(&bystander), 0);
+    assert_eq!(f.token.balance(&f.attester), 10_000 - MIN_BOND);
+    // The contract retains no unswept slashed balance.
+    assert_eq!(f.token.balance(&f.client.address), 0);
+}
+
+#[test]
+fn slash_recipient_change_requires_admin_and_applies_to_future_slashes() {
+    let f = bond_setup(1);
+    f.client.post_bond(&f.attester, &MIN_BOND);
+    let new_recipient = Address::generate(&f.env);
+
+    // Only the admin (bond config authority) can retarget the destination.
+    assert!(f
+        .client
+        .try_set_bond_config(
+            &f.token.address,
+            &MIN_BOND,
+            &WINDOW,
+            &1,
+            &(3 * DAY),
+            &new_recipient,
+        )
+        .is_err());
+
+    f.client.set_bond_config(
+        &f.token.address,
+        &MIN_BOND,
+        &WINDOW,
+        &1,
+        &(3 * DAY),
+        &new_recipient,
+    );
+    let case_id = f
+        .client
+        .propose_slash(&f.admin, &f.attester, &MIN_BOND, &evidence(&f.env));
+    f.client.execute_slash(&case_id);
+    assert_eq!(f.token.balance(&new_recipient), MIN_BOND);
+    assert_eq!(f.token.balance(&f.recipient), 0);
+}
+
+#[test]
+fn sweep_authority_is_restricted_and_moves_only_unswept_slashed_funds() {
+    let f = bond_setup(1);
+    f.client.post_bond(&f.attester, &MIN_BOND);
+    let case_id = f
+        .client
+        .propose_slash(&f.admin, &f.attester, &MIN_BOND, &evidence(&f.env));
+    f.client.execute_slash(&case_id);
+
+    // A non-admin cannot sweep.
+    let stranger = Address::generate(&f.env);
+    assert!(f.client.try_sweep_slashed(&stranger, &stranger).is_err());
+
+    // The admin can sweep any residual unswept slashed balance to a destination.
+    let treasury = Address::generate(&f.env);
+    f.client.sweep_slashed(&f.admin, &treasury);
+    assert_eq!(f.token.balance(&f.client.address), 0);
+}
+
+// ── Probation extension and objective promotion (#678) ──
+
+#[test]
+fn admin_can_extend_probation_but_not_shorten_it() {
+    let (env, client, admin) = setup();
+    client.set_probation_config(&DAY, &5, &100, &false);
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let original = client.get_probation_limits(&attester).unwrap().ends_at;
+
+    // Extending pushes the end further out.
+    client.extend_probation(&admin, &attester, &(2 * DAY));
+    let extended = client.get_probation_limits(&attester).unwrap().ends_at;
+    assert_eq!(extended, original + 2 * DAY);
+
+    // Extending by zero is a no-op; the admin cannot pull the end in.
+    client.extend_probation(&admin, &attester, &0);
+    assert_eq!(
+        client.get_probation_limits(&attester).unwrap().ends_at,
+        extended
+    );
+
+    // Only the admin can extend.
+    let stranger = Address::generate(&env);
+    assert!(client
+        .try_extend_probation(&stranger, &attester, &DAY)
+        .is_err());
+}
+
+#[test]
+fn try_promote_is_permissionless_and_refuses_when_criteria_unmet() {
+    let (env, client, admin) = setup();
+    client.set_probation_config(&(30 * DAY), &5, &100, &false);
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    assert_eq!(
+        client.get_probation_state(&attester),
+        ProbationState::Probation
+    );
+
+    // Criteria not met (no attestations, insufficient tenure): anyone calling
+    // try_promote is refused and the attester stays on probation.
+    let caller = Address::generate(&env);
+    assert!(client.try_promote(&caller, &attester).is_err());
+    assert_eq!(
+        client.get_probation_state(&attester),
+        ProbationState::Probation
+    );
+
+    // Once criteria are satisfied, a permissionless caller can promote.
+    advance(&env, 30 * DAY);
+    client.try_promote(&caller, &attester).unwrap();
+    assert_eq!(
+        client.get_probation_state(&attester),
+        ProbationState::Standard
+    );
+    // A second promotion attempt is refused.
+    assert!(client.try_promote(&caller, &attester).is_err());
+}
+
+#[test]
+fn try_promote_refuses_flagged_attester() {
+    let (env, client, admin) = setup();
+    client.set_probation_config(&DAY, &5, &100, &true);
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.flag_probation(&admin, &attester, &Symbol::new(&env, "odd_volume"));
+    advance(&env, 10 * DAY);
+    let caller = Address::generate(&env);
+    assert!(client.try_promote(&caller, &attester).is_err());
+    assert_eq!(
+        client.get_probation_state(&attester),
+        ProbationState::Flagged
+    );
+}

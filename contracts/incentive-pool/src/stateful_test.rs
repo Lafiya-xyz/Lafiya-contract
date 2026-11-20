@@ -9,12 +9,17 @@
 //! - `total_paid <= total_deposited`
 //! - each work item pays at most once
 //! - per-attester claimed total never exceeds the cap in force at claim time
+//! - vesting grants vest linearly after their cliff, never pay more than
+//!   `total`, and reserved liabilities (unvested + unclaimed grant amounts)
+//!   are never drained by `withdraw`
 //!
 //! Finding: approvals do not reserve funds, so `withdraw` can drop custody
 //! below outstanding (approved, unclaimed) liabilities. Those claims then
 //! fail with `InsufficientPoolBalance` until the pool is re-funded. This is
 //! by design (approvals are promises, not escrow) and the harness asserts
-//! that behaviour rather than flagging it.
+//! that behaviour rather than flagging it. Vesting grants, by contrast, *are*
+//! reserved: `withdraw` must leave enough custody to cover every grant's
+//! unclaimed remainder.
 //!
 //! Shrinking yields a minimal `Vec<Op>`; on failure proptest prints it in
 //! `Debug` form, which is a replayable trace: paste it into
@@ -35,6 +40,7 @@ use std::vec::Vec;
 
 pub const ATTESTERS: usize = 3;
 pub const ITEMS: u8 = 6;
+pub const GRANTS: usize = 4;
 const START_CAP: i128 = 1_000;
 
 #[derive(Clone, Debug)]
@@ -53,12 +59,22 @@ pub enum Op {
     SetMaxPerAttester(i128),
     Suspend(u8),
     Reinstate(u8),
+    CreateGrant {
+        attester: u8,
+        total: i128,
+        cliff: u64,
+        duration: u64,
+    },
+    ClaimVested(u8),
+    Forfeit(u8),
+    AdvanceTime(u64),
 }
 
 pub fn op_strategy() -> impl Strategy<Value = Op> {
     let amt = -10i128..=600;
     let item = 0..ITEMS;
     let att = 0..ATTESTERS as u8;
+    let grant = 0..GRANTS as u8;
     prop_oneof![
         3 => amt.clone().prop_map(Op::Fund),
         1 => amt.clone().prop_map(Op::Withdraw),
@@ -71,7 +87,66 @@ pub fn op_strategy() -> impl Strategy<Value = Op> {
         1 => (1i128..=1_500).prop_map(Op::SetMaxPerAttester),
         1 => att.clone().prop_map(Op::Suspend),
         1 => att.prop_map(Op::Reinstate),
+        2 => (att.clone(), 1i128..=600, 0u64..=50, 1u64..=200)
+            .prop_map(|(attester, total, cliff, duration)| Op::CreateGrant {
+                attester,
+                total,
+                cliff,
+                duration,
+            }),
+        3 => grant.clone().prop_map(Op::ClaimVested),
+        1 => grant.prop_map(Op::Forfeit),
+        2 => (0u64..=100).prop_map(Op::AdvanceTime),
     ]
+}
+
+/// Model of a single vesting grant. `start` is the ledger timestamp at
+/// creation; `claimed` and `forfeited` track released amounts.
+#[derive(Clone, Debug)]
+struct GrantModel {
+    attester: usize,
+    total: i128,
+    start: u64,
+    cliff: u64,
+    duration: u64,
+    claimed: i128,
+    forfeited: bool,
+}
+
+impl GrantModel {
+    /// Amount vested at time `now` (linear after the cliff, saturating at
+    /// `total`). Uses the same integer math as the contract so rounding is
+    /// exercised identically.
+    fn vested(&self, now: u64) -> i128 {
+        let elapsed = now.saturating_sub(self.start);
+        if elapsed < self.cliff {
+            return 0;
+        }
+        let after = elapsed - self.cliff;
+        if after >= self.duration {
+            return self.total;
+        }
+        // total * after / duration, floor division.
+        (self.total * after as i128) / self.duration as i128
+    }
+
+    /// Vested-but-unclaimed amount at time `now`.
+    fn claimable(&self, now: u64) -> i128 {
+        if self.forfeited {
+            return 0;
+        }
+        self.vested(now) - self.claimed
+    }
+
+    /// Unclaimed remainder still reserved against the pool (unvested +
+    /// vested-but-unclaimed), or zero once forfeited.
+    fn reserved(&self) -> i128 {
+        if self.forfeited {
+            0
+        } else {
+            self.total - self.claimed
+        }
+    }
 }
 
 #[derive(Default)]
@@ -85,6 +160,15 @@ struct Model {
     paused: bool,
     max_claim: i128,
     max_attester: i128,
+    now: u64,
+    grants: BTreeMap<u8, GrantModel>,
+}
+
+impl Model {
+    /// Sum of reserved vesting liabilities across all live grants.
+    fn reserved_vesting(&self) -> i128 {
+        self.grants.values().map(GrantModel::reserved).sum()
+    }
 }
 
 pub struct Harness {
@@ -173,7 +257,8 @@ impl Model {
                 if a <= 0 {
                     return Err(Error::NonPositiveAmount);
                 }
-                if a > self.deposited - self.paid {
+                // Reserved vesting liabilities must remain covered.
+                if a > self.deposited - self.paid - self.reserved_vesting() {
                     return Err(Error::InsufficientPoolBalance);
                 }
                 self.paid += a;
@@ -222,6 +307,72 @@ impl Model {
             Op::SetMaxPerClaim(m) => self.max_claim = m,
             Op::SetMaxPerAttester(m) => self.max_attester = m,
             Op::Suspend(_) | Op::Reinstate(_) => {}
+            Op::CreateGrant {
+                attester,
+                total,
+                cliff,
+                duration,
+            } => {
+                paused()?;
+                if total <= 0 {
+                    return Err(Error::NonPositiveAmount);
+                }
+                if duration == 0 {
+                    return Err(Error::NonPositiveAmount);
+                }
+                if self.suspended[attester as usize] {
+                    return Err(Error::AttesterNotAllowlisted);
+                }
+                // Grants are reserved, so the pool must already hold enough
+                // unreserved custody to back the new liability.
+                if total > self.deposited - self.paid - self.reserved_vesting() {
+                    return Err(Error::InsufficientPoolBalance);
+                }
+                let id = self.grants.len() as u8;
+                self.grants.insert(
+                    id,
+                    GrantModel {
+                        attester: attester as usize,
+                        total,
+                        start: self.now,
+                        cliff,
+                        duration,
+                        claimed: 0,
+                        forfeited: false,
+                    },
+                );
+            }
+            Op::ClaimVested(id) => {
+                paused()?;
+                let g = self.grants.get(&id).ok_or(Error::GrantNotFound)?;
+                if g.forfeited {
+                    return Err(Error::GrantForfeited);
+                }
+                if self.suspended[g.attester] {
+                    return Err(Error::AttesterNotAllowlisted);
+                }
+                let amount = g.claimable(self.now);
+                if amount <= 0 {
+                    return Err(Error::NothingToClaim);
+                }
+                let att = g.attester;
+                let g = self.grants.get_mut(&id).unwrap();
+                g.claimed += amount;
+                self.per_attester[att] += amount;
+                self.paid += amount;
+            }
+            Op::Forfeit(id) => {
+                paused()?;
+                let g = self.grants.get(&id).ok_or(Error::GrantNotFound)?;
+                if g.forfeited {
+                    return Err(Error::GrantForfeited);
+                }
+                let g = self.grants.get_mut(&id).unwrap();
+                g.forfeited = true;
+            }
+            Op::AdvanceTime(dt) => {
+                self.now = self.now.saturating_add(dt);
+            }
         }
         Ok(())
     }
@@ -270,6 +421,24 @@ pub fn replay(ops: Vec<Op>) {
                 }
                 Ok(())
             }
+            Op::CreateGrant {
+                attester,
+                total,
+                cliff,
+                duration,
+            } => outcome!(h.pool.try_create_vesting_grant(
+                &h.attesters[attester as usize],
+                &total,
+                &cliff,
+                &duration
+            )),
+            Op::ClaimVested(id) => outcome!(h.pool.try_claim_vested(&id)),
+            Op::Forfeit(id) => outcome!(h.pool.try_forfeit(&h.admin, &id)),
+            Op::AdvanceTime(dt) => {
+                let now = h.env.ledger().timestamp();
+                h.env.ledger().set_timestamp(now.saturating_add(dt));
+                Ok(())
+            }
         };
         let expected = m.step(op);
         assert_eq!(actual, expected, "step {n} {op:?} diverged from model");
@@ -294,6 +463,32 @@ pub fn replay(ops: Vec<Op>) {
         for (i, a) in h.attesters.iter().enumerate() {
             assert_eq!(h.pool.get_attester_total_claimed(a), m.per_attester[i]);
         }
+
+        // Vesting invariants: reserved liabilities are reported by the pool
+        // and never exceed custody; each grant's claimed total matches the
+        // model and never exceeds its total.
+        let reserved = h.pool.get_reserved_liabilities();
+        assert_eq!(
+            reserved,
+            m.reserved_vesting(),
+            "step {n}: reserved liabilities"
+        );
+        assert!(
+            reserved <= deposited - paid,
+            "step {n}: reserved liabilities exceed custody"
+        );
+        for (id, g) in m.grants.iter() {
+            let on_chain = h.pool.get_vesting_grant(id);
+            assert_eq!(on_chain.claimed, g.claimed, "step {n}: grant {id} claimed");
+            assert_eq!(
+                on_chain.forfeited, g.forfeited,
+                "step {n}: grant {id} forfeited"
+            );
+            assert!(
+                on_chain.claimed <= on_chain.total,
+                "step {n}: grant {id} over-claimed"
+            );
+        }
     }
 }
 
@@ -306,5 +501,43 @@ proptest! {
     #[test]
     fn pool_matches_model(ops in prop::collection::vec(op_strategy(), 1..40)) {
         replay(ops);
+    }
+
+    /// Focused rounding check: a grant whose `total` does not divide evenly
+    /// by `duration` must never over-pay, and the final claim must release
+    /// exactly the remainder.
+    #[test]
+    fn vesting_rounding_never_overpays(
+        total in 1i128..=1_000,
+        duration in 1u64..=97,
+        steps in prop::collection::vec(0u64..=20, 1..30),
+    ) {
+        let h = harness();
+        h.pool.fund(&(total + 1));
+        let att = h.attesters[0].clone();
+        let id = h.pool.create_vesting_grant(&att, &total, &0, &duration);
+        let mut paid: i128 = 0;
+        for dt in steps {
+            let now = h.env.ledger().timestamp();
+            h.env.ledger().set_timestamp(now.saturating_add(dt));
+            let elapsed = h.env.ledger().timestamp();
+            let expected_vested = if elapsed >= duration {
+                total
+            } else {
+                (total * elapsed as i128) / duration as i128
+            };
+            let _ = h.pool.try_claim_vested(&id);
+            let g = h.pool.get_vesting_grant(&id);
+            assert!(g.claimed <= expected_vested, "over-paid vested amount");
+            assert!(g.claimed <= total, "claimed exceeds total");
+            paid = g.claimed;
+        }
+        // Jump past the end and drain the remainder.
+        let now = h.env.ledger().timestamp();
+        h.env.ledger().set_timestamp(now.saturating_add(duration));
+        let _ = h.pool.try_claim_vested(&id);
+        let g = h.pool.get_vesting_grant(&id);
+        assert_eq!(g.claimed, total, "final claim must release the remainder");
+        assert!(g.claimed >= paid);
     }
 }

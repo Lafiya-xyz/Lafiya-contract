@@ -104,6 +104,46 @@
   },
   {
     "kind": "function_v0",
+    "name": "bond_reconcile",
+    "spec": {
+      "inputs": [],
+      "name": "bond_reconcile",
+      "outputs": [
+        {
+          "udt": {
+            "name": "BondReconciliation"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "extend_probation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "name": "extra_ledgers",
+          "type": "u32"
+        }
+      ],
+      "name": "extend_probation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_admin",
     "spec": {
       "inputs": [],
@@ -405,6 +445,27 @@
   },
   {
     "kind": "function_v0",
+    "name": "try_promote",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "try_promote",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "suspend_attester",
     "spec": {
       "inputs": [
@@ -669,6 +730,40 @@
   },
   {
     "kind": "event_v0",
+    "name": "BondReconciled",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "BondReconciled",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "by",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "total_bonds",
+          "type_": "i128"
+        },
+        {
+          "location": "data",
+          "name": "slashed_unswept",
+          "type_": "i128"
+        },
+        {
+          "location": "data",
+          "name": "token_balance",
+          "type_": "i128"
+        }
+      ],
+      "prefix_topics": [
+        "bond_reconciled"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
     "name": "Initialized",
     "spec": {
       "data_format": "map",
@@ -683,6 +778,54 @@
       ],
       "prefix_topics": [
         "initialized"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "ProbationCompleted",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "ProbationCompleted",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "policy_version",
+          "type_": "u32"
+        }
+      ],
+      "prefix_topics": [
+        "probation_completed"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "ProbationExtended",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "ProbationExtended",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "new_end_ledger",
+          "type_": "u32"
+        }
+      ],
+      "prefix_topics": [
+        "probation_extended"
       ]
     }
   },
@@ -755,6 +898,32 @@
       "prefix_topics": [
         "upgraded"
       ]
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "BondReconciliation",
+    "spec": {
+      "fields": [
+        {
+          "name": "total_bonds",
+          "type": "i128"
+        },
+        {
+          "name": "slashed_unswept",
+          "type": "i128"
+        },
+        {
+          "name": "token_balance",
+          "type": "i128"
+        },
+        {
+          "name": "balanced",
+          "type": "bool"
+        }
+      ],
+      "lib": "",
+      "name": "BondReconciliation"
     }
   },
   {

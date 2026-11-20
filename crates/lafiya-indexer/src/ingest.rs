@@ -8,6 +8,7 @@ use sqlx::PgPool;
 
 use crate::archive::{ArchiveError, ArchiveEventSource, ArchiveRange};
 use crate::decode::{cursor_ledger, RawEvent};
+use crate::events::IndexedEventKind;
 use crate::metrics::Metrics;
 use crate::reconcile::{self, ReorgOutcome};
 use crate::rpc::{EventSource, RpcError, Start};
@@ -123,6 +124,19 @@ impl<S: EventSource> Ingestor<S> {
             }
         };
 
+        // Classify every event before persisting so that a newly added event
+        // kind is either handled or explicitly ignored, never silently
+        // dropped. Unknown kinds are counted so operators can spot a decoder
+        // that lags behind a contract upgrade.
+        for event in &page.events {
+            match IndexedEventKind::classify(event) {
+                IndexedEventKind::Handled(_) => {}
+                IndexedEventKind::Ignored => {
+                    self.metrics.events_ignored_total.inc();
+                }
+            }
+        }
+
         let gaps = self
             .seq_tracker
             .lock()
@@ -138,6 +152,11 @@ impl<S: EventSource> Ingestor<S> {
             );
         }
 
+        // The checkpoint is derived from the page's events and cursor, so it
+        // advances past every event kind (handled or ignored) in this page.
+        // `apply_page` persists the events and the checkpoint in one
+        // transaction, so a crash can never checkpoint past unpersisted
+        // events.
         let next = store::checkpoint_after(&page.cursor, &page.events, resume);
         let applied = store::apply_page(&self.pool, &page.events, &next).await?;
 
@@ -385,6 +404,11 @@ pub async fn backfill(
     let chunks: Vec<&[RawEvent]> = events.chunks(500).collect();
     for (i, chunk) in chunks.iter().enumerate() {
         let tail = chunk.last().expect("non-empty chunk");
+        // Backfilled events go through the same classification as live
+        // ingestion so derived tables stay consistent regardless of source.
+        for event in chunk.iter() {
+            let _ = IndexedEventKind::classify(event);
+        }
         let next = match through_ledger {
             Some(t) if i + 1 == chunks.len() => Checkpoint {
                 cursor: None,
@@ -522,6 +546,19 @@ mod tests {
         }
         // Receiver deduplicated by event id: replay is idempotent.
         assert_eq!(seen.len(), event_ids.len());
+    }
+
+    /// Every event in a page must be classified, and the checkpoint must
+    /// advance past the last event regardless of whether its kind is handled
+    /// or ignored, so ingestion never stalls on a new event variant.
+    #[test]
+    fn checkpoint_advances_past_all_event_kinds() {
+        let handled = RawEvent::synthetic("evt-handled", 10, "bond_deposited");
+        let ignored = RawEvent::synthetic("evt-ignored", 11, "some_future_event");
+        let events = vec![handled, ignored];
+        let next = store::checkpoint_after(&Some("cursor-11".to_string()), &events, 1);
+        assert_eq!(next.ledger, 11);
+        assert_eq!(next.cursor.as_deref(), Some("cursor-11"));
     }
 
     #[test]

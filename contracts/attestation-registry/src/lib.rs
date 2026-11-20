@@ -27,6 +27,7 @@
 
 mod storage;
 
+use lafiya_contract_common::validate;
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
     panic_with_error, Address, BytesN, Env, String, Symbol, Vec,
@@ -49,6 +50,17 @@ pub trait AttesterRegistryInterface {
         session_pk: Address,
         scope: Symbol,
     ) -> Result<Address, u32>;
+    /// Record that `attester` completed one attestation. Called by this
+    /// contract after a successful attestation write so the registry can
+    /// evaluate objective probation-exit criteria. One-way: the registry
+    /// never calls back into this contract.
+    fn record_attestation_receipt(env: Env, attester: Address);
+    /// Record that `attester` had one attestation revoked by a revoker.
+    /// One-way hook; see `record_attestation_receipt`.
+    fn record_revocation_receipt(env: Env, attester: Address);
+    /// Record that a dispute against `attester` was upheld. One-way hook;
+    /// see `record_attestation_receipt`.
+    fn record_dispute_upheld_receipt(env: Env, attester: Address);
 }
 
 /// Maximum number of distinct attester slots retained per record hash.
@@ -725,6 +737,8 @@ pub enum Error {
     DisputeClearUnauthorized = 29,
     /// The supplied status-list segment is malformed or stale.
     InvalidStatusListSegment = 30,
+    /// A `String` or `Bytes` argument failed the shared bounded validator.
+    InvalidInput = 31,
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -1273,6 +1287,8 @@ impl AttestationRegistry {
         Self::require_not_paused(&env)?;
         Self::require_allowlisted_attester(&env, &attester)?;
         if let Some(class) = class.clone() {
+            validate::bounded_ascii(&class.to_string(), validate::MAX_SYMBOL_LEN)
+                .map_err(|_| Error::InvalidInput)?;
             let registry_id = Self::attester_registry(&env)?;
             match AttesterRegistryClient::new(&env, &registry_id)
                 .try_is_class_allowed(&attester, &class)
@@ -1442,15 +1458,26 @@ impl AttestationRegistry {
         reason: Symbol,
     ) -> Result<(), Error> {
         Self::require_role(&env, Role::Revoker, &revoker)?;
+        validate::bounded_ascii(&reason.to_string(), validate::MAX_SYMBOL_LEN)
+            .map_err(|_| Error::InvalidInput)?;
 
         let sequence: u64 = storage::get(&env, &DataKey::AttestationSequence(record_hash.clone()))
             .ok_or(Error::AttestationNotFound)?;
 
         let mut removed_count = 0u64;
+        let mut revoked_attesters: Vec<Address> = Vec::new(&env);
         // loop-bound: MAX_HISTORY -- <=10 persistent reads
         for seq in Self::history_start(sequence)..=sequence {
             if Self::slot_is_active(&env, &record_hash, seq) {
                 removed_count += 1;
+                if let Some(attestation) = storage::get::<_, Attestation>(
+                    &env,
+                    &DataKey::Attestation(record_hash.clone(), seq),
+                ) {
+                    if !revoked_attesters.contains(&attestation.attester) {
+                        revoked_attesters.push_back(attestation.attester);
+                    }
+                }
             }
         }
 
@@ -1483,6 +1510,13 @@ impl AttestationRegistry {
             seq: storage::next_event_seq(&env),
         }
         .publish(&env);
+
+        // One-way receipt: let the registry count revocations per attester
+        // for objective probation-exit criteria. A registry that predates
+        // receipts (or fails the call) is ignored.
+        for attester in revoked_attesters.iter() {
+            Self::emit_revocation_receipt(&env, &attester);
+        }
 
         Ok(())
     }
@@ -1763,6 +1797,8 @@ impl AttestationRegistry {
         required: u32,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        validate::bounded_ascii(&record_class.to_string(), validate::MAX_SYMBOL_LEN)
+            .map_err(|_| Error::InvalidInput)?;
         let key = DataKey::QuorumPolicy(record_class.clone());
         if required == 0 {
             env.storage().instance().remove(&key);
@@ -1787,6 +1823,8 @@ impl AttestationRegistry {
         record_class: Symbol,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        validate::bounded_ascii(&record_class.to_string(), validate::MAX_SYMBOL_LEN)
+            .map_err(|_| Error::InvalidInput)?;
         env.storage()
             .persistent()
             .set(&DataKey::RecordClass(record_hash), &record_class);
@@ -1923,6 +1961,16 @@ impl AttestationRegistry {
             return Err(Error::DisputeClearUnauthorized);
         }
         env.storage().persistent().remove(&key);
+
+        // A dispute cleared by the admin is treated as upheld against the
+        // attesters of the disputed record: emit one-way receipts so the
+        // registry can count upheld disputes per attester.
+        if is_admin {
+            if let Some((_, attestation)) = Self::latest_active(&env, &record_hash) {
+                Self::emit_dispute_upheld_receipt(&env, &attestation.attester);
+            }
+        }
+
         DisputeCleared {
             record_hash,
             signer,
@@ -2288,6 +2336,35 @@ impl AttestationRegistry {
             .temporary()
             .extend_ttl(&key, remaining, remaining);
         Ok(())
+    }
+
+    /// Emit a one-way attestation receipt to the registry. Best-effort: a
+    /// registry that predates receipts (or fails the call) is ignored so the
+    /// attestation itself is never blocked by counter bookkeeping.
+    fn emit_attestation_receipt(env: &Env, attester: &Address) {
+        let Ok(registry_id) = Self::attester_registry(env) else {
+            return;
+        };
+        let _ = AttesterRegistryClient::new(env, &registry_id)
+            .try_record_attestation_receipt(attester);
+    }
+
+    /// Emit a one-way revocation receipt to the registry. Best-effort.
+    fn emit_revocation_receipt(env: &Env, attester: &Address) {
+        let Ok(registry_id) = Self::attester_registry(env) else {
+            return;
+        };
+        let _ = AttesterRegistryClient::new(env, &registry_id)
+            .try_record_revocation_receipt(attester);
+    }
+
+    /// Emit a one-way upheld-dispute receipt to the registry. Best-effort.
+    fn emit_dispute_upheld_receipt(env: &Env, attester: &Address) {
+        let Ok(registry_id) = Self::attester_registry(env) else {
+            return;
+        };
+        let _ = AttesterRegistryClient::new(env, &registry_id)
+            .try_record_dispute_upheld_receipt(attester);
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
@@ -2805,7 +2882,7 @@ impl AttestationRegistry {
 
         AttestationRecorded {
             record_hash,
-            attester,
+            attester: attester.clone(),
             timestamp: attestation.timestamp,
             expires_at: attestation_expires_at,
             commitment_version,
@@ -2816,6 +2893,10 @@ impl AttestationRegistry {
             seq: storage::next_event_seq(env),
         }
         .publish(env);
+
+        // One-way receipt: let the registry count attestations per attester
+        // for objective probation-exit criteria.
+        Self::emit_attestation_receipt(env, &attester);
 
         Ok(attestation)
     }
