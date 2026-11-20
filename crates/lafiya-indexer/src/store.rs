@@ -263,7 +263,7 @@ pub async fn apply_page(
     }
     let mut applied = 0;
     for raw in events.iter().filter(|e| e.in_successful_contract_call) {
-        let event = decode(raw)?;
+        let event = decode_versioned(raw)?;
         // `raw_events` is partitioned by ledger range; make sure the target
         // partition exists before inserting into it.
         ensure_raw_events_partition(&mut tx, raw.ledger).await?;
