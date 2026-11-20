@@ -297,6 +297,83 @@
       "i18n_key": "err.attester.batch_too_large",
       "since": "0.1.0",
       "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 9,
+      "name": "RegistrarActiveQuotaExceeded",
+      "doc": "Enrolling this attester would push the regional registrar's `active_count` (currently allowlisted attesters) above its configured active quota. Quotas are enforced on both live and windowed-lifetime accounting; see `docs/specs/` for the quota semantics. Free a slot via `remove_attester` or raise the quota via `set_regional_registrar`.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.registrar_active_quota_exceeded",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 10,
+      "name": "RegistrarWindowQuotaExceeded",
+      "doc": "Enrolling this attester would push the regional registrar's `lifetime_enrollments` within the rolling quota window (e.g. 30 days) above its configured windowed cap. This cap is independent of `active_count`, so remove/re-enroll churn cannot bypass the quota. Wait for the window to roll over or raise the quota via `set_regional_registrar`.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.registrar_window_quota_exceeded",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 11,
+      "name": "InvalidRegistrarQuota",
+      "doc": "The quota supplied to `set_regional_registrar` is invalid (for example a windowed cap lower than the active cap, a zero window, or a window longer than the configured maximum).",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.invalid_registrar_quota",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 12,
+      "name": "DuplicateLicense",
+      "doc": "The canonical licence hash is already enrolled under a different attester address. A licence credential may back at most one attester identity; duplicate enrolment is rejected until the existing enrolment is removed and any configured cool-down has elapsed. See the licence canonicalization spec for how the hash is derived.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.duplicate_license",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 13,
+      "name": "LicenseCoolDownActive",
+      "doc": "The licence hash was recently released from another attester and is still within the configured cool-down period before it may be re-enrolled. Retry after the cool-down expires.",
+      "severity": "user",
+      "retryable": true,
+      "i18n_key": "err.attester.license_cool_down_active",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 14,
+      "name": "InvalidLicenseHash",
+      "doc": "The supplied licence hash is malformed or was not produced by the deployment's canonicalizer (issuer + licence number, salted per deployment). Use the shared canonicalizer in the CLI/import tooling.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.invalid_license_hash",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 15,
+      "name": "DuplicateIdentityCoAttester",
+      "doc": "The co-attesting address shares a licence or facility identity with an existing co-attester of the same record. Quorum counts distinct humans, so co-attestations from addresses sharing an identity are rejected where that data is available.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.duplicate_identity_co_attester",
+      "since": "0.3.0",
+      "deprecated": null
     }
   ]
 }

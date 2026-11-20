@@ -19,22 +19,24 @@ const TOTAL_ATTESTERS: usize = 1_000;
 // Each is deliberately far below the network invocation limit while retaining
 // headroom for cost-model adjustments in compatible SDK releases. The 1,000
 // attester ceilings include the per-enrollment stale-suspension check, role
-// lookup, status-history record and validity bookkeeping.
+// lookup, status-history record and validity bookkeeping, plus the
+// per-enrollment licence-index write (issue #679) and the registrar quota
+// counter updates for active_count and lifetime_enrollments (issue #676).
 const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
     BudgetCheckpoint {
         attesters: 10,
-        max_cpu_instructions: 2_000_000,
-        max_memory_bytes: 1_000_000,
+        max_cpu_instructions: 2_500_000,
+        max_memory_bytes: 1_250_000,
     },
     BudgetCheckpoint {
         attesters: 100,
-        max_cpu_instructions: 2_000_000,
-        max_memory_bytes: 1_000_000,
+        max_cpu_instructions: 2_500_000,
+        max_memory_bytes: 1_250_000,
     },
     BudgetCheckpoint {
         attesters: 1_000,
-        max_cpu_instructions: 10_000_000,
-        max_memory_bytes: 4_000_000,
+        max_cpu_instructions: 12_500_000,
+        max_memory_bytes: 5_000_000,
     },
 ];
 

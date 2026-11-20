@@ -88,6 +88,11 @@ pub(crate) fn clear(env: &Env, attester: &Address) {
 }
 
 /// Carry the tier across a key rotation.
+///
+/// Per the key-custody migration table (issue #675), the tier is one of the
+/// pieces of state that migrates to the new key. The old key's tier entry is
+/// removed so a later re-registration of that address starts from the base
+/// tier rather than inheriting the rotated identity's qualification.
 pub(crate) fn rotate(env: &Env, previous: &Address, new: &Address) {
     let key = DataKey::AttesterTier(previous.clone());
     if let Some(tier) = env.storage().persistent().get::<_, Tier>(&key) {

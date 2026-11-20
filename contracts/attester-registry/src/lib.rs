@@ -134,6 +134,22 @@ enum DataKey {
     SessionKey(BytesN<32>),
     /// Session key pks delegated by an attester.
     AttesterSessions(Address),
+    /// Ledger timestamp at which an attester rotated away from this address.
+    /// Pre-rotation attestations by this address remain verifiable for
+    /// timestamps strictly before this value.
+    AttesterRotatedAt(Address),
+    /// Unique index from a canonicalized licence hash to the address that
+    /// currently holds it. Enforces one licence per attester identity.
+    LicenseIndex(BytesN<32>),
+    /// Ledger timestamp until which a released licence hash may not be
+    /// re-enrolled (cool-down after removal).
+    LicenseCooldown(BytesN<32>),
+    /// Lifetime (cumulative) enrollment count attributed to a registrar.
+    RegionalRegistrarLifetime(Address),
+    /// Windowed enrollment count attributed to a registrar.
+    RegionalRegistrarWindow(Address),
+    /// Start of the current rolling enrollment window for a registrar.
+    RegionalRegistrarWindowStart(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -152,8 +168,31 @@ pub struct AttesterRotated {
     pub previous_attester: Address,
     #[topic]
     pub new_attester: Address,
+    /// Ledger timestamp at which the rotation took effect. Pre-rotation
+    /// attestations by `previous_attester` remain verifiable for timestamps
+    /// strictly before this value.
+    pub rotated_at: u64,
     /// Per-contract monotonic event sequence number (gap detection).
     pub seq: u64,
+}
+
+/// Emitted when a registrar consumes enrollment quota, so the watchdog can
+/// alert as a registrar approaches its cap.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RegistrarQuotaConsumed {
+    #[topic]
+    pub registrar: Address,
+    /// Currently active enrollments attributed to the registrar.
+    pub active_count: u32,
+    /// Cumulative enrollments attributed to the registrar.
+    pub lifetime_enrollments: u32,
+    /// Enrollments in the current rolling window.
+    pub window_enrollments: u32,
+    /// Configured concurrent quota.
+    pub quota: u32,
+    /// Whether the registrar has crossed the 80% alert threshold.
+    pub threshold_crossed: bool,
 }
 
 /// Metadata associated with an allowlisted attester.
@@ -195,6 +234,24 @@ pub struct AttesterStatusChange {
 pub struct RegionalRegistrarInfo {
     pub region: String,
     pub quota: u32,
+}
+
+/// Enrollment caps for a delegated registrar.
+///
+/// - `active` is the concurrent (live) count of currently enrolled attesters.
+/// - `lifetime` is the cumulative number of enrollments ever attributed to the
+///   registrar; it never decreases, so churn cannot reset it.
+/// - `window` is the number of enrollments in the current rolling window
+///   (see `REGIONAL_WINDOW_SECONDS`); it resets when the window elapses.
+///
+/// A registrar may enroll only while all three are under their caps, so
+/// enroll/remove/re-enroll churn cannot exceed the windowed or lifetime caps.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RegionalRegistrarCaps {
+    pub active_cap: u32,
+    pub lifetime_cap: u32,
+    pub window_cap: u32,
 }
 
 /// A short-lived device session key delegated by an allowlisted attester.
@@ -281,6 +338,16 @@ pub const BATCH_LIMIT: u32 = 40;
 const REGIONAL_BATCH_LIMIT: u32 = 20;
 const REGIONAL_REMOVE_BATCH_LIMIT: u32 = 8;
 
+/// Length of the rolling enrollment window used for windowed registrar caps.
+const REGIONAL_WINDOW_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+/// Fraction (in percent) of a registrar's quota at which the watchdog should
+/// alert. `RegistrarQuotaConsumed` sets `threshold_crossed` at or above this.
+const REGIONAL_QUOTA_ALERT_PERCENT: u32 = 80;
+
+/// Cool-down after a licence hash is released before it may be re-enrolled.
+const LICENSE_COOLDOWN_SECONDS: u64 = 24 * 60 * 60;
+
 /// Errors returned by the attester registry's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -340,6 +407,14 @@ pub enum Error {
     InvalidSessionScope = 20,
     /// The session key expiry is not in the future.
     InvalidSessionExpiry = 21,
+    /// The licence hash is already enrolled under another address.
+    DuplicateLicense = 22,
+    /// The licence hash was recently released and is within its cool-down.
+    LicenseCoolingDown = 23,
+    /// The registrar's lifetime enrollment cap has been reached.
+    RegionalLifetimeQuotaExceeded = 24,
+    /// The registrar's windowed enrollment cap has been reached.
+    RegionalWindowQuotaExceeded = 25,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -606,6 +681,20 @@ impl AttesterRegistry {
         let (valid_from, valid_until) = Self::validity(&env, &previous_attester);
         let registrar: Option<Address> =
             storage::get(&env, &DataKey::RegionalAttester(previous_attester.clone()));
+        let rotated_at = env.ledger().timestamp();
+
+        // Migrate the licence index: the new key inherits the licence hash so
+        // the old key cannot be re-enrolled under the same licence.
+        if let Some(license_hash) = info.license_hash.clone() {
+            Self::bind_license(&env, &license_hash, &new_attester)?;
+            Self::release_license(&env, &license_hash, &previous_attester);
+        }
+
+        // Migrate the scheduled removal (if any) to the new key so a
+        // pre-announced removal is never stranded on a rotated-away key.
+        let scheduled: Option<u64> =
+            storage::get(&env, &DataKey::ScheduledRemoval(previous_attester.clone()));
+
         Self::clear_regional_attester(&env, &previous_attester);
         storage::remove(&env, &DataKey::Attester(previous_attester.clone()));
         Self::set_validity(&env, &previous_attester, None, None);
@@ -614,10 +703,19 @@ impl AttesterRegistry {
         if let Some(registrar) = registrar {
             Self::record_regional_attester(&env, &registrar, &new_attester);
         }
+        if let Some(at) = scheduled {
+            storage::set(&env, &DataKey::ScheduledRemoval(new_attester.clone()), &at);
+        }
+
         storage::set(
             &env,
             &DataKey::AttesterRotation(previous_attester.clone()),
             &new_attester,
+        );
+        storage::set(
+            &env,
+            &DataKey::AttesterRotatedAt(previous_attester.clone()),
+            &rotated_at,
         );
         Self::clear_attester_sessions(&env, &previous_attester);
         Self::record_status_change(&env, &previous_attester, false);
@@ -625,6 +723,7 @@ impl AttesterRegistry {
         AttesterRotated {
             previous_attester,
             new_attester,
+            rotated_at,
             seq: storage::next_event_seq(&env),
         }
         .publish(&env);
@@ -645,6 +744,9 @@ impl AttesterRegistry {
             info.suspension_reason = None;
             info.suspended_since = None;
             info.trust_revoked_after = Some(env.ledger().timestamp());
+            if let Some(license_hash) = info.license_hash.clone() {
+                Self::release_license(&env, &license_hash, &attester);
+            }
             storage::set(&env, &DataKey::Attester(attester.clone()), &info);
             Self::clear_regional_attester(&env, &attester);
             Self::clear_attester_sessions(&env, &attester);
@@ -1031,6 +1133,9 @@ impl AttesterRegistry {
             }
             return Ok(());
         }
+        if let Some(license_hash) = license_hash.clone() {
+            Self::bind_license(&env, &license_hash, &attester)?;
+        }
         let info = StoredAttesterInfo {
             license_hash,
             region,
@@ -1081,6 +1186,14 @@ impl AttesterRegistry {
         let existing: StoredAttesterInfo = storage::get(&env, &DataKey::Attester(attester.clone()))
             .filter(|info: &StoredAttesterInfo| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
+        if existing.license_hash != license_hash {
+            if let Some(license_hash) = license_hash.clone() {
+                Self::bind_license(&env, &license_hash, &attester)?;
+            }
+            if let Some(old_hash) = existing.license_hash.clone() {
+                Self::release_license(&env, &old_hash, &attester);
+            }
+        }
         if existing.region != region {
             Self::clear_regional_attester(&env, &attester);
         }
@@ -1223,6 +1336,9 @@ impl AttesterRegistry {
                 info.suspension_reason = None;
                 info.suspended_since = None;
                 info.trust_revoked_after = Some(env.ledger().timestamp());
+                if let Some(license_hash) = info.license_hash.clone() {
+                    Self::release_license(&env, &license_hash, &attester);
+                }
                 storage::set(&env, &key, &info);
                 Self::clear_regional_attester(&env, &attester);
                 Self::clear_attester_sessions(&env, &attester);
@@ -1258,6 +1374,9 @@ impl AttesterRegistry {
             info.suspension_reason = None;
             info.suspended_since = None;
             info.trust_revoked_after = Some(env.ledger().timestamp());
+            if let Some(license_hash) = info.license_hash.clone() {
+                Self::release_license(&env, &license_hash, &attester);
+            }
             storage::set(&env, &DataKey::Attester(attester.clone()), info);
             Self::clear_regional_attester(&env, &attester);
             Self::clear_attester_sessions(&env, &attester);
@@ -1564,7 +1683,19 @@ impl AttesterRegistry {
     }
 
     /// Whether `attester` was active at the supplied ledger timestamp.
+    ///
+    /// For a rotated-away key, this returns true for timestamps strictly
+    /// before the rotation and false from the rotation onward, so
+    /// pre-rotation attestations remain verifiable while post-rotation use of
+    /// the old key is rejected.
     pub fn is_attester_at(env: Env, attester: Address, timestamp: u64) -> bool {
+        if let Some(rotated_at) =
+            storage::get::<_, u64>(&env, &DataKey::AttesterRotatedAt(attester.clone()))
+        {
+            if timestamp >= rotated_at {
+                return false;
+            }
+        }
         let count: u32 =
             storage::get(&env, &DataKey::AttesterStatusChangeCount(attester.clone())).unwrap_or(0);
         let mut active = false;
@@ -1796,8 +1927,27 @@ impl AttesterRegistry {
             if Self::regional_registrar_count(env, registrar) >= assignment.quota {
                 return Err(Error::RegionalQuotaExceeded);
             }
+            let caps = Self::regional_caps(assignment);
+            if Self::regional_lifetime(env, registrar) >= caps.lifetime_cap {
+                return Err(Error::RegionalLifetimeQuotaExceeded);
+            }
+            if Self::regional_window(env, registrar) >= caps.window_cap {
+                return Err(Error::RegionalWindowQuotaExceeded);
+            }
         }
         Ok(())
+    }
+
+    /// Derive the lifetime and windowed caps from a registrar's concurrent
+    /// quota. The concurrent quota is the primary control; the lifetime and
+    /// windowed caps bound churn (enroll/remove/re-enroll loops) so a
+    /// compromised registrar cannot create unbounded identities over time.
+    fn regional_caps(assignment: &RegionalRegistrarInfo) -> RegionalRegistrarCaps {
+        RegionalRegistrarCaps {
+            active_cap: assignment.quota,
+            lifetime_cap: assignment.quota.saturating_mul(4),
+            window_cap: assignment.quota.saturating_mul(2),
+        }
     }
 
     fn record_regional_attester(env: &Env, registrar: &Address, attester: &Address) {
@@ -1811,6 +1961,58 @@ impl AttesterRegistry {
             INSTANCE_LIFETIME_THRESHOLD,
             INSTANCE_BUMP_AMOUNT,
         );
+        Self::bump_regional_enrollment(env, registrar);
+    }
+
+    /// Increment the lifetime and windowed enrollment counters for `registrar`
+    /// and emit `RegistrarQuotaConsumed` so the watchdog can alert.
+    fn bump_regional_enrollment(env: &Env, registrar: &Address) {
+        let now = env.ledger().timestamp();
+        let lifetime_key = DataKey::RegionalRegistrarLifetime(registrar.clone());
+        let lifetime = Self::regional_lifetime(env, registrar).saturating_add(1);
+        storage::set(env, &lifetime_key, &lifetime);
+
+        let start_key = DataKey::RegionalRegistrarWindowStart(registrar.clone());
+        let window_key = DataKey::RegionalRegistrarWindow(registrar.clone());
+        let start: u64 = storage::get(env, &start_key).unwrap_or(now);
+        let window = if now.saturating_sub(start) >= REGIONAL_WINDOW_SECONDS {
+            storage::set(env, &start_key, &now);
+            1
+        } else {
+            Self::regional_window(env, registrar).saturating_add(1)
+        };
+        storage::set(env, &window_key, &window);
+
+        let active = Self::regional_registrar_count(env, registrar);
+        let quota = storage::get::<_, RegionalRegistrarInfo>(env, &DataKey::RegionalRegistrar(registrar.clone()))
+            .map(|assignment| assignment.quota)
+            .unwrap_or(0);
+        let threshold_crossed = quota > 0
+            && active.saturating_mul(100) >= quota.saturating_mul(REGIONAL_QUOTA_ALERT_PERCENT);
+        RegistrarQuotaConsumed {
+            registrar: registrar.clone(),
+            active_count: active,
+            lifetime_enrollments: lifetime,
+            window_enrollments: window,
+            quota,
+            threshold_crossed,
+        }
+        .publish(env);
+    }
+
+    fn regional_lifetime(env: &Env, registrar: &Address) -> u32 {
+        storage::get(env, &DataKey::RegionalRegistrarLifetime(registrar.clone())).unwrap_or(0)
+    }
+
+    fn regional_window(env: &Env, registrar: &Address) -> u32 {
+        let now = env.ledger().timestamp();
+        let start: u64 =
+            storage::get(env, &DataKey::RegionalRegistrarWindowStart(registrar.clone()))
+                .unwrap_or(now);
+        if now.saturating_sub(start) >= REGIONAL_WINDOW_SECONDS {
+            return 0;
+        }
+        storage::get(env, &DataKey::RegionalRegistrarWindow(registrar.clone())).unwrap_or(0)
     }
 
     /// Whether a scheduled removal for `attester` has taken effect by `timestamp`.
@@ -1819,6 +2021,44 @@ impl AttesterRegistry {
             .persistent()
             .get::<_, u64>(&DataKey::ScheduledRemoval(attester.clone()))
             .is_some_and(|at| timestamp >= at)
+    }
+
+    /// Bind `license_hash` to `attester`, rejecting duplicates and hashes
+    /// still within their post-removal cool-down.
+    fn bind_license(
+        env: &Env,
+        license_hash: &BytesN<32>,
+        attester: &Address,
+    ) -> Result<(), Error> {
+        let index_key = DataKey::LicenseIndex(license_hash.clone());
+        if let Some(holder) = storage::get::<_, Address>(env, &index_key) {
+            if &holder != attester {
+                return Err(Error::DuplicateLicense);
+            }
+            return Ok(());
+        }
+        let cooldown_key = DataKey::LicenseCooldown(license_hash.clone());
+        if let Some(until) = storage::get::<_, u64>(env, &cooldown_key) {
+            if env.ledger().timestamp() < until {
+                return Err(Error::LicenseCoolingDown);
+            }
+            storage::remove(env, &cooldown_key);
+        }
+        storage::set(env, &index_key, attester);
+        Ok(())
+    }
+
+    /// Release `license_hash` from `attester`, starting its cool-down.
+    fn release_license(env: &Env, license_hash: &BytesN<32>, attester: &Address) {
+        let index_key = DataKey::LicenseIndex(license_hash.clone());
+        if storage::get::<_, Address>(env, &index_key).as_ref() == Some(attester) {
+            storage::remove(env, &index_key);
+            let until = env
+                .ledger()
+                .timestamp()
+                .saturating_add(LICENSE_COOLDOWN_SECONDS);
+            storage::set(env, &DataKey::LicenseCooldown(license_hash.clone()), &until);
+        }
     }
 
     fn clear_regional_attester(env: &Env, attester: &Address) {

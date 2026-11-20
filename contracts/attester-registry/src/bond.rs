@@ -237,6 +237,10 @@ fn close_case(env: &Env, case_id: u64, value: &SlashCase, slashed: bool) {
 
 /// Move a bond and its open slash cases to the successor key on rotation,
 /// so a rotation can neither shed a pending slash nor strand the bond.
+///
+/// Per the key-custody ADR addendum (issue #675), the bond amount, its locked
+/// portion, any pending withdrawal request and every open slash case migrate
+/// atomically to the new key. The old key is left with no bond and no cases.
 pub(crate) fn rotate(env: &Env, previous: &Address, new: &Address) {
     let Some(old) = bond(env, previous) else {
         return;
@@ -266,6 +270,45 @@ pub(crate) fn rotate(env: &Env, previous: &Address, new: &Address) {
     }
     save_open_cases(env, new, &ids);
     save_open_cases(env, previous, &Vec::new(env));
+}
+
+/// Release any bond held for a removed attester. Per the key-custody ADR
+/// addendum (issue #675), a scheduled removal does not migrate the bond to a
+/// successor: the escrowed funds are returned to the attester and any open
+/// slash cases are cancelled so no lock is left dangling.
+pub(crate) fn release_on_removal(env: &Env, attester: &Address) {
+    let ids = open_cases(env, attester);
+    for id in ids.iter() {
+        if let Ok(mut value) = case(env, id) {
+            if !matches!(value.status, SlashStatus::Executed | SlashStatus::Cancelled) {
+                value.status = SlashStatus::Cancelled;
+                save_case(env, id, &value);
+                SlashCancelled { case_id: id }.publish(env);
+            }
+        }
+    }
+    save_open_cases(env, attester, &Vec::new(env));
+
+    let Some(info) = bond(env, attester) else {
+        return;
+    };
+    env.storage()
+        .persistent()
+        .remove(&DataKey::Bond(attester.clone()));
+    if info.amount > 0 {
+        if let Ok(cfg) = config(env) {
+            token::Client::new(env, &cfg.token).transfer(
+                &env.current_contract_address(),
+                attester,
+                &info.amount,
+            );
+        }
+    }
+    BondWithdrawn {
+        attester: attester.clone(),
+        amount: info.amount,
+    }
+    .publish(env);
 }
 
 #[contractimpl]

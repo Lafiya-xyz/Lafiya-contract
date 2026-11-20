@@ -176,11 +176,27 @@ pub(crate) fn flag_if_active(env: &Env, attester: &Address, reason: &Symbol) {
 }
 
 /// Carry probation state across a key rotation.
+///
+/// Per the key-custody ADR addendum (issue #675), the probation record —
+/// including the window start/end and any flag — migrates with the identity:
+/// the new key inherits the previous key's probation counters and flags, and
+/// the previous key's record is removed so it cannot be reused. If the new key
+/// already has a record (for example it was enrolled separately), the stricter
+/// of the two is kept so a rotation cannot be used to escape probation.
 pub(crate) fn rotate(env: &Env, previous: &Address, new: &Address) {
-    if let Some(rec) = record(env, previous) {
-        clear(env, previous);
-        save(env, new, &rec);
-    }
+    let Some(prev_rec) = record(env, previous) else {
+        return;
+    };
+    let merged = match record(env, new) {
+        None => prev_rec,
+        Some(new_rec) => ProbationRecord {
+            started_at: prev_rec.started_at.min(new_rec.started_at),
+            ends_at: prev_rec.ends_at.max(new_rec.ends_at),
+            flagged: prev_rec.flagged || new_rec.flagged,
+        },
+    };
+    clear(env, previous);
+    save(env, new, &merged);
 }
 
 fn state_of(env: &Env, attester: &Address) -> (ProbationState, Option<ProbationRecord>) {

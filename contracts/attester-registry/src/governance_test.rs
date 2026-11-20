@@ -521,3 +521,187 @@ fn bond_config_validation() {
         .try_set_bond_config(&token, &1, &10, &2, &10, &r)
         .is_err());
 }
+
+// ── Scheduled removal state machine (#680) ──
+
+#[test]
+fn scheduled_removal_fires_when_due() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    assert!(client.is_attester(&attester));
+    advance(&env, DAY);
+    client.execute_scheduled_removal(&attester);
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn scheduled_removal_cannot_fire_early() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    assert!(client.try_execute_scheduled_removal(&attester).is_err());
+    assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn scheduled_removal_follows_rotation_to_successor() {
+    let (env, client, admin) = setup();
+    let old = Address::generate(&env);
+    let new = Address::generate(&env);
+    client.add_attester(&admin, &old);
+    client.schedule_removal(&admin, &old, &(1_000 + DAY));
+    client.rotate_attester(&old, &new);
+    advance(&env, DAY);
+    client.execute_scheduled_removal(&new);
+    assert!(!client.is_attester(&new));
+    assert!(!client.is_attester(&old));
+}
+
+#[test]
+fn scheduled_removal_survives_suspend_and_reinstate() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    client.suspend_attester(&admin, &attester);
+    client.reinstate_attester(&admin, &attester);
+    advance(&env, DAY);
+    client.execute_scheduled_removal(&attester);
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn scheduled_removal_is_cancelled_by_manual_removal() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    client.remove_attester(&admin, &attester);
+    advance(&env, DAY);
+    assert!(client.try_execute_scheduled_removal(&attester).is_err());
+}
+
+#[test]
+fn scheduled_removal_can_be_cancelled_explicitly() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    client.cancel_scheduled_removal(&admin, &attester);
+    advance(&env, DAY);
+    assert!(client.try_execute_scheduled_removal(&attester).is_err());
+    assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn scheduled_removal_reenrollment_does_not_resurrect_schedule() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    client.remove_attester(&admin, &attester);
+    client.add_attester(&admin, &attester);
+    advance(&env, DAY);
+    assert!(client.try_execute_scheduled_removal(&attester).is_err());
+    assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn scheduled_removal_waits_out_pause() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    client.pause(&admin);
+    advance(&env, DAY);
+    assert!(client.try_execute_scheduled_removal(&attester).is_err());
+    client.unpause(&admin);
+    client.execute_scheduled_removal(&attester);
+    assert!(!client.is_attester(&attester));
+}
+
+#[test]
+fn watchdog_reports_overdue_scheduled_removal() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.schedule_removal(&admin, &attester, &(1_000 + DAY));
+    assert!(!client.is_scheduled_removal_overdue(&attester));
+    advance(&env, DAY);
+    assert!(client.is_scheduled_removal_overdue(&attester));
+}
+
+// ── Regional registrar quotas (#676) ──
+
+#[test]
+fn registrar_quota_tracks_active_and_lifetime_counts() {
+    let (env, client, admin) = setup();
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&admin, &registrar, &2, &3, &(30 * DAY));
+    let a = Address::generate(&env);
+    let b = Address::generate(&env);
+    client.add_attester(&registrar, &a);
+    client.add_attester(&registrar, &b);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 2);
+    assert_eq!(client.get_regional_registrar_lifetime(&registrar), 2);
+
+    client.remove_attester(&registrar, &a);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 1);
+    assert_eq!(client.get_regional_registrar_lifetime(&registrar), 2);
+}
+
+#[test]
+fn registrar_churn_cannot_exceed_windowed_cap() {
+    let (env, client, admin) = setup();
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&admin, &registrar, &1, &2, &(30 * DAY));
+    let a = Address::generate(&env);
+    client.add_attester(&registrar, &a);
+    client.remove_attester(&registrar, &a);
+    client.add_attester(&registrar, &a);
+    client.remove_attester(&registrar, &a);
+    // Lifetime cap of 2 reached; further enrollments are rejected.
+    let b = Address::generate(&env);
+    assert!(client.try_add_attester(&registrar, &b).is_err());
+    assert_eq!(client.get_regional_registrar_lifetime(&registrar), 2);
+}
+
+#[test]
+fn registrar_window_rolls_over_and_resets_lifetime() {
+    let (env, client, admin) = setup();
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&admin, &registrar, &1, &1, &(30 * DAY));
+    let a = Address::generate(&env);
+    client.add_attester(&registrar, &a);
+    client.remove_attester(&registrar, &a);
+    let b = Address::generate(&env);
+    assert!(client.try_add_attester(&registrar, &b).is_err());
+    advance(&env, 30 * DAY);
+    client.add_attester(&registrar, &b);
+    assert_eq!(client.get_regional_registrar_lifetime(&registrar), 1);
+}
+
+#[test]
+fn registrar_active_cap_enforced_under_governance_reinstate() {
+    let (env, client, admin) = setup();
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&admin, &registrar, &1, &10, &(30 * DAY));
+    let a = Address::generate(&env);
+    client.add_attester(&registrar, &a);
+    client.suspend_attester(&admin, &a);
+    client.reinstate_attester(&admin, &a);
+    assert_eq!(client.get_regional_registrar_count(&registrar), 1);
+}
+
+#[test]
+fn registrar_quota_consumed_event_emitted() {
+    let (env, client, admin) = setup();
+    let registrar = Address::generate(&env);
+    client.set_regional_registrar(&admin, &registrar, &10, &10, &(30 * DAY));
+    let a = Address::generate(&env);
+    client.add_attester(&registrar, &a);
+    assert_eq!(client.get_regional_registrar_lifetime(&registrar), 1);
+}
