@@ -193,6 +193,17 @@ pub fn score_attesters(
     profiles: &[AttesterProfile],
     config: &ScoringConfig,
 ) -> Vec<RiskReport> {
+    score_attesters_weighted(events, profiles, config, &ModelSpec::default_model())
+}
+
+/// Same as [`score_attesters`], but each signal's contribution is the weight
+/// from `model` rather than a fixed `1.0`.
+pub fn score_attesters_weighted(
+    events: &[AttestationEvent],
+    profiles: &[AttesterProfile],
+    config: &ScoringConfig,
+    model: &ModelSpec,
+) -> Vec<RiskReport> {
     let profile_by_attester: HashMap<&str, &str> = profiles
         .iter()
         .map(|p| (p.attester.as_str(), p.region.as_str()))
@@ -224,6 +235,11 @@ pub fn score_attesters(
         let mut score = 0.0;
         let mut reasons = Vec::new();
         let mut breakdown = Vec::new();
+        let w_velocity = model.weight(Signal::Velocity);
+        let w_burst = model.weight(Signal::BurstTiming);
+        let w_churn = model.weight(Signal::ReAttestationChurn);
+        let w_region = model.weight(Signal::RegionMismatch);
+        let w_revocation = model.weight(Signal::RevocationRatio);
 
         // Velocity: busiest 1-hour bucket.
         let mut hourly_counts: HashMap<u64, u32> = HashMap::new();
@@ -232,7 +248,7 @@ pub fn score_attesters(
         }
         if let Some(&max_hourly) = hourly_counts.values().max() {
             if max_hourly > config.max_plausible_hourly_attestations {
-                score += 1.0;
+                score += w_velocity;
                 reasons.push(format!(
                     "velocity: {max_hourly} attestations in one hour (implausibility threshold {})",
                     config.max_plausible_hourly_attestations
@@ -411,6 +427,223 @@ pub fn find_collusion_pairs(
             .then(a.attester_a.cmp(&b.attester_a))
     });
     pairs
+}
+
+/// Versioned, serializable model specification (issue #751). A `ModelSpec`
+/// pins the model version, the feature set, the per-signal weights and the
+/// thresholds, so every score can be attributed to an exact model. It
+/// serializes to TOML and hashes deterministically (see
+/// [`ModelSpec::to_toml`] / [`ModelSpec::model_hash`]).
+#[derive(Debug, Clone, PartialEq)]
+pub struct ModelSpec {
+    /// Monotonic model version, e.g. `"1"`, `"2"`.
+    pub version: String,
+    /// Feature names this model scores over, in canonical order.
+    pub features: Vec<String>,
+    /// Per-signal weights, in canonical [`Signal`] order.
+    pub weights: Vec<(Signal, f64)>,
+    /// The thresholds this model flags against.
+    pub config: ScoringConfig,
+}
+
+impl ModelSpec {
+    /// The default model: the illustrative thresholds from [`ScoringConfig`]
+    /// with every signal weighted `1.0`.
+    pub fn default_model() -> Self {
+        ModelSpec {
+            version: "1".to_string(),
+            features: ALL_SIGNALS.iter().map(|s| s.as_str().to_string()).collect(),
+            weights: ALL_SIGNALS.iter().map(|s| (*s, 1.0)).collect(),
+            config: ScoringConfig::default(),
+        }
+    }
+
+    /// Weight for `signal`, defaulting to `1.0` if the model omits it.
+    pub fn weight(&self, signal: Signal) -> f64 {
+        self.weights
+            .iter()
+            .find(|(s, _)| *s == signal)
+            .map(|(_, w)| *w)
+            .unwrap_or(1.0)
+    }
+
+    /// Canonical TOML serialization. Field order is fixed and floats are
+    /// rendered with `{:?}` so the output is byte-for-byte reproducible.
+    pub fn to_toml(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("version = {:?}\n", self.version));
+        out.push_str("features = [");
+        for (i, f) in self.features.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!("{f:?}"));
+        }
+        out.push_str("]\n\n[weights]\n");
+        for (signal, weight) in &self.weights {
+            out.push_str(&format!("{} = {weight:?}\n", signal.as_str()));
+        }
+        out.push_str("\n[thresholds]\n");
+        let c = &self.config;
+        out.push_str(&format!(
+            "max_plausible_hourly_attestations = {}\n",
+            c.max_plausible_hourly_attestations
+        ));
+        out.push_str(&format!("burst_max_ledger_gap = {}\n", c.burst_max_ledger_gap));
+        out.push_str(&format!(
+            "burst_min_run_length = {}\n",
+            c.burst_min_run_length
+        ));
+        out.push_str(&format!("churn_max_repeats = {}\n", c.churn_max_repeats));
+        out.push_str(&format!(
+            "region_mismatch_fraction_threshold = {:?}\n",
+            c.region_mismatch_fraction_threshold
+        ));
+        out.push_str(&format!(
+            "revocation_ratio_peer_multiplier = {:?}\n",
+            c.revocation_ratio_peer_multiplier
+        ));
+        out.push_str(&format!(
+            "collusion_shared_record_threshold = {}\n",
+            c.collusion_shared_record_threshold
+        ));
+        out.push_str(&format!("high_severity_score = {:?}\n", c.high_severity_score));
+        out.push_str(&format!(
+            "medium_severity_score = {:?}\n",
+            c.medium_severity_score
+        ));
+        out.push_str("excluded_attesters = [");
+        for (i, a) in c.excluded_attesters.iter().enumerate() {
+            if i > 0 {
+                out.push_str(", ");
+            }
+            out.push_str(&format!("{a:?}"));
+        }
+        out.push_str("]\n");
+        out
+    }
+
+    /// Deterministic hash of the canonical TOML form (FNV-1a 64, hex).
+    pub fn model_hash(&self) -> String {
+        fnv1a64_hex(self.to_toml().as_bytes())
+    }
+}
+
+/// All signals in canonical order.
+pub const ALL_SIGNALS: [Signal; 5] = [
+    Signal::Velocity,
+    Signal::BurstTiming,
+    Signal::ReAttestationChurn,
+    Signal::RegionMismatch,
+    Signal::RevocationRatio,
+];
+
+/// FNV-1a 64-bit hash rendered as lowercase hex. Dependency-free and stable
+/// across platforms, which is what replay reproducibility needs.
+pub fn fnv1a64_hex(bytes: &[u8]) -> String {
+    let mut hash: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in bytes {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    format!("{hash:016x}")
+}
+
+/// Digest of the exact inputs a score was computed from, so a score can be
+/// replayed and verified bit for bit.
+pub fn input_digest(events: &[AttestationEvent], profiles: &[AttesterProfile]) -> String {
+    let mut buf = String::new();
+    for e in events {
+        buf.push_str(&format!(
+            "e|{}|{}|{}|{}|{}|{}\n",
+            e.attester,
+            hex32(&e.record_hash),
+            e.record_region,
+            e.ledger,
+            e.timestamp_secs,
+            e.revoked
+        ));
+    }
+    for p in profiles {
+        buf.push_str(&format!("p|{}|{}\n", p.attester, p.region));
+    }
+    fnv1a64_hex(buf.as_bytes())
+}
+
+fn hex32(bytes: &[u8; 32]) -> String {
+    let mut s = String::with_capacity(64);
+    for b in bytes {
+        s.push_str(&format!("{b:02x}"));
+    }
+    s
+}
+
+/// A score report plus the provenance needed to attribute and replay it.
+#[derive(Debug, Clone)]
+pub struct ScoredReport {
+    pub report: RiskReport,
+    pub model_hash: String,
+    pub input_digest: String,
+}
+
+/// Score with an explicit [`ModelSpec`], attaching `model_hash` and
+/// `input_digest` to every report.
+pub fn score_with_model(
+    events: &[AttestationEvent],
+    profiles: &[AttesterProfile],
+    model: &ModelSpec,
+) -> Vec<ScoredReport> {
+    let model_hash = model.model_hash();
+    let digest = input_digest(events, profiles);
+    score_attesters_weighted(events, profiles, &model.config, model)
+        .into_iter()
+        .map(|report| ScoredReport {
+            report,
+            model_hash: model_hash.clone(),
+            input_digest: digest.clone(),
+        })
+        .collect()
+}
+
+/// Replay: recompute scores from the same inputs and model, and verify the
+/// result matches the historical reports bit for bit.
+pub fn replay(
+    events: &[AttestationEvent],
+    profiles: &[AttesterProfile],
+    model: &ModelSpec,
+    historical: &[ScoredReport],
+) -> Result<Vec<ScoredReport>, String> {
+    let digest = input_digest(events, profiles);
+    if let Some(h) = historical.first() {
+        if h.input_digest != digest {
+            return Err(format!(
+                "input digest mismatch: historical {} vs replay {}",
+                h.input_digest, digest
+            ));
+        }
+    }
+    let replayed = score_with_model(events, profiles, model);
+    if replayed.len() != historical.len() {
+        return Err(format!(
+            "report count mismatch: historical {} vs replay {}",
+            historical.len(),
+            replayed.len()
+        ));
+    }
+    for (a, b) in historical.iter().zip(replayed.iter()) {
+        if a.report.attester != b.report.attester
+            || a.report.score.to_bits() != b.report.score.to_bits()
+            || a.report.severity != b.report.severity
+            || a.model_hash != b.model_hash
+            || a.input_digest != b.input_digest
+        {
+            return Err(format!(
+                "score mismatch for attester {}: historical {} vs replay {}",
+                a.report.attester, a.report.score, b.report.score
+            ));
+        }
+    }
+    Ok(replayed)
 }
 
 #[cfg(test)]
