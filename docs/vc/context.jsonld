@@ -16,6 +16,22 @@
         },
         "commitmentVersion": {
           "@id": "https://lafiya.xyz/ns/credentials#commitmentVersion"
+        },
+        "facilityId": {
+          "@id": "https://lafiya.xyz/ns/credentials#facilityId",
+          "@type": "https://www.w3.org/2001/XMLSchema#hexBinary"
+        },
+        "facilityLocalId": {
+          "@id": "https://lafiya.xyz/ns/credentials#facilityLocalId",
+          "@type": "https://www.w3.org/2001/XMLSchema#integer"
+        },
+        "facilityDeactivationReason": {
+          "@id": "https://lafiya.xyz/ns/credentials#facilityDeactivationReason",
+          "@type": "@vocab"
+        },
+        "facilityDeactivatedAt": {
+          "@id": "https://lafiya.xyz/ns/credentials#facilityDeactivatedAt",
+          "@type": "https://www.w3.org/2001/XMLSchema#dateTime"
         }
       }
     },
@@ -36,6 +52,42 @@
         },
         "txHash": {
           "@id": "https://lafiya.xyz/ns/credentials#txHash"
+        }
+      }
+    },
+
+    "FacilityId": {
+      "@id": "https://lafiya.xyz/ns/credentials#FacilityId",
+      "@context": {
+        "@protected": true,
+        "jurisdiction": {
+          "@id": "https://lafiya.xyz/ns/credentials#jurisdiction"
+        },
+        "issuingAuthority": {
+          "@id": "https://lafiya.xyz/ns/credentials#issuingAuthority"
+        },
+        "facilityCode": {
+          "@id": "https://lafiya.xyz/ns/credentials#facilityCode"
+        },
+        "facilityCodeHash": {
+          "@id": "https://lafiya.xyz/ns/credentials#facilityCodeHash",
+          "@type": "https://www.w3.org/2001/XMLSchema#hexBinary"
+        }
+      }
+    },
+
+    "FacilityDeactivationReason": {
+      "@id": "https://lafiya.xyz/ns/credentials#FacilityDeactivationReason",
+      "@context": {
+        "@protected": true,
+        "closed": {
+          "@id": "https://lafiya.xyz/ns/credentials#closed"
+        },
+        "licence_lapsed": {
+          "@id": "https://lafiya.xyz/ns/credentials#licence_lapsed"
+        },
+        "fraud": {
+          "@id": "https://lafiya.xyz/ns/credentials#fraud"
         }
       }
     }

@@ -26,6 +26,11 @@ CONTRACTS: dict[str, dict[str, pathlib.Path]] = {
         "wasm_path": WASM_DIR / "incentive_pool.wasm",
         "bindings_dir": REPO_ROOT / "bindings" / "incentive-pool",
     },
+    "facility-registry": {
+        "crate_dir": REPO_ROOT / "contracts" / "facility-registry",
+        "wasm_path": WASM_DIR / "facility_registry.wasm",
+        "bindings_dir": REPO_ROOT / "bindings" / "facility-registry",
+    },
 }
 
 # Contracts whose committed TypeScript bindings are covered by

@@ -24,6 +24,10 @@ use soroban_sdk::{vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec};
 /// Number of attesters enrolled before measuring the "loaded" scenarios.
 const LOADED_ATTESTERS: u32 = 50;
 
+/// Number of affiliate/disaffiliate cycles used to prove that affiliation
+/// history stays bounded and that lookups stay logarithmic.
+const AFFILIATION_CYCLES: u32 = 1_000;
+
 #[derive(Parser, Debug)]
 #[command(
     name = "lafiya-bench",
@@ -250,6 +254,123 @@ fn attestation_registry(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
     Ok(())
 }
 
+fn facility_registry(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
+    let attesters = std::fs::read(dir.join("attester_registry.wasm"))?;
+    let wasm = load(dir, report, "facility-registry")?;
+    let env = new_env();
+    let admin = Address::generate(&env);
+    let attester_registry = deploy(&env, &attesters, vec![&env, admin.into_val(&env)]);
+    let registry = deploy(
+        &env,
+        &wasm,
+        vec![&env, admin.into_val(&env), attester_registry.into_val(&env)],
+    );
+    grant_registrar(&env, &attester_registry, &admin);
+    let facility = Address::generate(&env);
+    let attester = Address::generate(&env);
+    let enrol = vec![&env, admin.into_val(&env), attester.into_val(&env)];
+    if !report.setup(
+        &env,
+        "facility-registry/affiliate",
+        &[(&attester_registry, "add_attester", enrol)],
+    ) {
+        return Ok(());
+    }
+
+    // Drive many affiliate/disaffiliate cycles so the history would grow
+    // without bound if it were stored as a single vector.
+    let mut cycles: std::vec::Vec<(&Address, &str, Vec<Val>)> = std::vec::Vec::new();
+    for _ in 0..AFFILIATION_CYCLES {
+        cycles.push((
+            &registry,
+            "affiliate",
+            vec![
+                &env,
+                attester.into_val(&env),
+                facility.into_val(&env),
+                admin.into_val(&env),
+            ],
+        ));
+        cycles.push((
+            &registry,
+            "disaffiliate",
+            vec![
+                &env,
+                attester.into_val(&env),
+                facility.into_val(&env),
+                admin.into_val(&env),
+            ],
+        ));
+    }
+    if !report.setup(&env, "facility-registry/affiliate_cycles", &cycles) {
+        return Ok(());
+    }
+
+    // One more affiliate so the latest period is open, then measure the
+    // bounded write and the O(log n) reads against the full history.
+    let affiliate = vec![
+        &env,
+        attester.into_val(&env),
+        facility.into_val(&env),
+        admin.into_val(&env),
+    ];
+    if !report.setup(
+        &env,
+        "facility-registry/affiliate_loaded",
+        &[(&registry, "affiliate", affiliate)],
+    ) {
+        return Ok(());
+    }
+    report.measure(
+        &env,
+        "facility-registry/affiliate_loaded",
+        &registry,
+        "affiliate",
+        vec![
+            &env,
+            attester.into_val(&env),
+            facility.into_val(&env),
+            admin.into_val(&env),
+        ],
+    );
+    report.measure(
+        &env,
+        "facility-registry/is_affiliated",
+        &registry,
+        "is_affiliated",
+        vec![&env, attester.into_val(&env), facility.into_val(&env)],
+    );
+    // Look up a timestamp in the middle of the history: the binary search
+    // over pages must stay logarithmic in the number of cycles.
+    let midpoint = (AFFILIATION_CYCLES / 2) as u64;
+    report.measure(
+        &env,
+        "facility-registry/was_affiliated_at",
+        &registry,
+        "was_affiliated_at",
+        vec![
+            &env,
+            attester.into_val(&env),
+            facility.into_val(&env),
+            midpoint.into_val(&env),
+        ],
+    );
+    report.measure(
+        &env,
+        "facility-registry/get_affiliation_periods",
+        &registry,
+        "get_affiliation_periods",
+        vec![
+            &env,
+            attester.into_val(&env),
+            facility.into_val(&env),
+            0u32.into_val(&env),
+            10u32.into_val(&env),
+        ],
+    );
+    Ok(())
+}
+
 fn multisig_account(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
     let wasm = load(dir, report, "multisig-account")?;
     let env = new_env();
@@ -325,6 +446,7 @@ fn main() -> anyhow::Result<()> {
             attester_registry as fn(&Path, &mut Report) -> anyhow::Result<()>,
         ),
         ("attestation-registry", attestation_registry),
+        ("facility-registry", facility_registry),
         ("multisig-account", multisig_account),
         ("incentive-pool", incentive_pool),
     ] {

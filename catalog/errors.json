@@ -297,6 +297,39 @@
       "i18n_key": "err.attester.batch_too_large",
       "since": "0.1.0",
       "deprecated": null
+    },
+    {
+      "contract": "facility-registry",
+      "code": 1,
+      "name": "InvalidDeactivationReason",
+      "doc": "`deactivate_facility` was called with a `deactivation_reason` code that is not one of the supported values (`closed`, `licence_lapsed`, `fraud`). Pass a supported reason code so the verification model can decide whether attestations made before deactivation remain valid.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.facility.invalid_deactivation_reason",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "facility-registry",
+      "code": 2,
+      "name": "UnknownFacilityId",
+      "doc": "No facility is registered for the supplied portable `FacilityId` (or its external-code hash). The identifier may belong to another deployment or jurisdiction, or the facility was never enrolled.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.facility.unknown_facility_id",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "facility-registry",
+      "code": 3,
+      "name": "InvalidPaginationCursor",
+      "doc": "The `cursor` passed to a paginated read (for example `get_affiliation_periods`) is malformed or does not belong to the requested (facility, attester) history. Restart pagination from a `null` cursor and follow the returned `next_cursor` values.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.facility.invalid_pagination_cursor",
+      "since": "0.3.0",
+      "deprecated": null
     }
   ]
 }

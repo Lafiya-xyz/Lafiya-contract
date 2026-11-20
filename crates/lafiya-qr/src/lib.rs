@@ -102,6 +102,8 @@ const KEY_PATIENT_SIG: u64 = 9;
 const KEY_UNDISCLOSED_LEAVES: u64 = 10;
 const KEY_ISSUED_AT: u64 = 11;
 const KEY_VALID_UNTIL: u64 = 12;
+const KEY_FACILITY_ID: u64 = 13;
+const KEY_FACILITY_ID_ALIAS: u64 = 14;
 
 // Disclosure sub-keys
 const DISC_KEY_INDEX: u64 = 1;
@@ -247,6 +249,12 @@ pub struct QrPayload {
     pub issued_at: Option<u64>,
     /// Unix epoch seconds after which the card is stale (freshness, issue #526).
     pub valid_until: Option<u64>,
+    /// Portable facility identifier (issue #689): `H(domain || jurisdiction ||
+    /// issuing_authority || facility_code)`, 32 bytes.
+    pub facility_id: Option<[u8; 32]>,
+    /// Legacy sequential `u64` facility ID, kept as a local alias during the
+    /// migration to portable identifiers (issue #689).
+    pub facility_id_alias: Option<u64>,
 }
 
 // ---------------------------------------------------------------------------
@@ -279,6 +287,8 @@ impl QrPayloadBuilder {
                 patient_sig: None,
                 issued_at: None,
                 valid_until: None,
+                facility_id: None,
+                facility_id_alias: None,
             },
         }
     }
@@ -317,6 +327,18 @@ impl QrPayloadBuilder {
     pub fn with_freshness(mut self, issued_at: u64, valid_until: u64) -> Self {
         self.payload.issued_at = Some(issued_at);
         self.payload.valid_until = Some(valid_until);
+        self
+    }
+
+    /// Attach the portable facility identifier (issue #689).
+    pub fn with_facility_id(mut self, facility_id: [u8; 32]) -> Self {
+        self.payload.facility_id = Some(facility_id);
+        self
+    }
+
+    /// Attach the legacy sequential facility ID alias (issue #689).
+    pub fn with_facility_id_alias(mut self, alias: u64) -> Self {
+        self.payload.facility_id_alias = Some(alias);
         self
     }
 
@@ -819,6 +841,14 @@ fn encode_cbor(payload: &QrPayload) -> Result<Vec<u8>, EncodeError> {
         map_entries.push((KEY_VALID_UNTIL, CborValue::Uint(valid_until)));
     }
 
+    // Portable facility ID and legacy alias (issue #689)
+    if let Some(facility_id) = &payload.facility_id {
+        map_entries.push((KEY_FACILITY_ID, CborValue::Bytes(facility_id.to_vec())));
+    }
+    if let Some(alias) = payload.facility_id_alias {
+        map_entries.push((KEY_FACILITY_ID_ALIAS, CborValue::Uint(alias)));
+    }
+
     let root = CborValue::Map(map_entries);
     let mut out = Vec::new();
     cbor::encode_value(&root, &mut out);
@@ -1010,6 +1040,19 @@ fn decode_cbor(bytes: &[u8]) -> Result<QrPayload, DecodeError> {
     let issued_at = find_uint(&map, KEY_ISSUED_AT);
     let valid_until = find_uint(&map, KEY_VALID_UNTIL);
 
+    // Optional: portable facility ID (issue #689). Absent on payloads produced
+    // before the migration, so decoding stays backward compatible.
+    let facility_id = find_bytes(&map, KEY_FACILITY_ID)
+        .map(|b| -> Result<[u8; 32], DecodeError> {
+            if b.len() != 32 {
+                return Err(DecodeError::InvalidField("facility_id must be 32 bytes"));
+            }
+            Ok(b.try_into().unwrap())
+        }).transpose()?;
+
+    // Optional: legacy sequential facility ID alias (issue #689).
+    let facility_id_alias = find_uint(&map, KEY_FACILITY_ID_ALIAS);
+
     Ok(QrPayload {
         version,
         network_id,
@@ -1023,6 +1066,8 @@ fn decode_cbor(bytes: &[u8]) -> Result<QrPayload, DecodeError> {
         patient_sig,
         issued_at,
         valid_until,
+        facility_id,
+        facility_id_alias,
     })
 }
 
@@ -1571,6 +1616,50 @@ mod tests {
         assert!(enforce_freshness(&payload, 2500, StalenessPolicy::Warn).is_ok());
         assert!(enforce_freshness(&payload, 2500, StalenessPolicy::SoftFail).is_err());
         assert!(enforce_freshness(&payload, 500, StalenessPolicy::HardFail).is_err());
+    }
+
+    // ── Portable facility ID (issue #689) ───────────────────────────────────
+
+    #[test]
+    fn round_trip_portable_facility_id() {
+        let facility_id = [0x9au8; 32];
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref())
+            .with_facility_id(facility_id)
+            .with_facility_id_alias(42)
+            .build();
+
+        let qr = encode_qr(&payload).expect("encode");
+        let decoded = decode_qr(&qr).expect("decode");
+        assert_eq!(decoded.facility_id, Some(facility_id));
+        assert_eq!(decoded.facility_id_alias, Some(42));
+        assert_eq!(decoded, payload);
+    }
+
+    #[test]
+    fn portable_facility_id_is_optional() {
+        let payload = QrPayloadBuilder::new(NETWORK_ID_TESTNET, registry_id(), card_ref()).build();
+        let qr = encode_qr(&payload).expect("encode");
+        let decoded = decode_qr(&qr).expect("decode");
+        assert_eq!(decoded.facility_id, None);
+        assert_eq!(decoded.facility_id_alias, None);
+    }
+
+    #[test]
+    fn rejects_wrong_facility_id_length() {
+        let mut out = Vec::new();
+        let map: Vec<(u64, CborValue)> = vec![
+            (KEY_VERSION, CborValue::Uint(1)),
+            (KEY_NETWORK_ID, CborValue::Bytes(NETWORK_ID_TESTNET.to_vec())),
+            (KEY_ATTESTATION_REGISTRY, CborValue::Bytes(vec![0u8; 32])),
+            (KEY_CARD_REF, CborValue::Bytes(vec![0u8; 32])),
+            (KEY_FACILITY_ID, CborValue::Bytes(vec![0x01, 0x02])),
+        ];
+        cbor::encode_value(&CborValue::Map(map), &mut out);
+        let qr = format!("{}{}", QR_PREFIX, base45::encode(&out));
+        assert_eq!(
+            decode_qr(&qr).unwrap_err(),
+            DecodeError::InvalidField("facility_id must be 32 bytes")
+        );
     }
 
     #[test]

@@ -184,6 +184,85 @@ describe("disputed overlay", () => {
   });
 });
 
+describe("facility deactivation semantics", () => {
+  const FACILITY = "0x" + "11".repeat(32);
+  const DEACTIVATED_AT = fresh.timestamp + 5n * DAY;
+
+  it("keeps attestations made before a closed facility valid", async () => {
+    const result = await verify({
+      history: [fresh],
+      facility: { id: FACILITY, deactivatedAt: DEACTIVATED_AT, reason: "closed" },
+    });
+    expect(result.verdict).toBe("verified");
+  });
+
+  it("keeps attestations made before a licence_lapsed facility valid", async () => {
+    const result = await verify({
+      history: [fresh],
+      facility: { id: FACILITY, deactivatedAt: DEACTIVATED_AT, reason: "licence_lapsed" },
+    });
+    expect(result.verdict).toBe("verified");
+  });
+
+  it("marks attestations made before a fraud deactivation as facility_untrusted", async () => {
+    const result = await verify({
+      history: [fresh],
+      facility: { id: FACILITY, deactivatedAt: DEACTIVATED_AT, reason: "fraud" },
+    });
+    expect(result.verdict).toBe("facility_untrusted");
+    expect(result.reasons[0].code).toBe("facility_untrusted");
+  });
+
+  it("does not flag attestations made after the fraud window opens", async () => {
+    const after = { attester: CHW, timestamp: DEACTIVATED_AT + DAY };
+    const result = await verify(
+      { history: [after], facility: { id: FACILITY, deactivatedAt: DEACTIVATED_AT, reason: "fraud" } },
+      qr({ attested: after.timestamp.toString() }),
+    );
+    expect(result.verdict).toBe("verified");
+  });
+
+  it("ignores facility status when the attestation carries no facility scope", async () => {
+    const result = await verify({
+      history: [fresh],
+      facility: { id: FACILITY, deactivatedAt: DEACTIVATED_AT, reason: "fraud" },
+      facilityScoped: false,
+    });
+    expect(result.verdict).toBe("verified");
+  });
+
+  it("lets revocation take precedence over facility_untrusted", async () => {
+    const result = await verify({
+      history: [fresh],
+      revoked: true,
+      facility: { id: FACILITY, deactivatedAt: DEACTIVATED_AT, reason: "fraud" },
+    });
+    expect(result.verdict).toBe("revoked");
+  });
+});
+
+describe("portable facility identifiers", () => {
+  const PORTABLE = "0x" + "ab".repeat(32);
+
+  it("resolves a facility by its portable 32-byte id", async () => {
+    const result = await verify({
+      history: [fresh],
+      facility: { id: PORTABLE, deactivatedAt: null, reason: null },
+    });
+    expect(result.verdict).toBe("verified");
+    expect(result.facility?.id).toBe(PORTABLE);
+  });
+
+  it("treats an unknown portable id as an inactive facility", async () => {
+    const result = await verify({
+      history: [fresh],
+      facility: { id: PORTABLE, deactivatedAt: null, reason: null },
+      facilityKnown: false,
+    });
+    expect(result.verdict).toBe("facility_untrusted");
+  });
+});
+
 describe("status list inclusion", () => {
   it("validates inclusion against a signed root", async () => {
     const result = await verify({

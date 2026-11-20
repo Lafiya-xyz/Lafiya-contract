@@ -1,6 +1,7 @@
 import type {
   AttesterState,
   ChainReader,
+  FacilityState,
   OnChainAttestation,
   QuorumStatus,
   StatusListCheck,
@@ -77,6 +78,26 @@ export interface VerificationResult {
   attestation?: OnChainAttestation & { attestedAt: Date };
   attester?: { address: string; status: "active" | "suspended" | "removed"; region?: string };
   /**
+   * Portable facility identifier (32-byte hash) the attestation was scoped to,
+   * carried through from the card / on-chain record. Absent for unscoped
+   * attestations.
+   */
+  facilityId?: string;
+  /**
+   * Facility status snapshot used for trust evaluation, when the attestation
+   * was scoped to a facility.
+   */
+  facility?: {
+    /** Portable facility identifier (hex). */
+    facilityId: string;
+    /** Whether the facility is currently active. */
+    active: boolean;
+    /** Deactivation reason code, when deactivated. */
+    deactivationReason?: "closed" | "licence_lapsed" | "fraud";
+    /** When the facility was deactivated (Unix seconds). */
+    deactivatedAt?: number;
+  };
+  /**
    * Quorum progress for records whose class requires N distinct attesters.
    * Only aggregate counts are exposed; co-attester identities are never leaked.
    */
@@ -115,6 +136,55 @@ function federationReason(failure: ForeignVerificationFailure): Reason {
     case "foreign_registry_unavailable":
       return { code: "unavailable", message: failure.message };
   }
+}
+
+/**
+ * Evaluate facility trust for an attestation made at `attestedAt` (Unix
+ * seconds). Mirrors the Rust model:
+ *
+ * - An active facility is trusted.
+ * - A deactivated facility with reason `closed` or `licence_lapsed` keeps
+ *   attestations made *before* deactivation valid; later ones are untrusted.
+ * - A deactivated facility with reason `fraud` marks *all* attestations
+ *   `facility_untrusted` from the deactivation timestamp onward, regardless of
+ *   when they were made (mirrors attester compromise windows).
+ *
+ * Returns `null` when the facility is trusted for this attestation, or a
+ * {@link Reason} describing why it is not.
+ */
+function facilityTrustReason(
+  facility: FacilityState,
+  attestedAt: bigint,
+): Reason | null {
+  if (facility.active) return null;
+  const reason = facility.deactivationReason;
+  const deactivatedAt = facility.deactivatedAt;
+  // A deactivation without a reason/timestamp is treated conservatively as
+  // untrusted for all attestations.
+  if (reason === undefined || deactivatedAt === undefined) {
+    return {
+      code: "facility_untrusted",
+      message: `facility ${facility.facilityId} is deactivated`,
+    };
+  }
+  if (reason === "fraud") {
+    // Fraud taints every attestation from the deactivation timestamp onward.
+    if (attestedAt >= deactivatedAt) {
+      return {
+        code: "facility_untrusted",
+        message: `facility ${facility.facilityId} was deactivated for fraud at ${deactivatedAt}`,
+      };
+    }
+    return null;
+  }
+  // closed / licence_lapsed: attestations made before deactivation stay valid.
+  if (attestedAt >= deactivatedAt) {
+    return {
+      code: "facility_untrusted",
+      message: `facility ${facility.facilityId} was deactivated (${reason}) at ${deactivatedAt}`,
+    };
+  }
+  return null;
 }
 
 export class LafiyaVerifier {
@@ -194,6 +264,7 @@ export class LafiyaVerifier {
         payload,
         attestation: foreign.attestation,
         attester: foreign.attester,
+        ...(payload.facilityId !== undefined ? { facilityId: payload.facilityId } : {}),
       });
     }
 
@@ -280,6 +351,24 @@ export class LafiyaVerifier {
       });
     }
 
+    // 4b. Facility trust: if the attestation was scoped to a facility, read its
+    // current status and evaluate the deactivation semantics. The portable
+    // facility ID is carried through from the card or the on-chain record.
+    const facilityId = payload.facilityId ?? latest.facilityId;
+    let facilityState: FacilityState | null = null;
+    if (facilityId !== undefined) {
+      try {
+        facilityState = (await this.chain.getFacilityStatus?.(trust, facilityId)) ?? null;
+      } catch (err) {
+        const transportError = classifyError(err);
+        reasons.push({
+          code: "unavailable",
+          message: `facility read failed (${transportError.kind}): ${transportError.message}`,
+        });
+        return done({ payload, transportError });
+      }
+    }
+
     // 5. Supersession, attester status, and age.
     if (payload.attestedAt !== undefined && latest.timestamp > payload.attestedAt) {
       reasons.push({
@@ -301,6 +390,12 @@ export class LafiyaVerifier {
           message: `attestation is older than ${opts.maxAgeDays} days`,
         });
       }
+    }
+
+    // 5a. Facility deactivation semantics (mirrors the Rust model).
+    if (facilityState) {
+      const facilityReason = facilityTrustReason(facilityState, latest.timestamp);
+      if (facilityReason) reasons.push(facilityReason);
     }
 
     // 5b. Quorum: a record class may require N distinct attesters. Only the
@@ -329,6 +424,21 @@ export class LafiyaVerifier {
         status: !attesterState ? "removed" : attesterState.suspended ? "suspended" : "active",
         ...(attesterState?.region ? { region: attesterState.region } : {}),
       },
+      ...(facilityId !== undefined ? { facilityId } : {}),
+      ...(facilityState
+        ? {
+            facility: {
+              facilityId: facilityState.facilityId,
+              active: facilityState.active,
+              ...(facilityState.deactivationReason !== undefined
+                ? { deactivationReason: facilityState.deactivationReason }
+                : {}),
+              ...(facilityState.deactivatedAt !== undefined
+                ? { deactivatedAt: Number(facilityState.deactivatedAt) }
+                : {}),
+            },
+          }
+        : {}),
       ...(quorum
         ? {
             quorum: {

@@ -35,6 +35,10 @@ EXTRA_CONTRACTS: dict[str, dict[str, Path]] = {
         "wasm_path": Path("target/wasm32v1-none/release/incentive_pool.wasm"),
         "bindings_dir": Path("bindings/incentive-pool"),
     },
+    "facility-registry": {
+        "wasm_path": Path("target/wasm32v1-none/release/facility_registry.wasm"),
+        "bindings_dir": Path("bindings/facility-registry"),
+    },
 }
 
 ALL_CONTRACTS: dict[str, dict[str, Path]] = {**CONTRACTS, **EXTRA_CONTRACTS}
