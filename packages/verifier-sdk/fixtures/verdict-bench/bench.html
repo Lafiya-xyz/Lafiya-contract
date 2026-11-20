@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>Lafiya verdict benchmark</title>
+  </head>
+  <body>
+    <p>Benchmark page for <code>scripts/verdict-bench.mjs</code> (issue #763).</p>
+    <script type="module">
+      // The harness passes the replay server URL as ?rpc=... and calls
+      // window.__lafiyaBench.verifyStandardScenario() once per sample.
+      const rpcUrl = new URLSearchParams(location.search).get("rpc");
+      const { LafiyaVerifier } = await import("/dist/index.js");
+      const trust = await (await fetch("/fixtures/trust-anchors.json")).json();
+      const scenario = await (await fetch("/fixtures/standard-scenario.json")).json();
+      const verifier = new LafiyaVerifier({ network: trust.network, trust, rpcUrl });
+      window.__lafiyaBench = {
+        async verifyStandardScenario() {
+          const result = await verifier.verifyCard(scenario.qrPayload, {
+            disclosedFields: scenario.disclosedFields,
+            maxAgeDays: scenario.maxAgeDays,
+          });
+          if (result.verdict !== "verified") {
+            throw new Error(`unexpected verdict: ${result.verdict}`);
+          }
+          return result;
+        },
+      };
+    </script>
+  </body>
+</html>

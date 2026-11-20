@@ -4,6 +4,7 @@ on:
   push:
     branches: [main]
   pull_request:
+  merge_group:
 
 permissions:
   contents: read
@@ -482,8 +483,11 @@ jobs:
       - name: Verify committed data is reproducible
         run: git diff --exit-code docs/specs/qr-robustness-data.json
 
-  # Single required check for branch protection. Jobs skipped by the path
-  # filter count as success; any failure or cancellation fails this job.
+  # Single required check for branch protection and the merge queue. Jobs
+  # skipped by the path filter count as success; any failure or cancellation
+  # fails this job. On `merge_group` the paths filter has no base to diff
+  # against, so `changes` reports every filter as changed and the full suite
+  # runs against the merged result.
   ci-success:
     name: ci-success
     if: always()

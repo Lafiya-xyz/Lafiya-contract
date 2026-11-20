@@ -1,0 +1,8 @@
+{
+  "$comment": "p95 time-to-verdict budgets in milliseconds (issue #763). 2G is the acceptance profile: 2000ms p95 for the standard scenario.",
+  "profiles": {
+    "2g": { "cold": 2000, "warm": 2000 },
+    "3g": { "cold": 1500, "warm": 1000 },
+    "unthrottled": { "cold": 800, "warm": 400 }
+  }
+}
