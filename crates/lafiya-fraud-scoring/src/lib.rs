@@ -413,6 +413,319 @@ pub fn find_collusion_pairs(
     pairs
 }
 
+/// Incremental, streaming feature computation (issue #750).
+///
+/// [`StreamingScorer`] folds one [`AttestationEvent`] at a time into
+/// per-attester windowed state, so a push feed (the indexer's event stream or
+/// a Postgres `LISTEN/NOTIFY` consumer) can keep scores current without
+/// re-scanning history. The state is plain data ([`StreamingState`]) and can
+/// be persisted between batches (e.g. as JSON in the indexer's store).
+///
+/// The aggregators mirror [`score_attesters`] exactly: velocity is the busiest
+/// 1-hour bucket, burst timing is the longest run of ledgers within
+/// `burst_max_ledger_gap`, churn is the max repeat count of one record hash,
+/// region mismatch is the out-of-region fraction, and revocation ratio is
+/// compared against the population mean. Feeding a stream through
+/// [`StreamingScorer::push`] and then calling [`StreamingScorer::reports`]
+/// yields the same scores as one batch call over the same events.
+#[derive(Debug, Clone, Default)]
+pub struct StreamingState {
+    /// Per-attester windowed aggregates.
+    pub attesters: HashMap<String, AttesterWindow>,
+    /// Population-wide revocation totals, for the peer-relative check.
+    pub population_events: u64,
+    pub population_revoked: u64,
+}
+
+/// Windowed aggregates for one attester.
+#[derive(Debug, Clone, Default)]
+pub struct AttesterWindow {
+    pub events: u64,
+    pub revoked: u64,
+    pub out_of_region: u64,
+    /// Count of events per 1-hour bucket (`timestamp_secs / 3600`).
+    pub hourly_counts: HashMap<u64, u32>,
+    /// Count of events per record hash.
+    pub hash_counts: HashMap<[u8; 32], u32>,
+    /// Distinct ledgers seen, kept sorted for the burst run computation.
+    pub ledgers: Vec<u32>,
+}
+
+impl AttesterWindow {
+    fn record(&mut self, event: &AttestationEvent, own_region: Option<&str>) {
+        self.events += 1;
+        if event.revoked {
+            self.revoked += 1;
+        }
+        if let Some(region) = own_region {
+            if event.record_region != region {
+                self.out_of_region += 1;
+            }
+        }
+        *self
+            .hourly_counts
+            .entry(event.timestamp_secs / 3600)
+            .or_insert(0) += 1;
+        *self.hash_counts.entry(event.record_hash).or_insert(0) += 1;
+        match self.ledgers.binary_search(&event.ledger) {
+            Ok(_) => {}
+            Err(pos) => self.ledgers.insert(pos, event.ledger),
+        }
+    }
+}
+
+/// A score-threshold crossing, emitted as an advisory alert for the watchdog.
+#[derive(Debug, Clone, PartialEq)]
+pub struct ScoreAlert {
+    pub attester: String,
+    pub previous_severity: Severity,
+    pub severity: Severity,
+    pub score: f64,
+    pub reasons: Vec<String>,
+}
+
+/// Streaming scorer: holds windowed state plus the attester region map and
+/// config, and emits [`ScoreAlert`]s when an attester's severity changes.
+#[derive(Debug, Clone)]
+pub struct StreamingScorer {
+    config: ScoringConfig,
+    regions: HashMap<String, String>,
+    state: StreamingState,
+    severities: HashMap<String, Severity>,
+}
+
+impl StreamingScorer {
+    pub fn new(config: ScoringConfig, profiles: &[AttesterProfile]) -> Self {
+        let regions = profiles
+            .iter()
+            .map(|p| (p.attester.clone(), p.region.clone()))
+            .collect();
+        StreamingScorer {
+            config,
+            regions,
+            state: StreamingState::default(),
+            severities: HashMap::new(),
+        }
+    }
+
+    /// Resume from persisted state (e.g. reloaded from the indexer store).
+    pub fn from_state(
+        config: ScoringConfig,
+        profiles: &[AttesterProfile],
+        state: StreamingState,
+    ) -> Self {
+        let mut scorer = StreamingScorer::new(config, profiles);
+        scorer.state = state;
+        scorer
+    }
+
+    pub fn state(&self) -> &StreamingState {
+        &self.state
+    }
+
+    pub fn into_state(self) -> StreamingState {
+        self.state
+    }
+
+    /// Fold one event into the windowed state. Returns an advisory alert when
+    /// the attester's severity crossed a threshold (up or down) as a result.
+    pub fn push(&mut self, event: &AttestationEvent) -> Option<ScoreAlert> {
+        if self.config.excluded_attesters.contains(&event.attester) {
+            return None;
+        }
+        let own_region = self.regions.get(&event.attester).cloned();
+        let window = self
+            .state
+            .attesters
+            .entry(event.attester.clone())
+            .or_default();
+        window.record(event, own_region.as_deref());
+        self.state.population_events += 1;
+        if event.revoked {
+            self.state.population_revoked += 1;
+        }
+
+        let report = self.report_for(&event.attester)?;
+        let previous = self
+            .severities
+            .insert(event.attester.clone(), report.severity)
+            .unwrap_or(Severity::Low);
+        if report.severity == previous {
+            return None;
+        }
+        Some(ScoreAlert {
+            attester: report.attester,
+            previous_severity: previous,
+            severity: report.severity,
+            score: report.score,
+            reasons: report.reasons,
+        })
+    }
+
+    /// Current report for one attester, or `None` if it has no events.
+    pub fn report_for(&self, attester: &str) -> Option<RiskReport> {
+        let window = self.state.attesters.get(attester)?;
+        let population_mean_revocation_rate = if self.state.attesters.is_empty() {
+            0.0
+        } else {
+            let rates: Vec<f64> = self
+                .state
+                .attesters
+                .values()
+                .map(|w| w.revoked as f64 / w.events as f64)
+                .collect();
+            rates.iter().sum::<f64>() / rates.len() as f64
+        };
+        Some(self.report_from_window(attester, window, population_mean_revocation_rate))
+    }
+
+    /// Reports for every attester seen so far, sorted like [`score_attesters`].
+    pub fn reports(&self) -> Vec<RiskReport> {
+        let population_mean_revocation_rate = if self.state.attesters.is_empty() {
+            0.0
+        } else {
+            let rates: Vec<f64> = self
+                .state
+                .attesters
+                .values()
+                .map(|w| w.revoked as f64 / w.events as f64)
+                .collect();
+            rates.iter().sum::<f64>() / rates.len() as f64
+        };
+        let mut reports: Vec<RiskReport> = self
+            .state
+            .attesters
+            .iter()
+            .map(|(attester, window)| {
+                self.report_from_window(attester, window, population_mean_revocation_rate)
+            })
+            .collect();
+        reports.sort_by(|a, b| {
+            b.score
+                .partial_cmp(&a.score)
+                .unwrap()
+                .then(a.attester.cmp(&b.attester))
+        });
+        reports
+    }
+
+    fn report_from_window(
+        &self,
+        attester: &str,
+        window: &AttesterWindow,
+        population_mean_revocation_rate: f64,
+    ) -> RiskReport {
+        let config = &self.config;
+        let mut score = 0.0;
+        let mut reasons = Vec::new();
+        let mut breakdown = Vec::new();
+
+        if let Some(&max_hourly) = window.hourly_counts.values().max() {
+            if max_hourly > config.max_plausible_hourly_attestations {
+                score += 1.0;
+                reasons.push(format!(
+                    "velocity: {max_hourly} attestations in one hour (implausibility threshold {})",
+                    config.max_plausible_hourly_attestations
+                ));
+                breakdown.push(SignalBreakdown {
+                    signal: Signal::Velocity,
+                    weight: 1.0,
+                    observed: format!("{max_hourly} attestations in one hour"),
+                    baseline: format!(
+                        "max plausible {} per hour",
+                        config.max_plausible_hourly_attestations
+                    ),
+                });
+            }
+        }
+
+        let run = longest_burst_run(window.ledgers.clone(), config.burst_max_ledger_gap);
+        if run >= config.burst_min_run_length {
+            score += 1.0;
+            reasons.push(format!(
+                "burst timing: {run} attestations within {} ledgers of each other (threshold {})",
+                config.burst_max_ledger_gap, config.burst_min_run_length
+            ));
+            breakdown.push(SignalBreakdown {
+                signal: Signal::BurstTiming,
+                weight: 1.0,
+                observed: format!(
+                    "{run} attestations within {} ledgers",
+                    config.burst_max_ledger_gap
+                ),
+                baseline: format!("min run length {}", config.burst_min_run_length),
+            });
+        }
+
+        let max_repeats = window.hash_counts.values().copied().max().unwrap_or(0);
+        if max_repeats > config.churn_max_repeats {
+            score += 1.0;
+            reasons.push(format!(
+                "re-attestation churn: one record hash attested {max_repeats} times (threshold {})",
+                config.churn_max_repeats
+            ));
+            breakdown.push(SignalBreakdown {
+                signal: Signal::ReAttestationChurn,
+                weight: 1.0,
+                observed: format!("one record hash attested {max_repeats} times"),
+                baseline: format!("max repeats {}", config.churn_max_repeats),
+            });
+        }
+
+        if let Some(own_region) = self.regions.get(attester) {
+            let fraction = window.out_of_region as f64 / window.events as f64;
+            if fraction > config.region_mismatch_fraction_threshold {
+                score += 1.0;
+                reasons.push(format!(
+                    "region mismatch: {:.0}% of attestations outside the attester's registered region {own_region} (threshold {:.0}%)",
+                    fraction * 100.0,
+                    config.region_mismatch_fraction_threshold * 100.0
+                ));
+                breakdown.push(SignalBreakdown {
+                    signal: Signal::RegionMismatch,
+                    weight: 1.0,
+                    observed: format!("{:.0}% out-of-region", fraction * 100.0),
+                    baseline: format!(
+                        "max {:.0}% out-of-region",
+                        config.region_mismatch_fraction_threshold * 100.0
+                    ),
+                });
+            }
+        }
+
+        let revocation_rate = window.revoked as f64 / window.events as f64;
+        let peer_threshold =
+            population_mean_revocation_rate * config.revocation_ratio_peer_multiplier;
+        if population_mean_revocation_rate > 0.0 && revocation_rate > peer_threshold {
+            score += 1.0;
+            reasons.push(format!(
+                "revocation ratio: {:.0}% of this attester's attestations were later revoked, vs. a {:.0}% population mean ({}x)",
+                revocation_rate * 100.0,
+                population_mean_revocation_rate * 100.0,
+                config.revocation_ratio_peer_multiplier
+            ));
+            breakdown.push(SignalBreakdown {
+                signal: Signal::RevocationRatio,
+                weight: 1.0,
+                observed: format!("{:.0}% revoked", revocation_rate * 100.0),
+                baseline: format!(
+                    "{:.0}% population mean x{}",
+                    population_mean_revocation_rate * 100.0,
+                    config.revocation_ratio_peer_multiplier
+                ),
+            });
+        }
+
+        RiskReport {
+            attester: attester.to_string(),
+            score,
+            severity: severity_for(score, config),
+            reasons,
+            breakdown,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -38,6 +38,9 @@
 
 pub mod base45;
 pub mod cbor;
+pub mod ndef;
+
+pub use ndef::{NdefError, NdefRecord, NdefTagProfile, NDEF_TAG_PROFILES};
 
 use sha2::{Digest, Sha256};
 
@@ -51,6 +54,12 @@ mod wasm;
 /// QR string prefix (analogous to EU DCC `HC1:`).
 /// Every encoded payload starts with this prefix.
 pub const QR_PREFIX: &str = "LFQR:";
+
+/// NDEF External Type name for the card payload carrier.
+///
+/// The full NDEF type is `urn:nfc:ext:lafiya.xyz:card`; the record payload is
+/// the raw CBOR body of the QR payload v1 (no base45, no `LFQR:` prefix).
+pub const NDEF_TYPE_NAME: &str = "lafiya.xyz:card";
 
 // ---------------------------------------------------------------------------
 // Network IDs (first 4 bytes of SHA-256(passphrase))
@@ -737,6 +746,22 @@ fn parse_frame(frame: &str) -> Result<QrFrame, FrameDecodeError> {
 // QR payload spec: unsigned integers, byte strings, text strings, arrays,
 // and maps with unsigned integer keys.  This avoids pulling in a full CBOR
 // crate as a dependency while keeping the implementation auditable.
+
+/// Encode a [`QrPayload`] to the raw CBOR bytes carried by the NDEF carrier.
+///
+/// This is the same CBOR body that [`encode_qr`] wraps in base45, so the QR and
+/// NFC carriers share one codec (see `docs/specs/qr-payload-v1-ndef.md`).
+pub fn encode_payload_cbor(payload: &QrPayload) -> Result<Vec<u8>, EncodeError> {
+    if payload.version != 1 {
+        return Err(EncodeError::UnsupportedVersion(payload.version));
+    }
+    encode_cbor(payload)
+}
+
+/// Decode raw CBOR bytes (as carried by the NDEF carrier) into a [`QrPayload`].
+pub fn decode_payload_cbor(bytes: &[u8]) -> Result<QrPayload, DecodeError> {
+    decode_cbor(bytes)
+}
 
 fn encode_cbor(payload: &QrPayload) -> Result<Vec<u8>, EncodeError> {
     let mut map_entries: Vec<(u64, CborValue)> = Vec::new();
