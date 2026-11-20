@@ -30,6 +30,8 @@ struct ReferenceModel {
     ttl: HashMap<String, u32>,
     /// Maximum TTL horizon
     max_ttl: u32,
+    /// Incentive-pool model state
+    pool: PoolModel,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +56,7 @@ impl ReferenceModel {
             disputes: HashSet::new(),
             ttl: HashMap::new(),
             max_ttl: 1000,
+            pool: PoolModel::new(),
         }
     }
 
@@ -336,6 +339,282 @@ impl ReferenceModel {
     }
 }
 
+/// Reference model for the incentive-pool's multi-asset, multi-identity accounting.
+///
+/// Every accounting figure is keyed by asset so that per-asset invariants can be
+/// checked in isolation (no cross-asset conversion happens on-chain).
+#[derive(Clone, Debug, Default)]
+struct PoolModel {
+    /// Allowlisted assets
+    allowed_assets: HashSet<String>,
+    /// Per-asset total deposited
+    total_deposited: HashMap<String, i128>,
+    /// Per-asset total paid out
+    total_paid: HashMap<String, i128>,
+    /// Per-asset cap on total deposits
+    deposit_cap: HashMap<String, i128>,
+    /// Per-asset cap on total payouts
+    payout_cap: HashMap<String, i128>,
+    /// Reservations: work_item_id -> (asset, amount, reserved)
+    reservations: HashMap<String, (String, i128, bool)>,
+    /// Work items: id -> item
+    work_items: HashMap<String, WorkItem>,
+    /// Per-identity cumulative payouts: (asset, identity_key) -> amount
+    identity_claimed: HashMap<(String, String), i128>,
+    /// Per-identity cap: asset -> cap
+    max_per_identity: HashMap<String, i128>,
+    /// Approver revocation watermarks: approver -> since
+    approver_revoked_since: HashMap<String, u32>,
+    /// Current ledger time
+    now: u32,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+struct WorkItem {
+    asset: String,
+    amount: i128,
+    approved_by: String,
+    approved_at: u32,
+    payout_binding: String,
+    identity_key: String,
+    push_enabled: bool,
+    claimed: bool,
+}
+
+impl PoolModel {
+    fn new() -> Self {
+        Self {
+            now: 1,
+            ..Default::default()
+        }
+    }
+
+    fn add_asset(&mut self, asset: &str, deposit_cap: i128, payout_cap: i128) {
+        self.allowed_assets.insert(asset.to_string());
+        self.deposit_cap.insert(asset.to_string(), deposit_cap);
+        self.payout_cap.insert(asset.to_string(), payout_cap);
+    }
+
+    fn set_max_per_identity(&mut self, asset: &str, cap: i128) {
+        self.max_per_identity.insert(asset.to_string(), cap);
+    }
+
+    fn deposit(&mut self, asset: &str, amount: i128) -> Result<(), String> {
+        if !self.allowed_assets.contains(asset) {
+            return Err("Asset not allowlisted".to_string());
+        }
+        if amount <= 0 {
+            return Err("Amount must be positive".to_string());
+        }
+        let deposited = self.total_deposited.get(asset).copied().unwrap_or(0);
+        let cap = self.deposit_cap.get(asset).copied().unwrap_or(i128::MAX);
+        if deposited + amount > cap {
+            return Err("Deposit cap exceeded".to_string());
+        }
+        self.total_deposited.insert(asset.to_string(), deposited + amount);
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn approve_work_item(
+        &mut self,
+        id: &str,
+        asset: &str,
+        amount: i128,
+        approver: &str,
+        payout_binding: &str,
+        identity_key: &str,
+        push_enabled: bool,
+    ) -> Result<(), String> {
+        if !self.allowed_assets.contains(asset) {
+            return Err("Asset not allowlisted".to_string());
+        }
+        if self.work_items.contains_key(id) {
+            return Err("Work item exists".to_string());
+        }
+        let deposited = self.total_deposited.get(asset).copied().unwrap_or(0);
+        let reserved: i128 = self
+            .reservations
+            .values()
+            .filter(|(a, _, active)| a == asset && *active)
+            .map(|(_, amt, _)| *amt)
+            .sum();
+        if deposited - reserved < amount {
+            return Err("Insufficient unreserved balance".to_string());
+        }
+        self.reservations
+            .insert(id.to_string(), (asset.to_string(), amount, true));
+        self.work_items.insert(
+            id.to_string(),
+            WorkItem {
+                asset: asset.to_string(),
+                amount,
+                approved_by: approver.to_string(),
+                approved_at: self.now,
+                payout_binding: payout_binding.to_string(),
+                identity_key: identity_key.to_string(),
+                push_enabled,
+                claimed: false,
+            },
+        );
+        Ok(())
+    }
+
+    /// Shared guard used by both `claim` and `disburse` so parity is structural.
+    fn check_claimable(&self, id: &str) -> Result<WorkItem, String> {
+        let item = self
+            .work_items
+            .get(id)
+            .ok_or_else(|| "Work item not found".to_string())?
+            .clone();
+        if item.claimed {
+            return Err("Already claimed".to_string());
+        }
+        if let Some(since) = self.approver_revoked_since.get(&item.approved_by) {
+            if item.approved_at >= *since {
+                return Err("Approval voided".to_string());
+            }
+        }
+        let claimed = self
+            .identity_claimed
+            .get(&(item.asset.clone(), item.identity_key.clone()))
+            .copied()
+            .unwrap_or(0);
+        let cap = self
+            .max_per_identity
+            .get(&item.asset)
+            .copied()
+            .unwrap_or(i128::MAX);
+        if claimed + item.amount > cap {
+            return Err("Identity cap exceeded".to_string());
+        }
+        let paid = self.total_paid.get(&item.asset).copied().unwrap_or(0);
+        let payout_cap = self
+            .payout_cap
+            .get(&item.asset)
+            .copied()
+            .unwrap_or(i128::MAX);
+        if paid + item.amount > payout_cap {
+            return Err("Payout cap exceeded".to_string());
+        }
+        Ok(item)
+    }
+
+    fn settle(&mut self, id: &str, item: &WorkItem) {
+        let paid = self.total_paid.get(&item.asset).copied().unwrap_or(0);
+        self.total_paid.insert(item.asset.clone(), paid + item.amount);
+        let key = (item.asset.clone(), item.identity_key.clone());
+        let claimed = self.identity_claimed.get(&key).copied().unwrap_or(0);
+        self.identity_claimed.insert(key, claimed + item.amount);
+        if let Some(res) = self.reservations.get_mut(id) {
+            res.2 = false;
+        }
+        if let Some(w) = self.work_items.get_mut(id) {
+            w.claimed = true;
+        }
+    }
+
+    fn claim(&mut self, id: &str) -> Result<(), String> {
+        let item = self.check_claimable(id)?;
+        self.settle(id, &item);
+        Ok(())
+    }
+
+    /// Approver-initiated push disbursement; only allowed for opt-in bindings.
+    fn disburse(&mut self, ids: &[&str]) -> Result<(), String> {
+        for id in ids {
+            let item = self.check_claimable(id)?;
+            if !item.push_enabled {
+                return Err("Push not enabled for binding".to_string());
+            }
+        }
+        for id in ids {
+            let item = self.check_claimable(id)?;
+            self.settle(id, &item);
+        }
+        Ok(())
+    }
+
+    fn void_approvals_since(&mut self, approver: &str, since: u32) {
+        self.approver_revoked_since
+            .insert(approver.to_string(), since);
+    }
+
+    /// Permissionless cleanup releasing reservations for voided items.
+    fn sweep_voided(&mut self) {
+        let voided: Vec<String> = self
+            .work_items
+            .iter()
+            .filter(|(_, w)| {
+                !w.claimed
+                    && self
+                        .approver_revoked_since
+                        .get(&w.approved_by)
+                        .map(|since| w.approved_at >= *since)
+                        .unwrap_or(false)
+            })
+            .map(|(id, _)| id.clone())
+            .collect();
+        for id in voided {
+            if let Some(res) = self.reservations.get_mut(&id) {
+                res.2 = false;
+            }
+        }
+    }
+
+    fn reserved_for(&self, asset: &str) -> i128 {
+        self.reservations
+            .values()
+            .filter(|(a, _, active)| a == asset && *active)
+            .map(|(_, amt, _)| *amt)
+            .sum()
+    }
+
+    /// Per-asset invariant: paid + reserved <= deposited <= cap.
+    fn check_per_asset_invariants(&self) {
+        for asset in &self.allowed_assets {
+            let deposited = self.total_deposited.get(asset).copied().unwrap_or(0);
+            let paid = self.total_paid.get(asset).copied().unwrap_or(0);
+            let reserved = self.reserved_for(asset);
+            assert!(
+                paid + reserved <= deposited,
+                "Asset {}: paid {} + reserved {} > deposited {}",
+                asset,
+                paid,
+                reserved,
+                deposited
+            );
+            let cap = self.deposit_cap.get(asset).copied().unwrap_or(i128::MAX);
+            assert!(
+                deposited <= cap,
+                "Asset {}: deposited {} > cap {}",
+                asset,
+                deposited,
+                cap
+            );
+        }
+    }
+
+    /// Per-identity invariant: cumulative payouts never exceed the cap.
+    fn check_identity_invariants(&self) {
+        for ((asset, identity), claimed) in &self.identity_claimed {
+            let cap = self
+                .max_per_identity
+                .get(asset)
+                .copied()
+                .unwrap_or(i128::MAX);
+            assert!(
+                *claimed <= cap,
+                "Identity {} on asset {}: claimed {} > cap {}",
+                identity,
+                asset,
+                claimed,
+                cap
+            );
+        }
+    }
+}
+
 /// Stateful property test configuration
 #[derive(Debug)]
 pub struct StatefulTestConfig {
@@ -515,4 +794,162 @@ fn ttl_extension_is_monotonic_and_capped() {
     model.check_ttl_monotonic("HASH_1", model.max_ttl);
 
     println!("✓ TTL extension monotonicity passed");
+}
+
+#[test]
+fn pool_multi_asset_custody_is_isolated() {
+    let mut model = ReferenceModel::new("ADMIN".to_string());
+    model.pool.add_asset("USDC", 1_000, 1_000);
+    model.pool.add_asset("EURC", 500, 500);
+
+    model.pool.deposit("USDC", 400).expect("usdc deposit");
+    model.pool.deposit("EURC", 200).expect("eurc deposit");
+
+    // Unknown asset rejected
+    assert!(model.pool.deposit("XLM", 10).is_err());
+
+    // Per-asset deposit cap enforced independently
+    assert!(model.pool.deposit("EURC", 400).is_err());
+    assert!(model.pool.deposit("USDC", 700).is_ok());
+
+    model.pool.set_max_per_identity("USDC", 1_000);
+    model.pool.set_max_per_identity("EURC", 1_000);
+
+    model
+        .pool
+        .approve_work_item("W1", "USDC", 300, "APPROVER", "PAYOUT_A", "ID_A", true)
+        .expect("approve usdc");
+    model
+        .pool
+        .approve_work_item("W2", "EURC", 150, "APPROVER", "PAYOUT_B", "ID_B", true)
+        .expect("approve eurc");
+
+    model.pool.claim("W1").expect("claim usdc");
+    model.pool.claim("W2").expect("claim eurc");
+
+    // Isolated accounting: paying USDC does not touch EURC totals
+    assert_eq!(model.pool.total_paid.get("USDC").copied().unwrap_or(0), 300);
+    assert_eq!(model.pool.total_paid.get("EURC").copied().unwrap_or(0), 150);
+    assert_eq!(model.pool.reserved_for("USDC"), 0);
+    assert_eq!(model.pool.reserved_for("EURC"), 0);
+
+    model.pool.check_per_asset_invariants();
+    model.pool.check_identity_invariants();
+
+    println!("✓ Multi-asset custody isolation passed");
+}
+
+#[test]
+fn pool_void_approvals_since_keeps_reservations_consistent() {
+    let mut model = ReferenceModel::new("ADMIN".to_string());
+    model.pool.add_asset("USDC", 1_000, 1_000);
+    model.pool.set_max_per_identity("USDC", 1_000);
+    model.pool.deposit("USDC", 1_000).expect("deposit");
+
+    model.pool.now = 10;
+    model
+        .pool
+        .approve_work_item("OLD", "USDC", 100, "APPROVER", "PAYOUT_A", "ID_A", true)
+        .expect("approve old");
+    model.pool.now = 20;
+    model
+        .pool
+        .approve_work_item("NEW", "USDC", 100, "APPROVER", "PAYOUT_A", "ID_A", true)
+        .expect("approve new");
+    model
+        .pool
+        .approve_work_item("OTHER", "USDC", 100, "APPROVER2", "PAYOUT_B", "ID_B", true)
+        .expect("approve other");
+
+    assert_eq!(model.pool.reserved_for("USDC"), 300);
+
+    // Void approvals issued by APPROVER at or after ledger 15
+    model.pool.void_approvals_since("APPROVER", 15);
+
+    // NEW is voided, OLD and OTHER remain claimable
+    assert!(model.pool.claim("NEW").is_err());
+    model.pool.claim("OLD").expect("old still claimable");
+    model.pool.claim("OTHER").expect("other approver unaffected");
+
+    // Lazy cleanup releases the voided reservation
+    model.pool.sweep_voided();
+    assert_eq!(model.pool.reserved_for("USDC"), 0);
+    model.pool.check_per_asset_invariants();
+
+    println!("✓ void_approvals_since reservation consistency passed");
+}
+
+#[test]
+fn pool_disburse_matches_claim_guards() {
+    let mut model = ReferenceModel::new("ADMIN".to_string());
+    model.pool.add_asset("USDC", 1_000, 1_000);
+    model.pool.set_max_per_identity("USDC", 250);
+    model.pool.deposit("USDC", 1_000).expect("deposit");
+
+    model
+        .pool
+        .approve_work_item("PUSH", "USDC", 100, "APPROVER", "PAYOUT_A", "ID_A", true)
+        .expect("approve push");
+    model
+        .pool
+        .approve_work_item("NOPUSH", "USDC", 100, "APPROVER", "PAYOUT_B", "ID_B", false)
+        .expect("approve nopush");
+
+    // Push requires opt-in
+    assert!(model.pool.disburse(&["NOPUSH"]).is_err());
+
+    // Identity cap applies to push exactly as to claim
+    model.pool.disburse(&["PUSH"]).expect("disburse push");
+    assert!(model.pool.claim("PUSH").is_err(), "replay blocked");
+
+    model
+        .pool
+        .approve_work_item("PUSH2", "USDC", 100, "APPROVER", "PAYOUT_A", "ID_A", true)
+        .expect("approve push2");
+    model
+        .pool
+        .approve_work_item("PUSH3", "USDC", 100, "APPROVER", "PAYOUT_A", "ID_A", true)
+        .expect("approve push3");
+    model.pool.disburse(&["PUSH2"]).expect("disburse push2");
+    // 100 + 100 + 100 would exceed the 250 identity cap
+    assert!(model.pool.disburse(&["PUSH3"]).is_err());
+
+    model.pool.check_per_asset_invariants();
+    model.pool.check_identity_invariants();
+
+    println!("✓ Disburse/claim guard parity passed");
+}
+
+#[test]
+fn pool_identity_caps_hold_across_addresses() {
+    let mut model = ReferenceModel::new("ADMIN".to_string());
+    model.pool.add_asset("USDC", 1_000, 1_000);
+    model.pool.set_max_per_identity("USDC", 150);
+    model.pool.deposit("USDC", 1_000).expect("deposit");
+
+    // Two attester addresses sharing one identity key
+    model
+        .pool
+        .approve_work_item("A1", "USDC", 100, "APPROVER", "PAYOUT_A", "ID_SHARED", true)
+        .expect("approve a1");
+    model
+        .pool
+        .approve_work_item("A2", "USDC", 100, "APPROVER", "PAYOUT_B", "ID_SHARED", true)
+        .expect("approve a2");
+
+    model.pool.claim("A1").expect("claim a1");
+    // Second address sharing the identity is blocked by the cumulative cap
+    assert!(model.pool.claim("A2").is_err());
+
+    // A different identity is unaffected
+    model
+        .pool
+        .approve_work_item("B1", "USDC", 100, "APPROVER", "PAYOUT_C", "ID_OTHER", true)
+        .expect("approve b1");
+    model.pool.claim("B1").expect("claim b1");
+
+    model.pool.check_per_asset_invariants();
+    model.pool.check_identity_invariants();
+
+    println!("✓ Per-identity cumulative caps across addresses passed");
 }

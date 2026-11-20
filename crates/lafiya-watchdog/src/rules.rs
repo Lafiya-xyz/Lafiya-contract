@@ -17,6 +17,14 @@ pub const WATCHDOG_FAILING: &str = "watchdog_failing";
 pub const ATTESTATION_EXPIRING: &str = "attestation_expiring";
 /// A patient-initiated dispute overlay was recorded on an attestation.
 pub const ATTESTATION_DISPUTED: &str = "attestation_disputed";
+/// The incentive-pool asset allowlist changed (asset added or removed).
+pub const POOL_ASSET_ALLOWLIST_CHANGED: &str = "pool_asset_allowlist_changed";
+/// An approver pushed a batch of disbursements to bound payout addresses.
+pub const POOL_DISBURSE_BATCH: &str = "pool_disburse_batch";
+/// Approvals issued by an approver since a watermark were voided.
+pub const POOL_APPROVALS_VOIDED: &str = "pool_approvals_voided";
+/// A payout was rejected because it would exceed a per-identity cap.
+pub const POOL_IDENTITY_CAP_HIT: &str = "pool_identity_cap_hit";
 
 pub struct Engine {
     rules: Vec<EventRule>,
@@ -75,6 +83,28 @@ pub fn default_rules() -> Vec<EventRule> {
             "work_item_endorsement",
             &["work_item_proposed", "work_item_endorsed"],
             Severity::Info,
+        ),
+        // incentive-pool: multi-asset, push disbursement, approval voiding,
+        // and per-identity caps.
+        rule(
+            "pool_asset_allowlist_changed",
+            &["asset_added", "asset_removed"],
+            Severity::Critical,
+        ),
+        rule(
+            "pool_disburse_batch",
+            &["disbursed"],
+            Severity::High,
+        ),
+        rule(
+            "pool_approvals_voided",
+            &["approvals_voided"],
+            Severity::Critical,
+        ),
+        rule(
+            "pool_identity_cap_hit",
+            &["identity_cap_hit"],
+            Severity::High,
         ),
     ]
 }
@@ -614,5 +644,39 @@ mod tests {
         assert!(Engine::new(&c)
             .evaluate(&ev("attestation_disputed", 1, &[]))
             .is_empty());
+    }
+
+    #[test]
+    fn asset_allowlist_changes_are_critical() {
+        let mut e = Engine::new(&cfg());
+        assert_eq!(
+            kinds(&e.evaluate(&ev("asset_added", 1, &[]))),
+            vec![(POOL_ASSET_ALLOWLIST_CHANGED, Severity::Critical)]
+        );
+        assert_eq!(
+            kinds(&e.evaluate(&ev("asset_removed", 2, &[]))),
+            vec![(POOL_ASSET_ALLOWLIST_CHANGED, Severity::Critical)]
+        );
+    }
+
+    #[test]
+    fn disburse_batch_is_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("disbursed", 1, &[]));
+        assert_eq!(kinds(&a), vec![(POOL_DISBURSE_BATCH, Severity::High)]);
+    }
+
+    #[test]
+    fn approvals_voided_is_critical() {
+        let a = Engine::new(&cfg()).evaluate(&ev("approvals_voided", 1, &[]));
+        assert_eq!(
+            kinds(&a),
+            vec![(POOL_APPROVALS_VOIDED, Severity::Critical)]
+        );
+    }
+
+    #[test]
+    fn identity_cap_hit_is_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("identity_cap_hit", 1, &[]));
+        assert_eq!(kinds(&a), vec![(POOL_IDENTITY_CAP_HIT, Severity::High)]);
     }
 }

@@ -12,6 +12,31 @@
 
 use soroban_sdk::{Env, IntoVal, TryFromVal, Val};
 
+/// A composite storage key pairing an asset with a per-asset sub-key.
+///
+/// Multi-asset contracts (e.g. the incentive pool) key their accounting by
+/// asset. Rather than duplicating every `DataKey` variant per asset, they wrap
+/// a per-asset sub-key `K` in this type and implement [`StorageKey`] for it,
+/// delegating durability to the inner key so routing stays exhaustive and
+/// compile-time checked.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct AssetKey<K> {
+    pub asset: soroban_sdk::Address,
+    pub inner: K,
+}
+
+impl<K> AssetKey<K> {
+    pub fn new(asset: soroban_sdk::Address, inner: K) -> Self {
+        Self { asset, inner }
+    }
+}
+
+impl<K: StorageKey> StorageKey for AssetKey<K> {
+    fn durability(&self) -> Durability {
+        self.inner.durability()
+    }
+}
+
 /// The storage store a key lives in.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum Durability {

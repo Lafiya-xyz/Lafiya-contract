@@ -23,5 +23,33 @@
     "write_entries": 18,
     "read_entries_typical_distinct_attesters": 84
   },
-  "justification": "16 items keep writes at 18/50 and typical reads at 84/100 even with every item from a distinct attester; 32 items would exceed the read limit (148)."
+  "justification": "16 items keep writes at 18/50 and typical reads at 84/100 even with every item from a distinct attester; 32 items would exceed the read limit (148).",
+  "disburse": {
+    "function": "disburse",
+    "max_batch_disbursements": 16,
+    "method": "Footprint analysis of the code path (per item and per batch), checked against Soroban per-transaction limits. `disburse` shares the same guard function as `claim` (caps, eligibility, replay protection) and adds a payout-binding read plus a push-mode flag check per item. Re-measure with `stellar contract invoke --sim-only` against a 16-item batch and update `budgets/baseline.json` when the code path changes.",
+    "network_limits_assumed": {
+      "tx_max_write_ledger_entries": 50,
+      "tx_max_read_ledger_entries": 100
+    },
+    "per_item": {
+      "write_entries": 1,
+      "write_entries_notes": "WorkItem key (claimed/replay marker), same as `claim`",
+      "read_entries_typical": 6,
+      "read_entries_notes": "Same reads as `claim` (WorkItem key + attestation-registry AttestationSequence, RevokedThrough and latest Attestation entry) plus the attester's payout binding entry and its push-mode flag. Records with long, interleaved version history (up to MAX_HISTORY=10) read more; such batches fail at simulation and must be split.",
+      "events": 1,
+      "events_notes": "One audit event per disbursed item, matching the per-item audit event emitted by `claim`"
+    },
+    "per_batch_fixed": {
+      "write_entries": 2,
+      "write_entries_notes": "incentive-pool instance entry + EpochApproved counter",
+      "read_entries": 4,
+      "read_entries_notes": "instance entries of incentive-pool, attester-registry and attestation-registry + EpochApproved; plus 1 attester-registry read per distinct attester (memoized in-call)"
+    },
+    "at_cap": {
+      "write_entries": 18,
+      "read_entries_typical_distinct_attesters": 100
+    },
+    "justification": "16 items keep writes at 18/50 and typical reads at 100/100 even with every item from a distinct attester (4 fixed + 16 * 6 = 100). This is the tightest batch that fits the read limit; 17 items would exceed it (106). The bound is therefore derived from the read-entry budget: max_batch_disbursements = floor((100 - 4) / 6) = 16. Batches with long attestation histories read more per item and must be split."
+  }
 }

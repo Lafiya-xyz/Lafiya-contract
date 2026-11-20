@@ -199,12 +199,79 @@ Thresholds live in the `[pool]` section of `watchdog.toml`:
 | `approval_burst_count` | `10` | Number of approvals that constitutes a burst |
 | `approval_burst_ledgers` | `100` | Window (in ledgers) over which approvals are counted |
 | `readd_window_ledgers` | `1000` | How far back to look for a remove/re-add of the claiming attester |
+| `disburse_batch_threshold` | `25` | Push-disbursement batch size at or above this raises `pool_disburse_batch` |
+| `disburse_window_ledgers` | `100` | Window (in ledgers) over which push-disbursement batches are counted |
+| `asset_allowlist_change_window_ledgers` | `1000` | Window over which asset allowlist additions/removals are correlated with payouts |
+| `identity_cap_breach_count` | `3` | Number of `IdentityCapBreach`-style rejections from one identity key within the window that raises `pool_identity_cap_breach` |
+| `identity_cap_breach_ledgers` | `500` | Window (in ledgers) over which identity-cap rejections are counted |
 
 Tune the thresholds to the pool's normal payout size before enabling the
 rules; a threshold far below typical payouts will page on every cycle. The
 `claim_by_readded_attester` rule keeps a bounded in-memory history of attester
 removals, so after a watchdog restart it can only flag re-adds that happened
 since startup; replay over an exported event range covers the gap.
+
+### Multi-asset pools
+
+Pools may hold several allowlisted assets with isolated accounting. The
+watchdog tracks the asset on every pool event and evaluates caps, drift, and
+payout rules **per asset**; it never converts between assets (there is no
+on-chain oracle).
+
+| Kind | Severity | Meaning | First response |
+| --- | --- | --- | --- |
+| `pool_asset_added` | high | Admin added an asset to the pool allowlist | Confirm the asset against the approved asset list (SAC address, decimals, issuer); an unannounced asset means the admin key may be compromised |
+| `pool_asset_removed` | high | Admin removed an asset from the pool allowlist | Confirm the removal was planned; check for stranded deposits in that asset and a migration plan |
+| `pool_asset_drift` | critical | A per-asset invariant drifted (e.g. `TotalPaid(asset) + reserved(asset) > TotalDeposited(asset)`) | Treat as a contract bug or exploit; pause the pool via guardians and start incident response |
+| `pool_disburse_batch` | high | Approver push-disbursed a batch at or above `disburse_batch_threshold` | Confirm the batch against the approved work-item list; push mode pays without the CHW signing |
+| `pool_identity_cap_breach` | high | Repeated identity-cap rejections for one identity key | Possible multi-address cap evasion; review the identity key's bound addresses in attester-registry |
+
+Operator procedures:
+
+- **Asset allowlist changes** — every `pool_asset_added` / `pool_asset_removed`
+  must be announced in the security channel before submission. On an
+  unannounced `pool_asset_added`, treat the admin as compromised: pause the
+  pool, audit `TotalDeposited(asset)` for the new asset, and check whether any
+  payouts were made in it. On removal, verify no deposits remain stranded and
+  that the CLI/bindings have been updated to stop offering the asset.
+- **Push disbursement** — `disburse` is approver-only and opt-in per attester
+  (the attester sets a push flag on their payout binding). A
+  `pool_disburse_batch` alert is expected during normal batch operations;
+  confirm the approver key was not used outside the announced batch window and
+  that every paid item had push mode enabled. An unexpected batch is treated
+  like a compromised approver (see below).
+- **Identity caps** — `pool_identity_cap_breach` means several addresses that
+  share an identity key hit `max_per_identity`. Cross-check the identity key in
+  attester-registry (`get_identity_key`) and confirm the addresses are a
+  legitimate rotation chain. If the registry does not advertise the identity
+  feature in `get_interface`, the pool falls back to per-address caps; note the
+  weaker guarantee in the incident record.
+
+### Voiding approvals from a compromised approver
+
+If the approver key is compromised, rotating it (`set_approver`) stops new
+approvals but leaves already-issued approvals claimable. Use the watermark:
+
+1. Determine the compromise time `T` (first suspicious approval ledger) from
+   the `approval_burst` / `pool_disburse_batch` alerts and the security channel
+   timeline.
+2. As admin or guardian, call `void_approvals_since(approver, T)`. This sets
+   `ApproverRevokedSince(approver) = T` in O(1); no per-item enumeration is
+   needed.
+3. `claim` and `disburse` now reject any item with
+   `approved_by == approver && approved_at >= T` with a typed error. Items from
+   other approvers, or approved before `T`, are unaffected.
+4. Rotate the approver key (`set_approver`) and announce the new key.
+5. Run the permissionless cleanup (the `sweep_expired`-style sweep) to release
+   reservations held by the voided items; confirm per-asset reservation totals
+   return to their pre-approval values.
+6. Record the watermark value, the affected item count, and the sweep result in
+   the incident record. Re-run `replay` over the affected ledger range to
+   confirm no affected item was paid after `T`.
+
+Escalation: a compromised approver is a `critical` incident. Page the security
+on-call, pause the pool if fraudulent claims are still succeeding, and follow
+[`docs/PAUSE-POLICY.md`](../PAUSE-POLICY.md) for the pause proposal.
 | `attestation_expiring` | high | An attestation's live-until ledger is within the configured horizon (default 30 days) | Notify the attester and the patient; anyone may extend it (see below) |
 | `attestation_archived` | high | An attestation entry has archived (rent lapsed) | Restore it with the CLI helper (see below) and extend its TTL |
 | `attestation_disputed` | high | A patient flagged an attestation as disputed | Surface the dispute to verifiers; only the attester or admin can clear it (see below) |
