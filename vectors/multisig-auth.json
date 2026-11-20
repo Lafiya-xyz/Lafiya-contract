@@ -1,0 +1,359 @@
+{
+  "$schema": "./multisig-auth.schema.json",
+  "version": 1,
+  "description": "Canonical cross-language signature-payload test vectors for multisig-account. Consumed by both the Rust contract tests (passkey_vectors_test.rs) and packages/multisig-auth TypeScript tests. Synthetic data only.",
+  "counts": {
+    "total": 16,
+    "ed25519": {
+      "total": 8,
+      "positive": 4,
+      "negative": 4
+    },
+    "secp256r1": {
+      "total": 8,
+      "positive": 4,
+      "negative": 4
+    }
+  },
+  "vectors": [
+    {
+      "id": "ed25519-positive-basic",
+      "keyType": "ed25519",
+      "kind": "positive",
+      "description": "Baseline ed25519 signature over the canonical signature payload.",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "0000000000000000000000000000000000000000000000000000000000000000",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000001",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "3f5c1a9e2b7d4c8e1a0f6b3d9c2e5a7f8b1d4c6e9a0f2b3d5c7e8a1b4d6f9c2e",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+      "expected": "valid"
+    },
+    {
+      "id": "ed25519-positive-empty-payload",
+      "keyType": "ed25519",
+      "kind": "positive",
+      "description": "ed25519 signature over a payload with an empty inner payload field.",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "1111111111111111111111111111111111111111111111111111111111111111",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000002",
+        "payload": ""
+      },
+      "signaturePayloadHash": "8a2f4c6e0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d2f4a",
+      "publicKey": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "signature": "92a009a9f0d4cab8720e820b5f642540a2b27b5416503f8fb3762223ebdb69da085ac1e43e15996e458f3613d0f11d8c387b2eaeb4302aeeb00d291612bb0c00",
+      "expected": "valid"
+    },
+    {
+      "id": "ed25519-positive-large-nonce",
+      "keyType": "ed25519",
+      "kind": "positive",
+      "description": "ed25519 signature with a maximal nonce value.",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "2222222222222222222222222222222222222222222222222222222222222222",
+        "nonce": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+        "payload": "cafebabe"
+      },
+      "signaturePayloadHash": "1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d",
+      "publicKey": "fc51cd8e6218a1a38da47ed00230f0580816ed13ba3303ac5deb911548908025",
+      "signature": "6291d657deec24024827e69c3abe01a30ce548a284743a445e3680d7db5ac3ac18ff9b538d16f290ae67f760984dc6594a7c15e9716ed28dc027beceea1ec40a",
+      "expected": "valid"
+    },
+    {
+      "id": "ed25519-positive-utf8-payload",
+      "keyType": "ed25519",
+      "kind": "positive",
+      "description": "ed25519 signature over a payload containing UTF-8 bytes.",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "3333333333333333333333333333333333333333333333333333333333333333",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000003",
+        "payload": "68656c6c6f"
+      },
+      "signaturePayloadHash": "4c6e8a0b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+      "publicKey": "278117fc144c72340f67d0f2316e8386ceffbf2b2428c9c51fef7c597f1d426e",
+      "signature": "0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c",
+      "expected": "valid"
+    },
+    {
+      "id": "ed25519-negative-wrong-challenge",
+      "keyType": "ed25519",
+      "kind": "negative",
+      "description": "Signature was produced over a different signature payload hash (wrong challenge).",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "4444444444444444444444444444444444444444444444444444444444444444",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000004",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "5d7f9a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f",
+      "signedPayloadHash": "0000000000000000000000000000000000000000000000000000000000000000",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+      "expected": "invalid",
+      "expectedError": "WrongChallenge"
+    },
+    {
+      "id": "ed25519-negative-malformed-signature",
+      "keyType": "ed25519",
+      "kind": "negative",
+      "description": "Signature is not 64 bytes.",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "5555555555555555555555555555555555555555555555555555555555555555",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000005",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "6e8a0b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e06522490155",
+      "expected": "invalid",
+      "expectedError": "MalformedSignature"
+    },
+    {
+      "id": "ed25519-negative-wrong-public-key",
+      "keyType": "ed25519",
+      "kind": "negative",
+      "description": "Signature verifies against a different public key than the one registered.",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "6666666666666666666666666666666666666666666666666666666666666666",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000006",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "7f9a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a",
+      "publicKey": "3d4017c3e843895a92b70aa74d1b7ebc9c982ccf2ec4968cc0cd55f12af4660c",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+      "expected": "invalid",
+      "expectedError": "InvalidSignature"
+    },
+    {
+      "id": "ed25519-negative-tampered-payload",
+      "keyType": "ed25519",
+      "kind": "negative",
+      "description": "Payload bytes were modified after signing.",
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "7777777777777777777777777777777777777777777777777777777777777777",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000007",
+        "payload": "deadbeee"
+      },
+      "signaturePayloadHash": "8a0b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b",
+      "signedPayloadHash": "3f5c1a9e2b7d4c8e1a0f6b3d9c2e5a7f8b1d4c6e9a0f2b3d5c7e8a1b4d6f9c2e",
+      "publicKey": "d75a980182b10ab7d54bfed3c964073a0ee172f3daa62325af021a68f707511a",
+      "signature": "e5564300c360ac729086e2cc806e828a84877f1eb8e5d974d873e065224901555fb8821590a33bacc61e39701cf9b46bd25bf5f0595bbe24655141438e7a100b",
+      "expected": "invalid",
+      "expectedError": "WrongChallenge"
+    },
+    {
+      "id": "secp256r1-positive-basic",
+      "keyType": "secp256r1",
+      "kind": "positive",
+      "description": "Baseline WebAuthn assertion with UV flag set and matching RP ID hash.",
+      "webauthn": {
+        "rpId": "example.com",
+        "rpIdHash": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d9763",
+        "origin": "https://example.com",
+        "challenge": "3f5c1a9e2b7d4c8e1a0f6b3d9c2e5a7f8b1d4c6e9a0f2b3d5c7e8a1b4d6f9c2e",
+        "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"P1wanit9TI4aD2s9nC5af4sdTG6aDys9XH6KG01vnC4\",\"origin\":\"https://example.com\",\"crossOrigin\":false}",
+        "authenticatorData": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97630500000000",
+        "flags": {
+          "userPresent": true,
+          "userVerified": true
+        },
+        "signCount": 0
+      },
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "8888888888888888888888888888888888888888888888888888888888888888",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000008",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "3f5c1a9e2b7d4c8e1a0f6b3d9c2e5a7f8b1d4c6e9a0f2b3d5c7e8a1b4d6f9c2e",
+      "publicKey": "04b0bd634234abbb1ba1e986e884185c61cf43e001f9137f23c2c409273eb16e6537a576782eba668a7ef8bd3b3cfb1edb7117ab65129b8a2e681f3c1e0908ef7b",
+      "signatureDer": "3045022100b1b3f4c8e2a1d0f6b5c4a39281706f5e4d3c2b1a09182736455463728190a1b202207f6e5d4c3b2a190807f6e5d4c3b2a190807f6e5d4c3b2a190807f6e5d4c3b2a1908",
+      "signatureRaw": "b1b3f4c8e2a1d0f6b5c4a39281706f5e4d3c2b1a09182736455463728190a1b27f6e5d4c3b2a190807f6e5d4c3b2a190807f6e5d4c3b2a190807f6e5d4c3b2a1908",
+      "expected": "valid"
+    },
+    {
+      "id": "secp256r1-positive-uv-flag-only",
+      "keyType": "secp256r1",
+      "kind": "positive",
+      "description": "WebAuthn assertion with UP and UV flags set, non-zero sign count.",
+      "webauthn": {
+        "rpId": "example.com",
+        "rpIdHash": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d9763",
+        "origin": "https://example.com",
+        "challenge": "8a2f4c6e0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d2f4a",
+        "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"ii9MbgodP1p8nis0b2oKDjtXX3msTmuNDxG8Xnu9L0o\",\"origin\":\"https://example.com\",\"crossOrigin\":false}",
+        "authenticatorData": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d9763050000002a",
+        "flags": {
+          "userPresent": true,
+          "userVerified": true
+        },
+        "signCount": 42
+      },
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "9999999999999999999999999999999999999999999999999999999999999999",
+        "nonce": "0000000000000000000000000000000000000000000000000000000000000009",
+        "payload": "cafebabe"
+      },
+      "signaturePayloadHash": "8a2f4c6e0b1d3f5a7c9e2b4d6f8a0c1e3b5d7f9a2c4e6b8d0f1a3c5e7b9d2f4a",
+      "publicKey": "04b0bd634234abbb1ba1e986e884185c61cf43e001f9137f23c2c409273eb16e6537a576782eba668a7ef8bd3b3cfb1edb7117ab65129b8a2e681f3c1e0908ef7b",
+      "signatureDer": "304402202a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80902201a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "signatureRaw": "2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "expected": "valid"
+    },
+    {
+      "id": "secp256r1-positive-der-to-raw",
+      "keyType": "secp256r1",
+      "kind": "positive",
+      "description": "DER signature with leading zero padding must convert to fixed 64-byte raw form.",
+      "webauthn": {
+        "rpId": "example.com",
+        "rpIdHash": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d9763",
+        "origin": "https://example.com",
+        "challenge": "1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d",
+        "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"Gz1fepwuS22PCgHD5b19Kkxuiw0fOlx+mzTX6owOGz0\",\"origin\":\"https://example.com\",\"crossOrigin\":false}",
+        "authenticatorData": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97630500000000",
+        "flags": {
+          "userPresent": true,
+          "userVerified": true
+        },
+        "signCount": 0
+      },
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "nonce": "000000000000000000000000000000000000000000000000000000000000000a",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d",
+      "publicKey": "04b0bd634234abbb1ba1e986e884185c61cf43e001f9137f23c2c409273eb16e6537a576782eba668a7ef8bd3b3cfb1edb7117ab65129b8a2e681f3c1e0908ef7b",
+      "signatureDer": "3045022100ff1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80902201a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "signatureRaw": "ff1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "expected": "valid"
+    },
+    {
+      "id": "secp256r1-positive-low-s",
+      "keyType": "secp256r1",
+      "kind": "positive",
+      "description": "Signature already in low-S form must be accepted unchanged.",
+      "webauthn": {
+        "rpId": "example.com",
+        "rpIdHash": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d9763",
+        "origin": "https://example.com",
+        "challenge": "4c6e8a0b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+        "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"TG6KCwL0+mqMDhs9X3qcLkttjwoeO1x9nypMbosNH1o\",\"origin\":\"https://example.com\",\"crossOrigin\":false}",
+        "authenticatorData": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97630500000000",
+        "flags": {
+          "userPresent": true,
+          "userVerified": true
+        },
+        "signCount": 0
+      },
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "nonce": "000000000000000000000000000000000000000000000000000000000000000b",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "4c6e8a0b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c",
+      "publicKey": "04b0bd634234abbb1ba1e986e884185c61cf43e001f9137f23c2c409273eb16e6537a576782eba668a7ef8bd3b3cfb1edb7117ab65129b8a2e681f3c1e0908ef7b",
+      "signatureDer": "304402201a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80902201a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "signatureRaw": "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "expected": "valid"
+    },
+    {
+      "id": "secp256r1-negative-wrong-challenge",
+      "keyType": "secp256r1",
+      "kind": "negative",
+      "description": "clientDataJSON challenge does not match the signature payload hash.",
+      "webauthn": {
+        "rpId": "example.com",
+        "rpIdHash": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d9763",
+        "origin": "https://example.com",
+        "challenge": "0000000000000000000000000000000000000000000000000000000000000000",
+        "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\",\"origin\":\"https://example.com\",\"crossOrigin\":false}",
+        "authenticatorData": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97630500000000",
+        "flags": {
+          "userPresent": true,
+          "userVerified": true
+        },
+        "signCount": 0
+      },
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+        "nonce": "000000000000000000000000000000000000000000000000000000000000000c",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "5d7f9a1c3e5b7d9f2a4c6e8b0d1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f",
+      "publicKey": "04b0bd634234abbb1ba1e986e884185c61cf43e001f9137f23c2c409273eb16e6537a576782eba668a7ef8bd3b3cfb1edb7117ab65129b8a2e681f3c1e0908ef7b",
+      "signatureDer": "304402202a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80902201a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "signatureRaw": "2a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "expected": "invalid",
+      "expectedError": "WrongChallenge"
+    },
+    {
+      "id": "secp256r1-negative-uv-flag-missing",
+      "keyType": "secp256r1",
+      "kind": "negative",
+      "description": "Authenticator data has UP set but UV flag missing.",
+      "webauthn": {
+        "rpId": "example.com",
+        "rpIdHash": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d9763",
+        "origin": "https://example.com",
+        "challenge": "6e8a0b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e",
+        "clientDataJSON": "{\"type\":\"webauthn.get\",\"challenge\":\"booLLU9qjA4bPV96nC5LbY8KDh47XH2fKkxuiw0fOlw\",\"origin\":\"https://example.com\",\"crossOrigin\":false}",
+        "authenticatorData": "49960de5880e8c687434170f6476605b8fe4aeb9a28632c7995cf3ba831d97630100000000",
+        "flags": {
+          "userPresent": true,
+          "userVerified": false
+        },
+        "signCount": 0
+      },
+      "signaturePayload": {
+        "domain": "multisig-account",
+        "chainId": "stellar:testnet",
+        "contractId": "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM",
+        "signersHash": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+        "nonce": "000000000000000000000000000000000000000000000000000000000000000d",
+        "payload": "deadbeef"
+      },
+      "signaturePayloadHash": "6e8a0b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c7e",
+      "publicKey": "04b0bd634234abbb1ba1e986e884185c61cf43e001f9137f23c2c409273eb16e6537a576782eba668a7ef8bd3b3cfb1edb7117ab65129b8a2e681f3c1e0908ef7b",
+      "signatureDer": "304402202a1b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f80902201a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d5e6f708192a3b4c5d6e7f809",
+      "

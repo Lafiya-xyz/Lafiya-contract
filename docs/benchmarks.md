@@ -93,3 +93,65 @@ To measure the current checkout without the history:
 cargo build -p lafiya-bench
 scripts/bench_measure.sh | jq .metrics
 ```
+
+## `__check_auth` signer budget
+
+`multisig-account` bounds an authorization by two constants:
+
+| Constant | Value | Where |
+|---|---|---|
+| `MAX_SIGNERS` | 8 | `crates/multisig-account/src/lib.rs` |
+| `MAX_CLIENT_DATA_LEN` | 512 | `crates/multisig-account/src/lib.rs` |
+
+Both are derived from the worst-case `__check_auth` measurement below, not
+picked by feel. The rule: a worst-case authorization must use at most **50%**
+of the transaction CPU limit in `config/network-limits.json`, leaving the
+other half for the rest of the transaction and for headroom against future
+host-cost changes.
+
+### Why the worst case is all passkeys
+
+`secp256r1` verification is far more expensive than `ed25519`, and a passkey
+signer also pays SHA-256 over the WebAuthn client data. The worst case is
+therefore every signer a passkey with maximum-size client data, and every
+role evaluated. Mixed-key matrices only ever come in under this bound.
+
+### Matrix
+
+Measured with `lafiya-bench` (`multisig-account/check_auth_*` scenarios),
+plain `cargo build --release`, against the CPU limit in
+`config/network-limits.json`. `cpu` is the fraction of the transaction CPU
+limit; `mem` is the fraction of the memory limit. `ed25519` and `passkey`
+columns are the signer mix; `client data` is the WebAuthn client-data size in
+bytes (passkey signers only).
+
+| Signers | Mix | Client data | cpu | mem |
+|---:|---|---:|---:|---:|
+| 1 | 1 ed25519 | 0 | 0.4% | 0.3% |
+| 1 | 1 passkey | 512 | 6.1% | 1.2% |
+| 2 | 1 ed25519 + 1 passkey | 512 | 6.5% | 1.6% |
+| 4 | 2 ed25519 + 2 passkey | 512 | 12.8% | 2.9% |
+| 4 | 4 passkey | 512 | 24.6% | 4.1% |
+| 8 | 4 ed25519 + 4 passkey | 512 | 25.4% | 5.6% |
+| 8 | 8 passkey | 512 | **49.1%** | 8.0% |
+| 9 | 9 passkey | 512 | 55.2% | 9.0% |
+| 8 | 8 passkey | 1024 | 49.6% | 8.4% |
+| 8 | 8 passkey | 2048 | 50.4% | 9.2% |
+
+### Derivation
+
+- **`MAX_SIGNERS = 8`.** Eight all-passkey signers with maximum client data
+  is the largest count that stays under the 50% CPU rule (49.1%). Nine
+  signers crosses it (55.2%), so the bound is eight.
+- **`MAX_CLIENT_DATA_LEN = 512`.** At eight passkey signers, 512 bytes of
+  client data stays under the rule (49.1%). 1024 bytes is still under it
+  (49.6%) but leaves almost no margin, and 2048 bytes crosses it (50.4%).
+  512 is the largest round size with meaningful headroom, and it covers the
+  WebAuthn client data a real authenticator produces.
+
+The numbers above are the reference point. The worst-case row (8 passkey
+signers, 512-byte client data) is checked in CI by
+`multisig-account/tests/budget.rs`, which fails if that authorization uses
+more than 50% of the transaction CPU limit. If a host-cost change moves the
+numbers, re-measure, update this table, and adjust the constants and the test
+together.

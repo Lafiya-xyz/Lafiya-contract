@@ -114,6 +114,11 @@ enum Commands {
         #[command(subcommand)]
         sub: PoolSub,
     },
+    /// Multisig-account signer management (atomic signer replacement)
+    Signer {
+        #[command(subcommand)]
+        sub: SignerSub,
+    },
     /// Deploy contracts (wrapper around scripts/deploy.sh logic, but uses same config)
     Deploy {
         /// Build only, don't deploy
@@ -191,6 +196,30 @@ enum TxSub {
         /// Stellar identity or G... address used as transaction source
         #[arg(long)]
         source: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+enum SignerSub {
+    /// Atomically replace one signer with another, preserving weight and
+    /// roles unless explicitly overridden (requires admin)
+    ///
+    /// Example: `lafiya-cli signer replace --old ed25519:G... --new passkey:G... --yes`
+    Replace {
+        /// Signer key being replaced (e.g. `ed25519:G...` or `passkey:G...`)
+        #[arg(long)]
+        old: String,
+        /// New signer key (e.g. `ed25519:G...` or `passkey:G...`)
+        #[arg(long)]
+        new: String,
+        /// Override the preserved weight for the new signer
+        #[arg(long)]
+        weight: Option<u32>,
+        /// Override the preserved roles for the new signer (comma-separated)
+        #[arg(long)]
+        roles: Option<String>,
+        #[command(flatten)]
+        opts: SubmitOpts,
     },
 }
 
@@ -1127,6 +1156,9 @@ fn main() -> anyhow::Result<()> {
         },
         Commands::Pool { sub } => {
             handle_pool(sub, &cli.network, &network_cfg)?;
+        }
+        Commands::Signer { sub } => {
+            handle_signer(sub, &cli.network, &network_cfg)?;
         }
         Commands::Interface { contract } => {
             let (kind, req) = match contract {
@@ -2539,6 +2571,106 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
     Ok(())
 }
 
+// ── multisig-account signer command handling ─────────────────────────────────
+
+/// Validate a signer key of the form `<scheme>:<key>`, where scheme is one of
+/// `ed25519` or `passkey` (secp256r1). Returns the normalized key.
+fn validate_signer_key(label: &str, raw: &str) -> anyhow::Result<String> {
+    let key = raw.trim();
+    if key.is_empty() {
+        anyhow::bail!("{label} must not be empty; expected `<scheme>:<key>`");
+    }
+    let (scheme, body) = key.split_once(':').ok_or_else(|| {
+        anyhow::anyhow!("{label} must be `<scheme>:<key>` (scheme: ed25519 or passkey), got `{key}`")
+    })?;
+    let body = body.trim();
+    if body.is_empty() {
+        anyhow::bail!("{label} has an empty key body: `{key}`");
+    }
+    match scheme.trim().to_ascii_lowercase().as_str() {
+        "ed25519" => {
+            validate_account_address(label, body)
+                .context("invalid ed25519 signer key (expected a G... account address)")?;
+        }
+        "passkey" | "secp256r1" => {
+            // Passkey keys are hex-encoded compressed secp256r1 public keys.
+            if !body.chars().all(|c| c.is_ascii_hexdigit()) {
+                anyhow::bail!("{label} passkey key must be hex-encoded, got `{body}`");
+            }
+            if body.len() != 66 && body.len() != 130 {
+                anyhow::bail!(
+                    "{label} passkey key must be 33 or 65 bytes hex-encoded (66 or 130 chars), got {} chars",
+                    body.len()
+                );
+            }
+        }
+        other => anyhow::bail!(
+            "{label} has unsupported scheme `{other}`; expected ed25519 or passkey"
+        ),
+    }
+    Ok(key.to_string())
+}
+
+fn handle_signer(sub: SignerSub, network: &str, cfg: &NetworkConfig) -> anyhow::Result<()> {
+    let contract_id = cfg
+        .require_contract_id(network, ContractKind::MultisigAccount)
+        .map_err(|e| anyhow::anyhow!(e))?;
+
+    match sub {
+        SignerSub::Replace {
+            old,
+            new,
+            weight,
+            roles,
+            opts,
+        } => {
+            let old = validate_signer_key("--old", &old)?;
+            let new = validate_signer_key("--new", &new)?;
+            if old == new {
+                anyhow::bail!("--old and --new must differ; refusing to replace a signer with itself");
+            }
+            let source = validated_source(opts.source)?;
+
+            let mut fn_args: Vec<String> = vec![
+                "--old".to_string(),
+                old.clone(),
+                "--new".to_string(),
+                new.clone(),
+            ];
+            if let Some(w) = weight {
+                fn_args.push("--weight".to_string());
+                fn_args.push(w.to_string());
+            }
+            if let Some(r) = &roles {
+                let trimmed = r.trim();
+                if trimmed.is_empty() {
+                    anyhow::bail!("--roles must not be empty when provided");
+                }
+                fn_args.push("--roles".to_string());
+                fn_args.push(trimmed.to_string());
+            }
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "replace_signer",
+                &fn_args_ref,
+            );
+            submit_with_preview(
+                cfg,
+                contract_id,
+                "replace_signer",
+                &[&old, &new],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
+    }
+    Ok(())
+}
+
 /// Show a state-change preview, require confirmation, then submit through the
 /// audited path. Simulation failure blocks submission by default.
 fn submit_with_preview(
@@ -2998,6 +3130,76 @@ mod tests {
         assert!(
             message.to_uppercase().contains("EXTEND_TO"),
             "expected error to name the missing `extend_to` argument, got: {message}"
+        );
+    }
+
+    // ── signer replace ────────────────────────────────────────────────────────
+
+    const ED25519_KEY: &str =
+        "ed25519:GA7QYNF7SOWQ3GLR2BGMZEHXAVIRZA4KVWLTJJFC7MGXUA74P7UJVSGZ";
+    const PASSKEY_KEY: &str = "passkey:02b1c2d3e4f5061728394a5b6c7d8e9f0a1b2c3d4e5f60718293a4b5c6d7e8f9a0";
+
+    #[test]
+    fn validate_signer_key_accepts_ed25519_and_passkey() {
+        assert_eq!(
+            validate_signer_key("--old", ED25519_KEY).unwrap(),
+            ED25519_KEY
+        );
+        assert_eq!(
+            validate_signer_key("--new", PASSKEY_KEY).unwrap(),
+            PASSKEY_KEY
+        );
+    }
+
+    #[test]
+    fn validate_signer_key_rejects_malformed() {
+        assert!(validate_signer_key("--old", "").is_err());
+        assert!(validate_signer_key("--old", "no-scheme").is_err());
+        assert!(validate_signer_key("--old", "ed25519:").is_err());
+        assert!(validate_signer_key("--old", "ed25519:not-an-address").is_err());
+        assert!(validate_signer_key("--old", "passkey:zzzz").is_err());
+        assert!(validate_signer_key("--old", "passkey:abcd").is_err());
+        assert!(validate_signer_key("--old", "rsa:abcd").is_err());
+    }
+
+    #[test]
+    fn signer_replace_parses_required_args() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "signer",
+            "replace",
+            "--old",
+            ED25519_KEY,
+            "--new",
+            PASSKEY_KEY,
+            "--yes",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Signer {
+                sub: SignerSub::Replace { old, new, .. },
+            } => {
+                assert_eq!(old, ED25519_KEY);
+                assert_eq!(new, PASSKEY_KEY);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn signer_replace_missing_old_names_the_argument() {
+        let err = Cli::try_parse_from([
+            "lafiya-cli",
+            "signer",
+            "replace",
+            "--new",
+            PASSKEY_KEY,
+        ])
+        .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("OLD"),
+            "expected error to name the missing `--old` argument, got: {message}"
         );
     }
 

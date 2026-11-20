@@ -1,5 +1,5 @@
 {
-  "_comment": "Snapshot of per-transaction Soroban network limits. Refresh from the network settings (see docs/runbooks/sdk-protocol-upgrade.md) and review any diff.",
+  "_comment": "Snapshot of per-transaction Soroban network limits. Refresh from the network settings (see docs/runbooks/sdk-protocol-upgrade.md) and review any diff. These values are the source of truth for the MAX_SIGNERS / MAX_CLIENT_DATA_LEN derivation (see docs/benchmarks.md): the worst-case mixed-key __check_auth budget must stay at or below 50% of cpu_instructions and memory_bytes.",
   "cpu_instructions": 100000000,
   "memory_bytes": 41943040,
   "ledger_read_entries": 100,

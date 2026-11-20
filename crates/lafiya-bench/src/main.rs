@@ -24,6 +24,18 @@ use soroban_sdk::{vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec};
 /// Number of attesters enrolled before measuring the "loaded" scenarios.
 const LOADED_ATTESTERS: u32 = 50;
 
+/// Signer counts swept by the `__check_auth` matrix.
+const AUTH_SIGNER_COUNTS: [u32; 5] = [1, 2, 3, 5, 8];
+
+/// Client-data sizes (bytes) swept by the `__check_auth` matrix. The largest
+/// entry is the candidate `MAX_CLIENT_DATA_LEN` bound.
+const AUTH_CLIENT_DATA_LENS: [usize; 4] = [0, 64, 256, 1024];
+
+/// Key-type mixes swept by the `__check_auth` matrix, as the number of
+/// secp256r1 (passkey) signers out of the total signer count. The remaining
+/// signers are ed25519. `None` means "all secp256r1".
+const AUTH_PASSKEY_COUNTS: [Option<u32>; 3] = [Some(0), Some(1), None];
+
 #[derive(Parser, Debug)]
 #[command(
     name = "lafiya-bench",
@@ -250,35 +262,115 @@ fn attestation_registry(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Build a `Signer` value for the multisig account. The contract's `Signer`
+/// enum is `Ed25519(BytesN<32>) | Secp256r1(BytesN<65>)`; both variants are
+/// constructed through their scval representation so the harness does not
+/// need to link the contract crate.
+fn ed25519_signer(env: &Env, seed: u8) -> Val {
+    let key = BytesN::from_array(env, &[seed; 32]);
+    let mut tuple: Vec<Val> = Vec::new(env);
+    tuple.push_back(0u32.into_val(env));
+    tuple.push_back(key.into_val(env));
+    tuple.into_val(env)
+}
+
+fn secp256r1_signer(env: &Env, seed: u8) -> Val {
+    let key = BytesN::from_array(env, &[seed; 65]);
+    let mut tuple: Vec<Val> = Vec::new(env);
+    tuple.push_back(1u32.into_val(env));
+    tuple.push_back(key.into_val(env));
+    tuple.into_val(env)
+}
+
+/// Build a `SignerKey`-shaped value for the `signers` argument of
+/// `__check_auth`. The contract's `SignerKey` mirrors the signer variants.
+fn signer_key(env: &Env, passkey: bool, seed: u8) -> Val {
+    if passkey {
+        secp256r1_signer(env, seed)
+    } else {
+        ed25519_signer(env, seed)
+    }
+}
+
+/// Build a synthetic `Signature` payload of `len` bytes. The bytes are
+/// deterministic and contain no real data.
+fn client_data(env: &Env, len: usize) -> Val {
+    let mut bytes = std::vec::Vec::with_capacity(len);
+    for i in 0..len {
+        bytes.push((i as u8).wrapping_mul(31).wrapping_add(7));
+    }
+    soroban_sdk::Bytes::from_slice(env, &bytes).into_val(env)
+}
+
+/// Sweep `__check_auth` across signer counts, key-type mixes and client-data
+/// sizes. Each cell is measured in a fresh environment so the reported
+/// resources are those of a single authorization. The worst-case cell (most
+/// signers, all passkeys, largest client data) is the one used to derive
+/// `MAX_SIGNERS` and `MAX_CLIENT_DATA_LEN`.
 fn multisig_account(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
     let wasm = load(dir, report, "multisig-account")?;
-    let env = new_env();
-    let signers: Vec<BytesN<32>> =
-        (1..=3u8)
-            .map(|i| BytesN::from_array(&env, &[i; 32]))
-            .fold(Vec::new(&env), |mut v, k| {
-                v.push_back(k);
-                v
-            });
-    let account = deploy(
-        &env,
-        &wasm,
-        vec![&env, signers.into_val(&env), 2u32.into_val(&env)],
-    );
-    report.measure(
-        &env,
-        "multisig-account/get_signers",
-        &account,
-        "get_signers",
-        vec![&env],
-    );
-    report.measure(
-        &env,
-        "multisig-account/set_signers",
-        &account,
-        "set_signers",
-        vec![&env, signers.into_val(&env), 3u32.into_val(&env)],
-    );
+    {
+        let env = new_env();
+        let signers: Vec<BytesN<32>> =
+            (1..=3u8)
+                .map(|i| BytesN::from_array(&env, &[i; 32]))
+                .fold(Vec::new(&env), |mut v, k| {
+                    v.push_back(k);
+                    v
+                });
+        let account = deploy(
+            &env,
+            &wasm,
+            vec![&env, signers.into_val(&env), 2u32.into_val(&env)],
+        );
+        report.measure(
+            &env,
+            "multisig-account/get_signers",
+            &account,
+            "get_signers",
+            vec![&env],
+        );
+        report.measure(
+            &env,
+            "multisig-account/set_signers",
+            &account,
+            "set_signers",
+            vec![&env, signers.into_val(&env), 3u32.into_val(&env)],
+        );
+    }
+
+    for &count in &AUTH_SIGNER_COUNTS {
+        for &passkeys in &AUTH_PASSKEY_COUNTS {
+            let passkey_count = passkeys.unwrap_or(count).min(count);
+            for &data_len in &AUTH_CLIENT_DATA_LENS {
+                let key = format!(
+                    "multisig-account/check_auth/signers={count}/passkeys={passkey_count}/client_data={data_len}"
+                );
+                let env = new_env();
+                let mut signer_vals: Vec<Val> = Vec::new(&env);
+                for i in 0..count {
+                    let passkey = i < passkey_count;
+                    signer_vals.push_back(signer_key(&env, passkey, (i as u8) + 1));
+                }
+                let account = deploy(
+                    &env,
+                    &wasm,
+                    vec![
+                        &env,
+                        signer_vals.into_val(&env),
+                        count.into_val(&env),
+                    ],
+                );
+                let payload = client_data(&env, data_len);
+                let auth_args = vec![
+                    &env,
+                    payload,
+                    signer_vals.into_val(&env),
+                ];
+                report.measure(&env, &key, &account, "__check_auth", auth_args);
+            }
+        }
+    }
     Ok(())
 }
 

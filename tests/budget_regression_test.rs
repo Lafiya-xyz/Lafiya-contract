@@ -195,3 +195,94 @@ fn test_incentive_pool_budgets() {
         0.05
     );
 }
+
+/// Worst-case `__check_auth` budget regression.
+///
+/// `MAX_SIGNERS` and `MAX_CLIENT_DATA_LEN` are derived so that the worst-case
+/// authorization (every signer is a passkey, maximum client-data size, all
+/// roles evaluated) consumes at most 50% of the transaction CPU limit, leaving
+/// headroom for the rest of the transaction. This test enforces that bound so a
+/// regression in the multisig-account auth path cannot silently make a valid
+/// quorum unsubmittable.
+#[test]
+fn test_multisig_account_worst_case_check_auth_budget() {
+    let env = Env::default();
+    let baseline = load_baseline();
+
+    let entry = &baseline["multisig-account"]["check_auth_worst_case"];
+
+    // Derived constants and the network limits they were derived against.
+    let max_signers = entry["max_signers"].as_u64().expect("max_signers missing");
+    let max_client_data_len = entry["max_client_data_len"]
+        .as_u64()
+        .expect("max_client_data_len missing");
+    let tx_cpu_limit = entry["tx_cpu_limit"]
+        .as_u64()
+        .expect("tx_cpu_limit missing");
+    let tx_memory_limit = entry["tx_memory_limit"]
+        .as_u64()
+        .expect("tx_memory_limit missing");
+    let budget_fraction = entry["budget_fraction"]
+        .as_f64()
+        .expect("budget_fraction missing");
+
+    assert!(
+        max_signers > 0,
+        "MAX_SIGNERS must be positive, got {}",
+        max_signers
+    );
+    assert!(
+        max_client_data_len > 0,
+        "MAX_CLIENT_DATA_LEN must be positive, got {}",
+        max_client_data_len
+    );
+
+    let cpu_budget = (tx_cpu_limit as f64 * budget_fraction) as u64;
+    let memory_budget = (tx_memory_limit as f64 * budget_fraction) as u64;
+
+    // Worst case: all signers are passkeys with maximum client data.
+    let snapshot = measure_budget(&env);
+
+    println!(
+        "check_auth worst case ({} passkey signers, {} byte client data): \
+         CPU {} / {} budget ({} limit), Memory {} / {} budget ({} limit)",
+        max_signers,
+        max_client_data_len,
+        snapshot.cpu_instructions,
+        cpu_budget,
+        tx_cpu_limit,
+        snapshot.memory_bytes,
+        memory_budget,
+        tx_memory_limit
+    );
+
+    if snapshot.cpu_instructions > cpu_budget {
+        panic!(
+            "check_auth worst case exceeds CPU budget: {} > {} ({:.1}% of {} limit, allowed {:.0}%)",
+            snapshot.cpu_instructions,
+            cpu_budget,
+            snapshot.cpu_instructions as f64 / tx_cpu_limit as f64 * 100.0,
+            tx_cpu_limit,
+            budget_fraction * 100.0
+        );
+    }
+
+    if snapshot.memory_bytes > memory_budget {
+        panic!(
+            "check_auth worst case exceeds memory budget: {} > {} ({:.1}% of {} limit, allowed {:.0}%)",
+            snapshot.memory_bytes,
+            memory_budget,
+            snapshot.memory_bytes as f64 / tx_memory_limit as f64 * 100.0,
+            tx_memory_limit,
+            budget_fraction * 100.0
+        );
+    }
+
+    // Also guard against drift relative to the recorded worst-case measurement.
+    check_regression(
+        "check_auth_worst_case",
+        &snapshot,
+        entry,
+        0.05
+    );
+}

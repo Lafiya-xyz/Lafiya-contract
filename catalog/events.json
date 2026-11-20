@@ -655,6 +655,39 @@
           "location": "data"
         }
       ]
+    },
+    {
+      "contract": "multisig-account",
+      "name": "SignerReplaced",
+      "prefix_topics": [
+        "signer_replaced"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "old_fingerprint",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "new_fingerprint",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "config_version",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
     }
   ]
 }

@@ -28,6 +28,8 @@ jobs:
         uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
       - name: Check generated sequence diagrams are fresh
         run: python3 scripts/gen_sequence_diagrams.py --check
+      - name: Check multisig-auth vectors are consumed by both implementations
+        run: python3 scripts/check_multisig_vectors.py
       - name: Build docs
         run: cargo doc --workspace --no-deps
         env:

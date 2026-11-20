@@ -428,5 +428,125 @@ export function finalizeCeremony(
   return attachSignatures(entry, sigs);
 }
 
+// ---------------------------------------------------------------------------
+// Context-aware signer requirements (#703)
+//
+// The contract selects a `SignerPolicy` per authorization context -- a
+// `(contract_address, fn_name)` pair -- and requires the *strictest* policy
+// across every context in one authorization. Unknown contexts and contract
+// creation (`CreateContractHostFn` / `CreateContractWithCtorHostFn`) fall
+// back to the strictest configured policy. These helpers mirror that
+// selection off-chain so a caller can report which signers a transaction
+// needs before collecting signatures.
+// ---------------------------------------------------------------------------
+
+/** A `(contract_address, fn_name)` authorization context. */
+export interface AuthContext {
+  /** The contract address (C... strkey) the invocation targets. */
+  contractAddress: string;
+  /** The contract function being invoked. */
+  functionName: string;
+}
+
+/**
+ * A signer policy: `threshold` of `signers` (G... strkeys) must sign. Mirrors
+ * the contract's `SignerPolicy`; `signers` is the full configured set, and
+ * `threshold` is how many of them are required.
+ */
+export interface SignerPolicy {
+  /** Number of signatures required from `signers`. */
+  threshold: number;
+  /** The configured signer set (G... strkeys). */
+  signers: string[];
+}
+
+/** A configured context policy override plus the default policy. */
+export interface ContextPolicyConfig {
+  /** Policy applied to any context without an explicit override. */
+  defaultPolicy: SignerPolicy;
+  /** Overrides keyed by `"<contractAddress>:<functionName>"`. */
+  overrides: Record<string, SignerPolicy>;
+}
+
+/** Key for a context in `ContextPolicyConfig.overrides`. */
+export function contextPolicyKey(context: AuthContext): string {
+  return `${context.contractAddress}:${context.functionName}`;
+}
+
+/**
+ * Order policies from least to most strict so the strictest can be selected
+ * across contexts. "Stricter" means a larger threshold, then a larger signer
+ * set (a superset requirement is harder to satisfy), then a lexicographically
+ * larger signer list as a deterministic tie-break.
+ */
+function comparePolicyStrictness(a: SignerPolicy, b: SignerPolicy): number {
+  if (a.threshold !== b.threshold) {
+    return a.threshold - b.threshold;
+  }
+  if (a.signers.length !== b.signers.length) {
+    return a.signers.length - b.signers.length;
+  }
+  const sortedA = [...a.signers].sort().join(",");
+  const sortedB = [...b.signers].sort().join(",");
+  return sortedA < sortedB ? -1 : sortedA > sortedB ? 1 : 0;
+}
+
+/** Return the strictest of `policies` (throws on an empty list). */
+export function strictestPolicy(policies: SignerPolicy[]): SignerPolicy {
+  if (policies.length === 0) {
+    throw new Error("strictestPolicy: at least one policy is required");
+  }
+  return policies.reduce((strictest, policy) =>
+    comparePolicyStrictness(policy, strictest) > 0 ? policy : strictest,
+  );
+}
+
+/**
+ * The strictest configured policy across all overrides and the default --
+ * the fallback for unknown and contract-creation contexts.
+ */
+export function strictestConfiguredPolicy(
+  config: ContextPolicyConfig,
+): SignerPolicy {
+  return strictestPolicy([
+    config.defaultPolicy,
+    ...Object.values(config.overrides),
+  ]);
+}
+
+/**
+ * Resolve the policy for one context: its override if configured, otherwise
+ * the strictest configured policy (unknown-context fallback).
+ */
+export function resolveContextPolicy(
+  config: ContextPolicyConfig,
+  context: AuthContext,
+): SignerPolicy {
+  return (
+    config.overrides[contextPolicyKey(context)] ??
+    strictestConfiguredPolicy(config)
+  );
+}
+
+/**
+ * Compute the signer set required for an authorization spanning `contexts`:
+ * the strictest policy across every context, with unknown contexts falling
+ * back to the strictest configured policy. An empty `contexts` list (e.g. a
+ * contract-creation-only authorization) also falls back to the strictest
+ * configured policy.
+ */
+export function requiredSigners(
+  config: ContextPolicyConfig,
+  contexts: AuthContext[],
+): SignerPolicy {
+  if (contexts.length === 0) {
+    return strictestConfiguredPolicy(config);
+  }
+  return strictestPolicy(
+    contexts.map((context) => resolveContextPolicy(config, context)),
+  );
+}
+
 export * from "./passkey.js";
 export * from "./intent.js";
+export * from "./vectors.js";
