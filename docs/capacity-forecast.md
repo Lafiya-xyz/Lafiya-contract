@@ -14,6 +14,13 @@ python3 scripts/capacity_model.py --check  # compare against testnet_observation
 python3 -m unittest discover -s scripts -p 'test_capacity_model.py'
 ```
 
+Measured inputs come from the populated-state benchmarks in
+`crates/lafiya-bench` (run by the bench-history workflow). Those benchmarks
+seed realistic state — 10k attesters, 1M attestations written directly through
+testutils, 500 facilities, and full histories — and then measure the hot paths,
+so fees and per-entry sizes reflect production-sized state rather than empty
+contracts.
+
 ## Inputs
 
 | Input | Meaning |
@@ -43,10 +50,33 @@ Storage bytes, yearly rent, yearly fee budget, indexer size, peak RPC QPS.
   test estimates, not measured testnet fees** (see storage-cost.md).
 - `rent_stroops_per_byte_per_ledger` and entry sizes are **placeholders** until
   calibrated; absolute rent figures must not be quoted externally before then.
+- **Populated-state measurements:** the benchmark results are fed into the
+  capacity model as the measured per-operation fees and entry sizes, replacing
+  the synthetic placeholders. When a measured value is available it takes
+  precedence over the corresponding assumption in
+  `budgets/capacity-model.json`; the source of each input is reported so
+  placeholder-derived figures remain identifiable.
 - **Validation:** record campaign results in `testnet_observations`
   (`{"operation", "observed_fee_stroops"}`); `--check` fails when any
   prediction deviates more than `tolerance` (default 25%). No observations are
   recorded yet, so the model is not yet validated against testnet.
+
+## Growth assertions
+
+Operations that touch collections are benchmarked across increasing state
+sizes, and the benchmark asserts the claimed growth class so superlinear
+behavior is caught rather than hidden by tiny state:
+
+| Operation | Collection touched | Claimed growth |
+|---|---|---|
+| `attest` | card history | O(1) |
+| `get_attestation` | card history | O(1) |
+| co-attester lookup | co-attesters | O(log n) |
+| affiliation check | affiliation periods | O(log n) |
+| rate limiting | rate windows | O(1) |
+
+A failure of any assertion fails the bench-history workflow, so the capacity
+model is only fed values whose scaling matches the documented claims.
 
 ## Sensitivity
 

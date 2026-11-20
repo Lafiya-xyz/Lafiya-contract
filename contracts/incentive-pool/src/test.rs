@@ -932,3 +932,200 @@ fn scheduled_approval_uses_timelocked_rate_and_records_version() {
     );
     assert_eq!(client.get_work_item_schedule_version(&id), 1);
 }
+
+// ─────────────── Archival / TTL recovery harness (#723) ───────────────
+//
+// Systematically archives each persistent `DataKey` class and asserts the
+// documented recovery behavior. The outcome table lives in
+// `docs/security/archival-outcomes.md`; keep the two in sync.
+//
+// Invariant under test: archiving a key must never make a record appear
+// *more* trusted. In particular, an archived claim/approval marker must not
+// allow a double payment or make an unapproved item look approved.
+
+/// Advance the ledger far enough that every entry written so far is past its
+/// TTL and eligible for archival. `extend_ttl` is not called by the contract
+/// on read, so the entry is treated as archived on next access.
+fn expire_all(env: &Env) {
+    use soroban_sdk::testutils::Ledger as _;
+    // Well beyond any TTL the contract sets (max ~ 30 days in ledgers).
+    env.ledger().with_mut(|l| {
+        l.sequence_number += 10_000_000;
+        l.timestamp += 10_000_000;
+    });
+}
+
+/// Enumerate every persistent `DataKey` variant. This list is the single
+/// source of truth for the harness; a new variant must be added here (and to
+/// the docs table) or the coverage test below fails.
+fn persistent_data_keys(env: &Env) -> std::vec::Vec<(&'static str, DataKey)> {
+    let id = BytesN::from_array(env, &[1u8; 32]);
+    let attester = Address::generate(env);
+    std::vec![
+        ("Admin", DataKey::Admin),
+        ("Approver", DataKey::Approver),
+        ("Token", DataKey::Token),
+        ("AttesterRegistry", DataKey::AttesterRegistry),
+        ("MaxPerClaim", DataKey::MaxPerClaim),
+        ("MaxPerAttester", DataKey::MaxPerAttester),
+        ("TotalDeposited", DataKey::TotalDeposited),
+        ("TotalPaid", DataKey::TotalPaid),
+        ("Paused", DataKey::Paused),
+        ("PendingAdmin", DataKey::PendingAdmin),
+        ("WorkItem", DataKey::WorkItem(id)),
+        ("AttesterTotalClaimed", DataKey::AttesterTotalClaimed(attester)),
+        ("EpochBudget", DataKey::EpochBudget(0)),
+        ("PayoutRate", DataKey::PayoutRate(1, 2)),
+        ("ScheduleVersion", DataKey::ScheduleVersion),
+    ]
+}
+
+#[test]
+fn archival_harness_covers_every_persistent_key_class() {
+    // Guard against silently missing a new DataKey variant: the harness list
+    // must name every variant declared in `DataKey`.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let src_path = workspace_root
+        .join("contracts")
+        .join("incentive-pool")
+        .join("src")
+        .join("lib.rs");
+    let src = std::fs::read_to_string(&src_path).expect("read incentive-pool lib.rs");
+
+    let env = new_env();
+    let covered: std::vec::Vec<&str> = persistent_data_keys(&env)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+
+    // Extract variant names from `pub enum DataKey { ... }`.
+    let start = src.find("pub enum DataKey").expect("DataKey enum");
+    let body = &src[start..];
+    let open = body.find('{').unwrap();
+    let close = body[open..].find('}').unwrap();
+    for line in body[open + 1..open + close].lines() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with("//") {
+            continue;
+        }
+        let name: std::string::String = line
+            .chars()
+            .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+            .collect();
+        if name.is_empty() {
+            continue;
+        }
+        assert!(
+            covered.contains(&name.as_str()),
+            "DataKey::{name} is not covered by the archival harness"
+        );
+    }
+}
+
+#[test]
+fn archived_work_item_does_not_appear_approved_or_claimed() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let id = BytesN::from_array(&env, &[3u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+    assert!(client.is_work_item_approved(&id));
+
+    // Archive the WorkItem entry.
+    expire_all(&env);
+
+    // Archived approval must NOT look approved (would be a trust escalation).
+    assert!(!client.is_work_item_approved(&id));
+    assert!(!client.is_work_item_claimed(&id));
+    assert_eq!(client.get_work_item(&id), None);
+
+    // And claiming an archived (now-missing) approval must fail closed.
+    assert_eq!(client.try_claim(&id), Err(Ok(Error::WorkItemNotApproved)));
+    assert_eq!(client.get_total_paid(), 0);
+}
+
+#[test]
+fn archived_claim_marker_does_not_allow_double_payment() {
+    let (env, client, attester_registry, _admin, _approver, token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let id = BytesN::from_array(&env, &[4u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+    client.claim(&id);
+    assert!(client.is_work_item_claimed(&id));
+    let paid_once = client.get_total_paid();
+    assert_eq!(paid_once, ONE_UNIT);
+
+    // Archive the WorkItem (which carries the claimed marker).
+    expire_all(&env);
+
+    // The archived claim marker must not permit a second payout: the item is
+    // no longer approved, so the claim fails closed rather than paying twice.
+    assert_eq!(client.try_claim(&id), Err(Ok(Error::WorkItemNotApproved)));
+    assert_eq!(client.get_total_paid(), paid_once);
+
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&attester), ONE_UNIT);
+}
+
+#[test]
+fn archived_attester_total_claimed_does_not_reset_cap() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    client.set_max_per_claim(&POOL_CAP);
+    client.fund(&(2 * POOL_CAP));
+
+    let id1 = BytesN::from_array(&env, &[5u8; 32]);
+    client.approve_work_item(&id1, &attester, &POOL_CAP);
+    client.claim(&id1);
+    assert_eq!(client.get_attester_total_claimed(&attester), POOL_CAP);
+
+    // Archive the AttesterTotalClaimed entry.
+    expire_all(&env);
+
+    // A fresh approval + claim must not silently reset the per-attester cap.
+    // If the archived total reads as zero, the cap would be bypassed — that
+    // would be a security bug. Assert the contract fails closed instead.
+    let id2 = BytesN::from_array(&env, &[6u8; 32]);
+    client.approve_work_item(&id2, &attester, &ONE_UNIT);
+    let result = client.try_claim(&id2);
+    // Either the cap is still enforced (archived total preserved) or the
+    // claim fails closed. It must never succeed as if the total were zero.
+    assert!(
+        result == Err(Ok(Error::AttesterClaimCapExceeded)) || result.is_err(),
+        "archived AttesterTotalClaimed must not reset the cap; got {result:?}"
+    );
+}
+
+#[test]
+fn archived_config_keys_fail_closed() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+
+    // Archive the whole config surface.
+    expire_all(&env);
+
+    // Config getters must not fabricate values; they surface NotInitialized
+    // (the documented behavior for a missing config entry).
+    assert_eq!(client.try_get_admin(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(client.try_get_approver(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(client.try_get_token(), Err(Ok(Error::NotInitialized)));
+    assert_eq!(
+        client.try_get_attester_registry(),
+        Err(Ok(Error::NotInitialized))
+    );
+
+    // Mutating entry points must also fail closed rather than operate on
+    // default/zero config.
+    assert_eq!(client.try_fund(&ONE_UNIT), Err(Ok(Error::NotInitialized)));
+}

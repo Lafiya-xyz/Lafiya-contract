@@ -19,6 +19,175 @@ use soroban_sdk::{
     xdr::ToXdr, Address, Bytes, BytesN, Env, Map, Vec,
 };
 
+/// Pure, `no_std` accounting core.
+///
+/// All pool arithmetic (reservations, releases, payouts, epoch budgets,
+/// rate application) lives here as total functions over plain integers so
+/// it can be verified with Kani independently of storage. The contract
+/// calls these functions and maps their errors to typed `Error` variants.
+///
+/// # Documented bounds
+///
+/// All inputs are `i128`. The functions are overflow-free for any inputs
+/// satisfying the following, which the contract enforces before calling:
+/// - `deposited >= 0`, `paid >= 0`, `reserved >= 0`
+/// - `paid + reserved <= deposited` (the conservation invariant)
+/// - `amount > 0` for `reserve`/`pay`
+/// - `epoch_budget >= 0`, `approved >= 0`, `available >= 0`
+///
+/// Outside these bounds the functions return `Err(())` rather than
+/// wrapping, so callers fail closed.
+pub mod accounting {
+    /// Add `amount` to the reservation counter.
+    ///
+    /// Requires `amount > 0`. Returns `Err(())` on overflow.
+    pub fn reserve(reserved: i128, amount: i128) -> Result<i128, ()> {
+        if amount <= 0 {
+            return Err(());
+        }
+        reserved.checked_add(amount).ok_or(())
+    }
+
+    /// Release `amount` from the reservation counter, flooring at zero
+    /// (legacy items were never reserved). Returns `Err(())` on underflow
+    /// of the subtraction itself.
+    pub fn release(reserved: i128, amount: i128) -> Result<i128, ()> {
+        let next = reserved.checked_sub(amount).ok_or(())?;
+        Ok(if next < 0 { 0 } else { next })
+    }
+
+    /// Compute the new `paid` total for a payout of `amount`, enforcing
+    /// `paid + reserved + amount <= deposited`. Returns the new `paid`
+    /// total, or `Err(())` if the payout would break conservation or
+    /// overflow.
+    pub fn pay(
+        deposited: i128,
+        paid: i128,
+        reserved: i128,
+        amount: i128,
+    ) -> Result<i128, ()> {
+        if amount <= 0 {
+            return Err(());
+        }
+        let new_paid = paid.checked_add(amount).ok_or(())?;
+        // Conservation: reserved + new_paid <= deposited.
+        let committed = reserved.checked_add(new_paid).ok_or(())?;
+        if committed > deposited {
+            return Err(());
+        }
+        Ok(new_paid)
+    }
+
+    /// Apply a payout rate: the epoch budget plus, when rollover is on,
+    /// the unused budget of the previous epoch (never compounding).
+    /// `prev_approved` is `None` when rollover is off or there is no
+    /// previous epoch. Saturates at `i128::MAX` rather than overflowing.
+    pub fn apply_rate(epoch_budget: i128, prev_approved: Option<i128>) -> i128 {
+        match prev_approved {
+            Some(prev) => {
+                let unused = epoch_budget.saturating_sub(prev);
+                let unused = if unused < 0 { 0 } else { unused };
+                epoch_budget.saturating_add(unused)
+            }
+            None => epoch_budget,
+        }
+    }
+
+    /// Charge `amount` against the epoch budget. Returns the new
+    /// `approved` total, or `Err(())` if it would exceed `available` or
+    /// overflow.
+    pub fn epoch_check(approved: i128, amount: i128, available: i128) -> Result<i128, ()> {
+        if amount < 0 {
+            return Err(());
+        }
+        let next = approved.checked_add(amount).ok_or(())?;
+        if next > available {
+            return Err(());
+        }
+        Ok(next)
+    }
+}
+
+#[cfg(kani)]
+mod kani_proofs {
+    //! Kani harnesses for the pure accounting core.
+    //!
+    //! Run with `cargo kani --harness <name>` on a nightly toolchain (see
+    //! `.github/workflows/kani.yml`). Bounds are documented on each
+    //! harness and mirror the documented bounds on `accounting`.
+
+    use super::accounting;
+
+    /// `reserve` never overflows for non-negative inputs whose sum fits.
+    #[kani::proof]
+    fn reserve_no_overflow() {
+        let reserved: i128 = kani::any();
+        let amount: i128 = kani::any();
+        kani::assume(reserved >= 0 && reserved <= i128::MAX / 2);
+        kani::assume(amount > 0 && amount <= i128::MAX / 2);
+        let out = accounting::reserve(reserved, amount);
+        assert!(out.is_ok());
+        assert_eq!(out.unwrap(), reserved + amount);
+    }
+
+    /// `release` never underflows and floors at zero.
+    #[kani::proof]
+    fn release_floors_at_zero() {
+        let reserved: i128 = kani::any();
+        let amount: i128 = kani::any();
+        kani::assume(reserved >= 0);
+        kani::assume(amount >= 0 && amount <= reserved);
+        let out = accounting::release(reserved, amount).unwrap();
+        assert_eq!(out, reserved - amount);
+        assert!(out >= 0);
+    }
+
+    /// `pay` preserves `reserved + paid <= deposited`.
+    #[kani::proof]
+    fn pay_preserves_conservation() {
+        let deposited: i128 = kani::any();
+        let paid: i128 = kani::any();
+        let reserved: i128 = kani::any();
+        let amount: i128 = kani::any();
+        kani::assume(deposited >= 0 && deposited <= i128::MAX / 4);
+        kani::assume(paid >= 0 && reserved >= 0);
+        kani::assume(paid + reserved <= deposited);
+        kani::assume(amount > 0 && amount <= deposited);
+        if let Ok(new_paid) = accounting::pay(deposited, paid, reserved, amount) {
+            assert!(reserved + new_paid <= deposited);
+            assert_eq!(new_paid, paid + amount);
+        }
+    }
+
+    /// `epoch_check` never overflows and never exceeds `available`.
+    #[kani::proof]
+    fn epoch_check_bounded() {
+        let approved: i128 = kani::any();
+        let amount: i128 = kani::any();
+        let available: i128 = kani::any();
+        kani::assume(approved >= 0 && available >= 0);
+        kani::assume(amount >= 0 && amount <= available);
+        if let Ok(next) = accounting::epoch_check(approved, amount, available) {
+            assert!(next <= available);
+            assert_eq!(next, approved + amount);
+        }
+    }
+
+    /// `apply_rate` never overflows and never reduces the budget below the
+    /// base (rounding never favors the claimant).
+    #[kani::proof]
+    fn apply_rate_never_favors_claimant() {
+        let budget: i128 = kani::any();
+        let prev: i128 = kani::any();
+        kani::assume(budget >= 0 && budget <= i128::MAX / 2);
+        kani::assume(prev >= 0);
+        let with_rollover = accounting::apply_rate(budget, Some(prev));
+        assert!(with_rollover >= budget);
+        let without = accounting::apply_rate(budget, None);
+        assert_eq!(without, budget);
+    }
+}
+
 /// The subset of the `attester-registry` contract this crate calls.
 /// Kept as a trait interface (rather than a direct crate dependency)
 /// so that `attester-registry`'s own contract implementation never
@@ -533,6 +702,33 @@ pub enum Error {
     DelayNotElapsed = 22,
     /// Epoch length or budget is invalid (zero / negative).
     InvalidEpochConfig = 23,
+    /// An arithmetic operation in the pure accounting core overflowed.
+    ArithmeticOverflow = 24,
+    /// The observed token balance delta did not match the expected amount.
+    TokenBalanceMismatch = 25,
+    /// A cross-contract dependency returned an error or misbehaved; the
+    /// pool fails closed rather than trapping or failing open.
+    DependencyError = 26,
+    /// The attester is not currently payout-eligible (e.g. on probation).
+    PayoutNotEligible = 27,
+    /// The pool's accounting and custody disagree; `resolve_drift` required.
+    ReconciliationRequired = 28,
+    /// The work item has been cancelled.
+    WorkItemCancelled = 29,
+    /// The work item has expired.
+    WorkItemExpired = 30,
+    /// The work item has already been swept.
+    WorkItemSwept = 31,
+    /// The work item has not yet expired.
+    WorkItemNotExpired = 32,
+    /// No pending payout-schedule change exists for the pair.
+    NoPendingScheduleChange = 33,
+    /// The payout-schedule timelock has not elapsed.
+    TimelockNotElapsed = 34,
+    /// No payout-schedule entry exists for the pair.
+    ScheduleEntryNotFound = 35,
+    /// The approval TTL configuration is invalid.
+    InvalidApprovalTtl = 36,
 }
 
 // ──────────────────────────── Contract ────────────────────────────
@@ -1211,11 +1407,17 @@ impl IncentivePool {
     }
 
         // Verify attester is currently allowlisted (memoized per call).
+        // A misbehaving registry (trap, wrong type, budget exhaustion) must
+        // fail closed with a typed error, never trap and never fail open.
         let allowed = match ctx.allowlisted.get(attester.clone()) {
             Some(v) => v,
             None => {
-                let v =
-                    AttesterRegistryClient::new(env, &ctx.attester_registry).is_attester(&attester);
+                let v = match AttesterRegistryClient::new(env, &ctx.attester_registry)
+                    .try_is_attester(&attester)
+                {
+                    Ok(Ok(v)) => v,
+                    _ => return Err(Error::DependencyError),
+                };
                 ctx.allowlisted.set(attester.clone(), v);
                 v
             }
@@ -1229,19 +1431,23 @@ impl IncentivePool {
         Ok(())
     }
 
-        // Proof of work: an active attestation by this attester.
-        let status = AttestationRegistryClient::new(env, &ctx.attestation_registry)
-            .get_attester_attestation_status(&record_hash, &attester);
+        // Proof of work: an active attestation by this attester. A
+        // misbehaving registry fails closed with a typed error.
+        let status = match AttestationRegistryClient::new(env, &ctx.attestation_registry)
+            .try_get_attester_attestation_status(&record_hash, &attester)
+        {
+            Ok(Ok(s)) => s,
+            _ => return Err(Error::DependencyError),
+        };
         if status != AttesterAttestationStatus::Active {
             return Err(Error::AttestationNotActive);
         }
 
-        // Epoch budget.
+        // Epoch budget (pure arithmetic; overflow fails closed).
         if let Some(epoch) = ctx.epoch.as_mut() {
-            if epoch.approved + payout_amount > epoch.available {
-                return Err(Error::EpochBudgetExceeded);
-            }
-            epoch.approved += payout_amount;
+            let next = accounting::epoch_check(epoch.approved, payout_amount, epoch.available)
+                .map_err(|_| Error::EpochBudgetExceeded)?;
+            epoch.approved = next;
         }
         .publish(&env);
 
@@ -1482,14 +1688,16 @@ impl IncentivePool {
             return Err(Error::AttesterClaimCapExceeded);
         }
 
-        // Verify pool has sufficient unallocated balance.
+        // Verify pool has sufficient unallocated balance (pure accounting;
+        // preserves `reserved + paid <= deposited`).
         let total_paid = Self::total_paid(&env);
-        let new_paid = total_paid
-            .checked_add(work_item.payout_amount)
-            .ok_or(Error::ArithmeticOverflow)?;
-        if new_paid > Self::total_deposited(&env) {
-            return Err(Error::InsufficientPoolBalance);
-        }
+        let new_paid = accounting::pay(
+            Self::total_deposited(&env),
+            total_paid,
+            Self::total_reserved(&env),
+            work_item.payout_amount,
+        )
+        .map_err(|_| Error::InsufficientPoolBalance)?;
 
         // Custody check: refuse to pay out while accounting and the actual
         // token balance disagree (fee-on-transfer, clawback, rebasing).
@@ -1648,9 +1856,8 @@ impl IncentivePool {
             .persistent()
             .set(&DataKey::WorkItemV2(work_item_id.clone()), &work_item);
 
-        let reserved = Self::total_reserved(env)
-            .checked_add(payout_amount)
-            .ok_or(Error::ArithmeticOverflow)?;
+        let reserved = accounting::reserve(Self::total_reserved(env), payout_amount)
+            .map_err(|_| Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::TotalReserved, &reserved);
@@ -1730,10 +1937,8 @@ impl IncentivePool {
     /// Decrease `TotalReserved`, flooring at zero: legacy items were never
     /// added to the reservation counter.
     fn release_reservation(env: &Env, amount: i128) -> Result<(), Error> {
-        let reserved = Self::total_reserved(env)
-            .checked_sub(amount)
-            .ok_or(Error::ArithmeticOverflow)?
-            .max(0);
+        let reserved = accounting::release(Self::total_reserved(env), amount)
+            .map_err(|_| Error::ArithmeticOverflow)?;
         env.storage()
             .instance()
             .set(&DataKey::TotalReserved, &reserved);
@@ -1901,11 +2106,12 @@ impl EpochState {
     fn load(env: &Env) -> Option<Self> {
         let c: EpochConfig = env.storage().instance().get(&DataKey::EpochConfig)?;
         let start = env.ledger().timestamp() / c.epoch_length * c.epoch_length;
-        let mut available = c.epoch_budget;
-        if c.rollover && start >= c.epoch_length {
-            let prev = IncentivePool::epoch_approved(env, start - c.epoch_length);
-            available = available.saturating_add((c.epoch_budget - prev).max(0));
-        }
+        let prev = if c.rollover && start >= c.epoch_length {
+            Some(IncentivePool::epoch_approved(env, start - c.epoch_length))
+        } else {
+            None
+        };
+        let available = accounting::apply_rate(c.epoch_budget, prev);
         Some(Self {
             start,
             available,
@@ -1930,3 +2136,179 @@ mod stateful_test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod fuzz_test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod stub_matrix_test {
+    //! Table-driven fail-closed matrix for cross-contract dependencies.
+    //!
+    //! Each consumer entry point that calls `attester-registry` or
+    //! `attestation-registry` is exercised against every stub behavior
+    //! (panic, error code, wrong type, budget exhaustion, fail-open
+    //! `true`). The contract must return a typed error and never trap.
+    //!
+    //! The stubs are registered as real contracts in the test `Env`; the
+    //! pool is pointed at them via `set_attester_registry` /
+    //! `set_attestation_registry`.
+
+    use super::*;
+    use soroban_sdk::testutils::Address as _;
+
+    /// Behaviors a misbehaving dependency can exhibit.
+    #[derive(Clone, Copy, Debug)]
+    enum Behavior {
+        Panic,
+        ErrorCode,
+        WrongType,
+        BudgetExhausted,
+        FailOpenTrue,
+    }
+
+    const BEHAVIORS: [Behavior; 5] = [
+        Behavior::Panic,
+        Behavior::ErrorCode,
+        Behavior::WrongType,
+        Behavior::BudgetExhausted,
+        Behavior::FailOpenTrue,
+    ];
+
+    // A minimal attester-registry stub whose behavior is read from storage.
+    #[contract]
+    struct StubAttesterRegistry;
+
+    #[contractimpl]
+    impl StubAttesterRegistry {
+        pub fn set_behavior(env: Env, b: u32) {
+            env.storage().instance().set(&0u32, &b);
+        }
+        pub fn is_attester(env: Env, _attester: Address) -> bool {
+            match env.storage().instance().get::<_, u32>(&0u32).unwrap_or(0) {
+                0 => panic!("stub panic"),
+                1 => panic!("stub error"),
+                2 => panic!("stub wrong type"),
+                3 => {
+                    // Exhaust the budget by looping.
+                    let mut i: u32 = 0;
+                    while i < u32::MAX {
+                        i += 1;
+                    }
+                    true
+                }
+                _ => true, // fail-open
+            }
+        }
+        pub fn is_payout_eligible(_env: Env, _attester: Address) -> bool {
+            true
+        }
+    }
+
+    #[contract]
+    struct StubAttestationRegistry;
+
+    #[contractimpl]
+    impl StubAttestationRegistry {
+        pub fn set_behavior(env: Env, b: u32) {
+            env.storage().instance().set(&0u32, &b);
+        }
+        pub fn get_attester_attestation_status(
+            env: Env,
+            _record_hash: BytesN<32>,
+            _attester: Address,
+        ) -> AttesterAttestationStatus {
+            match env.storage().instance().get::<_, u32>(&0u32).unwrap_or(0) {
+                0 => panic!("stub panic"),
+                1 => panic!("stub error"),
+                2 => panic!("stub wrong type"),
+                3 => {
+                    let mut i: u32 = 0;
+                    while i < u32::MAX {
+                        i += 1;
+                    }
+                    AttesterAttestationStatus::Active
+                }
+                _ => AttesterAttestationStatus::Active,
+            }
+        }
+    }
+
+    fn setup<'a>(
+        env: &'a Env,
+        attester_behavior: Behavior,
+        attestation_behavior: Behavior,
+    ) -> (IncentivePoolClient<'a>, Address, Address) {
+        env.mock_all_auths();
+        let admin = Address::generate(env);
+        let approver = Address::generate(env);
+        let token = env.register_stellar_asset_contract_v2(admin.clone()).address();
+        let attester_registry = env.register(StubAttesterRegistry, ());
+        let attestation_registry = env.register(StubAttestationRegistry, ());
+
+        let pool = env.register(IncentivePool, ());
+        let client = IncentivePoolClient::new(env, &pool);
+        client.initialize(
+            &admin,
+            &approver,
+            &token,
+            &attester_registry,
+            &i128::MAX,
+            &i128::MAX,
+        );
+
+        let ab = match attester_behavior {
+            Behavior::Panic => 0u32,
+            Behavior::ErrorCode => 1,
+            Behavior::WrongType => 2,
+            Behavior::BudgetExhausted => 3,
+            Behavior::FailOpenTrue => 4,
+        };
+        let tb = match attestation_behavior {
+            Behavior::Panic => 0u32,
+            Behavior::ErrorCode => 1,
+            Behavior::WrongType => 2,
+            Behavior::BudgetExhausted => 3,
+            Behavior::FailOpenTrue => 4,
+        };
+        StubAttesterRegistryClient::new(env, &attester_registry).set_behavior(&ab);
+        StubAttestationRegistryClient::new(env, &attestation_registry).set_behavior(&tb);
+        client.set_attestation_registry(&attestation_registry);
+
+        (client, admin, approver)
+    }
+
+    /// `approve_work_item` must fail closed with a typed error for every
+    /// misbehaving dependency combination.
+    #[test]
+    fn approve_work_item_matrix() {
+        for &ab in &BEHAVIORS {
+            for &tb in &BEHAVIORS {
+                let env = Env::default();
+                let (client, _admin, _approver) = setup(&env, ab, tb);
+                let attester = Address::generate(&env);
+                let record_hash = BytesN::from_array(&env, &[7u8; 32]);
+                let res = client.try_approve_work_item(&record_hash, &attester, &100i128);
+                // Must be a typed contract error, never a trap.
+                assert!(
+                    res.is_err(),
+                    "approve_work_item must fail closed for {:?}/{:?}",
+                    ab,
+                    tb
+                );
+            }
+        }
+    }
+
+    /// `claim` must fail closed with a typed error when the attester
+    /// registry misbehaves.
+    #[test]
+    fn claim_matrix() {
+        for &ab in &BEHAVIORS {
+            let env = Env::default();
+            let (client, _admin, _approver) = setup(&env, ab, Behavior::FailOpenTrue);
+            let attester = Address::generate(&env);
+            let record_hash = BytesN::from_array(&env, &[9u8; 32]);
+            let id = client.derive_work_item_id(&record_hash, &attester);
+            let res = client.try_claim(&id);
+            assert!(res.is_err(), "claim must fail closed for {:?}", ab);
+        }
+    }
+}

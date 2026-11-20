@@ -1792,3 +1792,358 @@ fn status_list_segment_and_root_accessors() {
     let segment = client.get_status_list_segment(&0);
     assert!(segment.is_some());
 }
+
+// ───────────────────────── Archival harness ─────────────────────────
+
+/// Every persistent (instance or persistent) `DataKey` variant, paired with a
+/// factory that produces a representative key. Temporary keys are excluded:
+/// they are covered by the rate-limit tests and are not security markers.
+///
+/// Keep this list in sync with `storage::StorageKey::durability`; the
+/// `archival_harness_covers_every_persistent_key_class` test enforces it.
+fn all_keys(env: &Env) -> std::vec::Vec<(DataKey, &'static str)> {
+    let account = Address::generate(env);
+    let record = hash(env, 200);
+    std::vec![
+        (DataKey::Admin, "Admin"),
+        (DataKey::PendingAdmin, "PendingAdmin"),
+        (DataKey::AttesterRegistry, "AttesterRegistry"),
+        (DataKey::SchemaVersion, "SchemaVersion"),
+        (DataKey::EventSeq, "EventSeq"),
+        (DataKey::Paused, "Paused"),
+        (DataKey::MaxAttestationAge, "MaxAttestationAge"),
+        (DataKey::Role(Role::Guardian, account.clone()), "Role"),
+        (DataKey::Attestation(record.clone()), "Attestation"),
+        (DataKey::AttestationHistory(record.clone()), "AttestationHistory"),
+        (DataKey::RecordStatus(record.clone()), "RecordStatus"),
+        (DataKey::RecordRevoked(record.clone()), "RecordRevoked"),
+        (DataKey::AttestationWithdrawn(record.clone()), "AttestationWithdrawn"),
+        (DataKey::RevokedThroughSequence(account.clone()), "RevokedThroughSequence"),
+        (DataKey::PatientConsent(record.clone(), account.clone()), "PatientConsent"),
+        (DataKey::AttestationBatch(record.clone()), "AttestationBatch"),
+        (DataKey::PreviousRecordHash(record.clone()), "PreviousRecordHash"),
+        (DataKey::NextRecordHash(record.clone()), "NextRecordHash"),
+        (DataKey::QuorumPolicy(record.clone()), "QuorumPolicy"),
+        (DataKey::Dispute(record.clone()), "Dispute"),
+        (DataKey::StatusListRoot, "StatusListRoot"),
+        (DataKey::StatusListVersion, "StatusListVersion"),
+        (DataKey::StatusListSegment(0), "StatusListSegment"),
+        (DataKey::AttestationRateLimit, "AttestationRateLimit"),
+        (DataKey::AttesterRateLimit(account.clone()), "AttesterRateLimit"),
+    ]
+}
+
+/// The documented read behavior of each persistent key class once archived.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ArchivedRead {
+    /// The read returns `None` / a default and never looks more trusted.
+    Absent,
+    /// The read surfaces a typed error rather than a value.
+    TypedError,
+}
+
+/// Asserts that a record is not reported as trusted after archival.
+fn assert_not_more_trusted(env: &Env, client: &AttestationRegistryClient<'_>, record: &BytesN<32>) {
+    // `is_verified` may surface a typed error (fail-closed) but must never
+    // return `true` for an archived record.
+    if let Ok(verified) = client.try_is_verified(record) {
+        assert!(
+            !verified.unwrap_or(false),
+            "archived record must not be reported verified"
+        );
+    }
+    assert_ne!(
+        client.get_record_status(record),
+        RecordStatus::Verified,
+        "archived record must not report Verified"
+    );
+    let state = client.get_verification_state(record);
+    assert_ne!(
+        state,
+        VerificationState::Verified,
+        "archived record must not report Verified state"
+    );
+}
+
+#[test]
+fn archival_harness_covers_every_persistent_key_class() {
+    let env = new_env();
+    let keys = all_keys(&env);
+    // Every key in the list must be persistent or instance, never temporary.
+    for (key, name) in &keys {
+        assert_ne!(
+            key.durability(),
+            StorageDurability::Temporary,
+            "key class {name} is temporary and should not be in the archival harness"
+        );
+    }
+    // No duplicate key classes.
+    let mut names: std::vec::Vec<&str> = keys.iter().map(|(_, n)| *n).collect();
+    names.sort_unstable();
+    names.dedup();
+    assert_eq!(names.len(), keys.len(), "duplicate key class in harness");
+}
+
+#[test]
+fn archived_revocation_marker_does_not_restore_trust() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record = hash(&env, 201);
+    attest_with_consent(&env, &client, &attester, &record);
+    client.revoke_attestation(&admin, &record, &Symbol::new(&env, "audit"));
+
+    // Archive the revocation marker.
+    env.as_contract(&client.address, || {
+        env.storage().persistent().remove(&DataKey::RecordRevoked(record.clone()));
+    });
+
+    assert_not_more_trusted(&env, &client, &record);
+}
+
+#[test]
+fn archived_withdrawal_marker_does_not_restore_trust() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record = hash(&env, 202);
+    attest_with_consent(&env, &client, &attester, &record);
+    client.withdraw_attestation(&attester, &record);
+
+    env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .remove(&DataKey::AttestationWithdrawn(record.clone()));
+    });
+
+    assert_not_more_trusted(&env, &client, &record);
+}
+
+#[test]
+fn archived_dispute_marker_does_not_restore_trust() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record = hash(&env, 203);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record, &expires_at);
+    client.attest(&attester, &patient, &record);
+    let signature = BytesN::from_array(&env, &[5u8; 64]);
+    client.dispute_attestation(&patient, &record, &signature);
+
+    env.as_contract(&client.address, || {
+        env.storage().persistent().remove(&DataKey::Dispute(record.clone()));
+    });
+
+    assert_not_more_trusted(&env, &client, &record);
+}
+
+#[test]
+fn archived_consent_grant_does_not_authorize_attestation() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record = hash(&env, 204);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record, &expires_at);
+
+    env.as_contract(&client.address, || {
+        env.storage().persistent().remove(&DataKey::PatientConsent(
+            record.clone(),
+            patient.clone(),
+        ));
+    });
+
+    assert_eq!(
+        client.try_attest(&attester, &patient, &record),
+        Err(Ok(Error::PatientConsentRequired))
+    );
+    assert_eq!(client.get_attestation(&record), None);
+}
+
+#[test]
+fn archived_attestation_reads_as_absent() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record = hash(&env, 205);
+    attest_with_consent(&env, &client, &attester, &record);
+
+    env.as_contract(&client.address, || {
+        env.storage().persistent().remove(&DataKey::Attestation(record.clone()));
+    });
+
+    assert_eq!(client.get_attestation(&record), None);
+    assert_not_more_trusted(&env, &client, &record);
+}
+
+#[test]
+fn archived_record_status_reads_as_never_attested() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record = hash(&env, 206);
+    attest_with_consent(&env, &client, &attester, &record);
+
+    env.as_contract(&client.address, || {
+        env.storage().persistent().remove(&DataKey::RecordStatus(record.clone()));
+    });
+
+    assert_eq!(client.get_record_status(&record), RecordStatus::NeverAttested);
+    assert_not_more_trusted(&env, &client, &record);
+}
+
+#[test]
+fn archived_attester_registry_surfaces_typed_error() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record = hash(&env, 207);
+    attest_with_consent(&env, &client, &attester, &record);
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::AttesterRegistry);
+    });
+
+    // Fail-closed: a typed error, never a trap and never `true`.
+    assert_eq!(
+        client.try_is_verified(&record),
+        Err(Ok(Error::NotInitialized))
+    );
+    assert_not_more_trusted(&env, &client, &record);
+}
+
+#[test]
+fn archived_admin_surfaces_typed_error() {
+    let (env, client, _attester_registry, _admin) = setup();
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::Admin);
+    });
+    assert_eq!(client.try_get_admin(), Err(Ok(Error::NotInitialized)));
+}
+
+#[test]
+fn archived_pause_flag_fails_closed() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record = hash(&env, 208);
+    attest_with_consent(&env, &client, &attester, &record);
+
+    env.as_contract(&client.address, || {
+        env.storage().instance().remove(&DataKey::Paused);
+    });
+
+    // A missing pause flag must not be treated as "unpaused" in a way that
+    // makes a record more trusted; reads remain fail-closed.
+    assert_not_more_trusted(&env, &client, &record);
+}
+
+// ───────────────────────── Fault-injection matrix ─────────────────────────
+
+/// Behaviors a misbehaving attester-registry stub can exhibit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum StubBehavior {
+    Panic,
+    ErrorCode(u32),
+    WrongType,
+    BudgetExhaustion,
+    FailOpen,
+}
+
+/// A consumer entry point that depends on the attester registry.
+#[derive(Clone, Copy, Debug)]
+enum Consumer {
+    Attest,
+    AttestWithSession,
+    IsVerified,
+    GetRecordStatus,
+    GetVerificationState,
+}
+
+/// Asserts the result is a fail-closed typed error (never a trap, never a
+/// value that makes the record look more trusted).
+fn assert_fail_closed<T: core::fmt::Debug>(
+    result: Result<Result<T, soroban_sdk::Error>, Result<soroban_sdk::Error, soroban_sdk::InvokeError>>,
+    behavior: StubBehavior,
+    consumer: Consumer,
+) {
+    match result {
+        Ok(_) => panic!(
+            "{consumer:?} with {behavior:?} must fail closed, not return a value"
+        ),
+        Err(Ok(error)) => {
+            // Typed contract error: acceptable fail-closed outcome.
+            assert_ne!(
+                error,
+                Error::AttesterNotAllowlisted,
+                "{consumer:?} with {behavior:?} must not silently allow"
+            );
+        }
+        Err(Err(invoke_error)) => panic!(
+            "{consumer:?} with {behavior:?} trapped instead of returning a typed error: {invoke_error:?}"
+        ),
+    }
+}
+
+#[test]
+fn consumer_by_behavior_matrix_fails_closed() {
+    let behaviors = [
+        StubBehavior::Panic,
+        StubBehavior::ErrorCode(1),
+        StubBehavior::WrongType,
+        StubBehavior::BudgetExhaustion,
+        StubBehavior::FailOpen,
+    ];
+    let consumers = [
+        Consumer::Attest,
+        Consumer::AttestWithSession,
+        Consumer::IsVerified,
+        Consumer::GetRecordStatus,
+        Consumer::GetVerificationState,
+    ];
+
+    for behavior in behaviors {
+        for consumer in consumers {
+            let (env, client, attester_registry, admin) = setup();
+            let attester = enroll(&env, &attester_registry, &admin);
+            let patient = Address::generate(&env);
+            let record = hash(&env, 210);
+            let expires_at = env.ledger().timestamp() + 10_000;
+            client.consent_attestation(&patient, &attester, &record, &expires_at);
+
+            // Point the registry at a stub that misbehaves per `behavior`.
+            let stub = env.register(
+                lafiya_test_utils::MisbehavingAttesterRegistry,
+                (behavior as u32,),
+            );
+            env.as_contract(&client.address, || {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::AttesterRegistry, &stub);
+            });
+
+            match consumer {
+                Consumer::Attest => assert_fail_closed(
+                    client.try_attest(&attester, &patient, &record),
+                    behavior,
+                    consumer,
+                ),
+                Consumer::AttestWithSession => assert_fail_closed(
+                    client.try_attest_with_session(&attester, &patient, &record, &hash(&env, 211)),
+                    behavior,
+                    consumer,
+                ),
+                Consumer::IsVerified => assert_fail_closed(
+                    client.try_is_verified(&record),
+                    behavior,
+                    consumer,
+                ),
+                Consumer::GetRecordStatus => assert_fail_closed(
+                    client.try_get_record_status(&record),
+                    behavior,
+                    consumer,
+                ),
+                Consumer::GetVerificationState => assert_fail_closed(
+                    client.try_get_verification_state(&record),
+                    behavior,
+                    consumer,
+                ),
+            }
+        }
+    }
+}

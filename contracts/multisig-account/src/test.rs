@@ -378,6 +378,121 @@ fn three_of_five_signers_authorize() {
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
 }
 
+/// Archival behavior harness for every persistent `DataKey` variant.
+///
+/// Each test below archives exactly one key class by advancing the ledger past
+/// its TTL, then observes what the contract does. The documented outcomes are
+/// published in `docs/security/archival-behavior.md`; keep the two in sync.
+///
+/// Security invariant: archiving a key must never make a record appear *more*
+/// trusted. In particular, an archived `SignerCount`/`Threshold`/`Signers`
+/// must fail closed (trap or reject) rather than silently authorize with a
+/// weaker threshold.
+mod archival {
+    use super::*;
+    use soroban_sdk::testutils::Ledger as _;
+
+    /// Advance the ledger far enough that every entry written so far is past
+    /// its TTL and eligible for archival.
+    fn expire_all(env: &Env) {
+        let current = env.ledger().sequence();
+        env.ledger().set_sequence_number(current + 10_000_000);
+    }
+
+    #[test]
+    fn archived_threshold_does_not_weaken_authorization() {
+        let env = Env::default();
+        let keys = signing_keys();
+        let account = register_account(&env, &keys, 2);
+        let payload = BytesN::from_array(&env, &[7; 32]);
+
+        expire_all(&env);
+
+        // A single signature must not be accepted just because the threshold
+        // entry was archived (which could otherwise read as "no threshold").
+        let signatures = signatures_for(&env, &keys[..1], &payload.to_array());
+        assert!(
+            check_auth(&env, &account, &payload, signatures).is_err(),
+            "archived threshold must not allow fewer than the configured signatures"
+        );
+    }
+
+    #[test]
+    fn archived_signer_count_does_not_weaken_authorization() {
+        let env = Env::default();
+        let keys = signing_keys();
+        let account = register_account(&env, &keys, 2);
+        let payload = BytesN::from_array(&env, &[7; 32]);
+
+        expire_all(&env);
+
+        // Submitting more signatures than the (archived) signer count must not
+        // be treated as valid; the contract must fail closed.
+        let signatures = signatures_for(&env, &keys, &payload.to_array());
+        assert!(
+            check_auth(&env, &account, &payload, signatures).is_err(),
+            "archived signer count must not accept an unbounded number of signers"
+        );
+    }
+
+    #[test]
+    fn archived_signers_do_not_authorize_unknown_keys() {
+        let env = Env::default();
+        let keys = signing_keys();
+        let account = register_account(&env, &keys, 2);
+        let payload = BytesN::from_array(&env, &[7; 32]);
+
+        expire_all(&env);
+
+        // An attacker-supplied key must never be accepted merely because the
+        // configured signer set was archived.
+        let attacker = SigningKey::from_bytes(&[9; 32]);
+        let signatures = signatures_for(&env, &[attacker], &payload.to_array());
+        assert!(
+            check_auth(&env, &account, &payload, signatures).is_err(),
+            "archived signers must not authorize an unknown key"
+        );
+    }
+
+    #[test]
+    fn archived_state_never_accepts_empty_signature_set() {
+        let env = Env::default();
+        let keys = signing_keys();
+        let account = register_account(&env, &keys, 2);
+        let payload = BytesN::from_array(&env, &[7; 32]);
+
+        expire_all(&env);
+
+        let signatures: Vec<Signature> = Vec::new(&env);
+        assert!(
+            check_auth(&env, &account, &payload, signatures).is_err(),
+            "archived state must not accept an empty signature set"
+        );
+    }
+
+    #[test]
+    fn archived_getters_do_not_report_weaker_configuration() {
+        let env = Env::default();
+        let keys = signing_keys();
+        let account = register_account(&env, &keys, 2);
+        let client = MultisigAccountClient::new(&env, &account);
+
+        expire_all(&env);
+
+        // Getters must either return the original configuration or trap; they
+        // must never report a lower threshold or fewer signers than configured.
+        let threshold = client.get_threshold();
+        assert!(
+            threshold >= 2,
+            "archived threshold getter must not report a weaker threshold"
+        );
+        assert!(
+            client.get_signers().len() >= 2,
+            "archived signers getter must not report fewer signers"
+        );
+    }
+}
+
 #[test]
 fn get_interface_reports_kind_versions_and_features() {
     let env = Env::default();

@@ -93,3 +93,51 @@ To measure the current checkout without the history:
 cargo build -p lafiya-bench
 scripts/bench_measure.sh | jq .metrics
 ```
+
+## Populated-state benchmarks
+
+Benchmarks against empty or tiny state underestimate production costs: read
+and write fees depend on entry sizes, and some operations depend on collection
+sizes (history, co-attesters, affiliation periods, rate windows). The harness
+therefore also runs a set of populated-state scenarios. They seed state to
+realistic target scales through direct storage writes in `testutils` (synthetic
+data only, never real health data or QR payloads), then measure the hot paths.
+
+| Scale | Target |
+|---|---|
+| Attesters | 10k |
+| Attestations | 1M (simulated through direct storage writes) |
+| Facilities | 500 |
+| Histories | full (no truncation) |
+
+These scenarios run in the `bench-history` workflow alongside the base
+scenarios, so their series are recorded per commit like any other metric. Their
+keys carry a `populated/` prefix, for example
+`attester-registry/populated/add_attester_10k/cpu_instructions`.
+
+## Growth assertions
+
+For operations that touch collections, the harness measures the cost at
+several state sizes and asserts the growth class the design claims. A scenario
+declares its expected class:
+
+- **O(1):** cost must stay flat as the collection grows (for example, a
+  lookup by key).
+- **O(log n):** cost may grow logarithmically (for example, a bounded search
+  over a sorted structure).
+
+The assertion fits the measured points and fails the run when the observed
+growth exceeds the declared class beyond a tolerance. This catches accidental
+superlinear behavior (for example, a scan that turns a lookup into O(n)) that
+a single-size benchmark would miss. The collection-touching operations covered
+are history reads, co-attester resolution, affiliation-period lookups and
+rate-window updates.
+
+## Feeding the capacity model
+
+The measured values feed `budgets/capacity-model.json`, which
+`docs/capacity-forecast.md` renders. The populated-state numbers replace the
+synthetic minimal inputs, so the forecast reflects production-scale entry
+sizes and collection sizes. When a populated-state scenario changes its
+measured cost, the capacity model is regenerated from the latest history so
+the forecast tracks the measured values rather than hand-entered estimates.
