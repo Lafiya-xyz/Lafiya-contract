@@ -37,6 +37,27 @@ BINDING_CONTRACTS = (
     "registry",
     "multisig",
     "incentive-pool",
+    "facility-registry",
+)
+
+# Type names that must survive normalization verbatim for the facility-registry
+# bindings and conformance vectors (portable IDs, deactivation reasons, and the
+# paginated affiliation accessors). Listed here so a tooling upgrade that
+# renames or reshapes them fails loudly instead of silently drifting.
+FACILITY_REGISTRY_TYPES = (
+    "FacilityId",
+    "DeactivationReason",
+    "AffiliationPage",
+    "AffiliationPeriod",
+    "AffiliationCursor",
+)
+
+# Function names whose signatures carry pagination parameters. The extractor
+# keeps these intact (no argument reordering/dedup) so the generated TS
+# bindings expose `cursor`/`limit` exactly as the contract declares them.
+PAGINATED_FUNCTIONS = (
+    "get_affiliation_periods",
+    "list_affiliations",
 )
 
 # Event kinds that the `packages/events` generator knows how to decode.
@@ -65,16 +86,39 @@ def _normalize_type_keys(node: Any) -> Any:
     string or a single-key object depending on the CLI version; collapse both
     shapes to a canonical `{"type": ...}` form so the drift gate doesn't fire
     on tooling upgrades.
+
+    Fixed-width byte arrays (`BytesN<N>`) are additionally canonicalized to
+    `{"bytes_n": N}` so `FacilityId = BytesN<32>` renders identically whether
+    the CLI reports it as `{"bytes_n": 32}`, `{"bytes_n": {"n": 32}}`, or a
+    bare `"bytes_n"` string.
     """
     if isinstance(node, dict):
         if len(node) == 1:
             ((key, value),) = node.items()
+            if key == "bytes_n":
+                return {"bytes_n": _normalize_bytes_n(value)}
             if key in ("type", "udt", "option", "result", "vec", "map", "tuple"):
                 return {key: _normalize_type_keys(value)}
         return {k: _normalize_type_keys(v) for k, v in node.items()}
     if isinstance(node, list):
         return [_normalize_type_keys(v) for v in node]
     return node
+
+
+def _normalize_bytes_n(value: Any) -> int:
+    """Coerce the various `bytes_n` shapes emitted by the CLI to an int."""
+    if isinstance(value, int):
+        return value
+    if isinstance(value, dict):
+        for key in ("n", "size", "length"):
+            if key in value:
+                return _normalize_bytes_n(value[key])
+    if isinstance(value, str):
+        try:
+            return int(value)
+        except ValueError:
+            pass
+    return value
 
 
 def extract_events(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -90,6 +134,34 @@ def extract_events(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
 def extract_views(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter an interface snapshot down to its callable view functions."""
     return [entry for entry in snapshot if entry["kind"] == "function_v0"]
+
+
+def extract_paginated(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter an interface snapshot down to its paginated accessor functions.
+
+    Used by the facility-registry bindings generator to emit cursor/limit
+    typed wrappers without re-parsing the whole snapshot.
+    """
+    return [
+        entry
+        for entry in snapshot
+        if entry["kind"] == "function_v0" and entry["name"] in PAGINATED_FUNCTIONS
+    ]
+
+
+def extract_facility_types(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter an interface snapshot down to the facility-registry UDTs.
+
+    Returns the struct/union/enum entries whose names are part of the
+    portable-ID / deactivation / pagination model, so the TS bindings and the
+    conformance vectors can assert they exist and keep their shape.
+    """
+    return [
+        entry
+        for entry in snapshot
+        if entry["kind"] in ("udt_struct_v0", "udt_union_v0", "udt_enum_v0")
+        and entry["name"] in FACILITY_REGISTRY_TYPES
+    ]
 
 
 def require_stellar_cli() -> None:
@@ -142,7 +214,10 @@ def extract(wasm_path: Path) -> list[dict[str, Any]]:
 
 def main() -> None:
     if len(sys.argv) not in (2, 3):
-        sys.exit(f"usage: {sys.argv[0]} <path-to-wasm> [events|views]")
+        sys.exit(
+            f"usage: {sys.argv[0]} <path-to-wasm> "
+            "[events|views|paginated|facility-types]"
+        )
 
     snapshot = extract(Path(sys.argv[1]))
     if len(sys.argv) == 3:
@@ -151,8 +226,15 @@ def main() -> None:
             snapshot = extract_events(snapshot)
         elif section == "views":
             snapshot = extract_views(snapshot)
+        elif section == "paginated":
+            snapshot = extract_paginated(snapshot)
+        elif section == "facility-types":
+            snapshot = extract_facility_types(snapshot)
         else:
-            sys.exit(f"error: unknown section {section!r} (expected 'events' or 'views')")
+            sys.exit(
+                f"error: unknown section {section!r} "
+                "(expected 'events', 'views', 'paginated', or 'facility-types')"
+            )
 
     json.dump(snapshot, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")

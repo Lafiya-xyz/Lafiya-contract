@@ -301,6 +301,55 @@ pub trait RpcClient: Send + Sync {
     /// Fetch the network passphrase and latest ledger from the RPC node.
     fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError>;
 
+    /// Read a facility record from the facility-registry contract.
+    ///
+    /// `facility_id` is the portable `BytesN<32>` facility identifier
+    /// (hex-encoded).  Returns the raw XDR-encoded contract value so the
+    /// caller can decode it with the `facility-registry` bindings.
+    fn facility_show(
+        &self,
+        contract_id: &str,
+        facility_id: &str,
+    ) -> Result<LedgerEntry, RpcClientError>;
+
+    /// Look up a facility by its portable ID derived from the external
+    /// facility code hash (issue #689).
+    ///
+    /// `external_code_hash` is the hex-encoded `BytesN<32>` hash of the
+    /// canonicalized external identifier (jurisdiction, issuing authority,
+    /// facility code).  Returns `None` when no facility is registered for
+    /// that code.
+    fn facility_lookup_by_external_code(
+        &self,
+        contract_id: &str,
+        external_code_hash: &str,
+    ) -> Result<Option<LedgerEntry>, RpcClientError>;
+
+    /// Look up a facility by its legacy sequential `u64` alias.
+    ///
+    /// The alias remains available for compatibility during the migration to
+    /// portable IDs (issue #689).
+    fn facility_lookup_by_legacy_id(
+        &self,
+        contract_id: &str,
+        legacy_id: u64,
+    ) -> Result<Option<LedgerEntry>, RpcClientError>;
+
+    /// List the affiliation periods for a `(facility, attester)` pair.
+    ///
+    /// Results are paginated (issue #687): `cursor` is the page number to
+    /// start from (`None` starts at page 0) and `limit` bounds the number of
+    /// periods returned.  Returns the raw XDR-encoded pages so the caller can
+    /// decode them with the `facility-registry` bindings.
+    fn facility_list_affiliations(
+        &self,
+        contract_id: &str,
+        facility_id: &str,
+        attester: &str,
+        cursor: Option<u32>,
+        limit: u32,
+    ) -> Result<Vec<LedgerEntry>, RpcClientError>;
+
     /// High-level convenience: simulate → assemble → sign auth entries →
     /// sign envelope → send → poll.
     ///
@@ -409,6 +458,56 @@ impl RpcClient for NativeRpcClient {
         })
     }
 
+    fn facility_show(
+        &self,
+        _contract_id: &str,
+        _facility_id: &str,
+    ) -> Result<LedgerEntry, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::facility_show — add stellar-xdr + HTTP client (issue #395)"
+                .to_string(),
+        })
+    }
+
+    fn facility_lookup_by_external_code(
+        &self,
+        _contract_id: &str,
+        _external_code_hash: &str,
+    ) -> Result<Option<LedgerEntry>, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::facility_lookup_by_external_code — add stellar-xdr + HTTP \
+                     client (issue #395)"
+                .to_string(),
+        })
+    }
+
+    fn facility_lookup_by_legacy_id(
+        &self,
+        _contract_id: &str,
+        _legacy_id: u64,
+    ) -> Result<Option<LedgerEntry>, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::facility_lookup_by_legacy_id — add stellar-xdr + HTTP \
+                     client (issue #395)"
+                .to_string(),
+        })
+    }
+
+    fn facility_list_affiliations(
+        &self,
+        _contract_id: &str,
+        _facility_id: &str,
+        _attester: &str,
+        _cursor: Option<u32>,
+        _limit: u32,
+    ) -> Result<Vec<LedgerEntry>, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::facility_list_affiliations — add stellar-xdr + HTTP client \
+                     (issue #395)"
+                .to_string(),
+        })
+    }
+
     fn sign_and_submit(
         &self,
         _unsigned_xdr: &str,
@@ -512,6 +611,56 @@ impl RpcClient for StellarCliClient {
     fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError> {
         Err(RpcClientError::StellarCli {
             detail: "get_network_info is not directly available via the stellar CLI subprocess path"
+                .to_string(),
+        })
+    }
+
+    fn facility_show(
+        &self,
+        _contract_id: &str,
+        _facility_id: &str,
+    ) -> Result<LedgerEntry, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "facility_show is not available via the stellar CLI subprocess path"
+                .to_string(),
+        })
+    }
+
+    fn facility_lookup_by_external_code(
+        &self,
+        _contract_id: &str,
+        _external_code_hash: &str,
+    ) -> Result<Option<LedgerEntry>, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "facility_lookup_by_external_code is not available via the stellar CLI \
+                     subprocess path"
+                .to_string(),
+        })
+    }
+
+    fn facility_lookup_by_legacy_id(
+        &self,
+        _contract_id: &str,
+        _legacy_id: u64,
+    ) -> Result<Option<LedgerEntry>, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "facility_lookup_by_legacy_id is not available via the stellar CLI subprocess \
+                     path"
+                .to_string(),
+        })
+    }
+
+    fn facility_list_affiliations(
+        &self,
+        _contract_id: &str,
+        _facility_id: &str,
+        _attester: &str,
+        _cursor: Option<u32>,
+        _limit: u32,
+    ) -> Result<Vec<LedgerEntry>, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "facility_list_affiliations is not available via the stellar CLI subprocess \
+                     path"
                 .to_string(),
         })
     }
@@ -850,6 +999,37 @@ mod tests {
                 Err(_) => Err(RpcClientError::Transport { detail: "mock".into() }),
             }
         }
+        fn facility_show(
+            &self,
+            _contract_id: &str,
+            _facility_id: &str,
+        ) -> Result<LedgerEntry, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn facility_lookup_by_external_code(
+            &self,
+            _contract_id: &str,
+            _external_code_hash: &str,
+        ) -> Result<Option<LedgerEntry>, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn facility_lookup_by_legacy_id(
+            &self,
+            _contract_id: &str,
+            _legacy_id: u64,
+        ) -> Result<Option<LedgerEntry>, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn facility_list_affiliations(
+            &self,
+            _contract_id: &str,
+            _facility_id: &str,
+            _attester: &str,
+            _cursor: Option<u32>,
+            _limit: u32,
+        ) -> Result<Vec<LedgerEntry>, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
         fn sign_and_submit(
             &self,
             _unsigned_xdr: &str,
@@ -995,6 +1175,56 @@ mod tests {
         assert!(matches!(
             client.sign_and_submit("xdr", &signer, 5).unwrap_err(),
             RpcClientError::NotImplemented { .. }
+        ));
+    }
+
+    #[test]
+    fn facility_reads_not_implemented_on_native() {
+        let client = NativeRpcClient::new("https://example.org", "Test Net");
+        assert!(matches!(
+            client.facility_show("C...", "00").unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            client
+                .facility_lookup_by_external_code("C...", "00")
+                .unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            client.facility_lookup_by_legacy_id("C...", 7).unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+        assert!(matches!(
+            client
+                .facility_list_affiliations("C...", "00", "G...", None, 10)
+                .unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+    }
+
+    #[test]
+    fn facility_reads_not_available_on_stellar_cli() {
+        let client = make_rpc_client("https://example.org", "Test Net", true);
+        assert!(matches!(
+            client.facility_show("C...", "00").unwrap_err(),
+            RpcClientError::StellarCli { .. }
+        ));
+        assert!(matches!(
+            client
+                .facility_lookup_by_external_code("C...", "00")
+                .unwrap_err(),
+            RpcClientError::StellarCli { .. }
+        ));
+        assert!(matches!(
+            client.facility_lookup_by_legacy_id("C...", 7).unwrap_err(),
+            RpcClientError::StellarCli { .. }
+        ));
+        assert!(matches!(
+            client
+                .facility_list_affiliations("C...", "00", "G...", Some(2), 10)
+                .unwrap_err(),
+            RpcClientError::StellarCli { .. }
         ));
     }
 }

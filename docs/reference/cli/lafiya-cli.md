@@ -71,6 +71,56 @@ lafiya-cli man --out-dir /usr/local/share/man/man1
 Registry subcommands operate on the attester registry. Run
 `lafiya-cli registry --help` for the full list.
 
+## `facility` subcommands
+
+The `facility` subcommands drive every entry point of the facility registry.
+Run `lafiya-cli facility --help` for the full list.
+
+| Subcommand | Description |
+| --- | --- |
+| `facility enroll <FACILITY_ID>` | Enroll a new facility in the registry. |
+| `facility deactivate <FACILITY_ID>` | Deactivate an enrolled facility. |
+| `facility reactivate <FACILITY_ID>` | Reactivate a previously deactivated facility. |
+| `facility affiliate <FACILITY_ID> <ATTESTER>` | Affiliate an attester with a facility. |
+| `facility disaffiliate <FACILITY_ID> <ATTESTER>` | Remove an attester's affiliation with a facility. |
+| `facility show <FACILITY_ID>` | Read a facility's record. |
+| `facility list-affiliations <FACILITY_ID>` | List the attesters affiliated with a facility. |
+
+### Preview flags
+
+Mutating `facility` subcommands support `--preview` to simulate the call and
+print the resolved arguments and expected state changes without submitting a
+transaction:
+
+```sh
+lafiya-cli facility enroll 0x1234... --preview
+lafiya-cli facility affiliate 0x1234... 0xabc... --preview
+```
+
+Pre-checks mirror contract errors (for example unknown facility, already
+enrolled, or inactive facility) and report a clear message before submission.
+
+### Read commands
+
+Read commands render facility records and affiliation lists:
+
+```sh
+lafiya-cli facility show 0x1234...
+lafiya-cli facility list-affiliations 0x1234...
+```
+
+### JSON output
+
+All `facility` subcommands support `--json`. Output conforms to the versioned
+schemas in `crates/lafiya-cli/schemas/` (for example
+`facility-show.v1.schema.json` and `facility-list-affiliations.v1.schema.json`):
+
+```sh
+lafiya-cli facility show 0x1234... --json
+lafiya-cli facility list-affiliations 0x1234... --json
+lafiya-cli facility enroll 0x1234... --preview --json
+```
+
 ## `pool` subcommands
 
 The `pool` subcommands drive every entry point of the incentive pool with

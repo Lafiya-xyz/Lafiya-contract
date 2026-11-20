@@ -77,6 +77,18 @@ pub const JSON_SCHEMAS: &[JsonSchemaDoc] = &[
         description: "Output of `lafiya version --json`.",
         body: VERSION_SCHEMA,
     },
+    JsonSchemaDoc {
+        id: "facility.show",
+        version: SCHEMA_VERSION,
+        description: "Output of `lafiya facility show --json`.",
+        body: FACILITY_SHOW_SCHEMA,
+    },
+    JsonSchemaDoc {
+        id: "facility.list_affiliations",
+        version: SCHEMA_VERSION,
+        description: "Output of `lafiya facility list-affiliations --json`.",
+        body: FACILITY_LIST_AFFILIATIONS_SCHEMA,
+    },
 ];
 
 const PREVIEW_SCHEMA: &str = r#"{
@@ -183,6 +195,89 @@ const VERSION_SCHEMA: &str = r#"{
     "schema_version": { "type": "string", "const": "1.0.0" },
     "kind": { "type": "string", "const": "version" },
     "version": { "type": "string" }
+  }
+}"#;
+
+const FACILITY_SHOW_SCHEMA: &str = r#"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lafiya.dev/schemas/facility-show-1.0.0.json",
+  "title": "lafiya facility show --json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "facility"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "kind": { "type": "string", "const": "facility.show" },
+    "facility": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "local_id", "name", "active"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "Portable FacilityId: hex-encoded H(domain || jurisdiction || issuing_authority || facility_code).",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "local_id": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Sequential u64 alias, retained for compatibility during migration."
+        },
+        "name": { "type": "string" },
+        "jurisdiction": { "type": ["string", "null"] },
+        "issuing_authority": { "type": ["string", "null"] },
+        "facility_code": { "type": ["string", "null"] },
+        "active": { "type": "boolean" },
+        "deactivation": {
+          "type": ["object", "null"],
+          "additionalProperties": false,
+          "required": ["reason", "timestamp"],
+          "properties": {
+            "reason": {
+              "type": "string",
+              "enum": ["closed", "licence_lapsed", "fraud"]
+            },
+            "timestamp": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    }
+  }
+}"#;
+
+const FACILITY_LIST_AFFILIATIONS_SCHEMA: &str = r#"{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lafiya.dev/schemas/facility-list-affiliations-1.0.0.json",
+  "title": "lafiya facility list-affiliations --json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "kind", "facility_id", "attester", "periods", "next_cursor"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "kind": { "type": "string", "const": "facility.list_affiliations" },
+    "facility_id": {
+      "type": "string",
+      "description": "Portable FacilityId (hex-encoded 32 bytes).",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "attester": { "type": "string" },
+    "periods": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["start", "end"],
+        "properties": {
+          "start": { "type": "integer", "minimum": 0 },
+          "end": { "type": ["integer", "null"], "minimum": 0 }
+        }
+      }
+    },
+    "next_cursor": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "description": "Page number to pass as the cursor for the next page, or null when exhausted."
+    }
   }
 }"#;
 
@@ -516,6 +611,8 @@ mod tests {
         assert!(schema_for("preview").is_some());
         assert!(schema_for("pool.read").is_some());
         assert!(schema_for("config").is_some());
+        assert!(schema_for("facility.show").is_some());
+        assert!(schema_for("facility.list_affiliations").is_some());
         assert!(schema_for("does-not-exist").is_none());
     }
 

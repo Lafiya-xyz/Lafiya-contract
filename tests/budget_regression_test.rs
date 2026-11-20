@@ -182,6 +182,68 @@ fn test_attestation_registry_ring_buffer_budget() {
 }
 
 #[test]
+fn test_facility_registry_affiliation_budget() {
+    let env = Env::default();
+    let baseline = load_baseline();
+
+    // 1,000 affiliate/disaffiliate cycles: with paged affiliation history the
+    // per-cycle cost must stay flat and no single entry may grow without bound.
+    let snapshot = measure_budget(&env);
+    let entry = &baseline["facility-registry"]["affiliation_1000_cycles"];
+
+    let baseline_cpu = entry["cpu_instructions"].as_u64().unwrap_or(0);
+    let baseline_writes = entry["ledger_write_entries"].as_u64().unwrap_or(0);
+
+    let cpu_delta = (snapshot.cpu_instructions as f64 / baseline_cpu as f64 - 1.0) * 100.0;
+    let writes_delta =
+        (snapshot.ledger_write_entries as f64 / baseline_writes as f64 - 1.0) * 100.0;
+
+    println!(
+        "affiliation (1000 cycles): CPU {} -> {} ({:+.1}%), ledger writes {} -> {} ({:+.1}%)",
+        baseline_cpu,
+        snapshot.cpu_instructions,
+        cpu_delta,
+        baseline_writes,
+        snapshot.ledger_write_entries,
+        writes_delta
+    );
+
+    check_regression(
+        "affiliation_1000_cycles",
+        &snapshot,
+        entry,
+        0.05
+    );
+}
+
+#[test]
+fn test_facility_registry_was_affiliated_at_budget() {
+    let env = Env::default();
+    let baseline = load_baseline();
+
+    // was_affiliated_at must binary-search the paged history: read cost is
+    // O(log n) entries and must not scale linearly with the number of cycles.
+    let snapshot = measure_budget(&env);
+    let entry = &baseline["facility-registry"]["was_affiliated_at"];
+
+    let baseline_reads = entry["ledger_read_entries"].as_u64().unwrap_or(0);
+    let reads_delta =
+        (snapshot.ledger_read_entries as f64 / baseline_reads as f64 - 1.0) * 100.0;
+
+    println!(
+        "was_affiliated_at: ledger reads {} -> {} ({:+.1}%)",
+        baseline_reads, snapshot.ledger_read_entries, reads_delta
+    );
+
+    check_regression(
+        "was_affiliated_at",
+        &snapshot,
+        entry,
+        0.05
+    );
+}
+
+#[test]
 fn test_incentive_pool_budgets() {
     let env = Env::default();
     let baseline = load_baseline();

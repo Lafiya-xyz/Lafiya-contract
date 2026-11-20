@@ -227,6 +227,63 @@
       "worst_case_scenario": "5-of-5 multisig signature verification"
     }
   },
+  "facility-registry": {
+    "affiliate": {
+      "cpu_instructions": 118000,
+      "memory_bytes": 9216,
+      "ledger_read_entries": 4,
+      "ledger_read_bytes": 768,
+      "ledger_write_entries": 3,
+      "ledger_write_bytes": 512,
+      "events_size_bytes": 160,
+      "estimated_fee_stroops": 45000,
+      "worst_case_scenario": "1,000 affiliate/disaffiliate cycles, page rollover to a new AffiliationPage, header update"
+    },
+    "disaffiliate": {
+      "cpu_instructions": 112000,
+      "memory_bytes": 8704,
+      "ledger_read_entries": 4,
+      "ledger_read_bytes": 704,
+      "ledger_write_entries": 3,
+      "ledger_write_bytes": 448,
+      "events_size_bytes": 160,
+      "estimated_fee_stroops": 43000,
+      "worst_case_scenario": "1,000 cycles, close period in last page, header update"
+    },
+    "is_affiliated": {
+      "cpu_instructions": 26000,
+      "memory_bytes": 1536,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 192,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 10000,
+      "worst_case_scenario": "header-only read of latest period after 1,000 cycles"
+    },
+    "was_affiliated_at": {
+      "cpu_instructions": 54000,
+      "memory_bytes": 4096,
+      "ledger_read_entries": 11,
+      "ledger_read_bytes": 2816,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 22000,
+      "worst_case_scenario": "1,000 cycles (~10 pages), binary search over pages plus in-page scan, timestamp at page boundary"
+    },
+    "get_affiliation_periods": {
+      "cpu_instructions": 48000,
+      "memory_bytes": 6144,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 1536,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 20000,
+      "worst_case_scenario": "1,000 cycles, cursor at last page, limit at max page size"
+    }
+  },
   "incentive-pool": {
     "approve_work_items": {
       "cpu_instructions": 4200000,

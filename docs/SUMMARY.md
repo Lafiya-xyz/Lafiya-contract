@@ -14,7 +14,9 @@
 
 - [attester-registry](reference/contracts/attester-registry.md)
 - [attestation-registry](reference/contracts/attestation-registry.md)
+- [facility-registry](reference/contracts/facility-registry.md)
 - [multisig-account](reference/contracts/multisig-account.md)
+- [Portable facility identifiers](specs/facility-identifiers.md)
 - [Error codes](error-codes.md)
 - [Event schemas](events.md)
 

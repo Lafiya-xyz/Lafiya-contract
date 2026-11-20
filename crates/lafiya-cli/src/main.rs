@@ -114,6 +114,11 @@ enum Commands {
         #[command(subcommand)]
         sub: PoolSub,
     },
+    /// Facility registry operations (enroll, deactivate, reactivate, affiliations)
+    Facility {
+        #[command(subcommand)]
+        sub: FacilitySub,
+    },
     /// Deploy contracts (wrapper around scripts/deploy.sh logic, but uses same config)
     Deploy {
         /// Build only, don't deploy
@@ -263,6 +268,131 @@ enum DeploymentsSub {
 enum InterfaceTarget {
     Attester,
     Attestation,
+    Facility,
+}
+
+// ── facility-registry subcommands ─────────────────────────────────────────────
+
+/// Why a facility was deactivated. Mirrors the contract's
+/// `DeactivationReason` enum; only `fraud` invalidates attestations made
+/// before the deactivation (see docs/specs/verification-model.md).
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+enum DeactivationReasonArg {
+    /// Facility closed permanently.
+    Closed,
+    /// Facility's operating licence lapsed.
+    LicenceLapsed,
+    /// Facility is untrusted (fraud); past attestations become
+    /// `facility_untrusted` from the deactivation timestamp.
+    Fraud,
+}
+
+impl DeactivationReasonArg {
+    /// The contract's snake_case reason code.
+    fn code(self) -> &'static str {
+        match self {
+            DeactivationReasonArg::Closed => "closed",
+            DeactivationReasonArg::LicenceLapsed => "licence_lapsed",
+            DeactivationReasonArg::Fraud => "fraud",
+        }
+    }
+}
+
+/// Flags shared by every facility command: preview + machine-readable output.
+#[derive(clap::Args, Debug, Clone, Default)]
+struct FacilityOpts {
+    /// Simulate the call and print the resulting state change without
+    /// submitting a transaction
+    #[arg(long, default_value_t = false)]
+    simulate: bool,
+    /// Emit machine-readable JSON instead of text
+    #[arg(long, default_value_t = false)]
+    json: bool,
+    /// Stellar identity or G... address used as transaction source
+    #[arg(long)]
+    source: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum FacilitySub {
+    /// Enroll a facility (admin only)
+    ///
+    /// Example: `lafiya-cli facility enroll --code NG-LA-001 --jurisdiction NG-LA --authority NCDC --yes`
+    Enroll {
+        /// External facility code (national registry / licence number)
+        #[arg(long)]
+        code: String,
+        /// Jurisdiction the facility operates in, e.g. `NG-LA`
+        #[arg(long)]
+        jurisdiction: String,
+        /// Issuing authority that assigned the facility code
+        #[arg(long)]
+        authority: String,
+        /// Optional hex-encoded 32-byte licence hash
+        #[arg(long)]
+        license_hash: Option<String>,
+        #[command(flatten)]
+        opts: FacilityOpts,
+    },
+    /// Deactivate a facility with a reason code (admin only)
+    ///
+    /// Example: `lafiya-cli facility deactivate --facility-id <hex> --reason licence-lapsed --yes`
+    Deactivate {
+        /// Portable facility id (64-char hex) or legacy u64 alias
+        #[arg(long)]
+        facility_id: String,
+        /// Why the facility is being deactivated
+        #[arg(long, value_enum)]
+        reason: DeactivationReasonArg,
+        #[command(flatten)]
+        opts: FacilityOpts,
+    },
+    /// Reactivate a previously deactivated facility (admin only)
+    Reactivate {
+        /// Portable facility id (64-char hex) or legacy u64 alias
+        #[arg(long)]
+        facility_id: String,
+        #[command(flatten)]
+        opts: FacilityOpts,
+    },
+    /// Affiliate an attester with a facility (admin only)
+    Affiliate {
+        /// Portable facility id (64-char hex) or legacy u64 alias
+        #[arg(long)]
+        facility_id: String,
+        /// Attester address (G...)
+        #[arg(long)]
+        attester: String,
+        #[command(flatten)]
+        opts: FacilityOpts,
+    },
+    /// Remove an attester's affiliation with a facility (admin only)
+    Disaffiliate {
+        /// Portable facility id (64-char hex) or legacy u64 alias
+        #[arg(long)]
+        facility_id: String,
+        /// Attester address (G...)
+        #[arg(long)]
+        attester: String,
+        #[command(flatten)]
+        opts: FacilityOpts,
+    },
+    /// Show a facility's record, status, and deactivation reason
+    Show {
+        /// Portable facility id (64-char hex) or legacy u64 alias
+        #[arg(long)]
+        facility_id: String,
+        #[command(flatten)]
+        opts: FacilityOpts,
+    },
+    /// List the attesters affiliated with a facility
+    ListAffiliations {
+        /// Portable facility id (64-char hex) or legacy u64 alias
+        #[arg(long)]
+        facility_id: String,
+        #[command(flatten)]
+        opts: FacilityOpts,
+    },
 }
 
 // ── incentive-pool subcommands ────────────────────────────────────────────────
@@ -1128,6 +1258,9 @@ fn main() -> anyhow::Result<()> {
         Commands::Pool { sub } => {
             handle_pool(sub, &cli.network, &network_cfg)?;
         }
+        Commands::Facility { sub } => {
+            handle_facility(sub, &cli.network, &network_cfg)?;
+        }
         Commands::Interface { contract } => {
             let (kind, req) = match contract {
                 InterfaceTarget::Attester => {
@@ -1137,6 +1270,9 @@ fn main() -> anyhow::Result<()> {
                     ContractKind::AttestationRegistry,
                     interface::ATTESTATION_REGISTRY,
                 ),
+                InterfaceTarget::Facility => {
+                    (ContractKind::FacilityRegistry, interface::FACILITY_REGISTRY)
+                }
             };
             let contract_id = network_cfg
                 .require_contract_id(&cli.network, kind)
@@ -2268,6 +2404,316 @@ fn handle_ops(sub: OpsSub, network: &str, cfg: &NetworkConfig) -> anyhow::Result
     Ok(())
 }
 
+// ── facility-registry command handling ───────────────────────────────────────
+
+/// Resolve the facility-registry contract id for the active network.
+fn facility_contract_id(network: &str, cfg: &NetworkConfig) -> anyhow::Result<&str> {
+    cfg.require_contract_id(network, ContractKind::FacilityRegistry)
+        .map_err(|e| anyhow::anyhow!(e))
+}
+
+/// A facility id is either a portable 32-byte id (64 hex chars) or the legacy
+/// sequential u64 alias. Returns the value to pass to the contract.
+fn validate_facility_id(raw: &str) -> anyhow::Result<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        anyhow::bail!("facility id must not be empty");
+    }
+    if trimmed.len() == 64 && trimmed.chars().all(|c| c.is_ascii_hexdigit()) {
+        return Ok(trimmed.to_ascii_lowercase());
+    }
+    if trimmed.chars().all(|c| c.is_ascii_digit()) {
+        // Legacy u64 alias; keep the decimal form for the contract's alias path.
+        return Ok(trimmed.to_string());
+    }
+    anyhow::bail!(
+        "invalid facility id `{raw}`: expected a 64-char hex portable id or a decimal u64 alias"
+    )
+}
+
+fn handle_facility(sub: FacilitySub, network: &str, cfg: &NetworkConfig) -> anyhow::Result<()> {
+    let contract_id = facility_contract_id(network, cfg)?;
+
+    match sub {
+        FacilitySub::Enroll {
+            code,
+            jurisdiction,
+            authority,
+            license_hash,
+            opts,
+        } => {
+            if code.trim().is_empty() {
+                anyhow::bail!("--code must not be empty");
+            }
+            if jurisdiction.trim().is_empty() {
+                anyhow::bail!("--jurisdiction must not be empty");
+            }
+            if authority.trim().is_empty() {
+                anyhow::bail!("--authority must not be empty");
+            }
+            if let Some(ref h) = license_hash {
+                validate_record_hash("license_hash", h)
+                    .context("license_hash must be a 64-char hex string (32 bytes)")?;
+            }
+            let source = validated_source(opts.source)?;
+            let mut fn_args: Vec<String> = vec![
+                "--code".to_string(),
+                code.clone(),
+                "--jurisdiction".to_string(),
+                jurisdiction.clone(),
+                "--authority".to_string(),
+                authority.clone(),
+            ];
+            match &license_hash {
+                Some(h) => {
+                    fn_args.push("--license_hash".to_string());
+                    fn_args.push(format!("Some({h})"));
+                }
+                None => {
+                    fn_args.push("--license_hash".to_string());
+                    fn_args.push("None".to_string());
+                }
+            }
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "enroll_facility",
+                &fn_args_ref,
+            );
+            facility_submit(
+                cfg,
+                contract_id,
+                "enroll_facility",
+                &fn_args_ref,
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
+        FacilitySub::Deactivate {
+            facility_id,
+            reason,
+            opts,
+        } => {
+            let facility_id = validate_facility_id(&facility_id)?;
+            let source = validated_source(opts.source)?;
+            let reason_code = reason.code();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "deactivate_facility",
+                &[
+                    "--facility_id",
+                    &facility_id,
+                    "--reason",
+                    reason_code,
+                ],
+            );
+            facility_submit(
+                cfg,
+                contract_id,
+                "deactivate_facility",
+                &[&facility_id, reason_code],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
+        FacilitySub::Reactivate { facility_id, opts } => {
+            let facility_id = validate_facility_id(&facility_id)?;
+            let source = validated_source(opts.source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "reactivate_facility",
+                &["--facility_id", &facility_id],
+            );
+            facility_submit(
+                cfg,
+                contract_id,
+                "reactivate_facility",
+                &[&facility_id],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
+        FacilitySub::Affiliate {
+            facility_id,
+            attester,
+            opts,
+        } => {
+            let facility_id = validate_facility_id(&facility_id)?;
+            validate_address("attester address", &attester)
+                .context("invalid attester address")?;
+            let source = validated_source(opts.source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "affiliate_attester",
+                &["--facility_id", &facility_id, "--attester", &attester],
+            );
+            facility_submit(
+                cfg,
+                contract_id,
+                "affiliate_attester",
+                &[&facility_id, &attester],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
+        FacilitySub::Disaffiliate {
+            facility_id,
+            attester,
+            opts,
+        } => {
+            let facility_id = validate_facility_id(&facility_id)?;
+            validate_address("attester address", &attester)
+                .context("invalid attester address")?;
+            let source = validated_source(opts.source)?;
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "disaffiliate_attester",
+                &["--facility_id", &facility_id, "--attester", &attester],
+            );
+            facility_submit(
+                cfg,
+                contract_id,
+                "disaffiliate_attester",
+                &[&facility_id, &attester],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
+        FacilitySub::Show { facility_id, opts } => {
+            let facility_id = validate_facility_id(&facility_id)?;
+            facility_query(
+                cfg,
+                contract_id,
+                "get_facility",
+                &["--facility_id", &facility_id],
+                &opts,
+            )?;
+        }
+        FacilitySub::ListAffiliations { facility_id, opts } => {
+            let facility_id = validate_facility_id(&facility_id)?;
+            facility_query(
+                cfg,
+                contract_id,
+                "list_affiliations",
+                &["--facility_id", &facility_id],
+                &opts,
+            )?;
+        }
+    }
+    Ok(())
+}
+
+/// Run a read-only facility query, honoring `--json` and `--simulate`.
+fn facility_query(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    function: &str,
+    fn_args: &[&str],
+    opts: &FacilityOpts,
+) -> anyhow::Result<()> {
+    if opts.simulate {
+        let preview = crate::rpc_client::simulate_preview(cfg, contract_id, function, fn_args);
+        return print_facility_preview(preview, opts.json);
+    }
+    let args = invoke_args(cfg, contract_id, None, function, fn_args);
+    if opts.json {
+        // Emit the invocation as JSON so scripts can consume it without
+        // parsing the human-readable command line.
+        let payload = serde_json::json!({
+            "contract_id": contract_id,
+            "function": function,
+            "args": fn_args,
+            "argv": args,
+        });
+        println!("{}", serde_json::to_string_pretty(&payload)?);
+    } else {
+        println!("> stellar {}", args.join(" "));
+    }
+    if which::which("stellar").is_ok() {
+        let status = std::process::Command::new("stellar").args(args).status()?;
+        if !status.success() {
+            anyhow::bail!("stellar CLI failed");
+        }
+    } else {
+        eprintln!("stellar CLI not found — showing command only.");
+    }
+    Ok(())
+}
+
+/// Preview a mutating facility call, then submit it through the audited path.
+fn facility_submit(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    function: &str,
+    call_args: &[&str],
+    signer: Option<&str>,
+    stellar_args: Vec<String>,
+    opts: &FacilityOpts,
+) -> anyhow::Result<()> {
+    let preview = crate::rpc_client::simulate_preview(cfg, contract_id, function, call_args);
+    if opts.simulate {
+        return print_facility_preview(preview, opts.json);
+    }
+    match &preview {
+        Ok(p) => {
+            if opts.json {
+                println!("{}", serde_json::to_string_pretty(p)?);
+            } else {
+                print!("{}", p.render_text());
+            }
+        }
+        Err(e) => {
+            anyhow::bail!(
+                "simulation failed, refusing to submit `{function}`: {e}\n\
+                 (fix the underlying issue or re-run with a working RPC; \
+                 submission is blocked by default)"
+            );
+        }
+    }
+    run_audited(
+        "facility",
+        &cfg.network_passphrase,
+        contract_id,
+        function,
+        call_args,
+        signer,
+        stellar_args,
+    )
+}
+
+/// Print a simulation preview (or its error) in the requested format.
+fn print_facility_preview(
+    preview: anyhow::Result<crate::rpc_client::Preview>,
+    json: bool,
+) -> anyhow::Result<()> {
+    match preview {
+        Ok(p) => {
+            if json {
+                println!("{}", serde_json::to_string_pretty(&p)?);
+            } else {
+                print!("{}", p.render_text());
+            }
+            Ok(())
+        }
+        Err(e) => anyhow::bail!("simulation failed: {e}"),
+    }
+}
+
 // ── incentive-pool command handling ──────────────────────────────────────────
 
 /// Number of decimal places for pool token amounts (Stellar SAC: 7).
@@ -2998,6 +3444,142 @@ mod tests {
         assert!(
             message.to_uppercase().contains("EXTEND_TO"),
             "expected error to name the missing `extend_to` argument, got: {message}"
+        );
+    }
+
+    #[test]
+    fn facility_enroll_parses_required_args() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "facility",
+            "enroll",
+            "--code",
+            "NG-LA-001",
+            "--jurisdiction",
+            "NG-LA",
+            "--authority",
+            "NCDC",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Facility {
+                sub:
+                    FacilitySub::Enroll {
+                        code,
+                        jurisdiction,
+                        authority,
+                        ..
+                    },
+            } => {
+                assert_eq!(code, "NG-LA-001");
+                assert_eq!(jurisdiction, "NG-LA");
+                assert_eq!(authority, "NCDC");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn facility_deactivate_requires_reason() {
+        let err = Cli::try_parse_from([
+            "lafiya-cli",
+            "facility",
+            "deactivate",
+            "--facility-id",
+            "1",
+        ])
+        .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("REASON"),
+            "expected error to name the missing `reason` argument, got: {message}"
+        );
+    }
+
+    #[test]
+    fn facility_deactivate_parses_reason_codes() {
+        for (flag, expected) in [
+            ("closed", DeactivationReasonArg::Closed),
+            ("licence-lapsed", DeactivationReasonArg::LicenceLapsed),
+            ("fraud", DeactivationReasonArg::Fraud),
+        ] {
+            let cli = Cli::try_parse_from([
+                "lafiya-cli",
+                "facility",
+                "deactivate",
+                "--facility-id",
+                "1",
+                "--reason",
+                flag,
+            ])
+            .unwrap();
+            match cli.command {
+                Commands::Facility {
+                    sub: FacilitySub::Deactivate { reason, .. },
+                } => assert_eq!(reason, expected),
+                other => panic!("unexpected command: {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn deactivation_reason_codes_match_contract() {
+        assert_eq!(DeactivationReasonArg::Closed.code(), "closed");
+        assert_eq!(
+            DeactivationReasonArg::LicenceLapsed.code(),
+            "licence_lapsed"
+        );
+        assert_eq!(DeactivationReasonArg::Fraud.code(), "fraud");
+    }
+
+    #[test]
+    fn validate_facility_id_accepts_portable_and_alias() {
+        let portable = "ab".repeat(32);
+        assert_eq!(validate_facility_id(&portable).unwrap(), portable);
+        assert_eq!(validate_facility_id("42").unwrap(), "42");
+        assert!(validate_facility_id("").is_err());
+        assert!(validate_facility_id("not-a-facility").is_err());
+        // 64 chars but not hex
+        assert!(validate_facility_id(&"zz".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn facility_show_parses_simulate_and_json() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "facility",
+            "show",
+            "--facility-id",
+            "7",
+            "--simulate",
+            "--json",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Facility {
+                sub: FacilitySub::Show { opts, .. },
+            } => {
+                assert!(opts.simulate);
+                assert!(opts.json);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn facility_affiliate_requires_attester() {
+        let err = Cli::try_parse_from([
+            "lafiya-cli",
+            "facility",
+            "affiliate",
+            "--facility-id",
+            "1",
+        ])
+        .expect_err("expected a missing required argument error");
+        let message = err.to_string();
+        assert!(
+            message.to_uppercase().contains("ATTESTER"),
+            "expected error to name the missing `attester` argument, got: {message}"
         );
     }
 

@@ -216,6 +216,174 @@ pub fn run_dispute(
     run_bounded(cfg, invoke, window)
 }
 
+/// Build, bound, sign, and submit a `facility_registry::enroll_facility`
+/// invocation (issue #686).
+///
+/// `facility_id` is the registry's opaque facility identifier; `metadata_hash`
+/// commits to the off-chain facility record. Both are passed through verbatim
+/// and validated by the contract.
+pub fn run_facility_enroll(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    facility_id: &str,
+    metadata_hash: &str,
+    window: u32,
+    opts: &PreviewOptions,
+) -> anyhow::Result<()> {
+    if facility_id.is_empty() {
+        bail!("facility_id must not be empty");
+    }
+    if metadata_hash.is_empty() {
+        bail!("metadata_hash must not be empty");
+    }
+    let invoke = invoke_args(
+        contract_id,
+        source,
+        "enroll_facility",
+        &[
+            "--facility_id".to_string(),
+            facility_id.to_string(),
+            "--metadata_hash".to_string(),
+            metadata_hash.to_string(),
+        ],
+    );
+    run_bounded(cfg, invoke, window, opts)
+}
+
+/// Build, bound, sign, and submit a `facility_registry::deactivate_facility`
+/// invocation (issues #686, #688).
+///
+/// The deactivation reason is a code (`closed`, `licence_lapsed`, `fraud`) and
+/// is stored alongside the deactivation timestamp. Attestations made before
+/// deactivation remain valid unless the reason is `fraud`, which marks them
+/// `facility_untrusted` from the deactivation ledger.
+pub fn run_facility_deactivate(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    facility_id: &str,
+    reason: &str,
+    window: u32,
+    opts: &PreviewOptions,
+) -> anyhow::Result<()> {
+    if facility_id.is_empty() {
+        bail!("facility_id must not be empty");
+    }
+    let reason = normalize_deactivation_reason(reason)?;
+    let invoke = invoke_args(
+        contract_id,
+        source,
+        "deactivate_facility",
+        &[
+            "--facility_id".to_string(),
+            facility_id.to_string(),
+            "--reason".to_string(),
+            reason.to_string(),
+        ],
+    );
+    run_bounded(cfg, invoke, window, opts)
+}
+
+/// Build, bound, sign, and submit a `facility_registry::reactivate_facility`
+/// invocation (issue #686).
+pub fn run_facility_reactivate(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    facility_id: &str,
+    window: u32,
+    opts: &PreviewOptions,
+) -> anyhow::Result<()> {
+    if facility_id.is_empty() {
+        bail!("facility_id must not be empty");
+    }
+    let invoke = invoke_args(
+        contract_id,
+        source,
+        "reactivate_facility",
+        &["--facility_id".to_string(), facility_id.to_string()],
+    );
+    run_bounded(cfg, invoke, window, opts)
+}
+
+/// Build, bound, sign, and submit a `facility_registry::affiliate` invocation
+/// (issue #686).
+pub fn run_facility_affiliate(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    facility_id: &str,
+    attester: &str,
+    window: u32,
+    opts: &PreviewOptions,
+) -> anyhow::Result<()> {
+    if facility_id.is_empty() {
+        bail!("facility_id must not be empty");
+    }
+    if attester.is_empty() {
+        bail!("attester must not be empty");
+    }
+    let invoke = invoke_args(
+        contract_id,
+        source,
+        "affiliate",
+        &[
+            "--facility_id".to_string(),
+            facility_id.to_string(),
+            "--attester".to_string(),
+            attester.to_string(),
+        ],
+    );
+    run_bounded(cfg, invoke, window, opts)
+}
+
+/// Build, bound, sign, and submit a `facility_registry::disaffiliate`
+/// invocation (issue #686).
+pub fn run_facility_disaffiliate(
+    cfg: &NetworkConfig,
+    contract_id: &str,
+    source: &str,
+    facility_id: &str,
+    attester: &str,
+    window: u32,
+    opts: &PreviewOptions,
+) -> anyhow::Result<()> {
+    if facility_id.is_empty() {
+        bail!("facility_id must not be empty");
+    }
+    if attester.is_empty() {
+        bail!("attester must not be empty");
+    }
+    let invoke = invoke_args(
+        contract_id,
+        source,
+        "disaffiliate",
+        &[
+            "--facility_id".to_string(),
+            facility_id.to_string(),
+            "--attester".to_string(),
+            attester.to_string(),
+        ],
+    );
+    run_bounded(cfg, invoke, window, opts)
+}
+
+/// Validate and canonicalize a facility deactivation reason code (issue #688).
+///
+/// The contract stores the code as a symbol, so the CLI accepts the canonical
+/// snake_case spellings and rejects anything else before signing.
+pub fn normalize_deactivation_reason(reason: &str) -> anyhow::Result<&'static str> {
+    match reason.trim().to_ascii_lowercase().replace('-', "_").as_str() {
+        "closed" => Ok("closed"),
+        "licence_lapsed" | "license_lapsed" => Ok("licence_lapsed"),
+        "fraud" => Ok("fraud"),
+        other => bail!(
+            "unknown deactivation reason `{other}`; expected one of: closed, licence_lapsed, fraud"
+        ),
+    }
+}
+
 /// Restore archived attestation entries, then extend their TTL.
 ///
 /// Archived entries must be restored into the live footprint before they can
@@ -580,6 +748,62 @@ mod tests {
         let err = run_extend_ttl(&cfg, "C1", "GSOURCE", "abc", 0, 10)
             .expect_err("zero extend_to must be rejected");
         assert!(err.to_string().contains("extend_to"));
+    }
+
+    #[test]
+    fn facility_deactivation_reason_is_canonicalized() {
+        assert_eq!(normalize_deactivation_reason("closed").unwrap(), "closed");
+        assert_eq!(
+            normalize_deactivation_reason("Licence-Lapsed").unwrap(),
+            "licence_lapsed"
+        );
+        assert_eq!(
+            normalize_deactivation_reason("license_lapsed").unwrap(),
+            "licence_lapsed"
+        );
+        assert_eq!(normalize_deactivation_reason("fraud").unwrap(), "fraud");
+        assert!(normalize_deactivation_reason("bankrupt").is_err());
+    }
+
+    #[test]
+    fn facility_enroll_rejects_empty_inputs() {
+        let cfg = NetworkConfig {
+            rpc_url: "http://localhost".into(),
+            network_passphrase: "Test SDF Network ; September 2015".into(),
+            ..Default::default()
+        };
+        let opts = PreviewOptions::default();
+        let err = run_facility_enroll(&cfg, "C1", "GSOURCE", "", "abc", 10, &opts)
+            .expect_err("empty facility_id must be rejected");
+        assert!(err.to_string().contains("facility_id"));
+        let err = run_facility_enroll(&cfg, "C1", "GSOURCE", "F1", "", 10, &opts)
+            .expect_err("empty metadata_hash must be rejected");
+        assert!(err.to_string().contains("metadata_hash"));
+    }
+
+    #[test]
+    fn facility_deactivate_rejects_unknown_reason() {
+        let cfg = NetworkConfig {
+            rpc_url: "http://localhost".into(),
+            network_passphrase: "Test SDF Network ; September 2015".into(),
+            ..Default::default()
+        };
+        let opts = PreviewOptions::default();
+        let err = run_facility_deactivate(&cfg, "C1", "GSOURCE", "F1", "bankrupt", 10, &opts)
+            .expect_err("unknown reason must be rejected");
+        assert!(err.to_string().contains("deactivation reason"));
+    }
+
+    #[test]
+    fn facility_affiliation_requires_attester() {
+        let cfg = NetworkConfig {
+            rpc_url: "http://localhost".into(),
+            network_passphrase: "Test SDF Network ; September 2015".into(),
+            ..Default::default()
+        };
+        let opts = PreviewOptions::default();
+        assert!(run_facility_affiliate(&cfg, "C1", "GSOURCE", "F1", "", 10, &opts).is_err());
+        assert!(run_facility_disaffiliate(&cfg, "C1", "GSOURCE", "F1", "", 10, &opts).is_err());
     }
 
     #[test]

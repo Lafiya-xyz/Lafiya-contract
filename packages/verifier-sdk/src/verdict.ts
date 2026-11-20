@@ -14,6 +14,7 @@ export const VERDICTS = [
   "superseded",
   "attester_removed",
   "attester_suspended",
+  "facility_untrusted",
   "expired",
   "disputed",
   "quorum_not_met",
@@ -37,6 +38,8 @@ export const VERDICT_DESCRIPTIONS: Record<Verdict, string> = {
   superseded: "A newer attestation exists for this record than the one on the card.",
   attester_removed: "The attesting health worker is no longer on the allowlist.",
   attester_suspended: "The attesting health worker is currently suspended.",
+  facility_untrusted:
+    "The attesting facility was deactivated for fraud; attestations made before that are untrusted.",
   expired: "The attestation is older than the maximum accepted age.",
   disputed:
     "The patient has flagged this attestation as disputed; treat the data as contested.",
@@ -44,6 +47,45 @@ export const VERDICT_DESCRIPTIONS: Record<Verdict, string> = {
     "The record requires more independent attesters than have co-attested so far.",
   verified: "Attested by a currently trusted health worker.",
 };
+
+/**
+ * Why a facility was deactivated. Mirrors the on-chain `deactivation_reason`
+ * code. `fraud` is the only reason that invalidates attestations made before
+ * deactivation; `closed` and `licence_lapsed` leave them valid.
+ */
+export const FACILITY_DEACTIVATION_REASONS = [
+  "closed",
+  "licence_lapsed",
+  "fraud",
+] as const;
+
+export type FacilityDeactivationReason =
+  (typeof FACILITY_DEACTIVATION_REASONS)[number];
+
+/**
+ * Facility status as observed at verification time. `deactivatedAt` is the
+ * ledger timestamp of deactivation (seconds); `reason` is absent while active.
+ */
+export interface FacilityStatus {
+  active: boolean;
+  reason?: FacilityDeactivationReason;
+  deactivatedAt?: number;
+}
+
+/**
+ * Whether an attestation made at `attestedAt` is invalidated by the facility's
+ * deactivation. Only `fraud` invalidates, and only attestations made at or
+ * before the deactivation timestamp. Mirrors the Rust model.
+ */
+export function facilityInvalidatesAttestation(
+  status: FacilityStatus | undefined,
+  attestedAt: number,
+): boolean {
+  if (!status || status.active) return false;
+  if (status.reason !== "fraud") return false;
+  if (status.deactivatedAt === undefined) return false;
+  return attestedAt <= status.deactivatedAt;
+}
 
 /** A single problem (or, for `verified`, the success) behind a verdict. */
 export interface Reason {

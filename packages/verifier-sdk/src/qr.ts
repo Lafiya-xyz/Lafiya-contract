@@ -13,11 +13,30 @@
  * `valid_until` must be greater than or equal to `issued_at`. Payloads
  * without these fields remain valid v1 payloads; verifiers apply their
  * configured staleness policy to decide whether to accept them.
+ *
+ * Portable facility identifier extension (backwards compatible within v1):
+ * optional `facility` field carrying the canonical `FacilityId`, a 32-byte
+ * hash encoded as 64 lowercase hex characters. The canonical identifier is
+ *
+ *   FacilityId = H(domain || jurisdiction || issuing_authority || facility_code)
+ *
+ * where `domain` is the fixed ASCII tag `lafiya:facility:v1`, each field is
+ * length-prefixed (u32 big-endian byte length followed by its UTF-8 bytes)
+ * and `H` is SHA-256. See `docs/specs/` for the normative spec and test
+ * vectors. The legacy sequential `u64` facility id is carried in the
+ * optional `facility_seq` field (canonical decimal integer) so cards issued
+ * before the migration keep verifying; new cards SHOULD emit `facility`
+ * only. When both are present, `facility` is authoritative and
+ * `facility_seq` is a local alias for display/migration purposes.
  */
 export interface QrPayload {
   network: string;
   contractId: string;
   recordHash: string;
+  /** Canonical portable facility id: 32-byte hash as 64 lowercase hex chars. */
+  facilityId?: string;
+  /** Legacy sequential facility id, kept as a local alias during migration. */
+  facilitySeq?: bigint;
   attestedAt?: bigint;
   issuedAt?: bigint;
   validUntil?: bigint;
@@ -74,6 +93,8 @@ export function parseQrPayload(text: string): QrPayload {
   const network = params.get("network") ?? "";
   const contractId = params.get("contract") ?? "";
   const recordHash = (params.get("record") ?? "").toLowerCase();
+  const facility = (params.get("facility") ?? "").toLowerCase();
+  const facilitySeq = params.get("facility_seq");
   const attested = params.get("attested");
   const issuedAt = params.get("issued_at");
   const validUntil = params.get("valid_until");
@@ -86,6 +107,12 @@ export function parseQrPayload(text: string): QrPayload {
   }
   if (!/^[0-9a-f]{64}$/.test(recordHash)) {
     throw new QrPayloadError("record must be a 32-byte hex hash");
+  }
+  if (facility !== "" && !/^[0-9a-f]{64}$/.test(facility)) {
+    throw new QrPayloadError("facility must be a 32-byte hex hash");
+  }
+  if (facilitySeq !== null && !/^\d{1,20}$/.test(facilitySeq)) {
+    throw new QrPayloadError("facility_seq must be a canonical u64");
   }
   if (attested !== null && !/^\d{1,20}$/.test(attested)) {
     throw new QrPayloadError("attested must be unix seconds");
@@ -103,6 +130,8 @@ export function parseQrPayload(text: string): QrPayload {
     network,
     contractId,
     recordHash,
+    ...(facility !== "" ? { facilityId: facility } : {}),
+    ...(facilitySeq !== null ? { facilitySeq: BigInt(facilitySeq) } : {}),
     ...(attested !== null ? { attestedAt: BigInt(attested) } : {}),
     ...(issuedAt !== null ? { issuedAt: BigInt(issuedAt) } : {}),
     ...(validUntil !== null ? { validUntil: BigInt(validUntil) } : {}),
@@ -115,6 +144,19 @@ export function encodeQrPayload(payload: QrPayload): string {
     contract: payload.contractId,
     record: payload.recordHash,
   });
+  if (payload.facilityId !== undefined) {
+    const facilityId = payload.facilityId.toLowerCase();
+    if (!/^[0-9a-f]{64}$/.test(facilityId)) {
+      throw new QrPayloadError("facility must be a 32-byte hex hash");
+    }
+    params.set("facility", facilityId);
+  }
+  if (payload.facilitySeq !== undefined) {
+    if (payload.facilitySeq < 0n) {
+      throw new QrPayloadError("facility_seq must be a canonical u64");
+    }
+    params.set("facility_seq", payload.facilitySeq.toString());
+  }
   if (payload.attestedAt !== undefined) {
     params.set("attested", payload.attestedAt.toString());
   }
@@ -246,6 +288,57 @@ export const QR_PARITY_VECTORS: readonly QrVector[] = [
     name: "inverted window",
     text: "lafiya:v1?network=testnet&contract=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF&record=" +
       "0000000000000000000000000000000000000000000000000000000000000000&issued_at=1700086400&valid_until=1700000000",
+    expected: "error",
+  },
+  {
+    name: "portable facility id",
+    text: "lafiya:v1?network=testnet&contract=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF&record=" +
+      "0000000000000000000000000000000000000000000000000000000000000000&facility=" +
+      "1111111111111111111111111111111111111111111111111111111111111111",
+    expected: {
+      network: "testnet",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      recordHash: "0000000000000000000000000000000000000000000000000000000000000000",
+      facilityId: "1111111111111111111111111111111111111111111111111111111111111111",
+    },
+    freshness: "missing",
+  },
+  {
+    name: "portable facility id with legacy alias",
+    text: "lafiya:v1?network=testnet&contract=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF&record=" +
+      "0000000000000000000000000000000000000000000000000000000000000000&facility=" +
+      "2222222222222222222222222222222222222222222222222222222222222222&facility_seq=7",
+    expected: {
+      network: "testnet",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      recordHash: "0000000000000000000000000000000000000000000000000000000000000000",
+      facilityId: "2222222222222222222222222222222222222222222222222222222222222222",
+      facilitySeq: 7n,
+    },
+    freshness: "missing",
+  },
+  {
+    name: "legacy facility seq only",
+    text: "lafiya:v1?network=testnet&contract=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF&record=" +
+      "0000000000000000000000000000000000000000000000000000000000000000&facility_seq=42",
+    expected: {
+      network: "testnet",
+      contractId: "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF",
+      recordHash: "0000000000000000000000000000000000000000000000000000000000000000",
+      facilitySeq: 42n,
+    },
+    freshness: "missing",
+  },
+  {
+    name: "non-canonical facility_seq",
+    text: "lafiya:v1?network=testnet&contract=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF&record=" +
+      "0000000000000000000000000000000000000000000000000000000000000000&facility_seq=007",
+    expected: "error",
+  },
+  {
+    name: "malformed facility id",
+    text: "lafiya:v1?network=testnet&contract=CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF&record=" +
+      "0000000000000000000000000000000000000000000000000000000000000000&facility=abcd",
     expected: "error",
   },
 ];
