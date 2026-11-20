@@ -180,6 +180,34 @@ pub struct PoolRules {
     /// Alert when the pool is paused.
     #[serde(default = "default_pool_paused_severity")]
     pub pool_paused_severity: Severity,
+    /// Poll the incentive pool's on-chain `check_invariants()` view and alert
+    /// when it reports a violation (#700).
+    #[serde(default)]
+    pub invariants: PoolInvariantRule,
+}
+
+/// Settings for the incentive-pool `check_invariants()` self-diagnostic (#700).
+#[derive(Debug, Clone, Deserialize)]
+pub struct PoolInvariantRule {
+    /// Master switch for polling `check_invariants()`.
+    #[serde(default = "default_true")]
+    pub enabled: bool,
+    /// Severity used when the report lists one or more violations.
+    #[serde(default = "default_pool_invariant_severity")]
+    pub severity: Severity,
+}
+
+impl Default for PoolInvariantRule {
+    fn default() -> Self {
+        PoolInvariantRule {
+            enabled: true,
+            severity: default_pool_invariant_severity(),
+        }
+    }
+}
+
+fn default_pool_invariant_severity() -> Severity {
+    Severity::Critical
 }
 
 fn default_large_withdrawal_severity() -> Severity {

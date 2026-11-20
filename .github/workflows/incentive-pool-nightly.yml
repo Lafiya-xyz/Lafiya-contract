@@ -26,3 +26,46 @@ jobs:
         with:
           name: incentive-pool-proptest-regressions
           path: contracts/incentive-pool/proptest-regressions/
+
+  testnet-rehearsal:
+    name: Testnet rehearsal (real USDC SAC)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    # Weekly on Sunday, plus manual dispatch. Kept separate from the nightly
+    # property run so a flaky testnet does not mask property failures.
+    if: github.event_name == 'workflow_dispatch' || github.event.schedule == '30 2 * * *'
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Install Stellar CLI
+        run: |
+          curl -sSL https://github.com/stellar/stellar-cli/releases/latest/download/install.sh | bash
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Run testnet rehearsal
+        id: rehearsal
+        env:
+          STELLAR_NETWORK: testnet
+          # Testnet-only donor secret, provided via repository secrets.
+          # Never commit real secrets; this key holds only testnet funds.
+          STELLAR_DONOR_SECRET: ${{ secrets.INCENTIVE_POOL_TESTNET_DONOR_SECRET }}
+          REHEARSAL_REPORT_PATH: ${{ github.workspace }}/rehearsal-report.json
+        run: |
+          set -o pipefail
+          cargo xtask incentive-pool-rehearsal \
+            --network "$STELLAR_NETWORK" \
+            --report "$REHEARSAL_REPORT_PATH" \
+            --require-green
+      - name: Upload rehearsal report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: incentive-pool-testnet-rehearsal-report
+          path: ${{ github.workspace }}/rehearsal-report.json
+          if-no-files-found: error
+          retention-days: 30
+      - name: Fail on non-green rehearsal
+        if: steps.rehearsal.outcome != 'success'
+        run: |
+          echo "::error::Testnet rehearsal did not report green; see incentive-pool-testnet-rehearsal-report artifact."
+          exit 1

@@ -205,6 +205,39 @@ fn incentive_pool_scenario_reaches_the_webhook() {
     assert!(rx.try_recv().is_err());
 }
 
+/// A pool `check_invariants()` report that flags a broken invariant must
+/// surface as a critical alert and reach the webhook sink.
+#[test]
+fn incentive_pool_invariant_violation_reaches_the_webhook() {
+    let (url, rx) = mock_webhook();
+    let mut cfg = config(url);
+    cfg.contracts = vec!["CPOOL".into()];
+    let mut engine = Engine::new(&cfg);
+
+    // Synthetic report: the pool is insolvent (balance < total_reserved).
+    let report = lafiya_contract_common::InvariantReport::violated(&[
+        "solvency: token.balance < total_reserved",
+    ]);
+    let alerts = engine.observe_invariants("CPOOL", &report, 42);
+    assert!(
+        alerts.iter().any(|a| a.kind == rules::POOL_INVARIANT_VIOLATED),
+        "missing {} in {:?}",
+        rules::POOL_INVARIANT_VIOLATED,
+        alerts.iter().map(|a| &a.kind).collect::<Vec<_>>()
+    );
+
+    for alert in &alerts {
+        assert!(sinks::dispatch(&cfg.sinks, alert).is_empty());
+    }
+
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        body["kind"].as_str().unwrap(),
+        rules::POOL_INVARIANT_VIOLATED
+    );
+    assert!(rx.try_recv().is_err());
+}
+
 /// Requires a running quickstart (`stellar container start local`) with the
 /// Lafiya contracts deployed and the scenario in docs/runbooks/watchdog.md
 /// executed. Set `LAFIYA_WATCHDOG_RPC` and `LAFIYA_WATCHDOG_CONTRACTS`

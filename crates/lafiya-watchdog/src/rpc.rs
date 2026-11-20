@@ -111,7 +111,13 @@ impl Rpc {
     /// Simulates the contract's read-only `check_invariants()` view and
     /// returns the names of any violated invariants (empty when healthy).
     /// Errors if the contract does not expose the view.
+    ///
+    /// Works for any contract returning the shared `InvariantReport` shape
+    /// (attester-registry, attestation-registry, incentive-pool).
     pub fn check_invariants(&self, contract: &str) -> anyhow::Result<Vec<String>> {
+        let contract_address: ScAddress = contract.parse().map_err(|e| {
+            anyhow::anyhow!("check_invariants: invalid contract address {contract}: {e}")
+        })?;
         let tx = Transaction {
             source_account: MuxedAccount::Ed25519(Uint256([0; 32])),
             fee: 100,
@@ -122,7 +128,7 @@ impl Rpc {
                 source_account: None,
                 body: OperationBody::InvokeHostFunction(InvokeHostFunctionOp {
                     host_function: HostFunction::InvokeContract(InvokeContractArgs {
-                        contract_address: contract.parse()?,
+                        contract_address,
                         function_name: "check_invariants"
                             .try_into()
                             .map_err(|_| anyhow::anyhow!("invalid function name"))?,
@@ -146,14 +152,25 @@ impl Rpc {
         if let Some(e) = r.get("error") {
             anyhow::bail!("check_invariants simulation failed for {contract}: {e}");
         }
+        // A failed simulation (e.g. the contract does not expose the view, or
+        // the host trapped) is reported in `error` on the result entry.
+        if let Some(e) = r["results"][0].get("error").filter(|e| !e.is_null()) {
+            anyhow::bail!("check_invariants simulation failed for {contract}: {e}");
+        }
         let xdr = r["results"][0]["xdr"]
             .as_str()
             .ok_or_else(|| anyhow::anyhow!("check_invariants: no result for {contract}"))?;
-        violations_from_report(&ScVal::from_xdr_base64(xdr, Limits::none())?)
+        let report = ScVal::from_xdr_base64(xdr, Limits::none())
+            .map_err(|e| anyhow::anyhow!("check_invariants: undecodable report for {contract}: {e}"))?;
+        violations_from_report(&report)
+            .map_err(|e| anyhow::anyhow!("check_invariants: bad report for {contract}: {e}"))
     }
 }
 
 /// Extracts `violations` from an `InvariantReport` map value.
+///
+/// The report is a map with a `violations` vec (and a `checked` count). The
+/// vec is empty when healthy; each entry is rendered to a compact string.
 pub fn violations_from_report(report: &ScVal) -> anyhow::Result<Vec<String>> {
     let ScVal::Map(Some(map)) = report else {
         anyhow::bail!("InvariantReport is not a map");
@@ -235,5 +252,50 @@ mod tests {
         assert_eq!(e.name, "upgraded");
         assert_eq!(e.topics, vec!["ab".repeat(32)]);
         assert_eq!(e.ledger, 42);
+    }
+
+    fn report(violations: Vec<ScVal>) -> ScVal {
+        ScVal::Map(Some(
+            vec![
+                stellar_xdr::ScMapEntry {
+                    key: ScVal::Symbol(ScSymbol("checked".try_into().unwrap())),
+                    val: ScVal::U32(4),
+                },
+                stellar_xdr::ScMapEntry {
+                    key: ScVal::Symbol(ScSymbol("violations".try_into().unwrap())),
+                    val: ScVal::Vec(Some(violations.try_into().unwrap())),
+                },
+            ]
+            .try_into()
+            .unwrap(),
+        ))
+    }
+
+    #[test]
+    fn healthy_report_has_no_violations() {
+        assert!(violations_from_report(&report(vec![])).unwrap().is_empty());
+    }
+
+    #[test]
+    fn pool_violations_are_rendered() {
+        let v = violations_from_report(&report(vec![ScVal::Symbol(
+            ScSymbol("solvency".try_into().unwrap()),
+        )]))
+        .unwrap();
+        assert_eq!(v, vec!["solvency".to_string()]);
+    }
+
+    #[test]
+    fn malformed_report_is_an_error() {
+        assert!(violations_from_report(&ScVal::Void).is_err());
+        let no_violations = ScVal::Map(Some(
+            vec![stellar_xdr::ScMapEntry {
+                key: ScVal::Symbol(ScSymbol("checked".try_into().unwrap())),
+                val: ScVal::U32(1),
+            }]
+            .try_into()
+            .unwrap(),
+        ));
+        assert!(violations_from_report(&no_violations).is_err());
     }
 }

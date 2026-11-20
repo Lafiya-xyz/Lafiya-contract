@@ -378,6 +378,133 @@ fn three_of_five_signers_authorize() {
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
 }
 
+fn set_policy(
+    env: &Env,
+    account: &soroban_sdk::Address,
+    policy: &SignerPolicy,
+) -> Result<(), Result<Error, soroban_sdk::InvokeError>> {
+    env.try_invoke_contract::<(), Error>(
+        account,
+        &soroban_sdk::Symbol::new(env, "set_policy"),
+        (policy.clone(),).into_val(env),
+    )
+}
+
+fn policy_with(
+    env: &Env,
+    keys: &[SigningKey],
+    weight_threshold: u32,
+    minimum_signers: u32,
+    role_requirements: Vec<RoleRequirement>,
+    allow_single_point_of_failure: bool,
+) -> SignerPolicy {
+    let mut signers = Vec::new(env);
+    for key in keys {
+        signers.push_back(SignerKey::Ed25519(BytesN::from_array(
+            env,
+            &key.verifying_key().to_bytes(),
+        )));
+    }
+    SignerPolicy {
+        signers,
+        weight_threshold,
+        minimum_signers,
+        role_requirements,
+        allow_single_point_of_failure,
+    }
+}
+
+#[test]
+fn set_policy_accepts_satisfiable_policy() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 1);
+    let policy = policy_with(&env, &keys, 2, 2, Vec::new(&env), false);
+
+    assert_eq!(set_policy(&env, &account, &policy), Ok(()));
+}
+
+#[test]
+fn set_policy_rejects_weight_threshold_above_total_weight() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 1);
+    // Three signers, each weight 1, so a threshold of 4 is unsatisfiable.
+    let policy = policy_with(&env, &keys, 4, 1, Vec::new(&env), true);
+
+    assert_eq!(
+        set_policy(&env, &account, &policy),
+        Err(Ok(Error::UnsatisfiablePolicy))
+    );
+}
+
+#[test]
+fn set_policy_rejects_role_requirement_exceeding_role_size() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 1);
+    let mut role_requirements = Vec::new(&env);
+    role_requirements.push_back(RoleRequirement {
+        role: Role::Admin,
+        minimum: 5,
+    });
+    let policy = policy_with(&env, &keys, 1, 1, role_requirements, true);
+
+    assert_eq!(
+        set_policy(&env, &account, &policy),
+        Err(Ok(Error::UnsatisfiablePolicy))
+    );
+}
+
+#[test]
+fn set_policy_rejects_minimum_signers_above_signer_count() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 1);
+    let policy = policy_with(&env, &keys, 1, 4, Vec::new(&env), true);
+
+    assert_eq!(
+        set_policy(&env, &account, &policy),
+        Err(Ok(Error::UnsatisfiablePolicy))
+    );
+}
+
+#[test]
+fn set_policy_rejects_single_point_of_failure_without_override() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 1);
+    // A 2-of-2 policy: either signer alone is required, so each is a single
+    // point of failure.
+    let policy = policy_with(&env, &keys[..2], 2, 2, Vec::new(&env), false);
+
+    assert_eq!(
+        set_policy(&env, &account, &policy),
+        Err(Ok(Error::SinglePointOfFailure))
+    );
+}
+
+#[test]
+fn set_policy_accepts_single_point_of_failure_with_override() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 1);
+    let policy = policy_with(&env, &keys[..2], 2, 2, Vec::new(&env), true);
+
+    assert_eq!(set_policy(&env, &account, &policy), Ok(()));
+}
+
+#[test]
+fn set_policy_accepts_policy_without_single_point_of_failure() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 1);
+    // 2-of-3: no single signer is indispensable.
+    let policy = policy_with(&env, &keys, 2, 2, Vec::new(&env), false);
+
+    assert_eq!(set_policy(&env, &account, &policy), Ok(()));
+}
+
 #[test]
 fn get_interface_reports_kind_versions_and_features() {
     let env = Env::default();

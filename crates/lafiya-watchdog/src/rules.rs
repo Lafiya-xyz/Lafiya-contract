@@ -17,6 +17,8 @@ pub const WATCHDOG_FAILING: &str = "watchdog_failing";
 pub const ATTESTATION_EXPIRING: &str = "attestation_expiring";
 /// A patient-initiated dispute overlay was recorded on an attestation.
 pub const ATTESTATION_DISPUTED: &str = "attestation_disputed";
+/// The incentive pool's on-chain `check_invariants()` reported violations.
+pub const POOL_INVARIANT_VIOLATION: &str = "pool_invariant_violation";
 
 pub struct Engine {
     rules: Vec<EventRule>,
@@ -31,6 +33,23 @@ pub struct Engine {
     expiry_threshold_ledgers: Option<u32>,
     /// Whether disputes should be surfaced as alerts.
     alert_on_dispute: bool,
+    /// Incentive-pool rule thresholds and severities.
+    pool: PoolRules,
+}
+
+/// Rules for the incentive pool's on-chain `check_invariants()` report.
+#[derive(Debug, Clone)]
+pub struct PoolRules {
+    /// Severity raised when the pool reports invariant violations.
+    pub invariant_severity: Severity,
+}
+
+impl Default for PoolRules {
+    fn default() -> PoolRules {
+        PoolRules {
+            invariant_severity: Severity::Critical,
+        }
+    }
 }
 
 /// Default rules from the issue: privileged changes are critical, pause
@@ -113,6 +132,7 @@ impl Engine {
             expected_wasm: BTreeMap::new(),
             expiry_threshold_ledgers: cfg.attestation_expiry_threshold_ledgers,
             alert_on_dispute: cfg.alert_on_dispute,
+            pool: PoolRules::default(),
         }
         fresh
     }
@@ -283,6 +303,34 @@ impl Engine {
 }
 
 impl Engine {
+    /// Alert when the incentive pool's on-chain `check_invariants()` reports
+    /// violations. Healthy reports (no violations) are silent.
+    pub fn observe_pool_invariants(
+        &self,
+        contract: &str,
+        violations: &[String],
+        ledger: u32,
+    ) -> Option<Alert> {
+        if violations.is_empty() {
+            return None;
+        }
+        Some(Alert {
+            kind: POOL_INVARIANT_VIOLATION.into(),
+            severity: self.pool.invariant_severity,
+            summary: format!(
+                "incentive pool invariants violated: {}",
+                violations.join(", ")
+            ),
+            ledger,
+            contract: contract.into(),
+            details: violations
+                .iter()
+                .map(|v| format!("violation: {v}"))
+                .collect(),
+            explorer_link: None,
+        })
+    }
+
     /// Alert when a contract's on-chain `check_invariants()` reports violations.
     pub fn observe_invariants(
         &self,
@@ -530,6 +578,31 @@ mod tests {
             (a.kind.as_str(), a.severity),
             (WASM_CHANGED_WITHOUT_EVENT, Severity::Critical)
         );
+    }
+
+    #[test]
+    fn pool_invariant_violations_are_reported() {
+        let e = Engine::new(&cfg());
+        assert!(e.observe_pool_invariants("POOL", &[], 1).is_none());
+        let a = e
+            .observe_pool_invariants("POOL", &["balance_below_reserved".into()], 2)
+            .unwrap();
+        assert_eq!(
+            (a.kind.as_str(), a.severity),
+            (POOL_INVARIANT_VIOLATION, Severity::Critical)
+        );
+        assert!(a.summary.contains("balance_below_reserved"));
+    }
+
+    #[test]
+    fn pool_invariant_severity_is_configurable() {
+        let e = Engine::new(&cfg()).with_pool_rules(PoolRules {
+            invariant_severity: Severity::High,
+        });
+        let a = e
+            .observe_pool_invariants("POOL", &["total_paid_exceeds_deposited".into()], 3)
+            .unwrap();
+        assert_eq!(a.severity, Severity::High);
     }
 
     #[test]

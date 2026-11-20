@@ -144,6 +144,11 @@ pub enum Error {
     RoleQuorumNotMet = 9,
     /// A signer weight, role requirement, or policy threshold is invalid.
     InvalidPolicy = 10,
+    /// The combined weight, signer-count, and role constraints cannot be met.
+    UnsatisfiablePolicy = 11,
+    /// The policy can only be satisfied by a single signer whose absence
+    /// makes it unsatisfiable, and the single-point-of-failure override is off.
+    SinglePointOfFailure = 12,
 }
 
 /// Instance storage TTL policy:
@@ -198,6 +203,12 @@ pub struct InterfaceInfo {
 
 /// Storage schema version; this contract's storage is not versioned.
 const SCHEMA_VERSION: u32 = 1;
+
+/// Maximum number of signers a policy may configure. The exact
+/// satisfiability search is exponential in the signer count, so this bound
+/// keeps `set_policy` within the CPU budget (see the benchmark in
+/// `benchmarks/`). Policies with more signers are rejected.
+pub const MAX_SIGNERS: u32 = 16;
 
 /// Emitted when the signer set is configured or replaced.
 #[contractevent]
@@ -363,7 +374,7 @@ impl MultisigAccount {
             });
         }
         let role_requirements = Vec::new(&env);
-        Self::set_policy(env, configs, threshold, threshold, role_requirements)
+        Self::set_policy(env, configs, threshold, threshold, role_requirements, false)
     }
 
     /// Atomically replace the signer set and approval policy.
@@ -371,12 +382,20 @@ impl MultisigAccount {
     /// `minimum_signers` and `weight_threshold` must both be met. Each role
     /// requirement also specifies a minimum number of approving signers with
     /// that role. The current policy must authorize this change.
+    ///
+    /// The combined constraints must be satisfiable by some subset of the
+    /// configured signers; otherwise the account would be permanently
+    /// unusable and the call is rejected with `UnsatisfiablePolicy`. A policy
+    /// that can only be satisfied by a single signer (whose absence makes it
+    /// unsatisfiable) is rejected with `SinglePointOfFailure` unless
+    /// `allow_single_point_of_failure` is set.
     pub fn set_policy(
         env: Env,
         signers: Vec<SignerConfig>,
         weight_threshold: u32,
         minimum_signers: u32,
         role_requirements: Vec<RoleRequirement>,
+        allow_single_point_of_failure: bool,
     ) -> Result<(), Error> {
         env.current_contract_address().require_auth();
         Self::validate_policy(
@@ -384,6 +403,13 @@ impl MultisigAccount {
             weight_threshold,
             minimum_signers,
             &role_requirements,
+        )?;
+        Self::check_satisfiable(
+            &signers,
+            weight_threshold,
+            minimum_signers,
+            &role_requirements,
+            allow_single_point_of_failure,
         )?;
 
         let old_signers = match env
@@ -483,6 +509,9 @@ impl MultisigAccount {
         minimum_signers: u32,
         role_requirements: &Vec<RoleRequirement>,
     ) -> Result<(), Error> {
+        if signers.len() > MAX_SIGNERS {
+            return Err(Error::InvalidPolicy);
+        }
         if minimum_signers == 0 || minimum_signers > signers.len() {
             return Err(Error::InvalidThreshold);
         }
@@ -540,6 +569,98 @@ impl MultisigAccount {
         Ok(())
     }
 
+    /// Return `true` when the subset of `signers` selected by `mask` meets
+    /// every constraint of the policy.
+    fn subset_satisfies(
+        signers: &Vec<SignerConfig>,
+        role_requirements: &Vec<RoleRequirement>,
+        weight_threshold: u32,
+        minimum_signers: u32,
+        mask: u32,
+    ) -> bool {
+        let mut weight = 0u32;
+        let mut count = 0u32;
+        // loop-bound: MAX_SIGNERS -- bounded by the policy signer cap
+        for (index, signer) in signers.iter().enumerate() {
+            if mask & (1u32 << index) != 0 {
+                weight = weight.saturating_add(signer.weight);
+                count += 1;
+            }
+        }
+        if count < minimum_signers || weight < weight_threshold {
+            return false;
+        }
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured role requirements
+        for requirement in role_requirements.iter() {
+            let mut matching = 0u32;
+            // loop-bound: MAX_SIGNERS -- bounded by the policy signer cap
+            for (index, signer) in signers.iter().enumerate() {
+                if mask & (1u32 << index) != 0 && signer.role == Some(requirement.role.clone()) {
+                    matching += 1;
+                }
+            }
+            if matching < requirement.minimum {
+                return false;
+            }
+        }
+        true
+    }
+
+    /// Exact satisfiability check over all signer subsets.
+    ///
+    /// Signer sets are bounded by [`MAX_SIGNERS`], so an exhaustive search is
+    /// feasible. Returns `UnsatisfiablePolicy` when no subset meets the
+    /// combined constraints, and `SinglePointOfFailure` when every satisfying
+    /// subset contains one signer whose removal makes the policy
+    /// unsatisfiable (unless `allow_single_point_of_failure` is set).
+    fn check_satisfiable(
+        signers: &Vec<SignerConfig>,
+        weight_threshold: u32,
+        minimum_signers: u32,
+        role_requirements: &Vec<RoleRequirement>,
+        allow_single_point_of_failure: bool,
+    ) -> Result<(), Error> {
+        let n = signers.len();
+        let total_masks: u32 = 1u32 << n;
+
+        let mut any_satisfiable = false;
+        // Bitmask of signers that appear in at least one satisfying subset.
+        let mut essential_candidates: u32 = 0;
+        // Bitmask of signers that appear in *every* satisfying subset.
+        let mut always_present: u32 = u32::MAX;
+
+        // loop-bound: MAX_SIGNERS -- 2^MAX_SIGNERS bounded exhaustive search
+        for mask in 0..total_masks {
+            if Self::subset_satisfies(
+                signers,
+                role_requirements,
+                weight_threshold,
+                minimum_signers,
+                mask,
+            ) {
+                any_satisfiable = true;
+                essential_candidates |= mask;
+                always_present &= mask;
+            }
+        }
+
+        if !any_satisfiable {
+            return Err(Error::UnsatisfiablePolicy);
+        }
+
+        if !allow_single_point_of_failure {
+            // A signer is a single point of failure when it is present in
+            // every satisfying subset and its removal leaves no satisfying
+            // subset. Since it is present in every satisfying subset, removing
+            // it makes the policy unsatisfiable by construction.
+            if always_present != 0 {
+                return Err(Error::SinglePointOfFailure);
+            }
+        }
+
+        Ok(())
+    }
+
     fn policy(env: &Env) -> Result<SignerPolicy, Error> {
         if let Some(policy) = env.storage().instance().get(&DataKey::Policy) {
             return Ok(policy);
@@ -570,6 +691,33 @@ impl MultisigAccount {
             minimum_signers,
             role_requirements: Vec::new(env),
         })
+    }
+
+    /// Expose the satisfiability checker for off-chain tooling and tests.
+    /// Returns `Ok(())` when the policy is acceptable, or the typed error
+    /// that `set_policy` would return.
+    pub fn check_policy_satisfiable(
+        env: Env,
+        signers: Vec<SignerConfig>,
+        weight_threshold: u32,
+        minimum_signers: u32,
+        role_requirements: Vec<RoleRequirement>,
+        allow_single_point_of_failure: bool,
+    ) -> Result<(), Error> {
+        let _ = env;
+        Self::validate_policy(
+            &signers,
+            weight_threshold,
+            minimum_signers,
+            &role_requirements,
+        )?;
+        Self::check_satisfiable(
+            &signers,
+            weight_threshold,
+            minimum_signers,
+            &role_requirements,
+            allow_single_point_of_failure,
+        )
     }
 
     /// Report the contract kind, interface version, enabled features, and

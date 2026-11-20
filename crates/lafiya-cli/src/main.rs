@@ -114,6 +114,11 @@ enum Commands {
         #[command(subcommand)]
         sub: PoolSub,
     },
+    /// Incentive-pool testnet rehearsal against the real USDC SAC
+    Rehearse {
+        #[command(subcommand)]
+        sub: RehearseSub,
+    },
     /// Deploy contracts (wrapper around scripts/deploy.sh logic, but uses same config)
     Deploy {
         /// Build only, don't deploy
@@ -358,6 +363,38 @@ enum PoolSub {
     },
     /// Query whether the pool is paused
     IsPaused,
+}
+
+// ── incentive-pool testnet rehearsal subcommands ─────────────────────────────
+
+#[derive(Subcommand, Debug)]
+enum RehearseSub {
+    /// Run the full payout rehearsal on testnet against the real USDC SAC
+    ///
+    /// Deploys a fresh pool, funds it from a test donor, then exercises the
+    /// happy path plus every failure mode (no trustline, unauthorized
+    /// trustline, frozen trustline, merged account, paused pool, drift) and
+    /// asserts typed errors and accounting state after each step.
+    ///
+    /// Example: `lafiya-cli --network testnet rehearse pool --report out.json`
+    Pool {
+        /// Write the machine-readable rehearsal report to this file
+        #[arg(long)]
+        report: Option<PathBuf>,
+        /// Stellar identity or G... address used as transaction source
+        #[arg(long)]
+        source: Option<String>,
+        /// USDC Stellar Asset Contract id to exercise (C...); defaults to the
+        /// network's configured token
+        #[arg(long)]
+        token: Option<String>,
+        /// Skip the interactive confirmation prompt (required in CI)
+        #[arg(long, default_value_t = false)]
+        yes: bool,
+        /// Keep the deployed pool and test accounts instead of cleaning up
+        #[arg(long, default_value_t = false)]
+        keep: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -1128,6 +1165,30 @@ fn main() -> anyhow::Result<()> {
         Commands::Pool { sub } => {
             handle_pool(sub, &cli.network, &network_cfg)?;
         }
+        Commands::Rehearse { sub } => match sub {
+            RehearseSub::Pool {
+                report,
+                source,
+                token,
+                yes,
+                keep,
+            } => {
+                let source = validated_source(source)?;
+                if let Some(token) = &token {
+                    validate_address("token", token)
+                        .context("invalid --token (expected a C... contract id)")?;
+                }
+                let opts = rehearsal::RehearsalOpts {
+                    network: cli.network.clone(),
+                    source,
+                    token,
+                    yes,
+                    keep,
+                    report,
+                };
+                rehearsal::run_pool_rehearsal(&network_cfg, &opts)?;
+            }
+        },
         Commands::Interface { contract } => {
             let (kind, req) = match contract {
                 InterfaceTarget::Attester => {
@@ -2999,6 +3060,57 @@ mod tests {
             message.to_uppercase().contains("EXTEND_TO"),
             "expected error to name the missing `extend_to` argument, got: {message}"
         );
+    }
+
+    #[test]
+    fn rehearse_pool_parses_report_and_flags() {
+        let cli = Cli::try_parse_from([
+            "lafiya-cli",
+            "--network",
+            "testnet",
+            "rehearse",
+            "pool",
+            "--report",
+            "report.json",
+            "--source",
+            "alice",
+            "--yes",
+        ])
+        .unwrap();
+        match cli.command {
+            Commands::Rehearse {
+                sub:
+                    RehearseSub::Pool {
+                        report,
+                        source,
+                        yes,
+                        keep,
+                        token,
+                    },
+            } => {
+                assert_eq!(report, Some(PathBuf::from("report.json")));
+                assert_eq!(source.as_deref(), Some("alice"));
+                assert!(yes);
+                assert!(!keep);
+                assert!(token.is_none());
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn rehearse_pool_defaults_are_offline_safe() {
+        let cli = Cli::try_parse_from(["lafiya-cli", "rehearse", "pool"]).unwrap();
+        match cli.command {
+            Commands::Rehearse {
+                sub: RehearseSub::Pool { report, yes, keep, .. },
+            } => {
+                assert!(report.is_none());
+                assert!(!yes);
+                assert!(!keep);
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
     }
 
     #[test]
