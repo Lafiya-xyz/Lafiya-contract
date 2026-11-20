@@ -24,12 +24,92 @@ pub const MAX_TTL_HORIZON: u32 = 31_536_000;
 /// Requests below this are rejected rather than silently shortened.
 pub const MIN_TTL_HORIZON: u32 = INSTANCE_BUMP_AMOUNT;
 
+/// Retention horizon (in ledger seconds) for config entries that have been
+/// moved out of the hot instance entry (admin, roles, rate-limit config, ...).
+///
+/// These change rarely, so they are kept alive for the full allowed horizon to
+/// avoid paying to rewrite them on hot paths. Typical value is ~1 year
+/// (31,536,000 seconds).
+pub const CONFIG_LIFETIME_THRESHOLD: u32 = MAX_TTL_HORIZON;
+
+/// Bump amount used when extending a moved config entry. Matches the maximum
+/// horizon so a single extension keeps the entry alive as long as allowed.
+pub const CONFIG_BUMP_AMOUNT: u32 = MAX_TTL_HORIZON;
+
+/// Retention horizon (in ledger seconds) for superseded status-list epochs.
+///
+/// Old epochs stay readable for this long after a new epoch is activated so
+/// in-flight verifications that already read `root(epoch)` can still fetch the
+/// matching segments. Typical value is ~30 days (2,592,000 seconds).
+pub const STATUS_LIST_EPOCH_RETENTION: u32 = 2_592_000;
+
+/// Minimum retention horizon for a superseded status-list epoch. Requests to
+/// retain an old epoch for less than this are rejected so verifiers always have
+/// a bounded window to finish.
+pub const MIN_STATUS_LIST_EPOCH_RETENTION: u32 = 604_800;
+
 /// Extend the instance storage TTL if it falls below the threshold.
 /// Call this at the end of any state-changing operation.
 pub fn extend_instance_ttl(env: &Env) {
     env.storage()
         .instance()
         .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+/// Extend the TTL of a config entry that was moved out of the hot instance
+/// entry. Uses the long [`CONFIG_LIFETIME_THRESHOLD`] / [`CONFIG_BUMP_AMOUNT`]
+/// policy so rarely changing config is not rewritten on hot paths.
+pub fn extend_config_ttl(env: &Env) {
+    env.storage()
+        .instance()
+        .extend_ttl(CONFIG_LIFETIME_THRESHOLD, CONFIG_BUMP_AMOUNT);
+}
+
+/// Extend a persistent config entry's TTL to the config horizon.
+///
+/// Returns the horizon applied. The entry is never shortened and never exceeds
+/// `MAX_TTL_HORIZON`.
+pub fn extend_persistent_config_ttl<K>(env: &Env, key: &K) -> u32
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    extend_persistent_ttl(env, key, CONFIG_BUMP_AMOUNT)
+}
+
+/// Clamp a requested retention horizon for a superseded status-list epoch.
+///
+/// Returns `None` when the request is below
+/// [`MIN_STATUS_LIST_EPOCH_RETENTION`] (callers should reject such requests so
+/// old epochs cannot be dropped before in-flight verifications finish),
+/// otherwise returns the requested horizon capped at `MAX_TTL_HORIZON`.
+pub fn clamp_epoch_retention(retain_for: u32) -> Option<u32> {
+    if retain_for < MIN_STATUS_LIST_EPOCH_RETENTION {
+        return None;
+    }
+    Some(if retain_for > MAX_TTL_HORIZON {
+        MAX_TTL_HORIZON
+    } else {
+        retain_for
+    })
+}
+
+/// Extend the TTL of a status-list entry (segment or root) for a given epoch.
+///
+/// `is_current` selects the policy: the current epoch uses the standard
+/// persistent policy, while superseded epochs are retained for
+/// [`STATUS_LIST_EPOCH_RETENTION`] so in-flight verifications that already read
+/// `root(epoch)` can still fetch the matching segments. Returns the horizon
+/// applied.
+pub fn extend_status_list_epoch_ttl<K>(env: &Env, key: &K, is_current: bool) -> u32
+where
+    K: soroban_sdk::IntoVal<Env, soroban_sdk::Val>,
+{
+    let requested = if is_current {
+        INSTANCE_BUMP_AMOUNT
+    } else {
+        STATUS_LIST_EPOCH_RETENTION
+    };
+    extend_persistent_ttl(env, key, requested)
 }
 
 /// Clamp a requested extension horizon into the allowed `[MIN_TTL_HORIZON,
@@ -179,5 +259,36 @@ mod tests {
         assert!(one > 0);
         assert_eq!(rent_for_entries_stroops(10, MAX_TTL_HORIZON), one * 10);
         assert_eq!(rent_for_entries_stroops(0, MAX_TTL_HORIZON), 0);
+    }
+
+    #[test]
+    fn config_policy_uses_full_horizon() {
+        assert_eq!(CONFIG_LIFETIME_THRESHOLD, MAX_TTL_HORIZON);
+        assert_eq!(CONFIG_BUMP_AMOUNT, MAX_TTL_HORIZON);
+        assert!(CONFIG_BUMP_AMOUNT >= INSTANCE_BUMP_AMOUNT);
+    }
+
+    #[test]
+    fn epoch_retention_is_bounded() {
+        assert!(
+            MIN_STATUS_LIST_EPOCH_RETENTION < STATUS_LIST_EPOCH_RETENTION,
+            "min epoch retention ({}) must be less than default ({})",
+            MIN_STATUS_LIST_EPOCH_RETENTION,
+            STATUS_LIST_EPOCH_RETENTION
+        );
+        assert!(STATUS_LIST_EPOCH_RETENTION <= MAX_TTL_HORIZON);
+        assert_eq!(clamp_epoch_retention(0), None);
+        assert_eq!(
+            clamp_epoch_retention(MIN_STATUS_LIST_EPOCH_RETENTION - 1),
+            None
+        );
+        assert_eq!(
+            clamp_epoch_retention(MIN_STATUS_LIST_EPOCH_RETENTION),
+            Some(MIN_STATUS_LIST_EPOCH_RETENTION)
+        );
+        assert_eq!(
+            clamp_epoch_retention(MAX_TTL_HORIZON + 1),
+            Some(MAX_TTL_HORIZON)
+        );
     }
 }

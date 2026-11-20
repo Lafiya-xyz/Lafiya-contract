@@ -1792,3 +1792,247 @@ fn status_list_segment_and_root_accessors() {
     let segment = client.get_status_list_segment(&0);
     assert!(segment.is_some());
 }
+
+// ───────────────────────── Epoch-versioned status lists ─────────────────────────
+
+/// Publishes `count` empty segments for `epoch` and returns the segment hashes
+/// in index order, plus the Merkle root over them.
+fn publish_empty_segments(
+    env: &Env,
+    client: &AttestationRegistryClient<'_>,
+    admin: &Address,
+    epoch: u64,
+    count: u32,
+) -> (Vec<BytesN<32>>, BytesN<32>) {
+    let mut hashes = Vec::new(env);
+    for index in 0..count {
+        let bits = Bytes::new(env);
+        let segment_hash = client.publish_status_list_segment(admin, &epoch, &index, &bits);
+        hashes.push_back(segment_hash);
+    }
+    let root = client.compute_status_list_root(&epoch, &hashes);
+    (hashes, root)
+}
+
+#[test]
+fn status_list_root_requires_all_segments_for_epoch() {
+    let (env, client, _attester_registry, admin) = setup();
+    let epoch = 1;
+
+    // Only segment 0 is published; the root references segments 0 and 1.
+    let bits = Bytes::new(&env);
+    let seg0 = client.publish_status_list_segment(&admin, &epoch, &0, &bits);
+    let missing = hash(&env, 200);
+    let hashes = Vec::from_array(&env, [seg0, missing]);
+    let root = client.compute_status_list_root(&epoch, &hashes);
+
+    assert_eq!(
+        client.try_set_status_list_root(&admin, &epoch, &root),
+        Err(Ok(Error::StatusListIncomplete))
+    );
+    assert_eq!(client.get_status_list_root(), None);
+}
+
+#[test]
+fn status_list_root_rejects_inconsistent_merkle_root() {
+    let (env, client, _attester_registry, admin) = setup();
+    let epoch = 1;
+    let (hashes, _root) = publish_empty_segments(&env, &client, &admin, epoch, 2);
+
+    // A root that does not recompute over the published segment hashes.
+    let bogus = hash(&env, 201);
+    assert_eq!(
+        client.try_set_status_list_root(&admin, &epoch, &bogus),
+        Err(Ok(Error::StatusListRootMismatch))
+    );
+    assert_eq!(client.get_status_list_root(), None);
+
+    // The genuine root activates.
+    let genuine = client.compute_status_list_root(&epoch, &hashes);
+    client.set_status_list_root(&admin, &epoch, &genuine);
+    assert_eq!(client.get_status_list_root(), Some(genuine));
+}
+
+#[test]
+fn status_list_root_is_epoch_scoped() {
+    let (env, client, _attester_registry, admin) = setup();
+    let (_h1, root1) = publish_empty_segments(&env, &client, &admin, 1, 1);
+    client.set_status_list_root(&admin, &1, &root1);
+
+    // Epoch 2 has no segments yet, so its root cannot activate.
+    assert_eq!(
+        client.try_set_status_list_root(&admin, &2, &root1),
+        Err(Ok(Error::StatusListIncomplete))
+    );
+
+    let (_h2, root2) = publish_empty_segments(&env, &client, &admin, 2, 1);
+    client.set_status_list_root(&admin, &2, &root2);
+    assert_eq!(client.get_status_list_root_for_epoch(&1), Some(root1));
+    assert_eq!(client.get_status_list_root_for_epoch(&2), Some(root2));
+}
+
+#[test]
+fn status_list_old_epochs_remain_readable_until_ttl() {
+    let (env, client, _attester_registry, admin) = setup();
+    let (_h1, root1) = publish_empty_segments(&env, &client, &admin, 1, 1);
+    client.set_status_list_root(&admin, &1, &root1);
+    let (_h2, root2) = publish_empty_segments(&env, &client, &admin, 2, 1);
+    client.set_status_list_root(&admin, &2, &root2);
+
+    // Epoch 1 is still readable while within its retention window.
+    assert_eq!(client.get_status_list_root_for_epoch(&1), Some(root1));
+    assert!(client.get_status_list_segment_for_epoch(&1, &0).is_some());
+
+    // After the retention TTL, the old epoch is pruned.
+    advance_ledgers(&env, STATUS_LIST_EPOCH_RETENTION_LEDGERS + 1);
+    assert_eq!(client.get_status_list_root_for_epoch(&1), None);
+    assert_eq!(client.get_status_list_root_for_epoch(&2), Some(root2));
+}
+
+#[test]
+fn status_list_revocation_is_monotonic_across_epochs() {
+    let (env, client, _attester_registry, admin) = setup();
+    let epoch1 = 1;
+    let mut bits = Bytes::new(&env);
+    bits.push_back(0b0000_0001);
+    let _seg = client.publish_status_list_segment(&admin, &epoch1, &0, &bits);
+    let hashes = Vec::from_array(&env, [_seg.clone()]);
+    let root1 = client.compute_status_list_root(&epoch1, &hashes);
+    client.set_status_list_root(&admin, &epoch1, &root1);
+
+    // Epoch 2 tries to clear the bit set in epoch 1.
+    let epoch2 = 2;
+    let cleared = Bytes::new(&env);
+    assert_eq!(
+        client.try_publish_status_list_segment(&admin, &epoch2, &0, &cleared),
+        Err(Ok(Error::StatusListRevocationNotMonotonic))
+    );
+}
+
+#[test]
+fn status_list_unrevoke_is_explicit_and_emits_event() {
+    let (env, client, _attester_registry, admin) = setup();
+    let epoch1 = 1;
+    let mut bits = Bytes::new(&env);
+    bits.push_back(0b0000_0001);
+    let seg = client.publish_status_list_segment(&admin, &epoch1, &0, &bits);
+    let hashes = Vec::from_array(&env, [seg]);
+    let root1 = client.compute_status_list_root(&epoch1, &hashes);
+    client.set_status_list_root(&admin, &epoch1, &root1);
+
+    // Clearing a bit requires the explicit unrevoke path.
+    client.unrevoke_status_list_bit(&admin, &epoch1, &0, &0);
+
+    // Reading the sequence runs a contract call, which resets the event log.
+    let events = env.events().all();
+    let expected = StatusListBitUnrevoked {
+        seq: last_seq(&env, &client.address),
+        epoch: epoch1,
+        index: 0,
+        bit: 0,
+        contract_kind: Symbol::new(&env, "attestation_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    assert_eq!(events, std::vec![expected.to_xdr(&env, &client.address)]);
+}
+
+// ───────────────────────── Footprint: no shared instance writes ─────────────────────────
+
+/// Asserts that running `f` writes no instance-storage key other than the
+/// ones in `allowed`. Reads are permitted; only writes are inspected.
+fn assert_no_shared_instance_writes<F>(env: &Env, contract: &Address, allowed: &[DataKey], f: F)
+where
+    F: FnOnce(),
+{
+    let before = env.as_contract(contract, || {
+        let mut snapshot = std::vec::Vec::new();
+        for key in instance_keys(env) {
+            snapshot.push((key, env.storage().instance().get::<_, u32>(&key)));
+        }
+        snapshot
+    });
+
+    f();
+
+    env.as_contract(contract, || {
+        for (key, previous) in before {
+            if allowed.contains(&key) {
+                continue;
+            }
+            let current = env.storage().instance().get::<_, u32>(&key);
+            assert_eq!(
+                current, previous,
+                "hot path wrote shared instance key {key:?}"
+            );
+        }
+    });
+}
+
+/// Enumerates the instance keys the contract may hold. Kept explicit so the
+/// footprint test fails loudly when a new instance key is introduced.
+fn instance_keys(_env: &Env) -> std::vec::Vec<DataKey> {
+    std::vec![
+        DataKey::Admin,
+        DataKey::AttesterRegistry,
+        DataKey::SchemaVersion,
+        DataKey::Paused,
+        DataKey::MaxAttestationAge,
+        DataKey::RateLimit,
+        DataKey::StatusListRoot,
+        DataKey::StatusListVersion,
+    ]
+}
+
+#[test]
+fn attest_writes_no_shared_instance_key() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 210);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+
+    assert_no_shared_instance_writes(&env, &client.address, &[], || {
+        client.attest(&attester, &patient, &record_hash);
+    });
+}
+
+#[test]
+fn co_attest_writes_no_shared_instance_key() {
+    let (env, client, attester_registry, admin) = setup();
+    let first = enroll(&env, &attester_registry, &admin);
+    let second = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 211);
+    attest_with_consent(&env, &client, &first, &record_hash);
+
+    let patient = Address::generate(&env);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &second, &record_hash, &expires_at);
+
+    assert_no_shared_instance_writes(&env, &client.address, &[], || {
+        client.co_attest(&second, &patient, &record_hash);
+    });
+}
+
+#[test]
+fn claim_writes_no_shared_instance_key() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 212);
+    attest_with_consent(&env, &client, &attester, &record_hash);
+    let claimant = Address::generate(&env);
+
+    assert_no_shared_instance_writes(&env, &client.address, &[], || {
+        client.claim_attestation(&claimant, &record_hash);
+    });
+}
+
+#[test]
+fn add_attester_writes_no_shared_instance_key() {
+    let (env, _client, attester_registry, admin) = setup();
+    let attester = Address::generate(&env);
+
+    assert_no_shared_instance_writes(&env, &attester_registry.address, &[], || {
+        attester_registry.add_attester(&admin, &attester);
+    });
+}

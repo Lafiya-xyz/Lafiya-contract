@@ -19,10 +19,19 @@ use anyhow::Context;
 use clap::Parser;
 use soroban_sdk::testutils::Address as _;
 use soroban_sdk::token::StellarAssetClient;
-use soroban_sdk::{vec, Address, BytesN, Env, IntoVal, Symbol, Val, Vec};
+use soroban_sdk::{vec, Address, Bytes, BytesN, Env, IntoVal, Symbol, Val, Vec};
 
 /// Number of attesters enrolled before measuring the "loaded" scenarios.
 const LOADED_ATTESTERS: u32 = 50;
+
+/// Number of session keys issued before measuring the invalidation scenarios.
+const LOADED_SESSIONS: u32 = 16;
+
+/// Maximum number of status-list segments the contract accepts per epoch.
+const MAX_STATUS_LIST_SEGMENTS: u32 = 16;
+
+/// Bytes per status-list segment (a 16 KiB bitstring).
+const STATUS_LIST_SEGMENT_BYTES: u32 = 16 * 1024;
 
 #[derive(Parser, Debug)]
 #[command(
@@ -182,7 +191,64 @@ fn attester_registry(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
         "remove_attester",
         vec![&env, admin.into_val(&env), first.into_val(&env)],
     );
+    session_invalidation(&env, &registry, &admin, report);
     Ok(())
+}
+
+/// Issue `LOADED_SESSIONS` session keys for one attester, then measure the
+/// cost of invalidating all of them at once. A generation-counter design
+/// should cost the same as invalidating a single session.
+fn session_invalidation(env: &Env, registry: &Address, admin: &Address, report: &mut Report) {
+    let owner = Address::generate(env);
+    let enrol = vec![env, admin.into_val(env), owner.into_val(env)];
+    if !report.setup(
+        env,
+        "attester-registry/revoke_all_sessions_loaded",
+        &[(registry, "add_attester", enrol)],
+    ) {
+        return;
+    }
+    let mut issued = 0u32;
+    for _ in 0..LOADED_SESSIONS {
+        let session = Address::generate(env);
+        let args = vec![
+            env,
+            owner.into_val(env),
+            session.into_val(env),
+            1_000_000u64.into_val(env),
+        ];
+        let result = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+            registry,
+            &Symbol::new(env, "delegate_session_key"),
+            args,
+        );
+        if result.is_err() {
+            break;
+        }
+        issued += 1;
+    }
+    if issued == 0 {
+        report.errors.insert(
+            "attester-registry/revoke_all_sessions_loaded".to_string(),
+            "no session keys could be issued".to_string(),
+        );
+        return;
+    }
+    report.measure(
+        env,
+        "attester-registry/revoke_all_sessions_loaded",
+        registry,
+        "revoke_all_sessions",
+        vec![env, owner.into_val(env)],
+    );
+    // Suspension must invalidate the same set with O(1) writes.
+    report.measure(
+        env,
+        "attester-registry/suspend_attester_loaded",
+        registry,
+        "suspend_attester",
+        vec![env, admin.into_val(env), owner.into_val(env)],
+    );
 }
 
 fn attestation_registry(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
@@ -247,7 +313,61 @@ fn attestation_registry(dir: &Path, report: &mut Report) -> anyhow::Result<()> {
         "is_verified",
         vec![&env, record.into_val(&env)],
     );
+    status_list_publish(&env, &registry, &admin, report);
     Ok(())
+}
+
+/// Publish a full status list at the maximum segment count and activate its
+/// root, so the per-epoch publish budget is recorded.
+fn status_list_publish(env: &Env, registry: &Address, admin: &Address, report: &mut Report) {
+    let key = "attestation-registry/publish_status_list_segment_max";
+    let bits = Bytes::from_array(env, &[0u8; STATUS_LIST_SEGMENT_BYTES as usize]);
+    let mut published = 0u32;
+    for index in 0..MAX_STATUS_LIST_SEGMENTS {
+        let args = vec![
+            env,
+            admin.into_val(env),
+            0u64.into_val(env),
+            index.into_val(env),
+            bits.clone().into_val(env),
+        ];
+        let result = env.try_invoke_contract::<Val, soroban_sdk::Error>(
+            registry,
+            &Symbol::new(env, "publish_status_list_segment"),
+            args,
+        );
+        if result.is_err() {
+            break;
+        }
+        published += 1;
+    }
+    if published == 0 {
+        report
+            .errors
+            .insert(key.to_string(), "no segments could be published".to_string());
+        return;
+    }
+    report.measure(
+        env,
+        key,
+        registry,
+        "publish_status_list_segment",
+        vec![
+            env,
+            admin.into_val(env),
+            0u64.into_val(env),
+            published.into_val(env),
+            bits.into_val(env),
+        ],
+    );
+    let root = BytesN::from_array(env, &[3; 32]);
+    report.measure(
+        env,
+        "attestation-registry/set_status_list_root_max",
+        registry,
+        "set_status_list_root",
+        vec![env, admin.into_val(env), 0u64.into_val(env), root.into_val(env)],
+    );
 }
 
 fn multisig_account(dir: &Path, report: &mut Report) -> anyhow::Result<()> {

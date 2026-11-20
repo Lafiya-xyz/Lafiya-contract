@@ -45,50 +45,72 @@
       "worst_case_scenario": "cache miss"
     },
     "delegate_session_key": {
-      "cpu_instructions": 110000,
-      "memory_bytes": 7168,
-      "ledger_read_entries": 2,
-      "ledger_read_bytes": 384,
+      "cpu_instructions": 118000,
+      "memory_bytes": 7680,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 448,
       "ledger_write_entries": 2,
-      "ledger_write_bytes": 320,
+      "ledger_write_bytes": 352,
       "events_size_bytes": 160,
-      "estimated_fee_stroops": 40000,
-      "worst_case_scenario": "max sessions per attester, full scope allowlist, signature verification"
+      "estimated_fee_stroops": 43000,
+      "worst_case_scenario": "MAX_SESSIONS_PER_ATTESTER concurrent sessions, full scope allowlist, signature verification, session-generation read"
     },
     "is_session_valid": {
-      "cpu_instructions": 32000,
-      "memory_bytes": 1536,
-      "ledger_read_entries": 1,
-      "ledger_read_bytes": 192,
+      "cpu_instructions": 36000,
+      "memory_bytes": 1792,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 256,
       "ledger_write_entries": 0,
       "ledger_write_bytes": 0,
       "events_size_bytes": 0,
-      "estimated_fee_stroops": 12000,
-      "worst_case_scenario": "session lookup with expiry and scope check at boundary"
+      "estimated_fee_stroops": 14000,
+      "worst_case_scenario": "session lookup with expiry and scope check at boundary, generation mismatch rejected"
+    },
+    "revoke_all_sessions": {
+      "cpu_instructions": 52000,
+      "memory_bytes": 3072,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 192,
+      "ledger_write_entries": 1,
+      "ledger_write_bytes": 64,
+      "events_size_bytes": 96,
+      "estimated_fee_stroops": 22000,
+      "worst_case_scenario": "O(1) generation bump with MAX_SESSIONS_PER_ATTESTER outstanding sessions"
+    },
+    "list_sessions": {
+      "cpu_instructions": 60000,
+      "memory_bytes": 6144,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 512,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 24000,
+      "worst_case_scenario": "MAX_SESSIONS_PER_ATTESTER sessions listed"
     }
   },
   "attestation-registry": {
     "attest": {
-      "cpu_instructions": 142000,
-      "memory_bytes": 12288,
+      "cpu_instructions": 138000,
+      "memory_bytes": 11264,
       "ledger_read_entries": 5,
-      "ledger_read_bytes": 896,
-      "ledger_write_entries": 3,
-      "ledger_write_bytes": 384,
+      "ledger_read_bytes": 832,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 320,
       "events_size_bytes": 256,
-      "estimated_fee_stroops": 52000,
-      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, full signature verification"
+      "estimated_fee_stroops": 49000,
+      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, full signature verification, per-record event sequence (no instance write)"
     },
     "attest_with_session": {
-      "cpu_instructions": 168000,
-      "memory_bytes": 14336,
+      "cpu_instructions": 164000,
+      "memory_bytes": 13312,
       "ledger_read_entries": 6,
-      "ledger_read_bytes": 1088,
-      "ledger_write_entries": 3,
-      "ledger_write_bytes": 384,
+      "ledger_read_bytes": 1024,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 320,
       "events_size_bytes": 256,
-      "estimated_fee_stroops": 60000,
-      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, session verification with one cross-contract read to attester-registry"
+      "estimated_fee_stroops": 57000,
+      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, session verification with one cross-contract read to attester-registry, per-record event sequence"
     },
     "revoke_attestation": {
       "cpu_instructions": 95000,
@@ -124,15 +146,15 @@
       "worst_case_scenario": "extend_to at max horizon, archived entry restored"
     },
     "add_co_attestation": {
-      "cpu_instructions": 165000,
-      "memory_bytes": 14336,
+      "cpu_instructions": 161000,
+      "memory_bytes": 13312,
       "ledger_read_entries": 5,
-      "ledger_read_bytes": 1024,
-      "ledger_write_entries": 3,
-      "ledger_write_bytes": 512,
+      "ledger_read_bytes": 960,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 448,
       "events_size_bytes": 256,
-      "estimated_fee_stroops": 60000,
-      "worst_case_scenario": "max quorum policy, full signature verification"
+      "estimated_fee_stroops": 57000,
+      "worst_case_scenario": "max quorum policy, full signature verification, per-record event sequence (no instance write)"
     },
     "get_verification_status": {
       "cpu_instructions": 48000,
@@ -170,15 +192,37 @@
   },
   "status-list": {
     "publish_segment": {
-      "cpu_instructions": 210000,
-      "memory_bytes": 20480,
-      "ledger_read_entries": 4,
-      "ledger_read_bytes": 1536,
+      "cpu_instructions": 245000,
+      "memory_bytes": 24576,
+      "ledger_read_entries": 5,
+      "ledger_read_bytes": 1792,
       "ledger_write_entries": 3,
-      "ledger_write_bytes": 1024,
-      "events_size_bytes": 256,
-      "estimated_fee_stroops": 75000,
-      "worst_case_scenario": "full segment rewrite, signed root update"
+      "ledger_write_bytes": 1088,
+      "events_size_bytes": 288,
+      "estimated_fee_stroops": 86000,
+      "worst_case_scenario": "full segment rewrite at MAX_SEGMENTS for the epoch, epoch-tagged segment hash write, monotonic revocation check against previous epoch"
+    },
+    "set_status_list_root": {
+      "cpu_instructions": 380000,
+      "memory_bytes": 32768,
+      "ledger_read_entries": 6,
+      "ledger_read_bytes": 2560,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 256,
+      "events_size_bytes": 192,
+      "estimated_fee_stroops": 130000,
+      "worst_case_scenario": "root activation at MAX_SEGMENTS: all segment hashes present for the epoch, Merkle root recomputed on-chain"
+    },
+    "unrevoke": {
+      "cpu_instructions": 82000,
+      "memory_bytes": 7168,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 640,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 288,
+      "events_size_bytes": 160,
+      "estimated_fee_stroops": 34000,
+      "worst_case_scenario": "explicit unrevoke path in max-size segment, previous-epoch comparison"
     },
     "set_status": {
       "cpu_instructions": 68000,
@@ -212,6 +256,17 @@
       "events_size_bytes": 0,
       "estimated_fee_stroops": 8000,
       "worst_case_scenario": "cache miss"
+    },
+    "get_root_by_epoch": {
+      "cpu_instructions": 20000,
+      "memory_bytes": 2304,
+      "ledger_read_entries": 1,
+      "ledger_read_bytes": 160,
+      "ledger_write_entries": 0,
+      "ledger_write_bytes": 0,
+      "events_size_bytes": 0,
+      "estimated_fee_stroops": 9000,
+      "worst_case_scenario": "epoch-consistent root read for a retained (non-current) epoch"
     }
   },
   "multisig-account": {

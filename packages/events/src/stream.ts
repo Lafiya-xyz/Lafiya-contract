@@ -39,12 +39,6 @@ export function memoryCursorStore(initial?: string): CursorStore & { cursor?: st
   };
 }
 
-/** Ledgers `fromLedger..=toLedger` could not be read from the RPC. */
-export interface LedgerGap {
-  fromLedger: number;
-  toLedger: number;
-}
-
 export interface RetryOptions {
   /** Consecutive failed `getEvents` calls tolerated before throwing. Default 5. */
   attempts?: number;
@@ -117,6 +111,12 @@ export function ledgerOfCursor(cursor: string): number {
 /**
  * Total order over event ids / paging cursors: negative if `a` comes
  * before `b`, zero if equal, positive if after.
+ *
+ * Ordering is derived entirely from the RPC cursor (ledger, transaction,
+ * operation, event index) and never from contract-emitted sequence numbers.
+ * Contracts no longer write a shared `EventSeq` instance entry, so per-record
+ * or per-attester sequences are not globally ordered; the RPC cursor is the
+ * only ordering key the stream relies on.
  */
 export function compareCursors(a: string, b: string): number {
   const [toidA, indexA = "0"] = a.split("-");
@@ -125,6 +125,21 @@ export function compareCursors(a: string, b: string): number {
   const tb = BigInt(toidB);
   if (ta !== tb) return ta < tb ? -1 : 1;
   return Number(indexA) - Number(indexB);
+}
+
+/**
+ * A contiguous run of ledgers the stream could not read, expressed in the
+ * RPC's ledger/tx/event ordering. `fromCursor`/`toCursor` are the paging
+ * cursors bracketing the gap when known, so an indexer can backfill exactly
+ * the missing range without relying on contract sequence numbers.
+ */
+export interface LedgerGap {
+  fromLedger: number;
+  toLedger: number;
+  /** Cursor of the last event seen before the gap, if any. */
+  fromCursor?: string;
+  /** Cursor of the first event seen after the gap, if any. */
+  toCursor?: string;
 }
 
 const sleep = (ms: number, signal?: AbortSignal) =>
@@ -193,7 +208,14 @@ export async function* streamEvents(
 
   const gap = async (requested: number, oldestLedger: number) => {
     if (!onGap) throw new RetentionGapError(requested, oldestLedger);
-    await onGap({ fromLedger: requested, toLedger: oldestLedger - 1 });
+    // Report the gap in RPC ordering: the last cursor we saw bounds the
+    // missing range from below; the post-gap cursor is filled in by the
+    // caller once the next page is read.
+    await onGap({
+      fromLedger: requested,
+      toLedger: oldestLedger - 1,
+      fromCursor: lastSeen,
+    });
     cursor = undefined;
     startLedger = oldestLedger;
   };
@@ -230,6 +252,12 @@ export async function* streamEvents(
       }
       checkRetention = false;
     }
+
+    // Gap detection is cursor-based, not sequence-based: any event whose
+    // cursor regresses behind `lastSeen` is a duplicate from a replayed page
+    // and is dropped, while a forward jump is a legitimate gap the consumer
+    // detects by comparing consecutive cursors. No shared contract sequence
+    // is consulted, so parallel transactions cannot create false gaps.
 
     for (const raw of page.events) {
       if (lastSeen !== undefined && compareCursors(raw.id, lastSeen) <= 0) continue;

@@ -163,6 +163,41 @@ CREATE TABLE status_list_roots (
 );
 CREATE INDEX status_list_roots_ledger_idx ON status_list_roots (ledger);
 
+-- Epoch-versioned status list. Segments are published per epoch and a root is
+-- only activated once every segment it references is present for that epoch,
+-- so verifiers always read an epoch-consistent (root, segments) pair.
+ALTER TABLE status_list_segments ADD COLUMN epoch BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE status_list_segments ADD COLUMN segment_hash TEXT;
+ALTER TABLE status_list_segments ADD COLUMN revoked_bits TEXT;
+CREATE INDEX status_list_segments_epoch_idx
+    ON status_list_segments (epoch, segment_id);
+
+ALTER TABLE status_list_roots ADD COLUMN epoch BIGINT NOT NULL DEFAULT 0;
+ALTER TABLE status_list_roots ADD COLUMN activated BOOLEAN NOT NULL DEFAULT false;
+CREATE UNIQUE INDEX status_list_roots_epoch_idx
+    ON status_list_roots (epoch) WHERE activated;
+
+-- Explicit unrevoke path: a bit cleared across epochs is recorded here so the
+-- monotonic revocation rule stays auditable.
+CREATE TABLE status_list_unrevocations (
+    event_id    TEXT PRIMARY KEY,
+    epoch       BIGINT NOT NULL,
+    segment_id  BIGINT NOT NULL,
+    bit_index   INTEGER NOT NULL,
+    ledger      BIGINT NOT NULL,
+    tx_hash     TEXT NOT NULL
+);
+CREATE INDEX status_list_unrevocations_epoch_idx
+    ON status_list_unrevocations (epoch, segment_id, bit_index);
+
+-- Chain ordering keys for gap detection. `(ledger, tx_index, event_index)`
+-- replaces the contract's global event sequence as the ordering key; the
+-- columns are nullable until backfilled from RPC event ids.
+ALTER TABLE raw_events ADD COLUMN tx_index BIGINT;
+ALTER TABLE raw_events ADD COLUMN event_index BIGINT;
+CREATE INDEX raw_events_order_idx
+    ON raw_events (ledger, tx_index, event_index);
+
 CREATE TABLE revocations (
     event_id    TEXT PRIMARY KEY,
     record_hash TEXT NOT NULL,

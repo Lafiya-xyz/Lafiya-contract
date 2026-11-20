@@ -521,3 +521,65 @@ fn bond_config_validation() {
         .try_set_bond_config(&token, &1, &10, &2, &10, &r)
         .is_err());
 }
+
+// ── Session generation invalidation (#674) ──
+
+#[test]
+fn suspend_remove_and_rotate_bump_session_generation() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let base = client.get_session_generation(&attester);
+
+    client.suspend_attester(&admin, &attester);
+    assert_eq!(client.get_session_generation(&attester), base + 1);
+    client.reinstate_attester(&admin, &attester);
+    assert_eq!(client.get_session_generation(&attester), base + 1);
+
+    client.remove_attester(&admin, &attester);
+    assert_eq!(client.get_session_generation(&attester), base + 2);
+
+    client.add_attester(&admin, &attester);
+    let successor = Address::generate(&env);
+    client.rotate_attester(&attester, &successor);
+    assert_eq!(client.get_session_generation(&attester), base + 3);
+}
+
+#[test]
+fn revoke_all_sessions_bumps_generation_and_emits_event() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let before = client.get_session_generation(&attester);
+
+    client.revoke_all_sessions(&admin, &attester);
+    assert_eq!(client.get_session_generation(&attester), before + 1);
+
+    let events = env.events().all();
+    let mut found = false;
+    for (contract, topics, _data) in events.iter() {
+        if contract != client.address {
+            continue;
+        }
+        if let Some(Ok(topic)) = topics.get(0).map(|t| Symbol::try_from_val(&env, &t)) {
+            if topic == Symbol::new(&env, "sessions_revoked") {
+                found = true;
+            }
+        }
+    }
+    assert!(found, "expected sessions_revoked event");
+}
+
+#[test]
+fn revoke_all_sessions_requires_authorization() {
+    let (env, client, admin) = setup();
+    let attester = Address::generate(&env);
+    let stranger = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    assert!(client
+        .try_revoke_all_sessions(&stranger, &attester)
+        .is_err());
+    assert!(client
+        .try_revoke_all_sessions(&admin, &stranger)
+        .is_err());
+}

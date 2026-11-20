@@ -406,6 +406,136 @@
   },
   {
     "kind": "function_v0",
+    "name": "get_status_list_epoch",
+    "spec": {
+      "inputs": [],
+      "name": "get_status_list_epoch",
+      "outputs": [
+        "u64"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "get_status_list_root",
+    "spec": {
+      "inputs": [
+        {
+          "name": "epoch",
+          "type": "u64"
+        }
+      ],
+      "name": "get_status_list_root",
+      "outputs": [
+        {
+          "option": {
+            "value_type": {
+              "bytes_n": {
+                "n": 32
+              }
+            }
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "publish_status_list_segment",
+    "spec": {
+      "inputs": [
+        {
+          "name": "epoch",
+          "type": "u64"
+        },
+        {
+          "name": "index",
+          "type": "u32"
+        },
+        {
+          "name": "bits",
+          "type": "bytes"
+        },
+        {
+          "name": "segment_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "publish_status_list_segment",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "set_status_list_root",
+    "spec": {
+      "inputs": [
+        {
+          "name": "epoch",
+          "type": "u64"
+        },
+        {
+          "name": "root",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "name": "set_status_list_root",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "unrevoke_attestation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "name": "reason",
+          "type": "symbol"
+        }
+      ],
+      "name": "unrevoke_attestation",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "get_interface",
     "spec": {
       "inputs": [],
@@ -762,6 +892,26 @@
         {
           "name": "DisputeLimitReached",
           "value": 16
+        },
+        {
+          "name": "StatusListEpochMismatch",
+          "value": 17
+        },
+        {
+          "name": "StatusListSegmentMissing",
+          "value": 18
+        },
+        {
+          "name": "StatusListRootMismatch",
+          "value": 19
+        },
+        {
+          "name": "RevocationNotMonotonic",
+          "value": 20
+        },
+        {
+          "name": "AttestationNotRevoked",
+          "value": 21
         }
       ],
       "lib": "",
@@ -988,6 +1138,100 @@
       ],
       "prefix_topics": [
         "attestation_revoked"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "AttestationUnrevoked",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "AttestationUnrevoked",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        },
+        {
+          "location": "data",
+          "name": "by",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "reason",
+          "type": "symbol"
+        }
+      ],
+      "prefix_topics": [
+        "attestation_unrevoked"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "StatusListSegmentPublished",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "StatusListSegmentPublished",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "epoch",
+          "type": "u64"
+        },
+        {
+          "location": "topic_list",
+          "name": "index",
+          "type": "u32"
+        },
+        {
+          "location": "data",
+          "name": "segment_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "prefix_topics": [
+        "status_list_segment_published"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
+    "name": "StatusListRootSet",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "StatusListRootSet",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "epoch",
+          "type": "u64"
+        },
+        {
+          "location": "data",
+          "name": "root",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "prefix_topics": [
+        "status_list_root_set"
       ]
     }
   },
@@ -1255,6 +1499,32 @@
       ],
       "lib": "",
       "name": "RateWindow"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "StatusListSegment",
+    "spec": {
+      "fields": [
+        {
+          "name": "epoch",
+          "type": "u64"
+        },
+        {
+          "name": "index",
+          "type": "u32"
+        },
+        {
+          "name": "segment_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "lib": "",
+      "name": "StatusListSegment"
     }
   }
 ]
