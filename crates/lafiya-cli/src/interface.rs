@@ -7,6 +7,12 @@
 
 use serde::Deserialize;
 
+/// The `Command` trait and `Context`/`Output` types live in `commands/mod.rs`.
+/// Command modules (`commands/attester.rs`, `commands/attestation.rs`, …)
+/// implement `Command` for their clap `Subcommand` derives and are unit-tested
+/// against a mock RPC. This module only holds the shared argument parsers and
+/// interface negotiation used by those commands.
+
 /// Arguments for the `restore` subcommand: re-fund (restore) an archived
 /// attestation entry so proofs over it become readable again.
 #[derive(Debug, Clone, PartialEq, Eq)]

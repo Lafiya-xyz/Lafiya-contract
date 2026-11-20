@@ -66,6 +66,42 @@ Man pages are generated at build time and can be installed with:
 lafiya-cli man --out-dir /usr/local/share/man/man1
 ```
 
+## Command modules
+
+Each command group lives in its own module under
+`crates/lafiya-cli/src/commands/` and implements the shared `Command` trait:
+
+```rust
+pub trait Command {
+    fn run(&self, ctx: &Context) -> Result<Output>;
+}
+```
+
+`Context` bundles the resolved configuration, RPC client, signer, output
+format, and logger, so a command can be unit-tested in isolation with a mock
+RPC. `main.rs` only parses arguments and dispatches to the matching module.
+
+The command groups are:
+
+| Module | Subcommands |
+| --- | --- |
+| `attester` | Attester registry operations. |
+| `attestation` | Attestation submission and lookup. |
+| `pool` | Incentive-pool operations (see below). |
+| `multisig` | Multisig proposal and approval flows. |
+| `facility` | Facility registry operations. |
+| `config` | Configuration and network profile management. |
+| `audit` | Audit and verification helpers. |
+
+Run `lafiya-cli <group> --help` for the full list of subcommands in a group.
+
+### Help snapshots
+
+The `--help` output of every command is covered by committed `insta` snapshot
+tests under `crates/lafiya-cli/tests/snapshots/`. The CLI coverage check
+(`cargo xtask cli-coverage`) fails when a command is added or removed without
+updating its snapshot and this reference page.
+
 ## Registry subcommands
 
 Registry subcommands operate on the attester registry. Run

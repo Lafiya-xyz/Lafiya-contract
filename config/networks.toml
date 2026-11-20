@@ -14,6 +14,39 @@
 #
 # Contract IDs are empty until deployed. After deployment, update the relevant
 # network section with the deployed contract IDs.
+#
+# Named profiles (lafiya-cli profile use <name>) select a network section by
+# name. Each profile records the network it targets, its risk tier, and the
+# deployment ledger used to cross-check contract IDs before signing. A profile
+# whose contract IDs do not belong to its network is refused.
+#
+# Profile fields:
+#   network      - network section this profile targets (must exist above)
+#   risk         - "low" | "elevated" | "mainnet"; mainnet mutations require
+#                  explicit confirmation (typed network name or
+#                  --confirm-network mainnet) and, when stdout is not a TTY,
+#                  --yes-i-know-this-is-mainnet
+#   deployment   - path to the deployment ledger used for contract-ID
+#                  cross-checking (relative to the repository root)
+#   description  - human readable summary shown in the profile banner
+
+[profiles.local]
+network = "local"
+risk = "low"
+deployment = "deployments/local.json"
+description = "Local development network (stellar/quickstart)"
+
+[profiles.testnet]
+network = "testnet"
+risk = "elevated"
+deployment = "deployments/testnet.json"
+description = "SDF public testnet"
+
+[profiles.mainnet]
+network = "mainnet"
+risk = "mainnet"
+deployment = "deployments/mainnet.json"
+description = "Public Stellar mainnet - real funds, requires audit"
 
 [local]
 rpc_url = "http://localhost:8000/soroban/rpc"

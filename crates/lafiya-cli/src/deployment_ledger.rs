@@ -283,6 +283,107 @@ pub fn check_contract_drift(
     ))
 }
 
+/// Cross-check the contract IDs a mutating operation is about to touch
+/// against the deployment ledger for `network`, before anything is signed.
+///
+/// This is the guard rail that catches a mixed configuration -- e.g. a
+/// `mainnet` profile whose `config/networks.toml` still carries testnet
+/// contract IDs. Contract IDs are network-specific, so a configured ID that
+/// the ledger for this network has never seen (or that the ledger says was
+/// superseded by a repoint) is a blocking mismatch: signing would either
+/// fail late or target the wrong instance.
+///
+/// `configured_contract_ids` are the IDs resolved from the active network
+/// config for this operation. Returns one finding per mismatched ID; an
+/// empty result means every ID is consistent with the ledger.
+pub fn check_contract_ids_for_network(
+    deployments_dir: &Path,
+    network: &str,
+    configured_contract_ids: &[&str],
+) -> Result<Vec<DoctorFinding>, String> {
+    let check = "deployment_ledger.network_contract_mismatch";
+    let path = ledger_path(deployments_dir, network);
+    let lines = read_lines(&path)?;
+
+    // Latest record per contract ID, in file order, so a repoint supersedes
+    // the ID it replaced.
+    let mut latest_by_contract: std::collections::HashMap<String, DeploymentRecord> =
+        std::collections::HashMap::new();
+    for (i, line) in lines.iter().enumerate() {
+        let record: DeploymentRecord = serde_json::from_str(line)
+            .map_err(|e| format!("corrupt record at line {} in {path:?}: {e}", i + 1))?;
+        latest_by_contract.insert(record.contract_id.clone(), record);
+    }
+
+    let mut findings = Vec::new();
+    for configured in configured_contract_ids {
+        match latest_by_contract.get(*configured) {
+            Some(record) if record.event == DeployEvent::Repoint => {
+                findings.push(
+                    DoctorFinding::new(
+                        check,
+                        Severity::Blocking,
+                        format!(
+                            "contract id {configured} was superseded by a repoint on network '{network}' (ledger {:?}) -- refusing to sign against a stale contract",
+                            record.ledger
+                        ),
+                    )
+                    .with_remediation(format!(
+                        "update config/networks.toml to the contract id recorded by the repoint, or re-run `lafiya deploy --network {network}`"
+                    )),
+                );
+            }
+            Some(_) => {}
+            None => {
+                let known: Vec<&str> = latest_by_contract.keys().map(String::as_str).collect();
+                findings.push(
+                    DoctorFinding::new(
+                        check,
+                        Severity::Blocking,
+                        format!(
+                            "contract id {configured} is not recorded in the deployment ledger for network '{network}' -- the configuration looks mixed (e.g. a mainnet profile with testnet contract ids)"
+                        ),
+                    )
+                    .with_remediation(if known.is_empty() {
+                        format!(
+                            "run `lafiya deploy --network {network}` to record the first deployment, or fix the active profile with `lafiya-cli profile use <name>`"
+                        )
+                    } else {
+                        format!(
+                            "use one of the contract ids recorded for '{network}' ({}) or fix the active profile with `lafiya-cli profile use <name>`",
+                            known.join(", ")
+                        )
+                    }),
+                );
+            }
+        }
+    }
+
+    Ok(findings)
+}
+
+/// Convenience wrapper for the submit path: returns `Err` with a
+/// human-readable summary when any configured contract ID does not belong to
+/// `network` according to the deployment ledger. Call this before signing.
+pub fn ensure_contract_ids_match_network(
+    deployments_dir: &Path,
+    network: &str,
+    configured_contract_ids: &[&str],
+) -> Result<(), String> {
+    let findings = check_contract_ids_for_network(deployments_dir, network, configured_contract_ids)?;
+    if findings.is_empty() {
+        return Ok(());
+    }
+    let details = findings
+        .iter()
+        .map(|f| f.message.as_str())
+        .collect::<Vec<_>>()
+        .join("; ");
+    Err(format!(
+        "refusing to sign: network/contract-id mismatch for '{network}': {details}"
+    ))
+}
+
 /// Structural (offline) verification of a network's ledger file:
 /// - the hash chain is intact (each record's `prev_record_sha256` matches
 ///   the previous line's hash);
@@ -488,6 +589,70 @@ mod tests {
         assert_eq!(finding.severity, Severity::Warning);
         assert!(!finding.is_blocking());
         assert!(finding.remediation.is_some());
+    }
+
+    #[test]
+    fn contract_ids_match_when_recorded_for_network() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), "testnet", sample("alice")).unwrap();
+
+        let findings =
+            check_contract_ids_for_network(dir.path(), "testnet", &["CTESTCONTRACT"]).unwrap();
+        assert!(findings.is_empty(), "unexpected findings: {findings:?}");
+        ensure_contract_ids_match_network(dir.path(), "testnet", &["CTESTCONTRACT"]).unwrap();
+    }
+
+    #[test]
+    fn contract_ids_mismatch_blocks_mixed_configuration() {
+        let dir = tempdir().unwrap();
+        // Ledger only knows about testnet's contract.
+        append(dir.path(), "testnet", sample("alice")).unwrap();
+
+        // A mainnet profile still pointing at the testnet contract id.
+        let findings =
+            check_contract_ids_for_network(dir.path(), "mainnet", &["CTESTCONTRACT"]).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert_eq!(findings[0].severity, Severity::Blocking);
+        assert!(findings[0].message.contains("mixed"));
+        assert!(findings[0].remediation.is_some());
+
+        let err = ensure_contract_ids_match_network(dir.path(), "mainnet", &["CTESTCONTRACT"])
+            .unwrap_err();
+        assert!(err.contains("refusing to sign"));
+        assert!(err.contains("mainnet"));
+    }
+
+    #[test]
+    fn contract_ids_mismatch_blocks_after_repoint() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), "testnet", sample("alice")).unwrap();
+        let mut repoint = sample("bob");
+        repoint.event = DeployEvent::Repoint;
+        repoint.contract_id = "CREPOINTED".into();
+        append(dir.path(), "testnet", repoint).unwrap();
+
+        let findings =
+            check_contract_ids_for_network(dir.path(), "testnet", &["CTESTCONTRACT"]).unwrap();
+        assert_eq!(findings.len(), 1);
+        assert!(findings[0].message.contains("superseded"));
+
+        // The repointed-to id is fine.
+        ensure_contract_ids_match_network(dir.path(), "testnet", &["CREPOINTED"]).unwrap();
+    }
+
+    #[test]
+    fn contract_ids_mismatch_reports_every_bad_id() {
+        let dir = tempdir().unwrap();
+        append(dir.path(), "testnet", sample("alice")).unwrap();
+
+        let findings = check_contract_ids_for_network(
+            dir.path(),
+            "testnet",
+            &["CTESTCONTRACT", "COTHER", "CTHIRD"],
+        )
+        .unwrap();
+        assert_eq!(findings.len(), 2);
+        assert!(findings.iter().all(|f| f.is_blocking()));
     }
 
     #[test]

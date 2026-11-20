@@ -29,17 +29,32 @@
         "attestation_registry"
       ]
     },
+    "NetworkKind": {
+      "description": "Risk class of a network profile. `mainnet` enables the mainnet guard\nrails (explicit confirmation, TTY check, passphrase verification).",
+      "type": "string",
+      "enum": [
+        "local",
+        "testnet",
+        "futurenet",
+        "mainnet"
+      ]
+    },
     "NetworkConfig": {
-      "description": "One network profile in `config/networks.toml`.",
+      "description": "One named network profile in `config/networks.toml`.",
       "type": "object",
       "properties": {
+        "kind": {
+          "description": "Risk class of this profile. Used to decide whether mainnet guard\nrails apply and to cross-check contract ids against the deployment ledger.",
+          "$ref": "#/$defs/NetworkKind"
+        },
         "contracts": {
           "description": "Deployed contract ids for this network.",
           "$ref": "#/$defs/ContractIds"
         },
         "network_passphrase": {
-          "description": "Stellar network passphrase.",
-          "type": "string"
+          "description": "Stellar network passphrase. Verified against RPC before signing.",
+          "type": "string",
+          "minLength": 1
         },
         "rpc_url": {
           "description": "Soroban JSON-RPC endpoint (http:// or https://). Used when `rpc_urls` is empty.",
@@ -56,9 +71,34 @@
       },
       "additionalProperties": false,
       "required": [
+        "kind",
         "rpc_url",
         "network_passphrase",
         "contracts"
+      ]
+    },
+    "Profiles": {
+      "description": "Named network profiles plus the active profile selection.",
+      "type": "object",
+      "properties": {
+        "active": {
+          "description": "Name of the active profile. Must reference an entry in `profiles`.",
+          "type": "string",
+          "minLength": 1
+        },
+        "profiles": {
+          "description": "Named network profiles keyed by profile name.",
+          "type": "object",
+          "minProperties": 1,
+          "additionalProperties": {
+            "$ref": "#/$defs/NetworkConfig"
+          }
+        }
+      },
+      "additionalProperties": false,
+      "required": [
+        "active",
+        "profiles"
       ]
     }
   }

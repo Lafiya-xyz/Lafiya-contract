@@ -90,6 +90,25 @@ pub struct Outcome {
     pub qualifier: Option<Qualifier>,
 }
 
+impl Outcome {
+    /// Stable, human-readable explanation of the verdict for reason traces.
+    pub fn explain(&self) -> &'static str {
+        match self.reason {
+            Reason::NetworkMismatch => "card was issued for a different network",
+            Reason::AttestationReadFailed => "attestation state could not be read",
+            Reason::AttestationMissing => "no attestation found for this card",
+            Reason::Revoked => "attestation has been revoked",
+            Reason::AttesterStatusReadFailed => "attester status could not be read",
+            Reason::CompromiseWindow => "attestation falls within an attester compromise window",
+            Reason::AttesterRemoved => "attester has been removed",
+            Reason::AgeExceedsPolicy => "attestation age exceeds the policy limit",
+            Reason::AttesterSuspended => "attester is suspended",
+            Reason::Superseded => "attestation has been superseded",
+            Reason::None => "attestation is valid",
+        }
+    }
+}
+
 /// Evaluate the model for one fully-populated input.
 pub fn evaluate(i: &Input) -> Outcome {
     let qualifier = i.offline.then_some(Qualifier::AsOfBundle);

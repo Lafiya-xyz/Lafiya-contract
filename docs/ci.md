@@ -23,8 +23,26 @@ to its `needs` list.
 | `indexer` | `rust` changed | Builds `lafiya-indexer`, runs `clippy -D warnings`, and runs its tests (including the e2e suite) against a Postgres service container. |
 | `qr` | `rust` changed | Builds `lafiya-qr`, runs `clippy -D warnings`, and runs its tests. |
 | `deny` | `rust` changed | `cargo deny check` across the whole workspace, covering `lafiya-indexer` and `lafiya-qr`. |
+| `roundtrip` | `rust` or `bindings` changed | ScVal round-trip suite (#727): the Rust fixture generator emits random values for every `#[contracttype]` (list generated from the specs) as XDR base64 plus JSON; the TS tests decode with the bindings, re-encode, and assert byte equality, then the reverse direction. 1k values per type. |
 
 Docs-only PRs skip the Rust jobs; `ci-success` still reports.
+
+## ScVal round-trip suite (#727)
+
+The `roundtrip` job guards the language boundary between the Rust contracts and the
+TypeScript bindings. It runs when contracts, the bindings, or the specs change, so new
+`#[contracttype]`s are covered automatically.
+
+- **Type list:** generated from the specs at run time; do not hand-maintain it. A new
+  contracttype is picked up without editing CI.
+- **Fixtures:** the Rust generator (proptest/arbitrary) writes, per type, 1k random values
+  as XDR base64 plus JSON into an artifact consumed by the TS job.
+- **Assertions:** TS decodes each fixture with the bindings, re-encodes, and asserts
+  byte-exact equality; the reverse direction (TS-generated values decoded by Rust) is
+  checked the same way. Map key ordering, `i128`/`u64` BigInt handling, `Option<Vec<…>>`,
+  and enum tuple variants are all exercised.
+- **Data:** synthetic values only; no real health data, QR payloads, or secrets.
+=======
 
 ## Workspace crates
 

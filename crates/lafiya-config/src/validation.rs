@@ -95,6 +95,74 @@ pub enum ValidationError {
 
     #[error("{field} must be a http:// or https:// URL, got '{value}'")]
     RpcUrl { field: &'static str, value: String },
+
+    #[error(
+        "network profile '{profile}' is mainnet but {field} looks like a {found} value; \
+         refusing to sign a mixed configuration"
+    )]
+    MixedNetworkConfig {
+        profile: &'static str,
+        field: &'static str,
+        found: &'static str,
+    },
+
+    #[error(
+        "network passphrase does not match profile '{profile}': expected '{expected}', got '{actual}'"
+    )]
+    PassphraseMismatch {
+        profile: &'static str,
+        expected: &'static str,
+        actual: String,
+    },
+}
+
+/// Well-known network passphrases, used to cross-check a profile before signing.
+pub const PASSPHRASE_MAINNET: &str = "Public Global Stellar Network ; September 2015";
+/// Testnet passphrase.
+pub const PASSPHRASE_TESTNET: &str = "Test SDF Network ; September 2015";
+/// Futurenet passphrase.
+pub const PASSPHRASE_FUTURENET: &str = "Test SDF Future Network ; October 2022";
+/// Local/standalone passphrase used by `stellar network container`.
+pub const PASSPHRASE_LOCAL: &str = "Standalone Network ; February 2017";
+
+/// The risk class of a network profile.
+///
+/// Mainnet is the only class that requires deliberate confirmation; everything
+/// else is treated as disposable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NetworkClass {
+    /// Local/standalone development network.
+    Local,
+    /// Shared test network (testnet, futurenet, ...).
+    Testnet,
+    /// The public Stellar network.
+    Mainnet,
+}
+
+impl NetworkClass {
+    /// Classify a profile name. Unknown names are treated as testnet-like so
+    /// they never accidentally gain mainnet privileges.
+    pub fn from_profile(profile: &str) -> Self {
+        match profile {
+            "mainnet" | "public" => NetworkClass::Mainnet,
+            "local" | "standalone" => NetworkClass::Local,
+            _ => NetworkClass::Testnet,
+        }
+    }
+
+    /// Whether mutating operations on this class need explicit confirmation.
+    pub fn requires_confirmation(self) -> bool {
+        matches!(self, NetworkClass::Mainnet)
+    }
+
+    /// The passphrase this class is expected to use, when it is well known.
+    pub fn expected_passphrase(self) -> Option<&'static str> {
+        match self {
+            NetworkClass::Mainnet => Some(PASSPHRASE_MAINNET),
+            NetworkClass::Testnet => None,
+            NetworkClass::Local => Some(PASSPHRASE_LOCAL),
+        }
+    }
 }
 
 /// Validate a Stellar strkey of the requested kind (charset, length, prefix, checksum).
@@ -302,6 +370,73 @@ pub fn validate_wasm_hash(field: &'static str, value: &str) -> Result<(), Valida
 /// Validate a contract wiring entry: a contract id (`C...`) that must not be empty.
 pub fn validate_wiring_contract(field: &'static str, value: &str) -> Result<(), ValidationError> {
     validate_contract_id(field, value)
+}
+
+/// Verify that the configured passphrase matches the profile's expected passphrase.
+///
+/// This must run before signing so a mainnet profile can never be signed with a
+/// testnet passphrase (or vice versa). Profiles without a well-known passphrase
+/// (e.g. testnet, whose passphrase is stable but not pinned here) are accepted
+/// as long as the passphrase itself is well formed.
+pub fn validate_profile_passphrase(
+    profile: &str,
+    passphrase: &str,
+) -> Result<(), ValidationError> {
+    validate_passphrase(passphrase)?;
+    let class = NetworkClass::from_profile(profile);
+    if let Some(expected) = class.expected_passphrase() {
+        if passphrase != expected {
+            return Err(ValidationError::PassphraseMismatch {
+                profile: profile_name(profile),
+                expected,
+                actual: passphrase.to_string(),
+            });
+        }
+    }
+    Ok(())
+}
+
+/// Detect a mixed configuration: a mainnet profile paired with contract ids or
+/// other values that belong to a test network.
+///
+/// `deployment_network` is the network recorded in the deployment ledger for
+/// the contract ids being used. When the profile is mainnet and the ledger says
+/// the ids were deployed elsewhere, signing is refused.
+pub fn validate_profile_deployment(
+    profile: &str,
+    deployment_network: &str,
+) -> Result<(), ValidationError> {
+    let class = NetworkClass::from_profile(profile);
+    if !class.requires_confirmation() {
+        return Ok(());
+    }
+    let deployed_class = NetworkClass::from_profile(deployment_network);
+    if deployed_class != NetworkClass::Mainnet {
+        return Err(ValidationError::MixedNetworkConfig {
+            profile: profile_name(profile),
+            field: "contract ids",
+            found: deployment_network_name(deployment_network),
+        });
+    }
+    Ok(())
+}
+
+/// Normalise a profile name into a `'static` label for error messages.
+fn profile_name(profile: &str) -> &'static str {
+    match NetworkClass::from_profile(profile) {
+        NetworkClass::Mainnet => "mainnet",
+        NetworkClass::Local => "local",
+        NetworkClass::Testnet => "testnet",
+    }
+}
+
+/// Normalise a deployment network name into a `'static` label for error messages.
+fn deployment_network_name(network: &str) -> &'static str {
+    match NetworkClass::from_profile(network) {
+        NetworkClass::Mainnet => "mainnet",
+        NetworkClass::Local => "local",
+        NetworkClass::Testnet => "testnet",
+    }
 }
 
 /// The set of config fields that drift verification must compare against chain.
@@ -629,6 +764,62 @@ mod tests {
         for field in DRIFT_FIELDS {
             assert!(!field.label().is_empty());
         }
+    }
+
+    #[test]
+    fn classifies_network_profiles() {
+        assert_eq!(NetworkClass::from_profile("mainnet"), NetworkClass::Mainnet);
+        assert_eq!(NetworkClass::from_profile("public"), NetworkClass::Mainnet);
+        assert_eq!(NetworkClass::from_profile("local"), NetworkClass::Local);
+        assert_eq!(NetworkClass::from_profile("standalone"), NetworkClass::Local);
+        assert_eq!(NetworkClass::from_profile("testnet"), NetworkClass::Testnet);
+        assert_eq!(NetworkClass::from_profile("futurenet"), NetworkClass::Testnet);
+        assert_eq!(NetworkClass::from_profile("unknown"), NetworkClass::Testnet);
+
+        assert!(NetworkClass::Mainnet.requires_confirmation());
+        assert!(!NetworkClass::Testnet.requires_confirmation());
+        assert!(!NetworkClass::Local.requires_confirmation());
+    }
+
+    #[test]
+    fn verifies_profile_passphrase_before_signing() {
+        assert!(validate_profile_passphrase("mainnet", PASSPHRASE_MAINNET).is_ok());
+        assert!(validate_profile_passphrase("local", PASSPHRASE_LOCAL).is_ok());
+        assert!(validate_profile_passphrase("testnet", PASSPHRASE_TESTNET).is_ok());
+
+        assert!(matches!(
+            validate_profile_passphrase("mainnet", PASSPHRASE_TESTNET),
+            Err(ValidationError::PassphraseMismatch { profile: "mainnet", .. })
+        ));
+        assert!(matches!(
+            validate_profile_passphrase("local", PASSPHRASE_MAINNET),
+            Err(ValidationError::PassphraseMismatch { profile: "local", .. })
+        ));
+        // Malformed passphrases are rejected before any comparison.
+        assert!(matches!(
+            validate_profile_passphrase("testnet", "bad\npassphrase"),
+            Err(ValidationError::Charset { .. })
+        ));
+    }
+
+    #[test]
+    fn rejects_mainnet_profile_with_testnet_contracts() {
+        assert!(validate_profile_deployment("mainnet", "mainnet").is_ok());
+        assert!(matches!(
+            validate_profile_deployment("mainnet", "testnet"),
+            Err(ValidationError::MixedNetworkConfig {
+                profile: "mainnet",
+                field: "contract ids",
+                found: "testnet",
+            })
+        ));
+        assert!(matches!(
+            validate_profile_deployment("mainnet", "local"),
+            Err(ValidationError::MixedNetworkConfig { found: "local", .. })
+        ));
+        // Non-mainnet profiles are never blocked by this check.
+        assert!(validate_profile_deployment("testnet", "local").is_ok());
+        assert!(validate_profile_deployment("local", "testnet").is_ok());
     }
 
     #[test]

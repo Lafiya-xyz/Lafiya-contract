@@ -5,7 +5,7 @@
 //! through [`redact`], so secret seeds can never reach a log sink even if a
 //! call site logs one by mistake.
 
-use std::io::{self, Write};
+use std::io::{self, IsTerminal, Write};
 use tracing_subscriber::{fmt::MakeWriter, EnvFilter};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
@@ -186,6 +186,84 @@ impl<W: Write> Write for RedactingWriter<W> {
     fn flush(&mut self) -> io::Result<()> {
         self.0.flush()
     }
+}
+
+/// ANSI styling for the active-profile banner. Colors are suppressed when the
+/// stream is not a TTY or when `NO_COLOR` is set, so piped output stays clean.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BannerStyle {
+    /// Local/dev networks: green.
+    Local,
+    /// Test networks: yellow.
+    Test,
+    /// Mainnet: bold red, always loud.
+    Mainnet,
+}
+
+impl BannerStyle {
+    fn ansi(self) -> &'static str {
+        match self {
+            BannerStyle::Local => "\x1b[32m",
+            BannerStyle::Test => "\x1b[33m",
+            BannerStyle::Mainnet => "\x1b[1;31m",
+        }
+    }
+}
+
+fn color_enabled() -> bool {
+    std::env::var_os("NO_COLOR").is_none() && io::stderr().is_terminal()
+}
+
+/// Render the active-profile banner shown before every mutating command.
+///
+/// The banner is a single line so it is easy to assert on in tests and easy to
+/// grep in operator transcripts. When `color` is false the ANSI escapes are
+/// omitted entirely.
+pub fn profile_banner(profile: &str, network: &str, style: BannerStyle, color: bool) -> String {
+    let body = format!("active profile: {profile} (network: {network})");
+    if color {
+        format!("{}==> {body}\x1b[0m", style.ansi())
+    } else {
+        format!("==> {body}")
+    }
+}
+
+/// Emit the active-profile banner to stderr. Called by every mutating command
+/// before it does anything else, so an operator can never miss which network
+/// they are about to touch.
+pub fn emit_profile_banner(profile: &str, network: &str, style: BannerStyle) {
+    let line = profile_banner(profile, network, style, color_enabled());
+    let _ = writeln!(io::stderr(), "{line}");
+}
+
+/// Whether interactive confirmation prompts can be shown. Mainnet mutations
+/// refuse to proceed without an explicit flag when this is false.
+pub fn stdin_is_tty() -> bool {
+    io::stdin().is_terminal()
+}
+
+/// Whether stdout is a TTY. Mainnet mutations require an explicit
+/// `--yes-i-know-this-is-mainnet` when stdout is redirected.
+pub fn stdout_is_tty() -> bool {
+    io::stdout().is_terminal()
+}
+
+/// Prompt the operator to type `expected` (e.g. `mainnet`) to confirm a
+/// dangerous operation. Returns `Ok(true)` only on an exact match.
+///
+/// The prompt is written to stderr so stdout stays machine-parseable, and the
+/// response is read from stdin. Callers must check [`stdin_is_tty`] first; this
+/// function does not itself refuse non-TTY input so it stays testable.
+pub fn confirm_typed(expected: &str) -> io::Result<bool> {
+    let mut stderr = io::stderr();
+    write!(
+        stderr,
+        "Type `{expected}` to confirm this operation on {expected}: "
+    )?;
+    stderr.flush()?;
+    let mut line = String::new();
+    io::stdin().read_line(&mut line)?;
+    Ok(line.trim() == expected)
 }
 
 #[derive(Clone, Copy)]
@@ -444,5 +522,33 @@ mod tests {
         // redaction function itself scrubs a panic-style message.
         let msg = format!("assertion failed: seed == {SEED}");
         assert!(!redact(&msg).contains(SEED));
+    }
+
+    #[test]
+    fn banner_without_color_is_plain() {
+        let line = profile_banner("testnet", "testnet", BannerStyle::Test, false);
+        assert_eq!(line, "==> active profile: testnet (network: testnet)");
+        assert!(!line.contains('\x1b'));
+    }
+
+    #[test]
+    fn mainnet_banner_is_colored_and_loud() {
+        let line = profile_banner("mainnet", "mainnet", BannerStyle::Mainnet, true);
+        assert!(line.contains("\x1b[1;31m"));
+        assert!(line.contains("active profile: mainnet"));
+        assert!(line.ends_with("\x1b[0m"));
+    }
+
+    #[test]
+    fn banner_always_names_the_profile() {
+        for (profile, network, style) in [
+            ("local", "local", BannerStyle::Local),
+            ("testnet", "testnet", BannerStyle::Test),
+            ("mainnet", "mainnet", BannerStyle::Mainnet),
+        ] {
+            let line = profile_banner(profile, network, style, false);
+            assert!(line.contains(profile), "banner must name the profile");
+            assert!(line.contains(network), "banner must name the network");
+        }
     }
 }
