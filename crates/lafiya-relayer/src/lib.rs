@@ -11,7 +11,10 @@
 use lafiya_rpc_resilience::{RpcProvider, SignedTx, SubmitOutcome, TxState};
 use std::collections::{HashMap, HashSet};
 
+pub mod policy;
 pub mod store;
+
+pub use policy::{Invocation, SponsoredTx, TxPolicy};
 
 pub use store::{MemorySpendStore, Reservation, ReservationState, SpendStore, StoreError};
 
@@ -30,6 +33,9 @@ pub struct RelayerConfig {
     pub max_fee_per_tx: u64,
     /// Status polls after submission before reporting `Pending`.
     pub max_polls: u32,
+    /// Strict envelope policy (issue #747): allowlisted (contract, function)
+    /// pairs, auth-entry root match, resource caps and fee bound.
+    pub tx_policy: TxPolicy,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +45,10 @@ pub struct SponsorRequest {
     pub attester: String,
     /// Sponsor-sourced transaction carrying the attester's signed auth entry.
     pub tx: SignedTx,
+    /// The decoded envelope the relayer validated (issue #747). The relayer
+    /// never trusts `tx` alone: it re-checks this against the policy and the
+    /// server-side simulation before submitting.
+    pub sponsored: SponsoredTx,
     /// Fee (stroops) the sponsor will pay for this transaction.
     pub fee: u64,
     /// Caller-supplied unix seconds (injected for deterministic tests).
@@ -64,6 +74,20 @@ pub enum RelayError {
     AttesterSpendCapExceeded,
     GlobalSpendCapExceeded,
     FeeTooHigh,
+    /// The envelope is not a single allowlisted invocation (issue #747).
+    NotAllowlistedInvocation,
+    /// The envelope carries more than one operation.
+    MultipleOperations,
+    /// The envelope's operation is not an `InvokeHostFunction`.
+    NotInvokeHostFunction,
+    /// The auth entries do not root at the envelope's invocation.
+    AuthRootMismatch,
+    /// Declared resource limits exceed the configured caps.
+    ResourceLimitExceeded,
+    /// Server-side simulation failed or disagrees with the envelope.
+    SimulationMismatch(String),
+    /// `max_fee_per_tx` exceeds simulated resource fee plus inclusion margin.
+    FeeAboveSimulation,
     /// The idempotency key was already used for a different transaction.
     KeyReused,
     /// The provider refused the submission before it reached the network.
@@ -171,6 +195,16 @@ impl<P: RpcProvider> Relayer<P> {
         if req.fee > self.cfg.max_fee_per_tx {
             return Err(RelayError::FeeTooHigh);
         }
+        // Strict envelope validation (issue #747): the sponsor must never pay
+        // for work outside the allowlisted invocation set.
+        let sim = self
+            .provider
+            .simulate(&req.sponsored)
+            .map_err(|e| RelayError::SimulationMismatch(e.to_string()))?;
+        self.cfg
+            .tx_policy
+            .validate(&req.sponsored, &sim, req.fee)
+            .map_err(RelayError::from)?;
         let mine = || self.ledger.iter().filter(|e| e.attester == req.attester);
         let recent = mine()
             .filter(|e| e.at + self.cfg.window_secs > req.now)
