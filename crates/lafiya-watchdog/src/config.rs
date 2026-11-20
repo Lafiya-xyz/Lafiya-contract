@@ -384,6 +384,9 @@ pub enum SinkConfig {
         url: String,
         #[serde(default = "default_format")]
         format: String,
+        /// HMAC-SHA256 key; when set, payloads carry `X-Lafiya-Signature` (#745).
+        #[serde(default)]
+        signing_key: Option<String>,
         #[serde(default)]
         min_severity: Option<Severity>,
     },
