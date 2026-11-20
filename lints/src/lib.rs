@@ -19,7 +19,12 @@ dylint_linting::dylint_library!();
 #[unsafe(no_mangle)]
 pub fn register_lints(sess: &rustc_session::Session, store: &mut rustc_lint::LintStore) {
     dylint_linting::init_config(sess);
-    store.register_lints(&[PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+    store.register_lints(&[
+        PERSISTENT_SET_WITHOUT_TTL,
+        STORAGE_IN_LOOP,
+        UNCHECKED_AMOUNT_ARITHMETIC,
+        RAW_TIME_CONSTANT,
+    ]);
     store.register_late_lint_pass(Box::new(|_| Box::new(LafiyaLints)));
 }
 
@@ -35,7 +40,34 @@ rustc_session::declare_lint! {
     /// `+ - *` on an i128/u128 amount.
     pub UNCHECKED_AMOUNT_ARITHMETIC, Warn, "unchecked arithmetic on an amount type"
 }
-rustc_session::declare_lint_pass!(LafiyaLints => [PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+rustc_session::declare_lint! {
+    /// Raw `u32`/`u64` constant that looks like a time value.
+    pub RAW_TIME_CONSTANT, Warn, "raw integer time constant; use the typed Seconds/Ledgers abstraction"
+}
+rustc_session::declare_lint_pass!(LafiyaLints => [
+    PERSISTENT_SET_WITHOUT_TTL,
+    STORAGE_IN_LOOP,
+    UNCHECKED_AMOUNT_ARITHMETIC,
+    RAW_TIME_CONSTANT
+]);
+
+/// Name fragments that indicate a time-valued constant.
+const TIME_NAME_FRAGMENTS: &[&str] = &[
+    "SECOND", "SECS", "LEDGER", "TTL", "WINDOW", "EXPIRY", "EXPIRE", "DELAY", "DURATION", "TIMEOUT",
+];
+
+/// Returns true if the constant name looks like a time value.
+fn name_looks_like_time(name: &str) -> bool {
+    let upper = name.to_ascii_uppercase();
+    TIME_NAME_FRAGMENTS.iter().any(|frag| upper.contains(frag))
+}
+
+/// Returns true if the literal value looks like a plausible time constant
+/// (a day or more in seconds, or a meaningful number of ledgers).
+fn value_looks_like_time(value: u128) -> bool {
+    // 1 hour in seconds, or 100 ledgers.
+    value >= 3_600
+}
 
 /// `x.storage().persistent().set(..)` etc: returns the storage kind and method.
 fn storage_call<'a>(e: &'a Expr<'_>) -> Option<(&'a str, &'a str)> {
@@ -93,6 +125,30 @@ impl<'tcx> LateLintPass<'tcx> for LafiyaLints {
             for span in scan.persistent_sets {
                 span_lint(cx, PERSISTENT_SET_WITHOUT_TTL, span, "persistent set without extend_ttl in the same function");
             }
+        }
+    }
+
+    fn check_item(&mut self, cx: &LateContext<'tcx>, item: &'tcx rustc_hir::Item<'tcx>) {
+        let rustc_hir::ItemKind::Const(ident, _, body_id) = item.kind else { return };
+        let body = cx.tcx.hir_body(body_id);
+        let ExprKind::Lit(lit) = body.value.kind else { return };
+        let rustc_hir::LitKind::Int(value, _) = lit.node else { return };
+        let ty = cx.typeck_results().expr_ty(&body.value);
+        let is_raw_time_int = matches!(
+            ty.kind(),
+            TyKind::Uint(rustc_middle::ty::UintTy::U32) | TyKind::Uint(rustc_middle::ty::UintTy::U64)
+        );
+        if !is_raw_time_int {
+            return;
+        }
+        let name = ident.name.as_str();
+        if name_looks_like_time(&name) || value_looks_like_time(value.get()) {
+            span_lint(
+                cx,
+                RAW_TIME_CONSTANT,
+                item.span,
+                "raw integer time constant; use `lafiya_contract_common::time::Seconds` or `Ledgers`",
+            );
         }
     }
 }

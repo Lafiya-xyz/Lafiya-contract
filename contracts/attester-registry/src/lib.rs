@@ -31,6 +31,7 @@
 )]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use lafiya_contract_common::time::{CloseTime, Ledgers, Seconds};
 use soroban_sdk::xdr::ToXdr;
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
@@ -39,7 +40,15 @@ use soroban_sdk::{
 
 const SCHEMA_VERSION: u32 = 6;
 const EVENT_SCHEMA_VERSION: u32 = 2;
-const ADMIN_PROPOSAL_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+
+/// How long a proposed admin transfer stays open before it expires.
+const ADMIN_PROPOSAL_TTL: Seconds = Seconds::from_days(30);
+
+/// Assumed worst-case ledger close time used when converting between
+/// `Seconds` and `Ledgers`. Soroban's protocol target is 5s; we assume 2.5s
+/// (a 50% faster close) so TTLs sized from this assumption still cover the
+/// declared validity even if the network speeds up.
+const ASSUMED_CLOSE_TIME: CloseTime = CloseTime::new(2_500);
 
 /// Interface kind reported by `get_interface`, used by clients as a weak
 /// identity check when wiring contracts (not proof of authenticity).
@@ -256,10 +265,20 @@ pub struct AttesterStatus {
 }
 
 /// Instance storage TTL policy:
-/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
-/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
-const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+/// - Threshold: 30 days
+/// - Extend to: 90 days
+///
+/// Both are derived from `Seconds` via the declared close-time assumption so
+/// they stay correct across protocol upgrades that change ledger close time.
+const INSTANCE_LIFETIME_THRESHOLD: Ledgers =
+    Ledgers::covering(Seconds::from_days(30), ASSUMED_CLOSE_TIME);
+const INSTANCE_BUMP_AMOUNT: Ledgers =
+    Ledgers::covering(Seconds::from_days(90), ASSUMED_CLOSE_TIME);
+
+/// Maximum instance TTL extension a single `touch()` call may request. Caps
+/// griefing: a caller pays for the extension, but cannot pin the instance
+/// arbitrarily far into the future in one call.
+const TOUCH_MAX_EXTENSION: Ledgers = Ledgers::from_ledgers(INSTANCE_BUMP_AMOUNT.value());
 
 /// Default soft cap on the number of allowlisted attesters, used until an
 /// admin raises it via `set_max_attesters`. Sized generously above any
@@ -812,7 +831,7 @@ impl AttesterRegistry {
         let expires_at = env
             .ledger()
             .timestamp()
-            .saturating_add(ADMIN_PROPOSAL_TTL_SECONDS);
+            .saturating_add(ADMIN_PROPOSAL_TTL.value());
         storage::set(&env, &DataKey::PendingAdmin, &new_admin);
         storage::set(&env, &DataKey::PendingAdminExpiresAt, &expires_at);
         AdminTransferProposed {
@@ -912,6 +931,22 @@ impl AttesterRegistry {
     /// Whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         storage::get(&env, &DataKey::Paused).unwrap_or(false)
+    }
+
+    /// Permissionless instance/code TTL keep-alive.
+    ///
+    /// Extends the current contract instance and code TTLs so a low-traffic
+    /// deployment cannot be archived out from under its users. Works while
+    /// paused (it is not a state-changing operation on contract data) and
+    /// requires no authorization: the caller pays the rent. The extension is
+    /// capped at [`TOUCH_MAX_EXTENSION`] so it cannot be used to grief.
+    pub fn touch(env: Env) {
+        let threshold = INSTANCE_LIFETIME_THRESHOLD.value();
+        let extend_to = TOUCH_MAX_EXTENSION.value();
+        env.storage().instance().extend_ttl(threshold, extend_to);
+        #[allow(deprecated)]
+        env.deployer()
+            .extend_current_contract_instance_and_code_ttl(threshold, extend_to);
     }
 
     /// Add `attester` to the allowlist. Requires a global or regional registrar.
@@ -1973,6 +2008,14 @@ impl AttesterRegistry {
         storage::get(env, &DataKey::AttesterCount).unwrap_or(0)
     }
 
+    /// TTL policy constants exposed for tests and monitors.
+    pub fn ttl_policy() -> (u32, u32) {
+        (
+            INSTANCE_LIFETIME_THRESHOLD.value(),
+            INSTANCE_BUMP_AMOUNT.value(),
+        )
+    }
+
     fn record_status_change(env: &Env, attester: &Address, active: bool) {
         let count: u32 =
             storage::get(env, &DataKey::AttesterStatusChangeCount(attester.clone())).unwrap_or(0);
@@ -2006,3 +2049,7 @@ mod test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod governance_test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod time_test;

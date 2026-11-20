@@ -64,6 +64,36 @@ pub const BATCH_LIMIT: u32 = 50;
 /// can commit and keeps entries inside the network's maximum entry TTL.
 pub const MAX_TTL_HORIZON: u64 = 5 * 365 * 24 * 60 * 60;
 
+/// Typed time units for this contract. All time-bounded constants below are
+/// expressed through these newtypes so that seconds-based validity and
+/// ledger-based TTLs are never mixed implicitly. Conversions use the declared
+/// close-time assumption in `lafiya_contract_common::time` with a safety
+/// factor; see `docs/architecture/storage-versioning.md`.
+pub mod time {
+    use lafiya_contract_common::time::{Ledgers, Seconds};
+
+    /// Consent grants are valid for seven days.
+    pub const CONSENT_VALIDITY: Seconds = Seconds::from_days(7);
+    /// Pending admin proposals expire after thirty days.
+    pub const ADMIN_PROPOSAL_TTL: Seconds = Seconds::from_days(30);
+    /// Default maximum age of an attestation reported as verified (365 days).
+    pub const DEFAULT_MAX_ATTESTATION_AGE: Seconds = Seconds::from_days(365);
+    /// Maximum horizon `extend_attestation_ttl` may commit (5 years).
+    pub const MAX_TTL_HORIZON: Seconds = Seconds::from_days(5 * 365);
+
+    /// Instance storage TTL policy: threshold 30 days, extend to 90 days.
+    pub const INSTANCE_LIFETIME_THRESHOLD: Ledgers = Ledgers::from_days(30);
+    pub const INSTANCE_BUMP_AMOUNT: Ledgers = Ledgers::from_days(90);
+
+    /// Upper bound on a rate-limit window (30 days of ledgers).
+    pub const MAX_RATE_WINDOW: Ledgers = Ledgers::from_days(30);
+
+    /// TTL threshold/bump for consent entries. Chosen so the entry outlives
+    /// `CONSENT_VALIDITY` even at a 50% faster close time.
+    pub const CONSENT_TTL_THRESHOLD: Ledgers = Ledgers::from_days(7);
+    pub const CONSENT_TTL_BUMP: Ledgers = Ledgers::from_days(14);
+}
+
 /// Maximum number of distinct co-attesters retained per record hash.
 pub const MAX_CO_ATTESTERS: u32 = 10;
 
@@ -74,13 +104,13 @@ pub const MAX_DISPUTES_PER_RECORD: u32 = 5;
 pub const DISPUTE_DOMAIN: &str = "lafiya.attestation.dispute.v1";
 
 /// Default maximum age (seconds) of an attestation reported as verified.
-pub const DEFAULT_MAX_ATTESTATION_AGE: u64 = 31_536_000;
+pub const DEFAULT_MAX_ATTESTATION_AGE: u64 = time::DEFAULT_MAX_ATTESTATION_AGE.seconds();
 
-const ADMIN_PROPOSAL_TTL_SECONDS: u64 = 30 * 24 * 60 * 60;
+const ADMIN_PROPOSAL_TTL_SECONDS: u64 = time::ADMIN_PROPOSAL_TTL.seconds();
 
-const CONSENT_VALIDITY_SECONDS: u64 = 7 * 24 * 60 * 60;
-const CONSENT_TTL_THRESHOLD: u32 = 60_480;
-const CONSENT_TTL_BUMP: u32 = 120_960;
+const CONSENT_VALIDITY_SECONDS: u64 = time::CONSENT_VALIDITY.seconds();
+const CONSENT_TTL_THRESHOLD: u32 = time::CONSENT_TTL_THRESHOLD.ledgers();
+const CONSENT_TTL_BUMP: u32 = time::CONSENT_TTL_BUMP.ledgers();
 
 /// Storage schema version of this build.
 pub const SCHEMA_VERSION: u32 = 4;
@@ -132,15 +162,16 @@ pub struct InterfaceInfo {
 }
 
 /// Instance storage TTL policy:
-/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
-/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
-const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+/// - Threshold: 30 days
+/// - Extend to: 90 days
+/// Derived from the typed `time::INSTANCE_*` constants.
+const INSTANCE_BUMP_AMOUNT: u32 = time::INSTANCE_BUMP_AMOUNT.ledgers();
+const INSTANCE_LIFETIME_THRESHOLD: u32 = time::INSTANCE_LIFETIME_THRESHOLD.ledgers();
 
 /// Upper bound on a rate-limit window (30 days of ledgers). Keeps the
 /// temporary `RateWindow` entry's TTL well inside the network's maximum
 /// entry TTL.
-const MAX_RATE_WINDOW_LEDGERS: u32 = 518_400;
+const MAX_RATE_WINDOW_LEDGERS: u32 = time::MAX_RATE_WINDOW.ledgers();
 
 /// Operational capabilities managed by the owner.
 #[contracttype]
@@ -1016,6 +1047,26 @@ impl AttestationRegistry {
     /// Whether the contract is currently paused.
     pub fn is_paused(env: Env) -> bool {
         storage::get(&env, &DataKey::Paused).unwrap_or(false)
+    }
+
+    /// Permissionless keep-alive: extend this contract instance's TTL (and
+    /// its code TTL where the host supports it) so a low-traffic deployment
+    /// cannot be archived out from under its users.
+    ///
+    /// Works while paused, requires no authorization, and is paid for by the
+    /// caller. The extension is capped at the instance TTL policy so it
+    /// cannot be used to pin entries beyond `MAX_TTL_HORIZON`.
+    pub fn touch(env: Env) -> u32 {
+        let threshold = INSTANCE_LIFETIME_THRESHOLD;
+        let bump = INSTANCE_BUMP_AMOUNT;
+        #[allow(deprecated)]
+        env.storage()
+            .instance()
+            .extend_ttl(threshold, bump);
+        #[allow(deprecated)]
+        env.deployer()
+            .extend_current_contract_instance_and_code_ttl(threshold, bump);
+        bump
     }
 
     /// Set the maximum age in seconds for which an attestation is considered
@@ -2324,12 +2375,14 @@ impl AttestationRegistry {
 
     /// Convert a target timestamp into a ledger-count bump, clamped to the
     /// instance TTL policy so the entry stays within network limits.
+    ///
+    /// Uses the declared close-time assumption (with safety factor) from
+    /// `lafiya_contract_common::time` rather than a hard-coded ledger rate.
     fn ttl_bump_ledgers(env: &Env, target: u64) -> u32 {
         let now = env.ledger().timestamp();
-        let seconds = target.saturating_sub(now);
-        let ledgers = seconds.saturating_mul(17_280) / 86_400;
-        let clamped = ledgers.min(INSTANCE_BUMP_AMOUNT as u64);
-        clamped as u32
+        let seconds = lafiya_contract_common::time::Seconds::new(target.saturating_sub(now));
+        let ledgers = seconds.to_ledgers_assuming_close_time();
+        ledgers.ledgers().min(INSTANCE_BUMP_AMOUNT)
     }
 
     /// Domain-separated dispute payload: binds the domain, record hash and
@@ -2831,3 +2884,7 @@ mod test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod scope_test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod time_test;

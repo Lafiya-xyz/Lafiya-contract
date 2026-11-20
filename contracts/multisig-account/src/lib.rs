@@ -22,6 +22,7 @@
 // `panic_with_error!` to reject invalid construction parameters with a contract error
 // code, which the blanket deny would flag despite being the correct pattern here.
 
+use lafiya_contract_common::time::{CloseTimeAssumption, Ledgers, Seconds};
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
     contract, contracterror, contractevent, contractimpl, contracttype,
@@ -146,11 +147,28 @@ pub enum Error {
     InvalidPolicy = 10,
 }
 
-/// Instance storage TTL policy:
-/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
-/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
-const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+/// Instance storage TTL policy, expressed in typed time units.
+///
+/// The ledger counts are derived from a declared close-time assumption (see
+/// `lafiya_contract_common::time`) rather than hard-coded raw ledger numbers,
+/// so a protocol upgrade that changes the close time only requires updating
+/// the assumption in one place.
+///
+/// - Threshold: 30 days
+/// - Extend to: 90 days
+const INSTANCE_LIFETIME_THRESHOLD: Ledgers =
+    Ledgers::from_seconds(Seconds::from_days(30), CLOSE_TIME_ASSUMPTION);
+const INSTANCE_BUMP_AMOUNT: Ledgers =
+    Ledgers::from_seconds(Seconds::from_days(90), CLOSE_TIME_ASSUMPTION);
+
+/// Declared ledger close-time assumption used for every seconds↔ledgers
+/// conversion in this contract. See `docs/architecture/storage-versioning.md`.
+const CLOSE_TIME_ASSUMPTION: CloseTimeAssumption = CloseTimeAssumption::new(5, 2);
+
+/// Maximum number of ledgers a single `touch()` call may extend the instance
+/// and code TTLs by. Caps griefing: a caller pays for the extension, but can
+/// never push the TTL arbitrarily far into the future in one call.
+const TOUCH_MAX_EXTENSION: Ledgers = INSTANCE_BUMP_AMOUNT;
 
 /// Interface kind reported by `get_interface`, used by clients as a weak
 /// identity check when wiring contracts (not proof of authenticity).
@@ -465,9 +483,10 @@ impl MultisigAccount {
                 role_requirements,
             },
         );
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().instance().extend_ttl(
+            INSTANCE_LIFETIME_THRESHOLD.to_u32(),
+            INSTANCE_BUMP_AMOUNT.to_u32(),
+        );
         MultisigConfigured {
             threshold: minimum_signers,
             signers: Self::sorted_signers(&env, &typed_signers),
@@ -570,6 +589,25 @@ impl MultisigAccount {
             minimum_signers,
             role_requirements: Vec::new(env),
         })
+    }
+
+    /// Permissionlessly extend the instance and code TTLs.
+    ///
+    /// Anyone may call this (the TTL keeper, monitors, or verifiers) to keep a
+    /// low-traffic contract from being archived. It works regardless of any
+    /// paused state (this contract has none) and is capped by
+    /// `TOUCH_MAX_EXTENSION` so it cannot be used to grief storage.
+    ///
+    /// Returns the number of ledgers the instance TTL was extended to.
+    pub fn touch(env: Env) -> u32 {
+        let max_extension = TOUCH_MAX_EXTENSION.to_u32();
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.to_u32(), max_extension);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.to_u32(), max_extension);
+        max_extension
     }
 
     /// Report the contract kind, interface version, enabled features, and
@@ -725,9 +763,10 @@ impl CustomAccountInterface for MultisigAccount {
             }
         }
 
-        env.storage()
-            .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        env.storage().instance().extend_ttl(
+            INSTANCE_LIFETIME_THRESHOLD.to_u32(),
+            INSTANCE_BUMP_AMOUNT.to_u32(),
+        );
 
         AuthorizationApproved {
             timestamp: env.ledger().timestamp(),
@@ -740,6 +779,8 @@ impl CustomAccountInterface for MultisigAccount {
     }
 }
 
+#[cfg(test)]
+mod time_test;
 #[cfg(test)]
 mod fuzz_test;
 #[cfg(test)]

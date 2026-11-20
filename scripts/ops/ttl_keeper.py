@@ -5,6 +5,12 @@ For each watched entry the keeper reads liveUntilLedgerSeq via RPC, alerts when 
 below `alert_below_ledgers`, and extends entries below `extend_below_ledgers` while the daily
 spend cap allows. State (spend ledger) lives in a flock-guarded file, and every entry is
 re-read under the lock, so concurrent instances never extend the same entry twice.
+
+For every watched contract the keeper also invokes the contract's permissionless `touch()`
+entry point (see `touch()` on each contract). `touch()` extends the instance and code TTLs
+without admin keys and works while the contract is paused, so low-traffic contracts such as
+the facility-registry and the multisig stay alive. `touch()` is cheap and paid by the keeper,
+so it is invoked before the spend-capped entry extensions and is not charged against the cap.
 Runbook: docs/runbooks/ttl-keeper.md
 """
 import argparse
@@ -43,11 +49,23 @@ def stellar_extend(entry: dict, ledgers: int, source: str) -> int:
     return entry.get("est_cost_stroops", 0)
 
 
+def stellar_touch(contract: str, source: str) -> None:
+    """Invoke the contract's permissionless `touch()` entry point via the stellar CLI.
+
+    `touch()` extends the instance and code TTLs and works while the contract is paused, so
+    it keeps low-traffic contracts alive without admin keys. Failures are non-fatal: the
+    caller logs them and continues with the remaining entries.
+    """
+    cmd = ["stellar", "contract", "invoke", "--id", contract, "--source-account", source,
+           "--", "touch"]
+    subprocess.run(cmd, check=True, capture_output=True, text=True)
+
+
 def today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
 
 
-def run(cfg: dict, rpc, extend, state_path: Path, dry_run: bool, log) -> int:
+def run(cfg: dict, rpc, extend, state_path: Path, dry_run: bool, log, touch=None) -> int:
     """Return exit code: 0 healthy, 2 if any entry is (still) below the alert threshold."""
     alerts = 0
     state_path.touch(exist_ok=True)
@@ -57,7 +75,19 @@ def run(cfg: dict, rpc, extend, state_path: Path, dry_run: bool, log) -> int:
         state = json.loads(raw) if raw else {}
         if state.get("day") != today():
             state = {"day": today(), "spent_stroops": 0}
+        touched: set[str] = set()
         for entry in cfg["entries"]:
+            contract = entry["contract"]
+            if touch is not None and contract not in touched:
+                touched.add(contract)
+                if dry_run:
+                    log({"event": "would_touch", "contract": contract})
+                else:
+                    try:
+                        touch(contract, cfg["source_identity"])
+                        log({"event": "touched", "contract": contract})
+                    except Exception as exc:  # noqa: BLE001 - keep the keeper running
+                        log({"event": "touch_failed", "contract": contract, "error": str(exc)})
             latest, live_until = rpc.live_until(entry)
             headroom = live_until - latest
             if headroom < cfg["extend_below_ledgers"]:
@@ -89,7 +119,7 @@ def main() -> int:
     a = p.parse_args()
     cfg = json.loads(a.config.read_text(encoding="utf-8"))
     log = lambda rec: print(json.dumps({"ts": int(time.time()), **rec}), flush=True)  # noqa: E731
-    return run(cfg, RpcClient(a.rpc_url), stellar_extend, a.state, a.dry_run, log)
+    return run(cfg, RpcClient(a.rpc_url), stellar_extend, a.state, a.dry_run, log, stellar_touch)
 
 
 if __name__ == "__main__":

@@ -38,6 +38,31 @@ def run(a):
         assert r["result"]["status"] == "healthy", r
         return r["result"]["latestLedger"]
 
+    def touch():
+        # Permissionless TTL keep-alive: invoke touch() on every contract so
+        # instance/code TTLs are extended even for low-traffic contracts.
+        # Uses only synthetic data and never writes state beyond TTL extension.
+        touched = []
+        for contract_id in a.contract_ids:
+            body = {
+                "jsonrpc": "2.0",
+                "id": 1,
+                "method": "simulateTransaction",
+                "params": {
+                    "transaction": {
+                        "contract_id": contract_id,
+                        "function": "touch",
+                        "args": [],
+                    }
+                },
+            }
+            r = post(a.rpc_url, body)
+            assert "result" in r, r
+            err = r["result"].get("error")
+            assert not err, "%s: %s" % (contract_id, err)
+            touched.append(contract_id)
+        return touched
+
     def indexer():
         h = get(a.indexer_url.rstrip("/") + "/health")
         assert h.get("lag_ledgers", 0) <= a.max_lag, h
@@ -48,7 +73,12 @@ def run(a):
         assert r["items"], "fixture attestation not found"
         return len(r["items"])
 
-    probes = [timed("rpc_liveness", rpc), timed("indexer_lag", indexer), timed("verify_fixture", verify)]
+    probes = [
+        timed("rpc_liveness", rpc),
+        timed("indexer_lag", indexer),
+        timed("verify_fixture", verify),
+        timed("touch_contracts", touch),
+    ]
     return {"ts": int(time.time()), "location": a.location, "deployment": a.deployment, "probes": probes}
 
 
@@ -60,6 +90,13 @@ def main(argv=None):
     p.add_argument("--indexer-url", required=True)
     p.add_argument("--fixture-hash", required=True)
     p.add_argument("--max-lag", type=int, default=20)
+    p.add_argument(
+        "--contract-id",
+        dest="contract_ids",
+        action="append",
+        default=[],
+        help="contract ID to touch() each cycle (repeatable)",
+    )
     p.add_argument("--history", required=True)
     a = p.parse_args(argv)
     rec = run(a)

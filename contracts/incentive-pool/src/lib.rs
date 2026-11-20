@@ -14,6 +14,7 @@
 //! approved allowlisted attesters claim per-item payouts with
 //! per-attestation replay protection.
 
+use lafiya_contract_common::time::{Ledgers, Seconds};
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype, token,
     xdr::ToXdr, Address, Bytes, BytesN, Env, Map, Vec,
@@ -73,22 +74,30 @@ pub const BATCH_ERROR_BASE: u32 = 10_000;
 
 /// Delay before a newly designated payout address takes effect (48 hours).
 /// Gives an attester time to notice and suspend a takeover of their key.
-pub const PAYOUT_ADDRESS_DELAY: u64 = 48 * 60 * 60;
+pub const PAYOUT_ADDRESS_DELAY: Seconds = Seconds::from_hours(48);
 
 /// Delay before a proposed epoch-budget change can be applied (48 hours).
-pub const EPOCH_CONFIG_DELAY: u64 = 48 * 60 * 60;
+pub const EPOCH_CONFIG_DELAY: Seconds = Seconds::from_hours(48);
 
 /// Instance storage TTL policy:
-/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
-/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
-const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+/// - Threshold: 30 days
+/// - Extend to: 90 days
+///
+/// Expressed in ledgers via the declared close-time assumption in
+/// `lafiya_contract_common::time` (see docs/architecture/storage-versioning.md).
+const INSTANCE_BUMP_AMOUNT: Ledgers = Ledgers::covering(Seconds::from_days(90));
+const INSTANCE_LIFETIME_THRESHOLD: Ledgers = Ledgers::covering(Seconds::from_days(30));
 
 /// Default approval lifetime: 90 days, in seconds of ledger time.
 /// Also applied to work items approved before expiry existed (see ADR 0018).
-pub const DEFAULT_APPROVAL_TTL_SECS: u64 = 90 * 24 * 60 * 60;
+pub const DEFAULT_APPROVAL_TTL_SECS: Seconds = Seconds::from_days(90);
 /// Default upper bound on any approval lifetime: 365 days.
-pub const DEFAULT_MAX_APPROVAL_TTL_SECS: u64 = 365 * 24 * 60 * 60;
+pub const DEFAULT_MAX_APPROVAL_TTL_SECS: Seconds = Seconds::from_days(365);
+
+/// Minimum interval between permissionless `touch()` calls. Bounds the
+/// griefing surface: a caller cannot force an extension more often than
+/// this, and extensions are paid by the caller anyway.
+pub const TOUCH_MIN_INTERVAL: Seconds = Seconds::from_hours(1);
 
 /// Storage keys for the incentive pool.
 ///
@@ -139,6 +148,8 @@ enum DataKey {
     PendingEpochConfig,
     /// Amount approved in the epoch starting at the given timestamp.
     EpochApproved(u64),
+    /// Ledger timestamp of the last successful `touch()`.
+    LastTouch,
 }
 
 /// One entry of an `approve_work_items` batch.
@@ -533,6 +544,8 @@ pub enum Error {
     DelayNotElapsed = 22,
     /// Epoch length or budget is invalid (zero / negative).
     InvalidEpochConfig = 23,
+    /// `touch()` was called again before `TOUCH_MIN_INTERVAL` elapsed.
+    TouchTooSoon = 24,
 }
 
 // ──────────────────────────── Contract ────────────────────────────
@@ -843,7 +856,7 @@ impl IncentivePool {
 
         env.storage()
             .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.get(), INSTANCE_BUMP_AMOUNT.get());
 
         PoolFunded {
             funder: admin,
@@ -888,7 +901,7 @@ impl IncentivePool {
 
         env.storage()
             .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.get(), INSTANCE_BUMP_AMOUNT.get());
 
         PoolWithdrawn { to, amount }.publish(&env);
 
@@ -1063,7 +1076,7 @@ impl IncentivePool {
         if amount <= 0 {
             return Err(Error::NonPositiveAmount);
         }
-        let eta = env.ledger().timestamp() + SCHEDULE_TIMELOCK_SECS;
+        let eta = env.ledger().timestamp() + SCHEDULE_TIMELOCK_SECS.get();
         env.storage().persistent().set(
             &DataKey::PendingPayoutRate(work_type, region_class),
             &PendingPayoutRate { amount, eta },
@@ -1325,7 +1338,7 @@ impl IncentivePool {
         if epoch_length == 0 || epoch_budget < 0 {
             return Err(Error::InvalidEpochConfig);
         }
-        let effective_at = env.ledger().timestamp() + EPOCH_CONFIG_DELAY;
+        let effective_at = env.ledger().timestamp() + EPOCH_CONFIG_DELAY.get();
         let pending = PendingEpochConfig {
             config: EpochConfig {
                 epoch_length,
@@ -1409,7 +1422,7 @@ impl IncentivePool {
             return Err(Error::AttesterNotAllowlisted);
         }
         let now = env.ledger().timestamp();
-        let effective_at = now + PAYOUT_ADDRESS_DELAY;
+        let effective_at = now + PAYOUT_ADDRESS_DELAY.get();
         let binding = PayoutBinding {
             current: Self::resolve_payout(&env, &attester, now),
             pending: Some(recipient.clone()),
@@ -1592,6 +1605,30 @@ impl IncentivePool {
             .unwrap_or(false)
     }
 
+    // ── Permissionless: keep-alive ──
+
+    /// Extend the instance and code TTLs so the contract stays callable.
+    /// Permissionless and works while paused: a paused contract must not
+    /// be allowed to archive. Extensions are paid by the caller, and calls
+    /// are rate-limited to `TOUCH_MIN_INTERVAL` so it cannot be used to
+    /// grief. Returns the ledger timestamp of the extension.
+    pub fn touch(env: Env) -> Result<u64, Error> {
+        let now = env.ledger().timestamp();
+        if let Some(last) = env.storage().instance().get::<_, u64>(&DataKey::LastTouch) {
+            if now < last.saturating_add(TOUCH_MIN_INTERVAL.get()) {
+                return Err(Error::TouchTooSoon);
+            }
+        }
+        env.storage().instance().set(&DataKey::LastTouch, &now);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.get(), INSTANCE_BUMP_AMOUNT.get());
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.get(), INSTANCE_BUMP_AMOUNT.get());
+        Ok(now)
+    }
+
     // ── Private helpers ──
 
     fn approve(
@@ -1657,7 +1694,7 @@ impl IncentivePool {
 
         env.storage()
             .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.get(), INSTANCE_BUMP_AMOUNT.get());
 
         WorkItemApproved {
             work_item_id,
@@ -1687,7 +1724,9 @@ impl IncentivePool {
             attester: legacy.attester,
             payout_amount: legacy.payout_amount,
             approved_at: legacy.approved_at,
-            expires_at: legacy.approved_at.saturating_add(DEFAULT_APPROVAL_TTL_SECS),
+            expires_at: legacy
+                .approved_at
+                .saturating_add(DEFAULT_APPROVAL_TTL_SECS.get()),
         })
     }
 
@@ -1781,14 +1820,14 @@ impl IncentivePool {
         env.storage()
             .instance()
             .get(&DataKey::DefaultApprovalTtl)
-            .unwrap_or(DEFAULT_APPROVAL_TTL_SECS)
+            .unwrap_or(DEFAULT_APPROVAL_TTL_SECS.get())
     }
 
     fn max_ttl(env: &Env) -> u64 {
         env.storage()
             .instance()
             .get(&DataKey::MaxApprovalTtl)
-            .unwrap_or(DEFAULT_MAX_APPROVAL_TTL_SECS)
+            .unwrap_or(DEFAULT_MAX_APPROVAL_TTL_SECS.get())
     }
 
     fn admin(env: &Env) -> Result<Address, Error> {
@@ -1886,7 +1925,7 @@ impl ApprovalCtx {
         }
         env.storage()
             .instance()
-            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD.get(), INSTANCE_BUMP_AMOUNT.get());
     }
 }
 
@@ -1930,3 +1969,12 @@ mod stateful_test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod fuzz_test;
+
+#[cfg(test)]
+#[allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::arithmetic_side_effects
+)]
+mod time_test;
