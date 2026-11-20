@@ -12,12 +12,24 @@ export interface OnChainAttestation {
   attester: string;
   /** Ledger timestamp (unix seconds) the attestation was recorded at. */
   timestamp: bigint;
+  /**
+   * Set when the entry is archived (its TTL lapsed) and could not be read
+   * without a restore. The other fields are then best-effort/absent, and
+   * callers must report `archived` rather than "not verified".
+   */
+  archived?: boolean;
 }
 
 /** attester-registry's view of an attester (`get_attester_status`). */
 export interface AttesterState {
   suspended: boolean;
   region?: string;
+  /**
+   * Set when the attester entry is archived (its TTL lapsed) and could not
+   * be read without a restore. Callers must report `archived` rather than
+   * treating the attester as absent.
+   */
+  archived?: boolean;
 }
 
 /**
@@ -33,6 +45,11 @@ export interface ChainReader {
   readonly source: "rpc" | "offline";
   /** Unix seconds the data was captured at; set by snapshot-backed readers. */
   readonly snapshotAt?: number;
+  /**
+   * The latest attestation for `recordHash`, or `null` if none exists.
+   * Implementations should return `{ archived: true, ... }` (rather than
+   * `null`) when the entry exists but is archived and cannot be restored.
+   */
   getAttestation(trust: NetworkTrust, recordHash: string): Promise<OnChainAttestation | null>;
   /** Oldest first, as `get_attestation_history` returns it. */
   getAttestationHistory(
@@ -40,7 +57,11 @@ export interface ChainReader {
     recordHash: string,
     opts?: CallOptions,
   ): Promise<OnChainAttestation[]>;
-  /** `null` when the attester is not (or no longer) on the allowlist. */
+  /**
+   * `null` when the attester is not (or no longer) on the allowlist.
+   * Implementations should return `{ suspended: false, archived: true }`
+   * (rather than `null`) when the entry exists but is archived.
+   */
   getAttesterStatus(
     trust: NetworkTrust,
     attester: string,

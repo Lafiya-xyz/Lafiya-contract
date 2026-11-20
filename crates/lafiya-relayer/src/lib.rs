@@ -8,7 +8,9 @@
 //! transport. See `docs/security/relayer-threat-model.md` and
 //! `docs/runbooks/relayer-operations.md`.
 
-use lafiya_rpc_resilience::{RpcProvider, SignedTx, SubmitOutcome, TxState};
+use lafiya_rpc_resilience::{
+    restore, RpcProvider, SignedTx, SubmitOutcome, TxState, TxState as RestoreState,
+};
 use std::collections::{HashMap, HashSet};
 
 #[derive(Debug, Clone)]
@@ -64,6 +66,9 @@ pub enum RelayError {
     KeyReused,
     /// The provider refused the submission before it reached the network.
     SubmitFailed(String),
+    /// A persistent entry the transaction touches is archived and the restore
+    /// footprint could not be built or submitted (issue #710).
+    RestoreFailed(String),
 }
 
 /// One row of the append-only spend ledger.
@@ -145,6 +150,14 @@ impl<P: RpcProvider> Relayer<P> {
             return Err(RelayError::GlobalSpendCapExceeded);
         }
 
+        // Archived persistent entries (attestations, attester info, work items)
+        // must be restored before the sponsored transaction can touch them.
+        // The shared RPC layer detects the simulation restore preamble and
+        // builds/submits the restore transaction; we only surface failures.
+        if let Err(e) = restore::ensure_restored(&self.provider, &req.tx) {
+            return Err(RelayError::RestoreFailed(e.to_string()));
+        }
+
         let outcome = match self.provider.submit(&req.tx) {
             SubmitOutcome::Definite(e) => return Err(RelayError::SubmitFailed(e.to_string())),
             SubmitOutcome::Ack(TxState::Rejected { reason }) => Outcome::Rejected { reason },
@@ -180,6 +193,14 @@ impl<P: RpcProvider> Relayer<P> {
         }
         Outcome::Pending
     }
+}
+
+/// Read-only helper: report whether a sponsored transaction would need a
+/// restore footprint before it could be submitted. Used by the CLI/relayer
+/// dry-run paths so archived entries are surfaced as `archived` rather than a
+/// generic failure.
+pub fn archived_state<P: RpcProvider>(provider: &P, tx: &SignedTx) -> RestoreState {
+    restore::simulate_state(provider, tx)
 }
 
 #[cfg(test)]
@@ -279,6 +300,39 @@ mod tests {
             Err(RelayError::AttesterSpendCapExceeded)
         );
         assert_eq!(r.provider().submit_calls, 2);
+    }
+
+    #[test]
+    fn archived_entry_triggers_restore_before_sponsor_submit() {
+        // Simulation reports an archived entry; the relayer must submit the
+        // restore transaction first, then the sponsored transaction.
+        let p = ScriptedProvider::new("sandbox")
+            .then_simulate(restore::SimulationResult::archived(["attestation"]))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 7 }))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 8 }));
+        let mut r = Relayer::new(cfg(), p);
+        assert_eq!(
+            r.sponsor(req("k", "h", 100, 0)),
+            Ok(Outcome::Accepted { ledger: 8 })
+        );
+        assert_eq!(r.provider().submit_calls, 2);
+        assert_eq!(r.provider().restore_calls, 1);
+    }
+
+    #[test]
+    fn restore_failure_does_not_charge_or_submit_sponsored_tx() {
+        let p = ScriptedProvider::new("sandbox")
+            .then_simulate(restore::SimulationResult::archived(["work_item"]))
+            .then_submit(SubmitOutcome::Definite(
+                lafiya_rpc_resilience::RpcError::Timeout,
+            ));
+        let mut r = Relayer::new(cfg(), p);
+        assert!(matches!(
+            r.sponsor(req("k", "h", 100, 0)),
+            Err(RelayError::RestoreFailed(_))
+        ));
+        assert_eq!(r.total_spent(), 0);
+        assert!(r.ledger().is_empty());
     }
 
     #[test]

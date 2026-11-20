@@ -197,6 +197,75 @@ pub fn log_fee_bump(log: &mut crate::RecoveryLog, previous_fee: u64, decision: F
     ));
 }
 
+/// The fee for a restore transaction that must be submitted before the real
+/// one (see issue #710): a `RestoreFootprintOp` (or the auto-restore path in
+/// newer protocols) carries its own inclusion fee and resource fee, and both
+/// are spent in addition to the real transaction's fee.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RestoreFee {
+    /// Inclusion fee bid for the restore transaction itself.
+    pub inclusion_fee: u64,
+    /// Resource fee for the restore transaction, from its own simulation.
+    pub resource_fee: u64,
+}
+
+impl RestoreFee {
+    /// The total stroops the restore transaction costs.
+    pub fn total(&self) -> u64 {
+        self.inclusion_fee.saturating_add(self.resource_fee)
+    }
+}
+
+/// Estimate the fee for a restore transaction from its own simulation's
+/// resource usage and the network's fee stats, applying the same margin and
+/// priority rules as the real transaction.
+pub fn estimate_restore_fee(
+    usage: ResourceUsage,
+    margin_percent: u32,
+    limits: NetworkLimits,
+    stats: FeeStats,
+    priority: Priority,
+) -> RestoreFee {
+    let margined = apply_margin(usage, margin_percent, limits);
+    // The resource fee is dominated by the write bytes of the restored
+    // entries; instructions and read bytes are folded in at a nominal rate
+    // so the estimate scales with the whole footprint rather than only one
+    // dimension. These rates are deliberately conservative.
+    let resource_fee = margined
+        .instructions
+        .saturating_div(10_000)
+        .saturating_add(margined.read_bytes)
+        .saturating_add(margined.write_bytes.saturating_mul(4));
+    RestoreFee {
+        inclusion_fee: choose_inclusion_fee(stats, priority),
+        resource_fee,
+    }
+}
+
+/// Check a restore transaction's fee plus the real transaction's fee against
+/// the operator-set `--max-fee` ceiling, so `--max-fee` bounds the whole
+/// submission sequence rather than each transaction in isolation.
+pub fn enforce_combined_budget(
+    restore: RestoreFee,
+    real_fee: u64,
+    max_fee: Option<u64>,
+) -> Result<u64, FeeError> {
+    let combined = restore.total().saturating_add(real_fee);
+    enforce_budget(combined, max_fee)
+}
+
+/// Append a human-readable line recording a restore-fee decision to `log`.
+pub fn log_restore_fee(log: &mut crate::RecoveryLog, restore: RestoreFee, real_fee: u64) {
+    log.record(format!(
+        "restore fee: inclusion={} resource={} total={} stroops; combined with real tx fee {} = {} stroops",
+        restore.inclusion_fee,
+        restore.resource_fee,
+        restore.total(),
+        real_fee,
+        restore.total().saturating_add(real_fee),
+    ));
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -358,5 +427,79 @@ mod tests {
                 max_fee: 1000
             }
         );
+    }
+
+    #[test]
+    fn restore_fee_uses_margined_usage_and_priority() {
+        let restore = estimate_restore_fee(
+            usage(),
+            15,
+            NetworkLimits::default(),
+            congested_network_fee_stats(),
+            Priority::High,
+        );
+        // 11_500_000 / 10_000 = 1150, + 23_000 read + 4 * 5_750 write.
+        assert_eq!(restore.resource_fee, 1150 + 23_000 + 23_000);
+        assert_eq!(restore.inclusion_fee, 50_000);
+        assert_eq!(restore.total(), 50_000 + 47_150);
+    }
+
+    #[test]
+    fn restore_fee_never_panics_near_u64_max() {
+        let usage = ResourceUsage {
+            instructions: u64::MAX,
+            read_bytes: u64::MAX,
+            write_bytes: u64::MAX,
+        };
+        let restore = estimate_restore_fee(
+            usage,
+            15,
+            NetworkLimits::default(),
+            quiet_network_fee_stats(),
+            Priority::Normal,
+        );
+        assert_eq!(restore.total(), u64::MAX);
+    }
+
+    #[test]
+    fn combined_budget_counts_restore_and_real_fee() {
+        let restore = RestoreFee {
+            inclusion_fee: 100,
+            resource_fee: 400,
+        };
+        assert_eq!(enforce_combined_budget(restore, 500, Some(1000)).unwrap(), 1000);
+        let err = enforce_combined_budget(restore, 500, Some(999)).unwrap_err();
+        assert_eq!(
+            err,
+            FeeError::ExceedsBudget {
+                computed: 1000,
+                max_fee: 999
+            }
+        );
+    }
+
+    #[test]
+    fn combined_budget_uncapped_when_no_max_fee() {
+        let restore = RestoreFee {
+            inclusion_fee: 100,
+            resource_fee: 400,
+        };
+        assert_eq!(enforce_combined_budget(restore, 500, None).unwrap(), 1000);
+    }
+
+    #[test]
+    fn log_restore_fee_records_components_and_combined_total() {
+        let mut log = crate::RecoveryLog::new();
+        log_restore_fee(
+            &mut log,
+            RestoreFee {
+                inclusion_fee: 100,
+                resource_fee: 400,
+            },
+            500,
+        );
+        assert_eq!(log.lines().len(), 1);
+        assert!(log.lines()[0].contains("inclusion=100 resource=400 total=500"));
+        assert!(log.lines()[0].contains("combined with real tx fee 500 = 1000"));
     }
 }

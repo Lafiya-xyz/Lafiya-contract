@@ -6,7 +6,7 @@ import type {
   StatusListCheck,
 } from "./chain.js";
 import { commitV1, type FieldValue } from "./commitment.js";
-import { classifyError, type TransportError } from "./errors.js";
+import { classifyError, isArchivedError, type TransportError } from "./errors.js";
 import { parseQrPayload, QrPayloadError, type QrPayload } from "./qr.js";
 import { BindingsChainReader } from "./rpc.js";
 import {
@@ -250,6 +250,18 @@ export class LafiyaVerifier {
         ]);
       }
     } catch (err) {
+      // Archived entries are a distinct state: the record may well exist and be
+      // valid, it just needs its footprint restored before it can be read.
+      // Reporting this as `unavailable` (or worse, `not_found`) misleads the
+      // responder, so surface it explicitly.
+      if (isArchivedError(err)) {
+        reasons.push({
+          code: "archived",
+          message:
+            "the on-chain entry is archived (TTL lapsed) and must be restored before it can be verified",
+        });
+        return done({ payload });
+      }
       const transportError = classifyError(err);
       reasons.push({
         code: "unavailable",

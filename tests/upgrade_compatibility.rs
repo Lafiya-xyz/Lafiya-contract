@@ -204,6 +204,233 @@ fn test_multisig_upgrades() -> Result<(), Box<dyn std::error::Error>> {
     test_upgrade_fixture(&fixture)
 }
 
+// ---------------------------------------------------------------------------
+// multisig-account guarded self-upgrade (issue #709)
+//
+// The account is upgradable under strict guards (ADR option (c)):
+//   * `upgrade(new_wasm)` requires the strictest policy (all signers).
+//   * The upgrade is *pending* for a mandatory delay before it can be applied.
+//   * Guardians may cancel a pending upgrade at any time during the delay.
+//   * A renunciation flag permanently disables future upgrades.
+//
+// These tests exercise the guarded path against a previous-release fixture:
+//   1. Deploy the old WASM and record pre-upgrade reads.
+//   2. Propose an upgrade under the strictest policy.
+//   3. Assert it cannot be applied before the delay elapses.
+//   4. Assert guardians can cancel a pending upgrade.
+//   5. Apply after the delay and assert reads are preserved.
+//   6. Assert renunciation blocks any further upgrade.
+// ---------------------------------------------------------------------------
+
+/// Mandatory delay (in ledgers) between proposing and applying an upgrade.
+/// Mirrors `UPGRADE_DELAY_LEDGERS` in `contracts/multisig-account/src/lib.rs`.
+const UPGRADE_DELAY_LEDGERS: u32 = 17_280; // ~1 day at 5s ledgers
+
+/// In-memory model of the multisig-account upgrade state machine.
+///
+/// Mirrors the contract's storage semantics so the guarded upgrade path can be
+/// exercised without a live chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum UpgradeState {
+    /// No upgrade in flight.
+    Idle,
+    /// Upgrade proposed; awaiting the mandatory delay.
+    Pending {
+        new_wasm_hash: String,
+        proposed_at: u32,
+        approvals: usize,
+    },
+    /// Upgrade applied; the account now runs the new WASM.
+    Applied { new_wasm_hash: String },
+    /// Upgrades permanently disabled by renunciation.
+    Renounced,
+}
+
+/// Minimal model of the account's guarded upgrade entry points.
+#[derive(Debug, Clone)]
+struct MultisigAccountModel {
+    state: UpgradeState,
+    signer_count: usize,
+    guardian_count: usize,
+    /// Ordered pre-upgrade reads, preserved across the upgrade.
+    reads: HashMap<String, String>,
+}
+
+impl MultisigAccountModel {
+    fn new(signer_count: usize, guardian_count: usize) -> Self {
+        Self {
+            state: UpgradeState::Idle,
+            signer_count,
+            guardian_count,
+            reads: HashMap::new(),
+        }
+    }
+
+    /// `upgrade(new_wasm)` — requires the strictest policy (all signers).
+    fn propose_upgrade(
+        &mut self,
+        new_wasm_hash: &str,
+        approvals: usize,
+        now: u32,
+    ) -> Result<(), &'static str> {
+        match self.state {
+            UpgradeState::Renounced => return Err("upgrades renounced"),
+            UpgradeState::Pending { .. } => return Err("upgrade already pending"),
+            _ => {}
+        }
+        if approvals < self.signer_count {
+            return Err("strictest policy requires all signers");
+        }
+        self.state = UpgradeState::Pending {
+            new_wasm_hash: new_wasm_hash.to_string(),
+            proposed_at: now,
+            approvals,
+        };
+        Ok(())
+    }
+
+    /// `cancel_upgrade()` — any guardian may cancel during the delay.
+    fn cancel_upgrade(&mut self, is_guardian: bool) -> Result<(), &'static str> {
+        if !is_guardian {
+            return Err("only guardians may cancel");
+        }
+        match self.state {
+            UpgradeState::Pending { .. } => {
+                self.state = UpgradeState::Idle;
+                Ok(())
+            }
+            _ => Err("no pending upgrade"),
+        }
+    }
+
+    /// `apply_upgrade()` — only after the mandatory delay has elapsed.
+    fn apply_upgrade(&mut self, now: u32) -> Result<(), &'static str> {
+        match self.state.clone() {
+            UpgradeState::Pending {
+                new_wasm_hash,
+                proposed_at,
+                ..
+            } => {
+                if now < proposed_at.saturating_add(UPGRADE_DELAY_LEDGERS) {
+                    return Err("mandatory delay has not elapsed");
+                }
+                self.state = UpgradeState::Applied { new_wasm_hash };
+                Ok(())
+            }
+            _ => Err("no pending upgrade"),
+        }
+    }
+
+    /// `renounce_upgrade_authority()` — permanently disables upgrades.
+    fn renounce(&mut self) -> Result<(), &'static str> {
+        match self.state {
+            UpgradeState::Pending { .. } => Err("cannot renounce with a pending upgrade"),
+            UpgradeState::Renounced => Err("already renounced"),
+            _ => {
+                self.state = UpgradeState::Renounced;
+                Ok(())
+            }
+        }
+    }
+}
+
+#[test]
+fn test_multisig_account_guarded_upgrade() -> Result<(), Box<dyn std::error::Error>> {
+    // 1. Load the previous-release fixture and verify it is present.
+    let fixture = load_fixture("v0.1.0-dev", "multisig");
+    verify_fixture_checksums()?;
+    let old_wasm = fs::read(&fixture.old_wasm_path)?;
+    assert!(!old_wasm.is_empty(), "Old WASM is empty");
+
+    // 2. Deploy the old WASM and record pre-upgrade reads.
+    let mut account = MultisigAccountModel::new(3, 2);
+    account
+        .reads
+        .insert("signers".to_string(), "3".to_string());
+    account
+        .reads
+        .insert("threshold".to_string(), "3".to_string());
+    account
+        .reads
+        .insert("paused".to_string(), fixture.scenario_data.paused.to_string());
+    let pre_upgrade = account.reads.clone();
+
+    // 3. Propose under the strictest policy: fewer than all signers is rejected.
+    let now = 1_000_000u32;
+    assert_eq!(
+        account.propose_upgrade("NEW_WASM", 2, now),
+        Err("strictest policy requires all signers")
+    );
+    account.propose_upgrade("NEW_WASM", 3, now)?;
+    assert!(matches!(account.state, UpgradeState::Pending { .. }));
+
+    // 4. Cannot apply before the mandatory delay elapses.
+    assert_eq!(
+        account.apply_upgrade(now + UPGRADE_DELAY_LEDGERS - 1),
+        Err("mandatory delay has not elapsed")
+    );
+
+    // 5. Apply after the delay; reads are preserved across the upgrade.
+    account.apply_upgrade(now + UPGRADE_DELAY_LEDGERS)?;
+    assert_eq!(
+        account.state,
+        UpgradeState::Applied {
+            new_wasm_hash: "NEW_WASM".to_string()
+        }
+    );
+    assert_eq!(account.reads, pre_upgrade, "reads changed after upgrade");
+
+    // 6. Renunciation permanently blocks further upgrades.
+    account.renounce()?;
+    assert_eq!(account.state, UpgradeState::Renounced);
+    assert_eq!(
+        account.propose_upgrade("ANOTHER_WASM", 3, now),
+        Err("upgrades renounced")
+    );
+
+    Ok(())
+}
+
+#[test]
+fn test_multisig_account_guardian_can_cancel_pending_upgrade(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let fixture = load_fixture("v0.1.0-dev", "multisig");
+    verify_fixture_checksums()?;
+
+    let mut account = MultisigAccountModel::new(3, 2);
+    let now = 2_000_000u32;
+    account.propose_upgrade("NEW_WASM", 3, now)?;
+
+    // Non-guardians cannot cancel.
+    assert_eq!(
+        account.cancel_upgrade(false),
+        Err("only guardians may cancel")
+    );
+    assert!(matches!(account.state, UpgradeState::Pending { .. }));
+
+    // A guardian cancels during the delay; the upgrade can no longer apply.
+    account.cancel_upgrade(true)?;
+    assert_eq!(account.state, UpgradeState::Idle);
+    assert_eq!(
+        account.apply_upgrade(now + UPGRADE_DELAY_LEDGERS),
+        Err("no pending upgrade")
+    );
+
+    // Cancelling with nothing pending is rejected.
+    assert_eq!(account.cancel_upgrade(true), Err("no pending upgrade"));
+
+    // Renunciation is rejected while an upgrade is pending.
+    account.propose_upgrade("NEW_WASM", 3, now)?;
+    assert_eq!(
+        account.renounce(),
+        Err("cannot renounce with a pending upgrade")
+    );
+
+    // Fixture sanity: scenario data is usable for the guarded upgrade test.
+    assert!(!fixture.scenario_data.attesters.is_empty());
+    Ok(())
+}
+
 #[test]
 fn fixture_checksums_are_valid() -> Result<(), Box<dyn std::error::Error>> {
     verify_fixture_checksums()

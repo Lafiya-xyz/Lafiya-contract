@@ -5,10 +5,16 @@ set -e
 
 # Lafiya Smart Contract Deployment Script
 # Deploys both contracts with their security-sensitive constructor arguments.
+#
+# The multisig-account contract is deployed with the policy-based constructor
+# (`__constructor_policy`), which takes a `SignerPolicy` instead of the legacy
+# `Vec<BytesN<32>>` signer list. The legacy `set_signers` entry point is
+# deprecated; new deployments must start in the policy model.
 
 NETWORK="testnet"
 IDENTITY=""
 ADMIN_ADDRESS=""
+SIGNER_POLICY=""
 YES=false
 
 # Help message
@@ -18,6 +24,8 @@ show_help() {
     echo "Options:"
     echo "  -i, --identity <identity>       stellar-cli identity name to use for deployment (or set STELLAR_IDENTITY)"
     echo "  -a, --admin-address <address>   Admin address for both contracts (defaults to the identity's address)"
+    echo "  -p, --signer-policy <json>      SignerPolicy JSON for the multisig-account policy constructor"
+    echo "                                  (default: single ed25519 signer = admin address, weight 1, threshold 1)"
     echo "  -n, --network <network>         Stellar network (default: testnet)"
     echo "  -y, --yes                       Skip interactive confirmation prompt"
     echo "  -h, --help                      Show this help message"
@@ -35,6 +43,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         -a|--admin-address)
             ADMIN_ADDRESS="$2"
+            shift 2
+            ;;
+        -p|--signer-policy)
+            SIGNER_POLICY="$2"
             shift 2
             ;;
         -n|--network)
@@ -85,6 +97,16 @@ if [ -z "$ADMIN_ADDRESS" ]; then
     fi
 fi
 
+# Default signer policy: a single ed25519 signer (the admin) with weight 1 and
+# threshold 1. This mirrors the legacy single-signer model but goes through the
+# policy constructor so new deployments never start in the deprecated model.
+if [ -z "$SIGNER_POLICY" ]; then
+    SIGNER_POLICY=$(cat <<EOF
+{"signers":[{"Ed25519":{"key":"$ADMIN_ADDRESS","weight":1}}],"threshold":1}
+EOF
+)
+fi
+
 # Print configuration and ask for confirmation
 echo "=========================================================="
 echo "           Lafiya Soroban Contract Deployment"
@@ -92,6 +114,7 @@ echo "=========================================================="
 echo "Network:       $NETWORK"
 echo "Identity:      $IDENTITY"
 echo "Admin Address: $ADMIN_ADDRESS"
+echo "Signer Policy: $SIGNER_POLICY"
 echo "=========================================================="
 echo ""
 
@@ -122,12 +145,14 @@ if [ ! -f "$ATTESTATION_WASM" ]; then
 fi
 
 # 2. Deploy attester-registry
-echo "Deploying attester-registry..."
+# Uses the policy-based constructor so the account starts with a SignerPolicy
+# rather than the deprecated legacy signer list.
+echo "Deploying attester-registry (policy constructor)..."
 ATTESTER_REGISTRY_ID=$(stellar contract deploy \
     --wasm "$ATTESTER_WASM" \
     --source-account "$IDENTITY" \
     --network "$NETWORK" \
-    -- --admin "$ADMIN_ADDRESS")
+    -- --admin "$ADMIN_ADDRESS" --signer_policy "$SIGNER_POLICY")
 
 if [ -z "$ATTESTER_REGISTRY_ID" ]; then
     echo "Error: Failed to deploy attester-registry." >&2
@@ -137,12 +162,13 @@ echo "attester-registry deployed successfully. ID: $ATTESTER_REGISTRY_ID"
 echo ""
 
 # 3. Deploy attestation-registry
-echo "Deploying attestation-registry..."
+# Also uses the policy-based constructor for the multisig-account surface.
+echo "Deploying attestation-registry (policy constructor)..."
 ATTESTATION_REGISTRY_ID=$(stellar contract deploy \
     --wasm "$ATTESTATION_WASM" \
     --source-account "$IDENTITY" \
     --network "$NETWORK" \
-    -- --admin "$ADMIN_ADDRESS" --attester_registry "$ATTESTER_REGISTRY_ID")
+    -- --admin "$ADMIN_ADDRESS" --attester_registry "$ATTESTER_REGISTRY_ID" --signer_policy "$SIGNER_POLICY")
 
 if [ -z "$ATTESTATION_REGISTRY_ID" ]; then
     echo "Error: Failed to deploy attestation-registry." >&2
@@ -161,6 +187,8 @@ cat <<EOF > "$DEPLOYMENTS_FILE"
   "attester_registry": "$ATTESTER_REGISTRY_ID",
   "attestation_registry": "$ATTESTATION_REGISTRY_ID",
   "admin": "$ADMIN_ADDRESS",
+  "signer_policy": $SIGNER_POLICY,
+  "constructor": "policy",
   "timestamp": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 }
 EOF

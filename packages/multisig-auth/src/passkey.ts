@@ -106,6 +106,14 @@ export function derToCompact(der: Uint8Array): Uint8Array {
   return out;
 }
 
+/**
+ * Convert a DER-encoded ECDSA signature straight to compact low-S form.
+ * Convenience wrapper around `derToCompact` + `normalizeLowS`.
+ */
+export function derToCompactLowS(der: Uint8Array): Uint8Array {
+  return normalizeLowS(derToCompact(der));
+}
+
 /** Whether a compact `r || s` signature is already in low-S form. */
 export function isLowS(signature: Uint8Array): boolean {
   if (signature.length !== 64) {
@@ -120,11 +128,18 @@ export function isLowS(signature: Uint8Array): boolean {
  * only the low-S one is accepted by the contract.
  */
 export function normalizeLowS(signature: Uint8Array): Uint8Array {
-  if (isLowS(signature)) {
+  if (signature.length !== 64) {
+    throw new Error(`normalizeLowS: signature must be 64 bytes, got ${signature.length}`);
+  }
+  const s = toBigInt(signature.subarray(32));
+  if (s === 0n || s >= P256_ORDER) {
+    throw new Error("normalizeLowS: s out of range");
+  }
+  if (s <= HALF_ORDER) {
     return Uint8Array.from(signature);
   }
   const out = Uint8Array.from(signature);
-  out.set(toBytes32(P256_ORDER - toBigInt(signature.subarray(32))), 32);
+  out.set(toBytes32(P256_ORDER - s), 32);
   return out;
 }
 
@@ -227,9 +242,10 @@ export function parsePasskeyAssertion(
   }
 
   const compact = derToCompact(assertion.signature);
+  const normalized = !isLowS(compact);
   return {
     signature: normalizeLowS(compact),
-    normalized: !isLowS(compact),
+    normalized,
     signedDigest: webauthnSignedDigest(assertion.authenticatorData, assertion.clientDataJSON),
     origin: clientData.origin,
     userVerified,

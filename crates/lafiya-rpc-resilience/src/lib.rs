@@ -55,10 +55,20 @@ pub mod metrics;
 /// (issue #540).
 pub mod hedge;
 
+/// Archived-entry restoration: detecting `restorePreamble` in simulation
+/// results and building/submitting the restore (or auto-restore) transaction
+/// before the real one (issue #710).
+pub mod restore;
+
 pub use breaker::{BreakerConfig, BreakerState, CircuitBreaker};
 pub use health::{HealthConfig, HealthScore, HealthTracker, ProviderHealth};
 pub use hedge::{HedgeConfig, HedgeOutcome};
 pub use metrics::{Metrics, NoopMetrics, SharedMetrics};
+pub use restore::{
+    estimate_restore_fee, plan_restore, restore_required, RestoreError, RestoreFootprint,
+    RestoreOutcome, RestorePreamble, RestorePlan, RestoreSubmitter, SimulationResult,
+    AUTO_RESTORE_PROTOCOL,
+};
 
 /// Applying ledger bounds to real transaction envelopes.
 pub mod xdr;
@@ -227,6 +237,21 @@ pub trait RpcProvider {
     ) -> Result<Option<String>, RpcError> {
         Ok(None)
     }
+
+    /// Simulate a transaction envelope (Soroban RPC `simulateTransaction`).
+    /// The result carries the `restorePreamble` when the footprint touches
+    /// archived persistent entries; see [`restore`] for how to act on it.
+    fn simulate(&mut self, _envelope_xdr: &str) -> Result<SimulationResult, RpcError> {
+        Err(RpcError::Other("simulate not supported".to_string()))
+    }
+
+    /// Submit a restore (or auto-restore) transaction built from a
+    /// simulation's `restorePreamble`. Default implementation routes through
+    /// [`RpcProvider::submit`] so every provider gets restoration support
+    /// for free.
+    fn submit_restore(&mut self, tx: &SignedTx) -> SubmitOutcome {
+        self.submit(tx)
+    }
 }
 
 /// Validity bounds a transaction was built with. They are what turn a
@@ -304,6 +329,68 @@ pub fn resolve(
             latest_ledger: latest,
         },
         _ => Resolution::Uncertain,
+    }
+}
+
+/// Drive a transaction that may touch archived persistent entries through
+/// restoration before submitting it for real (issue #710).
+///
+/// This is the shared entry point the CLI and relayer call: it simulates the
+/// envelope, and when the simulation reports a `restorePreamble` it builds,
+/// fee-estimates, and submits the restore transaction first, then returns the
+/// original envelope ready for submission. When the network supports
+/// automatic restoration (protocol >= [`AUTO_RESTORE_PROTOCOL`]) the preamble
+/// is honoured by the real transaction and no separate restore is submitted.
+///
+/// Returns [`RestoreOutcome::NoRestoreNeeded`] when nothing is archived, so
+/// callers can use it unconditionally on the submit path.
+pub fn restore_before_submit(
+    provider: &mut dyn RpcProvider,
+    tx: &SignedTx,
+    submitter: &mut dyn RestoreSubmitter,
+    log: &mut RecoveryLog,
+) -> Result<RestoreOutcome, RestoreError> {
+    let simulation = provider
+        .simulate(&tx.envelope_xdr)
+        .map_err(RestoreError::Rpc)?;
+    let plan = plan_restore(&simulation, submitter.protocol_version())?;
+    match plan {
+        RestorePlan::None => {
+            log.record("simulation reported no archived entries".to_string());
+            Ok(RestoreOutcome::NoRestoreNeeded)
+        }
+        RestorePlan::AutoRestore { footprint } => {
+            log.record(format!(
+                "simulation reported archived entries; protocol supports auto-restore ({} keys)",
+                footprint.keys.len()
+            ));
+            Ok(RestoreOutcome::AutoRestored { footprint })
+        }
+        RestorePlan::Explicit { footprint, fee } => {
+            log.record(format!(
+                "simulation reported archived entries; submitting restore for {} keys (fee {fee})",
+                footprint.keys.len()
+            ));
+            let restore_tx = submitter.build_restore_tx(&footprint, fee)?;
+            match provider.submit_restore(&restore_tx) {
+                SubmitOutcome::Ack(TxState::Accepted { ledger }) => {
+                    log.record(format!("restore accepted at ledger {ledger}"));
+                    Ok(RestoreOutcome::Restored { ledger, footprint })
+                }
+                SubmitOutcome::Ack(other) => {
+                    log.record(format!("restore not yet final ({other:?})"));
+                    Err(RestoreError::RestoreNotFinal { state: other })
+                }
+                SubmitOutcome::Definite(err) => {
+                    log.record(format!("restore failed definitively ({err})"));
+                    Err(RestoreError::Rpc(err))
+                }
+                SubmitOutcome::Ambiguous(err) => {
+                    log.record(format!("restore outcome ambiguous ({err})"));
+                    Err(RestoreError::RestoreAmbiguous(err))
+                }
+            }
+        }
     }
 }
 
@@ -944,5 +1031,133 @@ mod tests {
                 Resolution::SequenceConsumed { consumed_by: None }
             );
         }
+    }
+
+    struct FakeRestoreSubmitter {
+        protocol: u32,
+        built: Vec<(RestoreFootprint, u64)>,
+    }
+
+    impl RestoreSubmitter for FakeRestoreSubmitter {
+        fn protocol_version(&self) -> u32 {
+            self.protocol
+        }
+
+        fn build_restore_tx(
+            &mut self,
+            footprint: &RestoreFootprint,
+            fee: u64,
+        ) -> Result<SignedTx, RestoreError> {
+            self.built.push((footprint.clone(), fee));
+            Ok(SignedTx::new("restore-hash", "restore-xdr"))
+        }
+    }
+
+    fn archived_simulation() -> SimulationResult {
+        SimulationResult {
+            restore_preamble: Some(RestorePreamble {
+                footprint: RestoreFootprint {
+                    keys: vec!["attestation:abc".to_string()],
+                },
+                min_resource_fee: 100,
+            }),
+            min_resource_fee: 50,
+        }
+    }
+
+    #[test]
+    fn restore_before_submit_skips_when_nothing_archived() {
+        let mut provider = mock::ScriptedProvider::new("p");
+        provider.push_simulation(Ok(SimulationResult::default()));
+        let mut submitter = FakeRestoreSubmitter {
+            protocol: 20,
+            built: Vec::new(),
+        };
+        let mut log = RecoveryLog::new();
+        let outcome = restore_before_submit(
+            &mut provider,
+            &SignedTx::new("h", "x"),
+            &mut submitter,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(outcome, RestoreOutcome::NoRestoreNeeded);
+        assert!(submitter.built.is_empty());
+    }
+
+    #[test]
+    fn restore_before_submit_uses_auto_restore_on_new_protocol() {
+        let mut provider = mock::ScriptedProvider::new("p");
+        provider.push_simulation(Ok(archived_simulation()));
+        let mut submitter = FakeRestoreSubmitter {
+            protocol: AUTO_RESTORE_PROTOCOL,
+            built: Vec::new(),
+        };
+        let mut log = RecoveryLog::new();
+        let outcome = restore_before_submit(
+            &mut provider,
+            &SignedTx::new("h", "x"),
+            &mut submitter,
+            &mut log,
+        )
+        .unwrap();
+        assert!(matches!(outcome, RestoreOutcome::AutoRestored { .. }));
+        assert!(
+            submitter.built.is_empty(),
+            "auto-restore must not submit a separate transaction"
+        );
+    }
+
+    #[test]
+    fn restore_before_submit_submits_explicit_restore_on_old_protocol() {
+        let mut provider = mock::ScriptedProvider::new("p");
+        provider.push_simulation(Ok(archived_simulation()));
+        provider.push_restore(SubmitOutcome::Ack(TxState::Accepted { ledger: 7 }));
+        let mut submitter = FakeRestoreSubmitter {
+            protocol: 20,
+            built: Vec::new(),
+        };
+        let mut log = RecoveryLog::new();
+        let outcome = restore_before_submit(
+            &mut provider,
+            &SignedTx::new("h", "x"),
+            &mut submitter,
+            &mut log,
+        )
+        .unwrap();
+        assert_eq!(
+            outcome,
+            RestoreOutcome::Restored {
+                ledger: 7,
+                footprint: RestoreFootprint {
+                    keys: vec!["attestation:abc".to_string()]
+                }
+            }
+        );
+        assert_eq!(submitter.built.len(), 1);
+        assert!(
+            submitter.built[0].1 >= 100,
+            "restore fee must cover the preamble's min resource fee"
+        );
+    }
+
+    #[test]
+    fn restore_before_submit_reports_ambiguous_restore() {
+        let mut provider = mock::ScriptedProvider::new("p");
+        provider.push_simulation(Ok(archived_simulation()));
+        provider.push_restore(SubmitOutcome::Ambiguous(RpcError::Timeout));
+        let mut submitter = FakeRestoreSubmitter {
+            protocol: 20,
+            built: Vec::new(),
+        };
+        let mut log = RecoveryLog::new();
+        let err = restore_before_submit(
+            &mut provider,
+            &SignedTx::new("h", "x"),
+            &mut submitter,
+            &mut log,
+        )
+        .unwrap_err();
+        assert!(matches!(err, RestoreError::RestoreAmbiguous(_)));
     }
 }

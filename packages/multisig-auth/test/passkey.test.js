@@ -87,6 +87,157 @@ describe("DER and low-S handling (shared vectors)", () => {
   });
 });
 
+// Builds a DER ECDSA signature from raw 32-byte r and s, applying the minimal
+// INTEGER encoding (strip leading zeros, re-add 0x00 when the high bit is set).
+function derFromRaw(r, s) {
+  const encodeInt = (bytes) => {
+    let i = 0;
+    while (i < bytes.length - 1 && bytes[i] === 0) i++;
+    let body = Array.from(bytes.subarray(i));
+    if (body[0] & 0x80) body = [0x00, ...body];
+    return [0x02, body.length, ...body];
+  };
+  const rEnc = encodeInt(r);
+  const sEnc = encodeInt(s);
+  const body = [...rEnc, ...sEnc];
+  return Uint8Array.from([0x30, body.length, ...body]);
+}
+
+function rawFromCompact(compact) {
+  return { r: compact.subarray(0, 32), s: compact.subarray(32) };
+}
+
+function bigTo32(n) {
+  const out = new Uint8Array(32);
+  let v = n;
+  for (let i = 31; i >= 0; i--) {
+    out[i] = Number(v & 0xffn);
+    v >>= 8n;
+  }
+  return out;
+}
+
+describe("DER edge cases (high-S, short-r, leading zero)", () => {
+  const named = (name) => {
+    const v = VECTORS.vectors.find((x) => x.name === name);
+    expect(v, `missing vector ${name}`).toBeDefined();
+    return v;
+  };
+
+  it("normalizes a high-S vector to low-S", () => {
+    const v = named("webauthn-high-s");
+    const compact = derToCompact(hex(v.der_hex));
+    expect(toHex(compact)).toBe(v.compact_hex);
+    expect(isLowS(compact)).toBe(false);
+    const normalized = normalizeLowS(compact);
+    expect(toHex(normalized)).toBe(v.normalized_compact_hex);
+    expect(isLowS(normalized)).toBe(true);
+  });
+
+  it("handles a short-r vector (r < 2^248, encoded with fewer bytes)", () => {
+    const v = named("webauthn-short-r");
+    const compact = derToCompact(hex(v.der_hex));
+    expect(toHex(compact)).toBe(v.compact_hex);
+    // r must be left-padded to 32 bytes in the compact form.
+    expect(compact[0]).toBe(0);
+    expect(toHex(normalizeLowS(compact))).toBe(v.normalized_compact_hex);
+  });
+
+  it("handles a leading-zero vector (r with 0x00 pad byte in DER)", () => {
+    const v = named("webauthn-leading-zero");
+    const compact = derToCompact(hex(v.der_hex));
+    expect(toHex(compact)).toBe(v.compact_hex);
+    // The DER INTEGER carries a 0x00 sign pad; the compact r keeps the value.
+    expect(hex(v.der_hex)[4]).toBe(0x00);
+    expect(toHex(normalizeLowS(compact))).toBe(v.normalized_compact_hex);
+  });
+
+  it("round-trips raw r/s through DER for every vector", () => {
+    for (const v of VECTORS.vectors) {
+      const compact = hex(v.compact_hex);
+      const { r, s } = rawFromCompact(compact);
+      const der = derFromRaw(r, s);
+      expect(toHex(derToCompact(der))).toBe(v.compact_hex);
+    }
+  });
+
+  it("pads short r and s to 32 bytes each", () => {
+    const r = bigTo32(0x7fn);
+    const s = bigTo32(0x01n);
+    const der = derFromRaw(r, s);
+    const compact = derToCompact(der);
+    expect(compact.length).toBe(64);
+    expect(toHex(compact.subarray(0, 32))).toBe(toHex(r));
+    expect(toHex(compact.subarray(32))).toBe(toHex(s));
+  });
+});
+
+describe("low-S normalization property", () => {
+  // Deterministic PRNG so failures are reproducible.
+  function mulberry32(seed) {
+    let a = seed >>> 0;
+    return () => {
+      a = (a + 0x6d2b79f5) >>> 0;
+      let t = a;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+  }
+
+  const HALF_ORDER = P256_ORDER >> 1n;
+
+  function randomScalar(rand) {
+    // Uniform-ish scalar in [1, n-1].
+    for (;;) {
+      let n = 0n;
+      for (let i = 0; i < 32; i++) n = (n << 8n) | BigInt(Math.floor(rand() * 256));
+      if (n > 0n && n < P256_ORDER) return n;
+    }
+  }
+
+  it("always produces a low-S signature", () => {
+    const rand = mulberry32(0x5eed);
+    for (let i = 0; i < 500; i++) {
+      const r = randomScalar(rand);
+      const s = randomScalar(rand);
+      const compact = new Uint8Array([...bigTo32(r), ...bigTo32(s)]);
+      const normalized = normalizeLowS(compact);
+      expect(normalized.length).toBe(64);
+      expect(isLowS(normalized)).toBe(true);
+      const sOut = BigInt("0x" + toHex(normalized.subarray(32)));
+      expect(sOut).toBeLessThanOrEqual(HALF_ORDER);
+    }
+  });
+
+  it("maps high-S inputs to the same compact form as their low-S counterparts", () => {
+    const rand = mulberry32(0xc0ffee);
+    for (let i = 0; i < 500; i++) {
+      const r = randomScalar(rand);
+      const s = randomScalar(rand);
+      const sLow = s > HALF_ORDER ? P256_ORDER - s : s;
+      const sHigh = s > HALF_ORDER ? s : P256_ORDER - s;
+      const lowCompact = new Uint8Array([...bigTo32(r), ...bigTo32(sLow)]);
+      const highCompact = new Uint8Array([...bigTo32(r), ...bigTo32(sHigh)]);
+      expect(isLowS(lowCompact)).toBe(true);
+      expect(isLowS(highCompact)).toBe(false);
+      expect(toHex(normalizeLowS(highCompact))).toBe(toHex(normalizeLowS(lowCompact)));
+      expect(toHex(normalizeLowS(highCompact))).toBe(toHex(lowCompact));
+    }
+  });
+
+  it("normalizes DER-encoded random signatures to low-S", () => {
+    const rand = mulberry32(0xdeadbeef);
+    for (let i = 0; i < 200; i++) {
+      const r = randomScalar(rand);
+      const s = randomScalar(rand);
+      const der = derFromRaw(bigTo32(r), bigTo32(s));
+      const normalized = normalizeLowS(derToCompact(der));
+      expect(isLowS(normalized)).toBe(true);
+    }
+  });
+});
+
 describe("parsePasskeyAssertion", () => {
   const [vector] = webauthnVectors;
   const payload = hex(vector.payload_hex);

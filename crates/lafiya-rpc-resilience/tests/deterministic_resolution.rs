@@ -12,7 +12,8 @@ use std::rc::Rc;
 use lafiya_rpc_resilience::mock::{ScriptedProvider, Shared};
 use lafiya_rpc_resilience::{
     classify, FailoverClient, HealthConfig, HealthTracker, RecoveryLog, RecoveryResult,
-    RetryClass, RetryPolicy, RpcError, RpcProvider, SignedTx, SubmitOutcome, TxBounds, TxState,
+    RestoreFootprint, RestoreOutcome, RetryClass, RetryPolicy, RpcError, RpcProvider, SignedTx,
+    SubmitOutcome, TxBounds, TxState,
 };
 
 fn policy() -> RetryPolicy {
@@ -335,5 +336,165 @@ fn submission_is_single_flight_and_idempotent_by_hash() {
         handle.borrow().submit_calls,
         1,
         "the envelope is submitted exactly once (single-flight)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Archived-entry restoration (issue #710).
+// ---------------------------------------------------------------------------
+
+fn restore_footprint() -> RestoreFootprint {
+    RestoreFootprint {
+        keys: vec![
+            "contract:attestation:42".to_string(),
+            "contract:attester:GATTESTER".to_string(),
+            "contract:work_item:7".to_string(),
+        ],
+    }
+}
+
+#[test]
+fn simulation_restore_preamble_is_submitted_before_the_real_tx() {
+    // The first submission is rejected because the footprint is archived; the
+    // client must submit the restore transaction, wait for it to land, and
+    // only then retry the original envelope.
+    let node = Shared::new(
+        ScriptedProvider::new("node")
+            .then_submit(SubmitOutcome::Archived(restore_footprint()))
+            .then_restore(RestoreOutcome::Ack(TxState::Accepted { ledger: 1_020 }))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 1_021 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+
+    let result = client.submit_with_bounds(
+        &SignedTx::new("tx-real", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
+
+    assert!(
+        matches!(result, RecoveryResult::Accepted { ledger: 1_021, .. }),
+        "the real transaction lands after restoration, got {result:?}"
+    );
+    assert_eq!(
+        handle.borrow().restore_calls,
+        1,
+        "exactly one restore transaction is submitted"
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        2,
+        "the real envelope is retried once after restoration"
+    );
+    assert_eq!(
+        handle.borrow().restored_keys,
+        restore_footprint().keys,
+        "the restore transaction covers the reported footprint"
+    );
+}
+
+#[test]
+fn restore_transaction_fee_is_estimated_from_the_footprint() {
+    let node = Shared::new(
+        ScriptedProvider::new("node")
+            .then_submit(SubmitOutcome::Archived(restore_footprint()))
+            .then_restore(RestoreOutcome::Ack(TxState::Accepted { ledger: 1_020 }))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 1_021 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+
+    let _ = client.submit_with_bounds(
+        &SignedTx::new("tx-real", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
+
+    let fee = handle
+        .borrow()
+        .restore_fee
+        .expect("the restore transaction carries an estimated fee");
+    assert!(
+        fee > 0,
+        "restoring archived entries must cost a non-zero fee"
+    );
+    assert_eq!(
+        handle.borrow().restore_fee_estimates,
+        1,
+        "the fee is estimated exactly once per restore"
+    );
+}
+
+#[test]
+fn restore_transaction_is_bounded_and_expires_deterministically() {
+    // The restore transaction itself is ledger-bounded: if it never lands the
+    // client must resolve to `Expired` rather than retrying forever, and must
+    // not submit the real envelope against still-archived entries.
+    let node = Shared::new(
+        ScriptedProvider::new("node")
+            .then_submit(SubmitOutcome::Archived(restore_footprint()))
+            .then_restore(RestoreOutcome::Ambiguous(RpcError::Timeout))
+            .then_latest_ledger(1_030)
+            .then_latest_ledger(1_061)
+            .then_account_sequence(6),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+
+    let result = client.submit_with_bounds(
+        &SignedTx::new("tx-real", ""),
+        &bounds(),
+        &mut RecoveryLog::new(),
+    );
+
+    assert_eq!(
+        result,
+        RecoveryResult::Expired {
+            max_ledger: 1_060,
+            latest_ledger: 1_061
+        },
+        "an unlanded restore resolves to expiry"
+    );
+    assert_eq!(
+        handle.borrow().restore_calls,
+        1,
+        "the restore envelope is never resubmitted"
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        1,
+        "the real envelope is not retried while entries stay archived"
+    );
+}
+
+#[test]
+fn restore_is_idempotent_when_entries_are_already_live() {
+    // A concurrent client may have restored the footprint already; the
+    // restore transaction then succeeds without changing state and the real
+    // envelope proceeds exactly once.
+    let node = Shared::new(
+        ScriptedProvider::new("node")
+            .then_submit(SubmitOutcome::Archived(restore_footprint()))
+            .then_restore(RestoreOutcome::Ack(TxState::Accepted { ledger: 1_020 }))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 1_021 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+
+    let tx = SignedTx::new("tx-real", "");
+    let first = client.submit_with_bounds(&tx, &bounds(), &mut RecoveryLog::new());
+    let second = client.submit_with_bounds(&tx, &bounds(), &mut RecoveryLog::new());
+
+    assert!(matches!(first, RecoveryResult::Accepted { .. }));
+    assert_eq!(first, second, "the resolved outcome is cached by hash");
+    assert_eq!(
+        handle.borrow().restore_calls,
+        1,
+        "restoration happens at most once per footprint"
     );
 }

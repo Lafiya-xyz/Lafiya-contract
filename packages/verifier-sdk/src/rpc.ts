@@ -12,6 +12,67 @@ import {
 } from "./transport.js";
 import type { NetworkTrust } from "./trust.js";
 
+/**
+ * Raised when a read touches a persistent entry whose TTL has lapsed and which
+ * must be restored (via `RestoreFootprintOp` or protocol auto-restore) before
+ * it can be read. Callers should surface this as a distinct `archived` state
+ * rather than treating the entry as absent or unverified.
+ */
+export class ArchivedEntryError extends Error {
+  readonly code = "ARCHIVED" as const;
+  /** Ledger keys (base64 XDR) reported in the simulation restore preamble. */
+  readonly restorePreamble: RestorePreamble;
+
+  constructor(message: string, restorePreamble: RestorePreamble) {
+    super(message);
+    this.name = "ArchivedEntryError";
+    this.restorePreamble = restorePreamble;
+  }
+}
+
+/** The restore footprint reported by simulation for archived entries. */
+export interface RestorePreamble {
+  /** Base64-encoded `SorobanTransactionData` XDR carrying the restore footprint. */
+  transactionData: string;
+  /** Minimum resource fee (in stroops) required to submit the restore transaction. */
+  minResourceFee: string;
+}
+
+/** Narrows an unknown error to an {@link ArchivedEntryError}. */
+export function isArchivedEntryError(err: unknown): err is ArchivedEntryError {
+  return err instanceof ArchivedEntryError;
+}
+
+/**
+ * Detects a `restorePreamble` in a Soroban RPC simulation response or error.
+ * Returns the parsed preamble, or `null` when the response carries none.
+ */
+export function detectRestorePreamble(response: unknown): RestorePreamble | null {
+  if (!response || typeof response !== "object") return null;
+  const candidate = response as {
+    restorePreamble?: { transactionData?: unknown; minResourceFee?: unknown } | null;
+    error?: unknown;
+  };
+  const preamble = candidate.restorePreamble;
+  if (preamble && typeof preamble === "object") {
+    const transactionData = preamble.transactionData;
+    const minResourceFee = preamble.minResourceFee;
+    if (typeof transactionData === "string" && transactionData.length > 0) {
+      return {
+        transactionData,
+        minResourceFee:
+          typeof minResourceFee === "string"
+            ? minResourceFee
+            : typeof minResourceFee === "number"
+              ? String(minResourceFee)
+              : "0",
+      };
+    }
+  }
+  if (candidate.error) return detectRestorePreamble(candidate.error);
+  return null;
+}
+
 /** A versioned status-list segment as stored on-chain. */
 export interface StatusListSegment {
   /** Segment index within the status list. */
@@ -50,12 +111,28 @@ export class BindingsChainReader implements ChainReader {
   }
 
   private read<T>(fn: () => Promise<T>, opts: CallOptions = {}): Promise<T> {
-    return callWithPolicy(fn, {
-      signal: opts.signal,
-      timeoutMs: opts.timeoutMs ?? this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      retry: this.options.retry ?? DEFAULT_RETRY,
-      idempotent: true,
-    });
+    return callWithPolicy(
+      async () => {
+        try {
+          return await fn();
+        } catch (err) {
+          const preamble = detectRestorePreamble(err);
+          if (preamble) {
+            throw new ArchivedEntryError(
+              "entry is archived and must be restored before it can be read",
+              preamble,
+            );
+          }
+          throw err;
+        }
+      },
+      {
+        signal: opts.signal,
+        timeoutMs: opts.timeoutMs ?? this.options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        retry: this.options.retry ?? DEFAULT_RETRY,
+        idempotent: true,
+      },
+    );
   }
 
   async getAttestation(trust: NetworkTrust, recordHash: string, opts?: CallOptions) {
@@ -64,6 +141,13 @@ export class BindingsChainReader implements ChainReader {
       () => client.get_attestation({ record_hash: Buffer.from(recordHash, "hex") }),
       opts,
     );
+    const preamble = detectRestorePreamble(tx);
+    if (preamble) {
+      throw new ArchivedEntryError(
+        "attestation is archived and must be restored before it can be read",
+        preamble,
+      );
+    }
     return tx.result ? toAttestation(tx.result) : null;
   }
 
@@ -73,6 +157,13 @@ export class BindingsChainReader implements ChainReader {
       () => client.get_attestation_history({ record_hash: Buffer.from(recordHash, "hex") }),
       opts,
     );
+    const preamble = detectRestorePreamble(tx);
+    if (preamble) {
+      throw new ArchivedEntryError(
+        "attestation history is archived and must be restored before it can be read",
+        preamble,
+      );
+    }
     return tx.result.map(toAttestation);
   }
 
@@ -82,7 +173,15 @@ export class BindingsChainReader implements ChainReader {
     opts?: CallOptions,
   ): Promise<AttesterState | null> {
     const client = new AttesterClient(this.clientOptions(trust, trust.attesterRegistry));
-    const status = (await this.read(() => client.get_attester_status({ attester }), opts)).result;
+    const tx = await this.read(() => client.get_attester_status({ attester }), opts);
+    const preamble = detectRestorePreamble(tx);
+    if (preamble) {
+      throw new ArchivedEntryError(
+        "attester info is archived and must be restored before it can be read",
+        preamble,
+      );
+    }
+    const status = tx.result;
     if (!status) return null;
     return {
       suspended: status.suspended,
@@ -92,7 +191,15 @@ export class BindingsChainReader implements ChainReader {
 
   async getStatusListRoot(trust: NetworkTrust): Promise<StatusListRoot | null> {
     const client = new StatusListClient(this.clientOptions(trust, trust.statusList));
-    const root = (await client.get_root()).result;
+    const tx = await client.get_root();
+    const preamble = detectRestorePreamble(tx);
+    if (preamble) {
+      throw new ArchivedEntryError(
+        "status list root is archived and must be restored before it can be read",
+        preamble,
+      );
+    }
+    const root = tx.result;
     if (!root) return null;
     return {
       version: Number(root.version),
@@ -104,7 +211,15 @@ export class BindingsChainReader implements ChainReader {
 
   async getStatusListSegment(trust: NetworkTrust, index: number): Promise<StatusListSegment | null> {
     const client = new StatusListClient(this.clientOptions(trust, trust.statusList));
-    const segment = (await client.get_segment({ index })).result;
+    const tx = await client.get_segment({ index });
+    const preamble = detectRestorePreamble(tx);
+    if (preamble) {
+      throw new ArchivedEntryError(
+        "status list segment is archived and must be restored before it can be read",
+        preamble,
+      );
+    }
+    const segment = tx.result;
     if (!segment) return null;
     return {
       index: Number(segment.index),

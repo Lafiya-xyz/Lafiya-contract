@@ -205,6 +205,43 @@ fn incentive_pool_scenario_reaches_the_webhook() {
     assert!(rx.try_recv().is_err());
 }
 
+/// A pending self-upgrade of the multisig account must raise a critical
+/// alert, and that alert must reach the webhook sink.
+#[test]
+fn pending_account_upgrade_reaches_the_webhook() {
+    let (url, rx) = mock_webhook();
+    let mut cfg = config(url);
+    cfg.contracts = vec!["CACC".into(), "CREG".into()];
+    let mut engine = Engine::new(&cfg);
+
+    let new_wasm = "dd".repeat(32);
+    let scenario = [
+        // The account announces an upgrade that is not yet executable.
+        ev("CACC", "upgrade_pending", 10, &[&new_wasm, "100"]),
+        // An unrelated registry event must not be mistaken for it.
+        ev("CREG", "attester_added", 11, &["GA"]),
+    ];
+    let alerts: Vec<_> = scenario.iter().flat_map(|e| engine.evaluate(e)).collect();
+
+    for alert in &alerts {
+        assert!(sinks::dispatch(&cfg.sinks, alert).is_empty());
+    }
+
+    let pending: Vec<_> = alerts
+        .iter()
+        .filter(|a| a.kind == rules::ACCOUNT_UPGRADE_PENDING)
+        .collect();
+    assert_eq!(pending.len(), 1, "expected one pending-upgrade alert");
+    assert_eq!(pending[0].severity, Severity::Critical);
+
+    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+    assert_eq!(
+        body["kind"].as_str().unwrap(),
+        rules::ACCOUNT_UPGRADE_PENDING
+    );
+    assert!(rx.try_recv().is_err());
+}
+
 /// Requires a running quickstart (`stellar container start local`) with the
 /// Lafiya contracts deployed and the scenario in docs/runbooks/watchdog.md
 /// executed. Set `LAFIYA_WATCHDOG_RPC` and `LAFIYA_WATCHDOG_CONTRACTS`

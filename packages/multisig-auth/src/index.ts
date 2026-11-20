@@ -430,3 +430,9 @@ export function finalizeCeremony(
 
 export * from "./passkey.js";
 export * from "./intent.js";
+export {
+  derToCompact,
+  normalizeLowS,
+  isLowS,
+  P256_ORDER,
+} from "./passkey.js";

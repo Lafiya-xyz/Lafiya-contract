@@ -18,8 +18,10 @@
 use crate::TxBounds;
 use std::fmt;
 use stellar_xdr::{
-    LedgerBounds, Limits, MuxedAccount, OperationBody, Preconditions, PreconditionsV2, ReadXdr,
-    SorobanCredentials, TransactionEnvelope, Uint256, WriteXdr,
+    ExtensionPoint, LedgerBounds, LedgerEntry, LedgerKey, Limits, MuxedAccount, Operation,
+    OperationBody, Preconditions, PreconditionsV2, ReadXdr, RestoreFootprintOp, SorobanCredentials,
+    SorobanTransactionData, SorobanTransactionDataExt, Transaction, TransactionEnvelope,
+    TransactionExt, TransactionV1Envelope, Uint256, VecM, WriteXdr,
 };
 
 /// Why an envelope could not be bounded.
@@ -35,6 +37,8 @@ pub enum BoundsError {
     AlreadySigned,
     /// Re-encoding failed.
     Encode(String),
+    /// The restore preamble could not be parsed or was internally inconsistent.
+    RestorePreamble(String),
 }
 
 impl fmt::Display for BoundsError {
@@ -51,6 +55,7 @@ impl fmt::Display for BoundsError {
                 )
             }
             BoundsError::Encode(e) => write!(f, "could not encode envelope: {e}"),
+            BoundsError::RestorePreamble(e) => write!(f, "invalid restore preamble: {e}"),
         }
     }
 }
@@ -121,6 +126,159 @@ pub fn apply_ledger_bounds(
         .to_xdr_base64(Limits::none())
         .map_err(|e| BoundsError::Encode(e.to_string()))?;
     Ok((encoded, bounds))
+}
+
+/// The `restorePreamble` reported by `simulateTransaction` when a simulation
+/// touches archived persistent entries.
+///
+/// When present, the real transaction cannot succeed until the listed
+/// entries are restored, so clients must submit a `RestoreFootprintOp` (or
+/// rely on protocol auto-restore) first.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RestorePreamble {
+    /// The `SorobanTransactionData` (base64 XDR) the restore transaction must
+    /// carry, including the footprint of the archived entries and the
+    /// resource fee the network quoted for the restore.
+    pub transaction_data_b64: String,
+    /// The minimum resource fee (in stroops) the network quoted for the
+    /// restore transaction.
+    pub min_resource_fee: u64,
+}
+
+impl RestorePreamble {
+    /// Parse a `restorePreamble` object from a JSON simulation result.
+    ///
+    /// Accepts the raw JSON value as returned by `simulateTransaction`:
+    /// `{ "transactionData": "<base64>", "minResourceFee": "<stroops>" }`.
+    /// Returns `Ok(None)` when the field is absent or `null`.
+    pub fn from_json(value: &serde_json::Value) -> Result<Option<Self>, BoundsError> {
+        let Some(obj) = value.get("restorePreamble") else {
+            return Ok(None);
+        };
+        if obj.is_null() {
+            return Ok(None);
+        }
+        let transaction_data_b64 = obj
+            .get("transactionData")
+            .and_then(|v| v.as_str())
+            .ok_or_else(|| {
+                BoundsError::RestorePreamble("missing `transactionData`".to_string())
+            })?
+            .to_string();
+        let min_resource_fee = match obj.get("minResourceFee") {
+            None | Some(serde_json::Value::Null) => 0,
+            Some(serde_json::Value::String(s)) => s.trim().parse::<u64>().map_err(|e| {
+                BoundsError::RestorePreamble(format!("invalid `minResourceFee`: {e}"))
+            })?,
+            Some(serde_json::Value::Number(n)) => n.as_u64().ok_or_else(|| {
+                BoundsError::RestorePreamble("`minResourceFee` is not a u64".to_string())
+            })?,
+            Some(_) => {
+                return Err(BoundsError::RestorePreamble(
+                    "`minResourceFee` must be a string or number".to_string(),
+                ))
+            }
+        };
+        Ok(Some(Self {
+            transaction_data_b64,
+            min_resource_fee,
+        }))
+    }
+
+    /// Decode the quoted `SorobanTransactionData`.
+    pub fn transaction_data(&self) -> Result<SorobanTransactionData, BoundsError> {
+        SorobanTransactionData::from_xdr_base64(&self.transaction_data_b64, Limits::none())
+            .map_err(|e| BoundsError::RestorePreamble(format!("invalid transaction data: {e}")))
+    }
+
+    /// The archived ledger keys the restore transaction must cover.
+    pub fn archived_keys(&self) -> Result<Vec<LedgerKey>, BoundsError> {
+        let data = self.transaction_data()?;
+        let read_only = data.resources.footprint.read_only.to_vec();
+        let read_write = data.resources.footprint.read_write.to_vec();
+        Ok(read_only.into_iter().chain(read_write).collect())
+    }
+}
+
+/// Build an unsigned `RestoreFootprintOp` transaction envelope (base64 XDR)
+/// from a simulation's [`RestorePreamble`].
+///
+/// The returned envelope has no signatures and no ledger bounds; callers
+/// should apply [`apply_ledger_bounds`] before signing. `fee` is the total
+/// transaction fee in stroops (typically `min_resource_fee` plus a base fee
+/// and inclusion margin).
+pub fn build_restore_footprint_tx(
+    preamble: &RestorePreamble,
+    source_account: MuxedAccount,
+    seq_num: i64,
+    fee: u32,
+) -> Result<String, BoundsError> {
+    let data = preamble.transaction_data()?;
+    let op = Operation {
+        source_account: None,
+        body: OperationBody::RestoreFootprint(RestoreFootprintOp {
+            ext: ExtensionPoint::V0,
+        }),
+    };
+    let tx = Transaction {
+        source_account,
+        fee,
+        seq_num: stellar_xdr::SequenceNumber(seq_num),
+        cond: Preconditions::None,
+        memo: stellar_xdr::Memo::None,
+        operations: vec![op]
+            .try_into()
+            .map_err(|e: stellar_xdr::xdr::Error| BoundsError::RestorePreamble(e.to_string()))?,
+        ext: TransactionExt::V1(data),
+    };
+    TransactionEnvelope::Tx(TransactionV1Envelope {
+        tx,
+        signatures: VecM::default(),
+    })
+    .to_xdr_base64(Limits::none())
+    .map_err(|e| BoundsError::Encode(e.to_string()))
+}
+
+/// Build an unsigned auto-restore transaction envelope (base64 XDR).
+///
+/// On protocols that support automatic restoration, the real transaction can
+/// carry the restore footprint itself: the same `SorobanTransactionData` the
+/// simulation quoted is attached to the original operations, and the network
+/// restores the archived entries before executing them. `envelope_b64` must be
+/// an unsigned V1 envelope; its existing `SorobanTransactionData` (if any) is
+/// replaced by the preamble's.
+pub fn apply_auto_restore(
+    envelope_b64: &str,
+    preamble: &RestorePreamble,
+) -> Result<String, BoundsError> {
+    let mut envelope = TransactionEnvelope::from_xdr_base64(envelope_b64.trim(), Limits::none())
+        .map_err(|e| BoundsError::Decode(e.to_string()))?;
+    let TransactionEnvelope::Tx(v1) = &mut envelope else {
+        return Err(BoundsError::UnsupportedEnvelope);
+    };
+    if !v1.signatures.is_empty() {
+        return Err(BoundsError::AlreadySigned);
+    }
+    let data = preamble.transaction_data()?;
+    v1.tx.ext = TransactionExt::V1(data);
+    envelope
+        .to_xdr_base64(Limits::none())
+        .map_err(|e| BoundsError::Encode(e.to_string()))
+}
+
+/// Read the `SorobanTransactionData` attached to an envelope, if any.
+pub fn soroban_data_of(
+    envelope_b64: &str,
+) -> Result<Option<SorobanTransactionData>, BoundsError> {
+    let envelope = TransactionEnvelope::from_xdr_base64(envelope_b64.trim(), Limits::none())
+        .map_err(|e| BoundsError::Decode(e.to_string()))?;
+    let TransactionEnvelope::Tx(v1) = envelope else {
+        return Err(BoundsError::UnsupportedEnvelope);
+    };
+    Ok(match v1.tx.ext {
+        TransactionExt::V0 => None,
+        TransactionExt::V1(data) => Some(data),
+    })
 }
 
 /// Read `maxLedger` back out of an envelope, if it has one.
@@ -246,6 +404,112 @@ mod tests {
             panic!("expected PreconditionsV2")
         };
         assert_eq!(v2.time_bounds, Some(time));
+    }
+
+    fn sample_preamble() -> RestorePreamble {
+        let key = LedgerKey::ContractData(stellar_xdr::LedgerKeyContractData {
+            contract: ScAddress::Contract(ContractId(Hash([1; 32]))),
+            key: ScVal::LedgerKeyContractInstance,
+            durability: stellar_xdr::ContractDataDurability::Persistent,
+        });
+        let data = SorobanTransactionData {
+            ext: SorobanTransactionDataExt::V0,
+            resources: stellar_xdr::SorobanResources {
+                footprint: stellar_xdr::LedgerFootprint {
+                    read_only: vec![key].try_into().unwrap(),
+                    read_write: VecM::default(),
+                },
+                instructions: 0,
+                disk_read_bytes: 0,
+                write_bytes: 0,
+            },
+            resource_fee: 12_345,
+        };
+        RestorePreamble {
+            transaction_data_b64: data.to_xdr_base64(Limits::none()).unwrap(),
+            min_resource_fee: 12_345,
+        }
+    }
+
+    #[test]
+    fn parses_restore_preamble_from_simulation_json() {
+        let preamble = sample_preamble();
+        let json = serde_json::json!({
+            "restorePreamble": {
+                "transactionData": preamble.transaction_data_b64,
+                "minResourceFee": "12345",
+            }
+        });
+        let parsed = RestorePreamble::from_json(&json).unwrap().unwrap();
+        assert_eq!(parsed, preamble);
+        assert_eq!(parsed.archived_keys().unwrap().len(), 1);
+
+        assert_eq!(
+            RestorePreamble::from_json(&serde_json::json!({})).unwrap(),
+            None
+        );
+        assert_eq!(
+            RestorePreamble::from_json(&serde_json::json!({ "restorePreamble": null })).unwrap(),
+            None
+        );
+        assert!(matches!(
+            RestorePreamble::from_json(&serde_json::json!({ "restorePreamble": {} })),
+            Err(BoundsError::RestorePreamble(_))
+        ));
+    }
+
+    #[test]
+    fn builds_restore_footprint_transaction() {
+        let preamble = sample_preamble();
+        let b64 = build_restore_footprint_tx(
+            &preamble,
+            MuxedAccount::Ed25519(Uint256([7; 32])),
+            99,
+            20_000,
+        )
+        .unwrap();
+        let env = TransactionEnvelope::from_xdr_base64(&b64, Limits::none()).unwrap();
+        let TransactionEnvelope::Tx(v1) = env else {
+            unreachable!()
+        };
+        assert!(v1.signatures.is_empty());
+        assert_eq!(v1.tx.seq_num.0, 99);
+        assert_eq!(v1.tx.fee, 20_000);
+        assert!(matches!(
+            v1.tx.operations[0].body,
+            OperationBody::RestoreFootprint(_)
+        ));
+        let TransactionExt::V1(data) = &v1.tx.ext else {
+            panic!("expected SorobanTransactionData")
+        };
+        assert_eq!(data.resource_fee, 12_345);
+
+        // Bounds can be applied to the restore transaction like any other.
+        let (bounded, bounds) = apply_ledger_bounds(&b64, 777).unwrap();
+        assert_eq!(bounds.max_ledger, 777);
+        assert_eq!(max_ledger_of(&bounded).unwrap(), Some(777));
+    }
+
+    #[test]
+    fn applies_auto_restore_to_unsigned_envelope() {
+        let preamble = sample_preamble();
+        let input = envelope(Preconditions::None, vec![]);
+        assert!(soroban_data_of(&input).unwrap().is_none());
+
+        let out = apply_auto_restore(&input, &preamble).unwrap();
+        let data = soroban_data_of(&out).unwrap().unwrap();
+        assert_eq!(data.resource_fee, 12_345);
+        assert_eq!(data.resources.footprint.read_only.len(), 1);
+
+        let mut env = TransactionEnvelope::from_xdr_base64(&input, Limits::none()).unwrap();
+        if let TransactionEnvelope::Tx(v1) = &mut env {
+            v1.signatures = vec![Default::default()].try_into().unwrap();
+        }
+        let signed = env.to_xdr_base64(Limits::none()).unwrap();
+        assert_eq!(
+            apply_auto_restore(&signed, &preamble),
+            Err(BoundsError::AlreadySigned)
+        );
     }
 
     #[test]

@@ -47,6 +47,7 @@ const TRUTH_TABLE: Record<Verdict, () => ReturnType<typeof verify>> = {
   commitment_mismatch: () =>
     verify({ history: [fresh] }, qr(), [...FIELDS.slice(0, 3), { kind: "text", value: "none" }]),
   unavailable: () => verify({ history: [fresh], fail: true }),
+  archived: () => verify({ history: [fresh], archived: true }),
   revoked: () => verify({ history: [], revoked: true }),
   not_found: () => verify({ history: [] }),
   superseded: () =>
@@ -180,6 +181,28 @@ describe("disputed overlay", () => {
     const disputed = await verify({ history: [fresh], disputed: true });
     expect(disputed.verdict).toBe("disputed");
     const revoked = await verify({ history: [fresh], disputed: true, revoked: true });
+    expect(revoked.verdict).toBe("revoked");
+  });
+});
+
+describe("archived entries", () => {
+  it("surfaces a dedicated archived state instead of unverified", async () => {
+    const result = await verify({ history: [fresh], archived: true });
+    expect(result.verdict).toBe("archived");
+    expect(result.reasons[0].code).toBe("archived");
+    expect(result.verdict).not.toBe("not_found");
+    expect(result.verdict).not.toBe("unavailable");
+  });
+
+  it("does not report archived entries as verified", async () => {
+    const result = await verify({ history: [fresh], archived: true });
+    expect(result.verdict).not.toBe("verified");
+  });
+
+  it("takes precedence over verified but not over revocation", async () => {
+    const archived = await verify({ history: [fresh], archived: true });
+    expect(archived.verdict).toBe("archived");
+    const revoked = await verify({ history: [fresh], archived: true, revoked: true });
     expect(revoked.verdict).toBe("revoked");
   });
 });

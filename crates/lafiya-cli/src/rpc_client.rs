@@ -46,6 +46,42 @@ pub struct SimulateResult {
     pub min_resource_fee: u64,
     /// Human-readable summary of the invocation returned by the simulator.
     pub invocation_summary: Option<String>,
+    /// The `restorePreamble` reported by the simulator, if any.
+    ///
+    /// When present, one or more ledger entries the transaction touches are
+    /// archived and must be restored (via `RestoreFootprintOp` or automatic
+    /// restoration) before the real transaction can succeed (issue #710).
+    pub restore_preamble: Option<RestorePreamble>,
+}
+
+/// The `restorePreamble` from a simulation result.
+///
+/// This describes the restore transaction that must be submitted before the
+/// real transaction when the simulator reports archived entries.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct RestorePreamble {
+    /// XDR-encoded `TransactionData` (footprint + resource fee) for the
+    /// restore transaction, as returned by the RPC node.
+    pub transaction_data_xdr: String,
+    /// Minimum resource fee (in stroops) for the restore transaction.
+    pub min_resource_fee: u64,
+}
+
+impl RestorePreamble {
+    /// Whether the preamble carries anything that must be submitted.
+    pub fn is_empty(&self) -> bool {
+        self.transaction_data_xdr.is_empty()
+    }
+}
+
+impl SimulateResult {
+    /// Whether the simulation reported archived entries that need restoring.
+    pub fn needs_restore(&self) -> bool {
+        self.restore_preamble
+            .as_ref()
+            .map(|p| !p.is_empty())
+            .unwrap_or(false)
+    }
 }
 
 /// A single ledger key in the transaction footprint.
@@ -203,6 +239,9 @@ pub enum RpcClientError {
     /// The transaction could not be simulated.  Callers must fail closed and
     /// refuse to submit when this is returned (issue #536).
     SimulationFailed { detail: String },
+    /// The simulation reported archived entries and the restore transaction
+    /// could not be built or submitted (issue #710).
+    RestoreFailed { detail: String },
 }
 
 impl fmt::Display for RpcClientError {
@@ -221,6 +260,9 @@ impl fmt::Display for RpcClientError {
             }
             RpcClientError::SimulationFailed { detail } => {
                 write!(f, "simulation failed: {detail}")
+            }
+            RpcClientError::RestoreFailed { detail } => {
+                write!(f, "restore failed: {detail}")
             }
         }
     }
@@ -312,6 +354,51 @@ pub trait RpcClient: Send + Sync {
         signer: &dyn Signer,
         poll_attempts: u32,
     ) -> Result<TxResult, RpcClientError>;
+
+    /// Submit the restore transaction described by `preamble` and wait for it
+    /// to reach a terminal state.
+    ///
+    /// This is the shared restore path used by the CLI and relayer when a
+    /// simulation reports archived entries (issue #710).  Implementations
+    /// build a `RestoreFootprintOp` (or rely on automatic restoration on
+    /// newer protocols) from the preamble's `TransactionData`, estimate the
+    /// fee, sign with `signer`, submit, and poll.
+    ///
+    /// Returns [`RpcClientError::RestoreFailed`] when the restore cannot be
+    /// built or submitted.
+    fn submit_restore(
+        &self,
+        preamble: &RestorePreamble,
+        signer: &dyn Signer,
+        poll_attempts: u32,
+    ) -> Result<TxResult, RpcClientError>;
+
+    /// Simulate `unsigned_xdr`, and if the simulation reports archived entries
+    /// submit the restore transaction first, then re-simulate and return the
+    /// fresh result.
+    ///
+    /// This is the entry point the CLI and relayer use before submitting a
+    /// real transaction so that archived persistent entries (attestations,
+    /// attester info, work items) are transparently restored.
+    fn simulate_with_restore(
+        &self,
+        unsigned_xdr: &str,
+        signer: &dyn Signer,
+        poll_attempts: u32,
+    ) -> Result<SimulateResult, RpcClientError> {
+        let first = self.simulate(unsigned_xdr)?;
+        if !first.needs_restore() {
+            return Ok(first);
+        }
+        let preamble = first
+            .restore_preamble
+            .as_ref()
+            .expect("needs_restore implies a preamble");
+        self.submit_restore(preamble, signer, poll_attempts)?;
+        // Re-simulate so the caller gets a footprint that no longer requires
+        // restoration.
+        self.simulate(unsigned_xdr)
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -417,6 +504,18 @@ impl RpcClient for NativeRpcClient {
     ) -> Result<TxResult, RpcClientError> {
         Err(RpcClientError::NotImplemented {
             detail: "NativeRpcClient::sign_and_submit — add stellar-xdr + HTTP client (issue #395)"
+                .to_string(),
+        })
+    }
+
+    fn submit_restore(
+        &self,
+        _preamble: &RestorePreamble,
+        _signer: &dyn Signer,
+        _poll_attempts: u32,
+    ) -> Result<TxResult, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "NativeRpcClient::submit_restore — add stellar-xdr + HTTP client (issue #395)"
                 .to_string(),
         })
     }
@@ -527,6 +626,18 @@ impl RpcClient for StellarCliClient {
         Err(RpcClientError::StellarCli {
             detail: "sign_and_submit via stellar CLI is handled by the CLI command dispatch, \
                      not through the RpcClient trait"
+                .to_string(),
+        })
+    }
+
+    fn submit_restore(
+        &self,
+        _preamble: &RestorePreamble,
+        _signer: &dyn Signer,
+        _poll_attempts: u32,
+    ) -> Result<TxResult, RpcClientError> {
+        Err(RpcClientError::StellarCli {
+            detail: "submit_restore is not available via the stellar CLI subprocess path"
                 .to_string(),
         })
     }
@@ -803,6 +914,229 @@ mod tests {
     }
 
     #[test]
+    fn restore_failed_displays_distinctly() {
+        let err = RpcClientError::RestoreFailed {
+            detail: "boom".to_string(),
+        };
+        assert_eq!(err.to_string(), "restore failed: boom");
+    }
+
+    #[test]
+    fn simulate_result_needs_restore_only_with_preamble() {
+        let mut result = SimulateResult {
+            assembled_xdr: "xdr".into(),
+            min_resource_fee: 100,
+            invocation_summary: None,
+            restore_preamble: None,
+        };
+        assert!(!result.needs_restore());
+
+        result.restore_preamble = Some(RestorePreamble::default());
+        assert!(!result.needs_restore(), "empty preamble is not a restore");
+
+        result.restore_preamble = Some(RestorePreamble {
+            transaction_data_xdr: "td".into(),
+            min_resource_fee: 50,
+        });
+        assert!(result.needs_restore());
+    }
+
+    /// Mock client that reports a restore preamble on the first simulation
+    /// and a clean result afterwards, recording restore submissions.
+    struct RestoreMockClient {
+        simulations: std::sync::Mutex<u32>,
+        restores: std::sync::Mutex<Vec<RestorePreamble>>,
+    }
+
+    impl RestoreMockClient {
+        fn new() -> Self {
+            Self {
+                simulations: std::sync::Mutex::new(0),
+                restores: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+    }
+
+    impl RpcClient for RestoreMockClient {
+        fn simulate(&self, _unsigned_xdr: &str) -> Result<SimulateResult, RpcClientError> {
+            let mut count = self.simulations.lock().unwrap();
+            *count += 1;
+            let restore_preamble = if *count == 1 {
+                Some(RestorePreamble {
+                    transaction_data_xdr: "restore-td".into(),
+                    min_resource_fee: 42,
+                })
+            } else {
+                None
+            };
+            Ok(SimulateResult {
+                assembled_xdr: "assembled".into(),
+                min_resource_fee: 100,
+                invocation_summary: None,
+                restore_preamble,
+            })
+        }
+        fn simulate_preview(
+            &self,
+            _unsigned_xdr: &str,
+        ) -> Result<SimulationPreview, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn send(&self, _signed_xdr: &str) -> Result<SendResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn poll(&self, _tx_hash: &str, _max_attempts: u32) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn get_transaction(&self, _tx_hash: &str) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn latest_ledger(&self) -> Result<u32, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn get_ledger_entries(
+            &self,
+            _keys_xdr: &[&str],
+        ) -> Result<Vec<LedgerEntry>, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn sign_and_submit(
+            &self,
+            _unsigned_xdr: &str,
+            _signer: &dyn Signer,
+            _poll_attempts: u32,
+        ) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn submit_restore(
+            &self,
+            preamble: &RestorePreamble,
+            _signer: &dyn Signer,
+            _poll_attempts: u32,
+        ) -> Result<TxResult, RpcClientError> {
+            self.restores.lock().unwrap().push(preamble.clone());
+            Ok(TxResult {
+                tx_hash: "restore-hash".into(),
+                status: TxStatus::Success { ledger: 1 },
+            })
+        }
+    }
+
+    #[test]
+    fn simulate_with_restore_submits_preamble_then_resimulates() {
+        let client = RestoreMockClient::new();
+        let signer = LocalSigner::new("key");
+        let result = client
+            .simulate_with_restore("xdr", &signer, 5)
+            .expect("restore path should succeed");
+        assert!(!result.needs_restore());
+        let restores = client.restores.lock().unwrap();
+        assert_eq!(restores.len(), 1);
+        assert_eq!(restores[0].transaction_data_xdr, "restore-td");
+        assert_eq!(restores[0].min_resource_fee, 42);
+        assert_eq!(*client.simulations.lock().unwrap(), 2);
+    }
+
+    #[test]
+    fn simulate_with_restore_skips_when_no_preamble() {
+        struct CleanClient;
+        impl RpcClient for CleanClient {
+            fn simulate(&self, _unsigned_xdr: &str) -> Result<SimulateResult, RpcClientError> {
+                Ok(SimulateResult {
+                    assembled_xdr: "assembled".into(),
+                    min_resource_fee: 100,
+                    invocation_summary: None,
+                    restore_preamble: None,
+                })
+            }
+            fn simulate_preview(
+                &self,
+                _unsigned_xdr: &str,
+            ) -> Result<SimulationPreview, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn send(&self, _signed_xdr: &str) -> Result<SendResult, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn poll(
+                &self,
+                _tx_hash: &str,
+                _max_attempts: u32,
+            ) -> Result<TxResult, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn get_transaction(&self, _tx_hash: &str) -> Result<TxResult, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn latest_ledger(&self) -> Result<u32, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn get_ledger_entries(
+                &self,
+                _keys_xdr: &[&str],
+            ) -> Result<Vec<LedgerEntry>, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn sign_and_submit(
+                &self,
+                _unsigned_xdr: &str,
+                _signer: &dyn Signer,
+                _poll_attempts: u32,
+            ) -> Result<TxResult, RpcClientError> {
+                Err(RpcClientError::NotImplemented { detail: "mock".into() })
+            }
+            fn submit_restore(
+                &self,
+                _preamble: &RestorePreamble,
+                _signer: &dyn Signer,
+                _poll_attempts: u32,
+            ) -> Result<TxResult, RpcClientError> {
+                panic!("submit_restore must not be called without a preamble");
+            }
+        }
+        let client = CleanClient;
+        let signer = LocalSigner::new("key");
+        let result = client
+            .simulate_with_restore("xdr", &signer, 5)
+            .expect("clean simulation should succeed");
+        assert!(!result.needs_restore());
+    }
+
+    #[test]
+    fn native_client_submit_restore_not_implemented() {
+        let client = NativeRpcClient::new("https://example.org", "Test Net");
+        let signer = LocalSigner::new("key");
+        let preamble = RestorePreamble {
+            transaction_data_xdr: "td".into(),
+            min_resource_fee: 1,
+        };
+        assert!(matches!(
+            client.submit_restore(&preamble, &signer, 5).unwrap_err(),
+            RpcClientError::NotImplemented { .. }
+        ));
+    }
+
+    #[test]
+    fn stellar_cli_submit_restore_errors() {
+        let client = StellarCliClient::new("https://example.org", "Test Net");
+        let signer = LocalSigner::new("key");
+        let preamble = RestorePreamble {
+            transaction_data_xdr: "td".into(),
+            min_resource_fee: 1,
+        };
+        assert!(matches!(
+            client.submit_restore(&preamble, &signer, 5).unwrap_err(),
+            RpcClientError::StellarCli { .. }
+        ));
+    }
+
+    #[test]
     fn make_rpc_client_native_path() {
         let client = make_rpc_client("https://example.org", "Test Net", false);
         // The native client returns NotImplemented, confirming the factory
@@ -829,10 +1163,22 @@ mod tests {
         fn simulate(&self, _unsigned_xdr: &str) -> Result<SimulateResult, RpcClientError> {
             Err(RpcClientError::NotImplemented { detail: "mock".into() })
         }
+        fn simulate_preview(
+            &self,
+            _unsigned_xdr: &str,
+        ) -> Result<SimulationPreview, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
         fn send(&self, _signed_xdr: &str) -> Result<SendResult, RpcClientError> {
             Err(RpcClientError::NotImplemented { detail: "mock".into() })
         }
         fn poll(&self, _tx_hash: &str, _max_attempts: u32) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn get_transaction(&self, _tx_hash: &str) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn latest_ledger(&self) -> Result<u32, RpcClientError> {
             Err(RpcClientError::NotImplemented { detail: "mock".into() })
         }
         fn get_ledger_entries(
@@ -853,6 +1199,14 @@ mod tests {
         fn sign_and_submit(
             &self,
             _unsigned_xdr: &str,
+            _signer: &dyn Signer,
+            _poll_attempts: u32,
+        ) -> Result<TxResult, RpcClientError> {
+            Err(RpcClientError::NotImplemented { detail: "mock".into() })
+        }
+        fn submit_restore(
+            &self,
+            _preamble: &RestorePreamble,
             _signer: &dyn Signer,
             _poll_attempts: u32,
         ) -> Result<TxResult, RpcClientError> {

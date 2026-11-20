@@ -51,6 +51,10 @@ $("load").onclick = () => {
   $("reviewed").checked = false;
   $("reviewed").disabled = false;
   $("sign").disabled = true;
+  $("result").textContent = "";
+  delete $("result").dataset.normalized;
+  $("normalized-warning").hidden = true;
+  $("normalized-warning").textContent = "";
 };
 
 $("reviewed").onchange = () => {
@@ -81,4 +85,10 @@ $("sign").onclick = async () => {
     null,
     2,
   );
+  // Expose the normalization flag for the virtual-authenticator smoke test.
+  $("result").dataset.normalized = String(parsed.normalized);
+  $("normalized-warning").hidden = !parsed.normalized;
+  $("normalized-warning").textContent = parsed.normalized
+    ? "The authenticator returned a high-S signature; it was normalized to low-S before submission."
+    : "";
 };

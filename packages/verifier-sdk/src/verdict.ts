@@ -9,6 +9,7 @@ export const VERDICTS = [
   "untrusted_contract",
   "commitment_mismatch",
   "unavailable",
+  "archived",
   "revoked",
   "not_found",
   "superseded",
@@ -32,6 +33,8 @@ export const VERDICT_DESCRIPTIONS: Record<Verdict, string> = {
     "The card points to a network or contract that is not in the trusted list.",
   commitment_mismatch: "The disclosed record does not match the card's record hash.",
   unavailable: "The attestation could not be checked (network or RPC failure).",
+  archived:
+    "The attestation is archived because its TTL lapsed; it must be restored before it can be verified.",
   revoked: "The attestation for this record was revoked by the registry admin.",
   not_found: "No attestation exists for this record.",
   superseded: "A newer attestation exists for this record than the one on the card.",

@@ -101,6 +101,29 @@ export class Client extends ContractClient {
   ): Promise<AssembledTransaction<T>> {
     return ContractClient.deploy({signers, threshold}, options)
   }
+  /**
+   * Deploy a new multisig account using the policy-based constructor.
+   *
+   * This is the preferred deployment path for new accounts. The legacy
+   * `deploy` (ed25519-only `signers` + `threshold`) remains available for
+   * backwards compatibility but is deprecated under the stability policy.
+   */
+  static async deployWithPolicy<T = Client>(
+        /** Constructor/Initialization Args for the contract's `__constructor_with_policy` method */
+        {policy}: {policy: SignerPolicy},
+    /** Options for initializing a Client as well as for calling a method, with extras specific to deploying. */
+    options: MethodOptions &
+      Omit<ContractClientOptions, "contractId"> & {
+        /** The hash of the Wasm blob, which must already be installed on-chain. */
+        wasmHash: Buffer | string;
+        /** Salt used to generate the contract's ID. Passed through to {@link Operation.createCustomContract}. Default: random. */
+        salt?: Buffer | Uint8Array;
+        /** The format used to decode `wasmHash`, if it's provided as a string. */
+        format?: "hex" | "base64";
+      }
+  ): Promise<AssembledTransaction<T>> {
+    return ContractClient.deploy({policy}, options)
+  }
   constructor(public readonly options: ContractClientOptions) {
     super(
       new ContractSpec([ "AAAABAAAAEdFcnJvcnMgcmV0dXJuZWQgYnkgdGhlIG11bHRpc2lnLWFjY291bnQgY29udHJhY3QncyBwdWJsaWMgZW50cnkgcG9pbnRzLgAAAAAAAAAABUVycm9yAAAAAAAABwAAAD1UaGUgY29uZmlndXJlZCB0aHJlc2hvbGQgaXMgemVybyBvciBleGNlZWRzIHRoZSBzaWduZXIgY291bnQuAAAAAAAAEEludmFsaWRUaHJlc2hvbGQAAAABAAAAOFRoZSBzaWduZXIgY29uZmlndXJhdGlvbiBjb250YWlucyBkdXBsaWNhdGUgcHVibGljIGtleXMuAAAAD0R1cGxpY2F0ZVNpZ25lcgAAAAACAAAAP1RoZSBzdXBwbGllZCBzaWduYXR1cmUgY291bnQgaXMgYmVsb3cgdGhlIGNvbmZpZ3VyZWQgdGhyZXNob2xkLgAAAAAQTm90RW5vdWdoU2lnbmVycwAAAAMAAAA8U2lnbmF0dXJlcyBhcmUgbm90IHN0cmljdGx5IG9yZGVyZWQgYnkgYXNjZW5kaW5nIHB1YmxpYyBrZXkuAAAAEUJhZFNpZ25hdHVyZU9yZGVyAAAAAAAABAAAAEhBIHNpZ25hdHVyZSBjb3JyZXNwb25kcyB0byBhIHB1YmxpYyBrZXkgdGhhdCBpcyBub3QgYSBjb25maWd1cmVkIHNpZ25lci4AAAANVW5rbm93blNpZ25lcgAAAAAAAAUAAABQVGhlIGNvbnRyYWN0IGhhcyBub3QgYmVlbiBpbml0aWFsaXplZDsgdGhyZXNob2xkIG9yIHNpZ25lciBjb3VudCBpcyB1bmF2YWlsYWJsZS4AAAAOTm90SW5pdGlhbGl6ZWQAAAAAAAYAAABBVGhlIHN1cHBsaWVkIHNpZ25hdHVyZSBjb3VudCBleGNlZWRzIHRoZSBjb25maWd1cmVkIHNpZ25lciBjb3VudC4AAAAAAAAOVG9vTWFueVNpZ25lcnMAAAAAAAc=",

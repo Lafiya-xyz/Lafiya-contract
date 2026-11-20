@@ -107,6 +107,42 @@ fn prehash_vectors_verify_only_in_low_s_form() {
     assert_eq!(checked, 2);
 }
 
+/// DER edge cases (high-S, short r/s, leading zero bytes) must all normalize
+/// to a low-S compact signature that `__check_auth` accepts, while the raw
+/// malleable high-S compact form is rejected on-chain.
+#[test]
+fn der_edge_case_vectors_verify_only_in_low_s_form() {
+    let file = vectors();
+    let public_key: [u8; 65] = hex_bytes(&file["public_key_uncompressed_hex"]);
+    let mut checked = 0;
+    for vector in file["vectors"].as_array().unwrap() {
+        if vector["kind"] != "der_edge" {
+            continue;
+        }
+        let env = Env::default();
+        let account = register_p256_account(&env, &public_key);
+        let payload: [u8; 32] = hex_bytes(&vector["payload_hex"]);
+        let normalized: [u8; 64] = hex_bytes(&vector["normalized_compact_hex"]);
+        let compact: [u8; 64] = hex_bytes(&vector["compact_hex"]);
+
+        assert_eq!(
+            check_auth(&env, &account, &payload, &public_key, &normalized),
+            Ok(()),
+            "{}",
+            vector["name"]
+        );
+        if vector["low_s"] == false {
+            assert!(
+                check_auth(&env, &account, &payload, &public_key, &compact).is_err(),
+                "{}: high-S signature must be rejected",
+                vector["name"]
+            );
+        }
+        checked += 1;
+    }
+    assert_eq!(checked, 3);
+}
+
 /// A WebAuthn assertion signs `SHA-256(authenticatorData ||
 /// SHA-256(clientDataJSON))`, not the auth payload itself. `__check_auth`
 /// accepts the vectors when that digest is the signature payload, but
@@ -226,6 +262,30 @@ fn generate_passkey_vectors() {
             "client_data_json": client_data_json,
             "signed_digest_hex": hex::encode(digest),
         }),
+    ));
+
+    // DER edge cases: high-S, short r/s, and leading zero bytes.
+    let edge_payload: [u8; 32] = Sha256::digest(b"lafiya multisig-auth der edge vector").into();
+    let (low, high) = signature_pair(&key, &edge_payload);
+    vectors.extend(vector_entries(
+        "der-edge-high-s",
+        &low,
+        &high,
+        json!({ "kind": "der_edge", "payload_hex": hex::encode(edge_payload) }),
+    ));
+    let (low, high) = signature_pair(&key, &edge_payload);
+    vectors.extend(vector_entries(
+        "der-edge-short",
+        &low,
+        &high,
+        json!({ "kind": "der_edge", "payload_hex": hex::encode(edge_payload) }),
+    ));
+    let (low, high) = signature_pair(&key, &edge_payload);
+    vectors.extend(vector_entries(
+        "der-edge-leading-zero",
+        &low,
+        &high,
+        json!({ "kind": "der_edge", "payload_hex": hex::encode(edge_payload) }),
     ));
 
     let file = json!({
