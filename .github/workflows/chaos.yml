@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: read
+  issues: write
 
 jobs:
   chaos:
@@ -18,3 +19,22 @@ jobs:
         with:
           python-version: "3.12"
       - run: python3 sandbox/chaos/chaos.py run sandbox/chaos/scenarios.toml
+
+  report:
+    name: Track failure
+    needs: [chaos]
+    if: always() && github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - name: Open or close tracking issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if [ "${{ needs.chaos.result }}" = "success" ]; then
+            .github/scripts/track-failure close --workflow chaos --label ci-tracking
+          else
+            .github/scripts/track-failure open --workflow chaos --label ci-tracking \
+              --title "Nightly chaos scenarios failed"
+          fi
