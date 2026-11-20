@@ -30,6 +30,8 @@ const WASM_DIR: &str = "target/wasm32v1-none/release";
 const WORKERS: usize = 50;
 /// `attester-registry`'s `BATCH_LIMIT` for `add_attesters`.
 const BATCH_LIMIT: usize = 40;
+/// The published scenario schema, embedded so validation works from any cwd.
+const SCENARIO_SCHEMA: &str = include_str!("../../sandbox/schema/scenario.schema.json");
 
 #[derive(Subcommand, Debug)]
 pub enum SandboxSub {
@@ -158,6 +160,28 @@ impl Scenario {
         s.expand();
         s.validate()?;
         Ok(s)
+    }
+
+    /// Strictly validate a scenario file against `sandbox/schema/scenario.schema.json`.
+    ///
+    /// Unknown keys, wrong types, and out-of-range values are rejected with a
+    /// JSON-pointer path (e.g. `/attesters/0/region`) so editors and CI can point
+    /// at the exact offending field.
+    pub fn validate_schema(text: &str) -> Result<()> {
+        let schema: serde_json::Value =
+            serde_json::from_str(SCENARIO_SCHEMA).context("embedded scenario schema is invalid")?;
+        let instance: serde_json::Value =
+            toml::from_str(text).context("invalid scenario file: not valid TOML")?;
+        let validator = jsonschema::validator_for(&schema)
+            .context("embedded scenario schema does not compile")?;
+        let errors: Vec<String> = validator
+            .iter_errors(&instance)
+            .map(|e| format!("{}: {e}", e.instance_path))
+            .collect();
+        if !errors.is_empty() {
+            bail!("scenario does not match schema:\n  {}", errors.join("\n  "));
+        }
+        Ok(())
     }
 
     fn expand(&mut self) {
