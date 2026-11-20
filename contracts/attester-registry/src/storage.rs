@@ -33,7 +33,8 @@ impl StorageKey for DataKey {
             | DataKey::AttesterStatusChangeCount(..)
             | DataKey::AttesterValidity(..)
             | DataKey::RegionalRegistrarCount(..)
-            | DataKey::RegionalAttester(..) => Durability::Persistent,
+            | DataKey::RegionalAttester(..)
+            | DataKey::IdentityKey(..) => Durability::Persistent,
         }
     }
 }
@@ -77,6 +78,7 @@ mod tests {
             DataKey::RegionalRegistrar(Address::generate(env)),
             DataKey::RegionalRegistrarCount(Address::generate(env)),
             DataKey::RegionalAttester(Address::generate(env)),
+            DataKey::IdentityKey(Address::generate(env)),
         ]
     }
 

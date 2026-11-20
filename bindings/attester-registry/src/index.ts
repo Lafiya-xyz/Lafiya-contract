@@ -118,6 +118,20 @@ suspended: boolean;
 
 
 
+/**
+ * Feature descriptor returned by `get_interface`, used by downstream
+ * contracts to negotiate optional capabilities.
+ */
+export interface InterfaceDescriptor {
+  /**
+ * Whether `get_identity_key` is supported and returns stable identity
+ * keys that follow licence rotations.
+ */
+identity_keys: boolean;
+}
+
+
+
 
 
 
@@ -424,6 +438,25 @@ export interface Client {
   add_attester_with_info: ({attester, license_hash, region}: {attester: string, license_hash: Option<Buffer>, region: Option<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
   suspend_attester_with_reason: ({attester, reason}: {attester: string, reason: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
   get_attester_trust_revoked_after: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>
+
+  /**
+   * Construct and simulate a get_identity_key transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the stable identity key for `attester`, derived from the
+   * canonical licence hash. The key follows licence rotations, so every
+   * address that shares the same underlying licence resolves to the same
+   * 32-byte identity key. Returns `None` if `attester` is not currently
+   * allowlisted or has no licence hash on record.
+   */
+  get_identity_key: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<Buffer>>>
+
+  /**
+   * Construct and simulate a get_interface transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the interface descriptor for this contract, including the
+   * `identity_keys` feature flag. Consumers (e.g. `incentive-pool`) use
+   * this to negotiate whether per-identity caps are supported, falling
+   * back to per-address behaviour when `identity_keys` is `false`.
+   */
+  get_interface: (options?: MethodOptions) => Promise<AssembledTransaction<InterfaceDescriptor>>
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -506,6 +539,8 @@ export class Client extends ContractClient {
         reinstate_attester: this.txFromJSON<Result<void>>,
         get_attester_status: this.txFromJSON<Option<AttesterStatus>>,
         update_attester_info: this.txFromJSON<Result<void>>,
-        add_attester_with_info: this.txFromJSON<Result<void>>
+        add_attester_with_info: this.txFromJSON<Result<void>>,
+        get_identity_key: this.txFromJSON<Option<Buffer>>,
+        get_interface: this.txFromJSON<InterfaceDescriptor>
   }
 }

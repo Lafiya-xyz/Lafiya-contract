@@ -60,19 +60,51 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
   {
     kind: ContractEntryKind.Function,
     name: "initialize",
-    doc: "Initializes the incentive pool with its admin and token.",
+    doc: "Initializes the incentive pool with its admin and initial asset allowlist.",
     args: [
       { name: "admin", type: "Address" },
-      { name: "token", type: "Address" },
+      { name: "assets", type: "Vec<Address>" },
+    ],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "add_asset",
+    doc: "Adds an asset to the allowlist after probing its interface (decimals, SAC check).",
+    args: [{ name: "asset", type: "Address" }],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "remove_asset",
+    doc: "Removes an asset from the allowlist. Fails if the asset still has outstanding accounting.",
+    args: [{ name: "asset", type: "Address" }],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "is_asset_allowed",
+    doc: "Returns whether an asset is on the allowlist.",
+    args: [{ name: "asset", type: "Address" }],
+    returns: "bool",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "set_asset_cap",
+    doc: "Sets the per-asset cap for an allowlisted asset.",
+    args: [
+      { name: "asset", type: "Address" },
+      { name: "cap", type: "i128" },
     ],
     returns: "void",
   },
   {
     kind: ContractEntryKind.Function,
     name: "deposit",
-    doc: "Deposits tokens into the pool on behalf of a depositor.",
+    doc: "Deposits an allowlisted asset into the pool on behalf of a depositor.",
     args: [
       { name: "depositor", type: "Address" },
+      { name: "asset", type: "Address" },
       { name: "amount", type: "i128" },
     ],
     returns: "i128",
@@ -80,9 +112,10 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
   {
     kind: ContractEntryKind.Function,
     name: "withdraw",
-    doc: "Withdraws tokens from the pool for a depositor.",
+    doc: "Withdraws an allowlisted asset from the pool for a depositor.",
     args: [
       { name: "depositor", type: "Address" },
+      { name: "asset", type: "Address" },
       { name: "amount", type: "i128" },
     ],
     returns: "i128",
@@ -90,25 +123,73 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
   {
     kind: ContractEntryKind.Function,
     name: "claim",
-    doc: "Claims accrued incentives for a recipient.",
+    doc: "Claims accrued incentives for a work item, paying its bound asset to the recipient.",
+    args: [{ name: "work_item_id", type: "BytesN<32>" }],
+    returns: "i128",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "disburse",
+    doc: "Approver-only bounded push disbursement of work items to their bound payout addresses.",
+    args: [{ name: "work_item_ids", type: "Vec<BytesN<32>>" }],
+    returns: "Vec<i128>",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "set_push_mode",
+    doc: "Opts an attester's payout binding in or out of approver-initiated push disbursement.",
     args: [
-      { name: "recipient", type: "Address" },
-      { name: "amount", type: "i128" },
+      { name: "attester", type: "Address" },
+      { name: "enabled", type: "bool" },
     ],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "void_approvals_since",
+    doc: "Voids all approvals issued by an approver at or after the given ledger timestamp (watermark).",
+    args: [
+      { name: "approver", type: "Address" },
+      { name: "since", type: "u64" },
+    ],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "sweep",
+    doc: "Permissionless cleanup that releases reservations of voided or expired work items.",
+    args: [{ name: "work_item_ids", type: "Vec<BytesN<32>>" }],
+    returns: "Vec<BytesN<32>>",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "set_max_per_identity",
+    doc: "Sets the per-identity payout cap. Falls back to per-address caps when the registry lacks identity keys.",
+    args: [{ name: "cap", type: "i128" }],
+    returns: "void",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "identity_claimed",
+    doc: "Returns the cumulative amount claimed by an identity key.",
+    args: [{ name: "identity_key", type: "BytesN<32>" }],
     returns: "i128",
   },
   {
     kind: ContractEntryKind.Function,
     name: "balance",
-    doc: "Returns the pool balance for a depositor.",
-    args: [{ name: "depositor", type: "Address" }],
+    doc: "Returns the pool balance for a depositor in a given asset.",
+    args: [
+      { name: "depositor", type: "Address" },
+      { name: "asset", type: "Address" },
+    ],
     returns: "i128",
   },
   {
     kind: ContractEntryKind.Function,
     name: "total_deposits",
-    doc: "Returns the total amount deposited into the pool.",
-    args: [],
+    doc: "Returns the total amount deposited into the pool for a given asset.",
+    args: [{ name: "asset", type: "Address" }],
     returns: "i128",
   },
   {
@@ -119,35 +200,107 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
     returns: "void",
   },
   {
+    kind: ContractEntryKind.Function,
+    name: "get_interface",
+    doc: "Returns the negotiated interface version and supported feature flags.",
+    args: [],
+    returns: "Map<Symbol, bool>",
+  },
+  {
     kind: ContractEntryKind.Event,
     name: "initialized",
     doc: "Emitted when the pool is initialized.",
     topics: ["initialized"],
     data: [
       { name: "admin", type: "Address" },
-      { name: "token", type: "Address" },
+      { name: "assets", type: "Vec<Address>" },
     ],
   },
   {
     kind: ContractEntryKind.Event,
+    name: "asset_added",
+    doc: "Emitted when an asset is added to the allowlist.",
+    topics: ["asset_added", "asset"],
+    data: [{ name: "decimals", type: "u32" }],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "asset_removed",
+    doc: "Emitted when an asset is removed from the allowlist.",
+    topics: ["asset_removed", "asset"],
+    data: [],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "asset_cap_changed",
+    doc: "Emitted when a per-asset cap is changed.",
+    topics: ["asset_cap_changed", "asset"],
+    data: [{ name: "cap", type: "i128" }],
+  },
+  {
+    kind: ContractEntryKind.Event,
     name: "deposit",
-    doc: "Emitted when tokens are deposited into the pool.",
-    topics: ["deposit", "depositor"],
+    doc: "Emitted when an asset is deposited into the pool.",
+    topics: ["deposit", "depositor", "asset"],
     data: [{ name: "amount", type: "i128" }],
   },
   {
     kind: ContractEntryKind.Event,
     name: "withdraw",
-    doc: "Emitted when tokens are withdrawn from the pool.",
-    topics: ["withdraw", "depositor"],
+    doc: "Emitted when an asset is withdrawn from the pool.",
+    topics: ["withdraw", "depositor", "asset"],
     data: [{ name: "amount", type: "i128" }],
   },
   {
     kind: ContractEntryKind.Event,
     name: "claim",
     doc: "Emitted when incentives are claimed from the pool.",
-    topics: ["claim", "recipient"],
-    data: [{ name: "amount", type: "i128" }],
+    topics: ["claim", "recipient", "asset"],
+    data: [
+      { name: "work_item_id", type: "BytesN<32>" },
+      { name: "amount", type: "i128" },
+    ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "disbursed",
+    doc: "Emitted per work item when an approver pushes a disbursement.",
+    topics: ["disbursed", "recipient", "asset"],
+    data: [
+      { name: "work_item_id", type: "BytesN<32>" },
+      { name: "amount", type: "i128" },
+    ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "push_mode_changed",
+    doc: "Emitted when an attester opts in or out of push disbursement.",
+    topics: ["push_mode_changed", "attester"],
+    data: [{ name: "enabled", type: "bool" }],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "approvals_voided",
+    doc: "Emitted when approvals from an approver at or after a timestamp are voided.",
+    topics: ["approvals_voided", "approver"],
+    data: [{ name: "since", type: "u64" }],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "reservation_swept",
+    doc: "Emitted when a reservation is released by permissionless cleanup.",
+    topics: ["reservation_swept", "asset"],
+    data: [
+      { name: "work_item_id", type: "BytesN<32>" },
+      { name: "amount", type: "i128" },
+    ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "identity_cap_changed",
+    doc: "Emitted when the per-identity payout cap is changed.",
+    topics: ["identity_cap_changed"],
+    data: [{ name: "cap", type: "i128" }],
   },
   {
     kind: ContractEntryKind.Event,
@@ -160,6 +313,50 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
     ],
   },
 ] as const;
+
+/** Typed error variants returned by the incentive-pool contract. */
+export const enum IncentivePoolError {
+  /** The asset is not on the allowlist. */
+  AssetNotAllowed = 1,
+  /** The asset failed the interface probe (decimals or SAC check). */
+  AssetProbeFailed = 2,
+  /** The asset still has outstanding accounting and cannot be removed. */
+  AssetHasOutstandingAccounting = 3,
+  /** The deposit or payout would exceed the per-asset cap. */
+  AssetCapExceeded = 4,
+  /** The payout would exceed the per-identity cap. */
+  IdentityCapExceeded = 5,
+  /** The work item was approved by an approver whose approvals were voided. */
+  ApprovalVoided = 6,
+  /** The attester has not opted in to push disbursement. */
+  PushModeNotEnabled = 7,
+  /** The disbursement batch exceeds the maximum batch size. */
+  BatchTooLarge = 8,
+  /** The work item has already been claimed or disbursed. */
+  AlreadySettled = 9,
+  /** The work item is not eligible for payout. */
+  NotEligible = 10,
+  /** The caller is not authorized for this operation. */
+  Unauthorized = 11,
+}
+
+/** Human-readable messages for each {@link IncentivePoolError}. */
+export const INCENTIVE_POOL_ERROR_MESSAGES: Readonly<
+  Record<IncentivePoolError, string>
+> = {
+  [IncentivePoolError.AssetNotAllowed]: "asset is not on the allowlist",
+  [IncentivePoolError.AssetProbeFailed]: "asset failed the interface probe",
+  [IncentivePoolError.AssetHasOutstandingAccounting]:
+    "asset still has outstanding accounting",
+  [IncentivePoolError.AssetCapExceeded]: "per-asset cap exceeded",
+  [IncentivePoolError.IdentityCapExceeded]: "per-identity cap exceeded",
+  [IncentivePoolError.ApprovalVoided]: "approval has been voided",
+  [IncentivePoolError.PushModeNotEnabled]: "push mode is not enabled",
+  [IncentivePoolError.BatchTooLarge]: "disbursement batch is too large",
+  [IncentivePoolError.AlreadySettled]: "work item already settled",
+  [IncentivePoolError.NotEligible]: "work item is not eligible for payout",
+  [IncentivePoolError.Unauthorized]: "caller is not authorized",
+};
 
 /** Names of every event emitted by the incentive-pool. */
 export const INCENTIVE_POOL_EVENTS = INCENTIVE_POOL_SPEC.filter(
@@ -175,25 +372,78 @@ export const INCENTIVE_POOL_FUNCTIONS = INCENTIVE_POOL_SPEC.filter(
 /** Decoded payload of the `initialized` event. */
 export interface InitializedEvent {
   readonly admin: Address;
-  readonly token: Address;
+  readonly assets: readonly Address[];
+}
+
+/** Decoded payload of the `asset_added` event. */
+export interface AssetAddedEvent {
+  readonly asset: Address;
+  readonly decimals: number;
+}
+
+/** Decoded payload of the `asset_removed` event. */
+export interface AssetRemovedEvent {
+  readonly asset: Address;
+}
+
+/** Decoded payload of the `asset_cap_changed` event. */
+export interface AssetCapChangedEvent {
+  readonly asset: Address;
+  readonly cap: bigint;
 }
 
 /** Decoded payload of the `deposit` event. */
 export interface DepositEvent {
   readonly depositor: Address;
+  readonly asset: Address;
   readonly amount: bigint;
 }
 
 /** Decoded payload of the `withdraw` event. */
 export interface WithdrawEvent {
   readonly depositor: Address;
+  readonly asset: Address;
   readonly amount: bigint;
 }
 
 /** Decoded payload of the `claim` event. */
 export interface ClaimEvent {
   readonly recipient: Address;
+  readonly asset: Address;
+  readonly workItemId: Uint8Array;
   readonly amount: bigint;
+}
+
+/** Decoded payload of the `disbursed` event. */
+export interface DisbursedEvent {
+  readonly recipient: Address;
+  readonly asset: Address;
+  readonly workItemId: Uint8Array;
+  readonly amount: bigint;
+}
+
+/** Decoded payload of the `push_mode_changed` event. */
+export interface PushModeChangedEvent {
+  readonly attester: Address;
+  readonly enabled: boolean;
+}
+
+/** Decoded payload of the `approvals_voided` event. */
+export interface ApprovalsVoidedEvent {
+  readonly approver: Address;
+  readonly since: bigint;
+}
+
+/** Decoded payload of the `reservation_swept` event. */
+export interface ReservationSweptEvent {
+  readonly asset: Address;
+  readonly workItemId: Uint8Array;
+  readonly amount: bigint;
+}
+
+/** Decoded payload of the `identity_cap_changed` event. */
+export interface IdentityCapChangedEvent {
+  readonly cap: bigint;
 }
 
 /** Decoded payload of the `admin_changed` event. */
@@ -205,9 +455,17 @@ export interface AdminChangedEvent {
 /** Union of every decoded incentive-pool event. */
 export type IncentivePoolEvent =
   | ({ readonly type: "initialized" } & InitializedEvent)
+  | ({ readonly type: "asset_added" } & AssetAddedEvent)
+  | ({ readonly type: "asset_removed" } & AssetRemovedEvent)
+  | ({ readonly type: "asset_cap_changed" } & AssetCapChangedEvent)
   | ({ readonly type: "deposit" } & DepositEvent)
   | ({ readonly type: "withdraw" } & WithdrawEvent)
   | ({ readonly type: "claim" } & ClaimEvent)
+  | ({ readonly type: "disbursed" } & DisbursedEvent)
+  | ({ readonly type: "push_mode_changed" } & PushModeChangedEvent)
+  | ({ readonly type: "approvals_voided" } & ApprovalsVoidedEvent)
+  | ({ readonly type: "reservation_swept" } & ReservationSweptEvent)
+  | ({ readonly type: "identity_cap_changed" } & IdentityCapChangedEvent)
   | ({ readonly type: "admin_changed" } & AdminChangedEvent);
 
 /** Options for constructing an {@link IncentivePoolClient}. */
@@ -231,55 +489,150 @@ export class IncentivePoolClient {
   /** Builds an unsigned invocation of `initialize`. */
   initialize(args: {
     admin: Address;
-    token: Address;
+    assets: readonly Address[];
   }): xdr.Operation {
     return this.contract.call(
       "initialize",
       args.admin.toScVal(),
-      args.token.toScVal(),
+      nativeToScVal(args.assets, { type: "address" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `add_asset`. */
+  addAsset(args: { asset: Address }): xdr.Operation {
+    return this.contract.call("add_asset", args.asset.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `remove_asset`. */
+  removeAsset(args: { asset: Address }): xdr.Operation {
+    return this.contract.call("remove_asset", args.asset.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `is_asset_allowed`. */
+  isAssetAllowed(args: { asset: Address }): xdr.Operation {
+    return this.contract.call("is_asset_allowed", args.asset.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `set_asset_cap`. */
+  setAssetCap(args: { asset: Address; cap: bigint }): xdr.Operation {
+    return this.contract.call(
+      "set_asset_cap",
+      args.asset.toScVal(),
+      nativeToScVal(args.cap, { type: "i128" }),
     );
   }
 
   /** Builds an unsigned invocation of `deposit`. */
-  deposit(args: { depositor: Address; amount: bigint }): xdr.Operation {
+  deposit(args: {
+    depositor: Address;
+    asset: Address;
+    amount: bigint;
+  }): xdr.Operation {
     return this.contract.call(
       "deposit",
       args.depositor.toScVal(),
+      args.asset.toScVal(),
       nativeToScVal(args.amount, { type: "i128" }),
     );
   }
 
   /** Builds an unsigned invocation of `withdraw`. */
-  withdraw(args: { depositor: Address; amount: bigint }): xdr.Operation {
+  withdraw(args: {
+    depositor: Address;
+    asset: Address;
+    amount: bigint;
+  }): xdr.Operation {
     return this.contract.call(
       "withdraw",
       args.depositor.toScVal(),
+      args.asset.toScVal(),
       nativeToScVal(args.amount, { type: "i128" }),
     );
   }
 
   /** Builds an unsigned invocation of `claim`. */
-  claim(args: { recipient: Address; amount: bigint }): xdr.Operation {
+  claim(args: { workItemId: Uint8Array }): xdr.Operation {
     return this.contract.call(
       "claim",
-      args.recipient.toScVal(),
-      nativeToScVal(args.amount, { type: "i128" }),
+      nativeToScVal(args.workItemId, { type: "bytes" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `disburse`. */
+  disburse(args: { workItemIds: readonly Uint8Array[] }): xdr.Operation {
+    return this.contract.call(
+      "disburse",
+      nativeToScVal(args.workItemIds, { type: "bytes" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `set_push_mode`. */
+  setPushMode(args: { attester: Address; enabled: boolean }): xdr.Operation {
+    return this.contract.call(
+      "set_push_mode",
+      args.attester.toScVal(),
+      nativeToScVal(args.enabled, { type: "bool" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `void_approvals_since`. */
+  voidApprovalsSince(args: {
+    approver: Address;
+    since: bigint;
+  }): xdr.Operation {
+    return this.contract.call(
+      "void_approvals_since",
+      args.approver.toScVal(),
+      nativeToScVal(args.since, { type: "u64" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `sweep`. */
+  sweep(args: { workItemIds: readonly Uint8Array[] }): xdr.Operation {
+    return this.contract.call(
+      "sweep",
+      nativeToScVal(args.workItemIds, { type: "bytes" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `set_max_per_identity`. */
+  setMaxPerIdentity(args: { cap: bigint }): xdr.Operation {
+    return this.contract.call(
+      "set_max_per_identity",
+      nativeToScVal(args.cap, { type: "i128" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `identity_claimed`. */
+  identityClaimed(args: { identityKey: Uint8Array }): xdr.Operation {
+    return this.contract.call(
+      "identity_claimed",
+      nativeToScVal(args.identityKey, { type: "bytes" }),
     );
   }
 
   /** Builds an unsigned invocation of `balance`. */
-  balance(args: { depositor: Address }): xdr.Operation {
-    return this.contract.call("balance", args.depositor.toScVal());
+  balance(args: { depositor: Address; asset: Address }): xdr.Operation {
+    return this.contract.call(
+      "balance",
+      args.depositor.toScVal(),
+      args.asset.toScVal(),
+    );
   }
 
   /** Builds an unsigned invocation of `total_deposits`. */
-  totalDeposits(): xdr.Operation {
-    return this.contract.call("total_deposits");
+  totalDeposits(args: { asset: Address }): xdr.Operation {
+    return this.contract.call("total_deposits", args.asset.toScVal());
   }
 
   /** Builds an unsigned invocation of `set_admin`. */
   setAdmin(args: { newAdmin: Address }): xdr.Operation {
     return this.contract.call("set_admin", args.newAdmin.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `get_interface`. */
+  getInterface(): xdr.Operation {
+    return this.contract.call("get_interface");
   }
 
   /** Builds a transaction for the given operation using the supplied source. */
@@ -315,13 +668,36 @@ export function decodeIncentivePoolEvent(
 
   switch (name) {
     case "initialized": {
-      const [admin, token] = event.value
-        ? (scValToNative(event.value) as [string, string])
-        : [String(topics[1]), String(topics[2])];
+      const [admin, assets] = scValToNative(event.value) as [
+        string,
+        string[],
+      ];
       return {
         type: "initialized",
         admin: Address.fromString(admin),
-        token: Address.fromString(token),
+        assets: assets.map((asset) => Address.fromString(asset)),
+      };
+    }
+    case "asset_added": {
+      const decimals = Number(scValToNative(event.value));
+      return {
+        type: "asset_added",
+        asset: Address.fromString(String(topics[1])),
+        decimals,
+      };
+    }
+    case "asset_removed": {
+      return {
+        type: "asset_removed",
+        asset: Address.fromString(String(topics[1])),
+      };
+    }
+    case "asset_cap_changed": {
+      const cap = scValToNative(event.value) as bigint;
+      return {
+        type: "asset_cap_changed",
+        asset: Address.fromString(String(topics[1])),
+        cap,
       };
     }
     case "deposit": {
@@ -329,6 +705,7 @@ export function decodeIncentivePoolEvent(
       return {
         type: "deposit",
         depositor: Address.fromString(String(topics[1])),
+        asset: Address.fromString(String(topics[2])),
         amount,
       };
     }
@@ -337,15 +714,69 @@ export function decodeIncentivePoolEvent(
       return {
         type: "withdraw",
         depositor: Address.fromString(String(topics[1])),
+        asset: Address.fromString(String(topics[2])),
         amount,
       };
     }
     case "claim": {
-      const amount = scValToNative(event.value) as bigint;
+      const [workItemId, amount] = scValToNative(event.value) as [
+        Uint8Array,
+        bigint,
+      ];
       return {
         type: "claim",
         recipient: Address.fromString(String(topics[1])),
+        asset: Address.fromString(String(topics[2])),
+        workItemId,
         amount,
+      };
+    }
+    case "disbursed": {
+      const [workItemId, amount] = scValToNative(event.value) as [
+        Uint8Array,
+        bigint,
+      ];
+      return {
+        type: "disbursed",
+        recipient: Address.fromString(String(topics[1])),
+        asset: Address.fromString(String(topics[2])),
+        workItemId,
+        amount,
+      };
+    }
+    case "push_mode_changed": {
+      const enabled = Boolean(scValToNative(event.value));
+      return {
+        type: "push_mode_changed",
+        attester: Address.fromString(String(topics[1])),
+        enabled,
+      };
+    }
+    case "approvals_voided": {
+      const since = scValToNative(event.value) as bigint;
+      return {
+        type: "approvals_voided",
+        approver: Address.fromString(String(topics[1])),
+        since,
+      };
+    }
+    case "reservation_swept": {
+      const [workItemId, amount] = scValToNative(event.value) as [
+        Uint8Array,
+        bigint,
+      ];
+      return {
+        type: "reservation_swept",
+        asset: Address.fromString(String(topics[1])),
+        workItemId,
+        amount,
+      };
+    }
+    case "identity_cap_changed": {
+      const cap = scValToNative(event.value) as bigint;
+      return {
+        type: "identity_cap_changed",
+        cap,
       };
     }
     case "admin_changed": {

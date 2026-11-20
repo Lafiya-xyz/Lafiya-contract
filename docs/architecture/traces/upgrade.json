@@ -16,11 +16,24 @@
       "from": "Admin",
       "to": "Contract",
       "call": "migrate",
-      "auth": "Admin"
+      "auth": "Admin",
+      "notes": "Bumps the storage schema version to the multi-asset layout (asset-keyed accounting)."
+    },
+    {
+      "from": "Contract",
+      "to": "Contract",
+      "call": "migrate_single_asset_to_asset_keyed",
+      "auth": "Admin",
+      "notes": "Rewrites single-asset state (total_deposited, total_paid, reservations, caps) into per-asset keys keyed by the previously bound token, and seeds the asset allowlist with that token."
     },
     {
       "from": "Contract",
       "event": "Upgraded"
+    },
+    {
+      "from": "Contract",
+      "event": "Migrated",
+      "notes": "Emits the new schema version and the asset-keyed migration summary."
     }
   ]
 }

@@ -932,3 +932,505 @@ fn scheduled_approval_uses_timelocked_rate_and_records_version() {
     );
     assert_eq!(client.get_work_item_schedule_version(&id), 1);
 }
+
+// ─────────────── Multi-asset pools (#695) ───────────────
+
+/// Registers a second funded asset and allowlists it on the pool.
+fn add_asset(
+    env: &Env,
+    client: &IncentivePoolClient<'static>,
+    admin: &Address,
+    fund_amount: i128,
+) -> Address {
+    let (asset, asset_client) = register_funded_token(env, admin, fund_amount);
+    let _ = asset_client;
+    client.add_asset(&asset);
+    asset
+}
+
+#[test]
+fn add_asset_probes_interface_and_allowlists() {
+    let (env, client, _registry, admin, _approver, _token, _ta) = setup();
+    let (asset, _asset_client) = register_funded_token(&env, &admin, ONE_UNIT);
+
+    client.add_asset(&asset);
+
+    assert!(client.is_asset_allowlisted(&asset));
+    assert_eq!(client.get_asset_decimals(&asset), 6);
+    let expected_event = AssetAdded {
+        asset: asset.clone(),
+        decimals: 6,
+    };
+    assert_eq!(
+        env.events().all().filter_by_contract(&client.address),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+}
+
+#[test]
+fn add_asset_rejects_non_contract_address() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+    let bogus = Address::generate(&env);
+
+    let result = client.try_add_asset(&bogus);
+    assert_eq!(result, Err(Ok(Error::InvalidAsset)));
+    assert!(!client.is_asset_allowlisted(&bogus));
+}
+
+#[test]
+fn add_asset_by_non_admin_fails() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+    let (asset, _asset_client) = register_funded_token(&env, &Address::generate(&env), ONE_UNIT);
+    let non_admin = Address::generate(&env);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &non_admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "add_asset",
+            args: (asset.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    let result = client.try_add_asset(&asset);
+    assert!(result.is_err());
+    assert!(!client.is_asset_allowlisted(&asset));
+}
+
+#[test]
+fn fund_and_claim_non_allowlisted_asset_fails() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let (rogue, _rogue_client) = register_funded_token(&env, &Address::generate(&env), ONE_UNIT);
+
+    assert_eq!(
+        client.try_fund_asset(&rogue, &ONE_UNIT),
+        Err(Ok(Error::AssetNotAllowlisted))
+    );
+
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    assert_eq!(
+        client.try_approve_work_item_for_asset(&id, &attester, &rogue, &ONE_UNIT),
+        Err(Ok(Error::AssetNotAllowlisted))
+    );
+}
+
+#[test]
+fn per_asset_accounting_is_isolated() {
+    let (env, client, attester_registry, admin, _approver, token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let asset_b = add_asset(&env, &client, &admin, 10 * POOL_CAP);
+
+    client.fund(&(10 * ONE_UNIT));
+    client.fund_asset(&asset_b, &(20 * ONE_UNIT));
+
+    assert_eq!(client.get_total_deposited(), 10 * ONE_UNIT);
+    assert_eq!(client.get_total_deposited_asset(&asset_b), 20 * ONE_UNIT);
+
+    let id_a = BytesN::from_array(&env, &[1u8; 32]);
+    let id_b = BytesN::from_array(&env, &[2u8; 32]);
+    client.approve_work_item(&id_a, &attester, &ONE_UNIT);
+    client.approve_work_item_for_asset(&id_b, &attester, &asset_b, &(2 * ONE_UNIT));
+
+    client.claim(&id_a);
+    client.claim(&id_b);
+
+    assert_eq!(client.get_total_paid(), ONE_UNIT);
+    assert_eq!(client.get_total_paid_asset(&asset_b), 2 * ONE_UNIT);
+    assert_eq!(
+        client.get_attester_total_claimed_asset(&attester, &asset_b),
+        2 * ONE_UNIT
+    );
+
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    let asset_b_client = soroban_sdk::token::Client::new(&env, &asset_b);
+    assert_eq!(token_client.balance(&attester), ONE_UNIT);
+    assert_eq!(asset_b_client.balance(&attester), 2 * ONE_UNIT);
+}
+
+#[test]
+fn per_asset_caps_are_independent() {
+    let (env, client, attester_registry, admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let asset_b = add_asset(&env, &client, &admin, 10 * POOL_CAP);
+
+    client.set_max_per_claim_asset(&asset_b, &ONE_UNIT);
+    client.fund(&(2 * ONE_UNIT));
+    client.fund_asset(&asset_b, &(2 * ONE_UNIT));
+
+    // Asset A still uses the original per-claim cap.
+    assert_eq!(client.get_max_per_claim_asset(&asset_b), ONE_UNIT);
+    assert_eq!(client.get_max_per_claim(), CLAIM_CAP);
+
+    let id_b = BytesN::from_array(&env, &[3u8; 32]);
+    assert_eq!(
+        client.try_approve_work_item_for_asset(&id_b, &attester, &asset_b, &(ONE_UNIT + 1)),
+        Err(Ok(Error::PayoutCapExceeded))
+    );
+
+    // Exhausting asset B's pool balance does not affect asset A.
+    let id_b_ok = BytesN::from_array(&env, &[4u8; 32]);
+    client.approve_work_item_for_asset(&id_b_ok, &attester, &asset_b, &ONE_UNIT);
+    client.claim(&id_b_ok);
+
+    let id_a = BytesN::from_array(&env, &[5u8; 32]);
+    client.approve_work_item(&id_a, &attester, &ONE_UNIT);
+    client.claim(&id_a);
+    assert_eq!(client.get_total_paid(), ONE_UNIT);
+    assert_eq!(client.get_total_paid_asset(&asset_b), ONE_UNIT);
+}
+
+#[test]
+fn per_asset_drift_detection_is_isolated() {
+    let (env, client, attester_registry, admin, _approver, token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let asset_b = add_asset(&env, &client, &admin, 10 * POOL_CAP);
+
+    client.fund(&(2 * ONE_UNIT));
+    client.fund_asset(&asset_b, &(2 * ONE_UNIT));
+
+    // Drain asset A out-of-band; asset B's invariant must stay intact.
+    soroban_sdk::token::StellarAssetClient::new(&env, &token)
+        .burn(&client.address, &(2 * ONE_UNIT));
+
+    assert_eq!(client.check_invariant(), Err(Ok(Error::InvariantViolated)));
+    assert_eq!(client.check_invariant_asset(&asset_b), Ok(()));
+}
+
+#[test]
+fn withdraw_asset_respects_per_asset_balance() {
+    let (env, client, _registry, admin, _approver, _token, _ta) = setup();
+    let asset_b = add_asset(&env, &client, &admin, 10 * POOL_CAP);
+    client.fund_asset(&asset_b, &ONE_UNIT);
+
+    let recipient = Address::generate(&env);
+    assert_eq!(
+        client.try_withdraw_asset(&asset_b, &recipient, &(2 * ONE_UNIT)),
+        Err(Ok(Error::InsufficientPoolBalance))
+    );
+    client.withdraw_asset(&asset_b, &recipient, &ONE_UNIT);
+    assert_eq!(client.get_total_paid_asset(&asset_b), ONE_UNIT);
+}
+
+#[test]
+fn migrate_single_asset_state_to_asset_keyed_layout() {
+    let (env, client, attester_registry, _admin, _approver, token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    // Legacy single-asset state: deposits and a claimed item on the bound token.
+    client.fund(&(3 * ONE_UNIT));
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+    client.claim(&id);
+
+    // Simulate pre-upgrade storage: legacy totals only, asset-keyed keys empty.
+    env.as_contract(&client.address, || {
+        env.storage()
+            .instance()
+            .set(&DataKey::LegacyTotalDeposited, &(3 * ONE_UNIT));
+        env.storage()
+            .instance()
+            .set(&DataKey::LegacyTotalPaid, &ONE_UNIT);
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TotalDeposited(token.clone()));
+        env.storage()
+            .persistent()
+            .remove(&DataKey::TotalPaid(token.clone()));
+    });
+
+    client.migrate_to_multi_asset();
+
+    assert_eq!(client.get_total_deposited(), 3 * ONE_UNIT);
+    assert_eq!(client.get_total_paid(), ONE_UNIT);
+    assert_eq!(client.get_total_deposited_asset(&token), 3 * ONE_UNIT);
+    assert_eq!(client.get_total_paid_asset(&token), ONE_UNIT);
+    assert!(client.is_asset_allowlisted(&token));
+
+    // Idempotent: a second run is a no-op.
+    client.migrate_to_multi_asset();
+    assert_eq!(client.get_total_deposited_asset(&token), 3 * ONE_UNIT);
+}
+
+// ─────────────── Push disbursement (#696) ───────────────
+
+#[test]
+fn disburse_requires_push_opt_in() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(2 * ONE_UNIT));
+
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+
+    // Not opted in: push is rejected and nothing mutates.
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id.clone());
+    assert_eq!(
+        client.try_disburse(&ids),
+        Err(Ok(Error::PushNotOptedIn))
+    );
+    assert!(!client.is_work_item_claimed(&id));
+
+    // Opt in, then push succeeds.
+    client.set_push_mode(&attester, &true);
+    client.disburse(&ids);
+    assert!(client.is_work_item_claimed(&id));
+    assert_eq!(client.get_total_paid(), ONE_UNIT);
+}
+
+#[test]
+fn disburse_by_non_approver_fails() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&ONE_UNIT);
+    client.set_push_mode(&attester, &true);
+
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id.clone());
+    let non_approver = Address::generate(&env);
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &non_approver,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "disburse",
+            args: (ids.clone(),).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    assert!(client.try_disburse(&ids).is_err());
+    assert!(!client.is_work_item_claimed(&id));
+}
+
+#[test]
+fn disburse_enforces_same_guards_as_claim() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&ONE_UNIT);
+    client.set_push_mode(&attester, &true);
+
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+    let mut ids = soroban_sdk::Vec::new(&env);
+    ids.push_back(id.clone());
+
+    // Paused: same typed error as claim.
+    client.pause();
+    assert_eq!(client.try_disburse(&ids), Err(Ok(Error::ContractPaused)));
+    client.unpause();
+
+    // Suspended attester: same typed error as claim.
+    attester_registry.suspend_attester(&attester_registry.get_admin(), &attester);
+    assert_eq!(
+        client.try_disburse(&ids),
+        Err(Ok(Error::AttesterNotAllowlisted))
+    );
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    // Replay protection: a second push fails exactly like a second claim.
+    client.disburse(&ids);
+    assert_eq!(
+        client.try_disburse(&ids),
+        Err(Ok(Error::WorkItemAlreadyClaimed))
+    );
+}
+
+#[test]
+fn disburse_rejects_oversized_batch() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.set_push_mode(&attester, &true);
+
+    let mut ids = soroban_sdk::Vec::new(&env);
+    for i in 0..(MAX_DISBURSE_BATCH + 1) {
+        ids.push_back(BytesN::from_array(&env, &[i as u8; 32]));
+    }
+    assert_eq!(
+        client.try_disburse(&ids),
+        Err(Ok(Error::BatchTooLarge))
+    );
+}
+
+// ─────────────── Void approvals (#697) ───────────────
+
+#[test]
+fn void_approvals_since_blocks_affected_claims() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let before = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&before, &attester, &ONE_UNIT);
+
+    env.ledger().with_mut(|l| l.timestamp = 2_000);
+    let after = BytesN::from_array(&env, &[2u8; 32]);
+    client.approve_work_item(&after, &attester, &ONE_UNIT);
+
+    client.void_approvals_since(&approver, &2_000);
+
+    assert_eq!(
+        client.try_claim(&after),
+        Err(Ok(Error::ApprovalVoided))
+    );
+    // Items approved before T are unaffected.
+    client.claim(&before);
+    assert_eq!(client.get_total_paid(), ONE_UNIT);
+}
+
+#[test]
+fn void_approvals_since_leaves_other_approvers_unaffected() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    env.ledger().with_mut(|l| l.timestamp = 5_000);
+    let id = BytesN::from_array(&env, &[3u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+
+    // Void a different approver: the item stays claimable.
+    client.void_approvals_since(&Address::generate(&env), &0);
+    client.claim(&id);
+    assert!(client.is_work_item_claimed(&id));
+
+    // Voiding the real approver from T=0 blocks a fresh item.
+    let id2 = BytesN::from_array(&env, &[4u8; 32]);
+    client.approve_work_item(&id2, &attester, &ONE_UNIT);
+    client.void_approvals_since(&approver, &0);
+    assert_eq!(client.try_claim(&id2), Err(Ok(Error::ApprovalVoided)));
+}
+
+#[test]
+fn void_approvals_since_requires_admin_or_guardian() {
+    let (env, client, _registry, _admin, approver, _token, _ta) = setup();
+    let stranger = Address::generate(&env);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &stranger,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "void_approvals_since",
+            args: (approver.clone(), 0u64).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    assert!(client.try_void_approvals_since(&approver, &0).is_err());
+}
+
+#[test]
+fn sweep_expired_releases_voided_reservations() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    let id = BytesN::from_array(&env, &[5u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+    assert_eq!(client.get_reserved(), ONE_UNIT);
+
+    client.void_approvals_since(&approver, &1_000);
+    // Reservation is released lazily by the permissionless sweep.
+    client.sweep_expired(&id);
+    assert_eq!(client.get_reserved(), 0);
+    assert_eq!(client.try_claim(&id), Err(Ok(Error::ApprovalVoided)));
+}
+
+// ─────────────── Per-identity caps (#698) ───────────────
+
+#[test]
+fn identity_caps_hold_across_addresses() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let licence = BytesN::from_array(&env, &[0xABu8; 32]);
+    let addr_a = Address::generate(&env);
+    let addr_b = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &addr_a);
+    attester_registry.add_attester(&attester_registry.get_admin(), &addr_b);
+    attester_registry.set_identity_key(&attester_registry.get_admin(), &addr_a, &licence);
+    attester_registry.set_identity_key(&attester_registry.get_admin(), &addr_b, &licence);
+
+    client.set_max_per_identity(&ONE_UNIT);
+    client.set_max_per_claim(&ONE_UNIT);
+    client.fund(&(10 * ONE_UNIT));
+
+    let id_a = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id_a, &addr_a, &ONE_UNIT);
+    client.claim(&id_a);
+
+    // Second address sharing the identity is blocked by the identity cap.
+    let id_b = BytesN::from_array(&env, &[2u8; 32]);
+    client.approve_work_item(&id_b, &addr_b, &ONE_UNIT);
+    assert_eq!(
+        client.try_claim(&id_b),
+        Err(Ok(Error::IdentityClaimCapExceeded))
+    );
+    assert_eq!(client.get_identity_total_claimed(&licence), ONE_UNIT);
+}
+
+#[test]
+fn identity_totals_survive_rotation() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let licence = BytesN::from_array(&env, &[0xCDu8; 32]);
+    let old_addr = Address::generate(&env);
+    let new_addr = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &old_addr);
+    attester_registry.set_identity_key(&attester_registry.get_admin(), &old_addr, &licence);
+
+    client.set_max_per_identity(&ONE_UNIT);
+    client.set_max_per_claim(&ONE_UNIT);
+    client.fund(&(10 * ONE_UNIT));
+
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id, &old_addr, &ONE_UNIT);
+    client.claim(&id);
+
+    // Rotate to a new address that keeps the same identity key.
+    attester_registry.add_attester(&attester_registry.get_admin(), &new_addr);
+    attester_registry.set_identity_key(&attester_registry.get_admin(), &new_addr, &licence);
+
+    let id2 = BytesN::from_array(&env, &[2u8; 32]);
+    client.approve_work_item(&id2, &new_addr, &ONE_UNIT);
+    assert_eq!(
+        client.try_claim(&id2),
+        Err(Ok(Error::IdentityClaimCapExceeded))
+    );
+    assert_eq!(client.get_identity_total_claimed(&licence), ONE_UNIT);
+}
+
+#[test]
+fn identity_caps_fall_back_to_per_address_without_registry_support() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    // Registry advertises no identity-key feature: negotiation falls back.
+    assert!(!client.registry_supports_identity_keys());
+    client.set_max_per_identity(&ONE_UNIT);
+    client.set_max_per_claim(&ONE_UNIT);
+    client.fund(&(10 * ONE_UNIT));
+
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+    client.claim(&id);
+    assert_eq!(client.get_attester_total_claimed(&attester), ONE_UNIT);
+}

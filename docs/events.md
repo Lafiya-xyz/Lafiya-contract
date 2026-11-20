@@ -186,19 +186,68 @@ for how these events are consumed.
 ## `incentive-pool`
 
 ### `WorkItemApproved`
-Topics: `work_item_id`. Data: `attester`, `payout_amount`. Emitted once per
-item by both `approve_work_item` and `approve_work_items`.
+Topics: `work_item_id`. Data: `attester`, `payout_amount`, `asset`,
+`approved_by`, `approved_at`. Emitted once per item by both
+`approve_work_item` and `approve_work_items`. `approved_by`/`approved_at`
+are the values checked by `void_approvals_since` (see below).
 
 ### `PayoutClaimed`
 Topics: `work_item_id`, `attester`. Data: `recipient` (bound payout
-address), `amount`.
+address), `amount`, `asset`.
+
+### `PayoutDisbursed`
+Topics: `work_item_id`, `attester`. Data: `recipient` (bound payout
+address), `amount`, `asset`, `disbursed_by` (approver). Emitted once per
+item by `disburse`; carries the same fields as `PayoutClaimed` so indexers
+can treat both identically.
 
 ### `PayoutAddressScheduled`
-Topics: `attester`. Data: `recipient`, `effective_at`. The new recipient is
-used for claims from `effective_at` (now + 48h).
+Topics: `attester`. Data: `recipient`, `effective_at`, `push_enabled`. The
+new recipient is used for claims from `effective_at` (now + 48h).
+`push_enabled` opts the attester into approver-initiated `disburse`; when
+false, `disburse` rejects the item with `PushNotEnabled`.
+
+### `AssetAdded`
+Topics: `asset`. Data: `decimals`, `added_by`. Emitted by the admin-managed
+asset allowlist after the interface probe (decimals + SAC check) succeeds.
+
+### `AssetRemoved`
+Topics: `asset`. Data: `removed_by`. New deposits/approvals for the asset
+are rejected; existing reservations remain claimable.
+
+### `AssetDeposited`
+Topics: `asset`. Data: `depositor`, `amount`, `total_deposited`. All
+accounting is keyed by asset (`TotalDeposited(asset)`, `TotalPaid(asset)`,
+reservations, caps); there is no cross-asset conversion on-chain.
+
+### `AssetCapSet`
+Topics: `asset`. Data: `max_per_attester`, `max_per_identity`,
+`epoch_budget`. Caps and drift detection are per asset.
+
+### `ApprovalsVoided`
+Topics: `approver`. Data: `since`, `voided_by`. Sets the O(1) watermark
+`ApproverRevokedSince(approver) = since`; `claim`/`disburse` reject items
+where `approved_by == approver && approved_at >= since` with
+`ApprovalVoided`. Reservations are released lazily by permissionless
+sweep-style cleanup.
+
+### `IdentityCapEnforced`
+Topics: `identity_key`. Data: `attester`, `asset`, `amount`,
+`identity_claimed`. Emitted when a payout is charged against
+`max_per_identity`; `identity_key` comes from
+`attester-registry.get_identity_key(attester)` and follows rotations.
 
 ### `AttestationRegistryRepointed`
 Topics: `previous` (optional), `new`.
+
+### Claim / disburse flow
+
+`claim(work_item_id)` (attester-authorized) and
+`disburse(work_item_ids)` (approver-only, bounded batch) share one guard
+function: asset allowlist, per-asset caps, per-identity caps, eligibility,
+approval watermark, replay protection, and push opt-in (disburse only).
+Each item pays its current payout binding in the asset recorded on the
+work item.
 
 ### `EpochConfigProposed`
 Data: `epoch_length`, `epoch_budget`, `rollover`, `effective_at`.

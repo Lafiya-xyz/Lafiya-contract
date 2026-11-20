@@ -67,6 +67,31 @@ CLI_MAPPING: dict[tuple[str, str], str] = {
     ("attestation-registry", "pause"):            "ops pause --contract attestation-registry",
     ("attestation-registry", "unpause"):          "ops unpause --contract attestation-registry",
     ("attestation-registry", "is_paused"):        "ops is-paused --contract attestation-registry",
+    # ── incentive-pool ───────────────────────────────────────────────────────
+    # Multi-asset pools (#695): admin-managed asset allowlist and per-asset
+    # accounting, all exposed through the `pool asset ...` subcommands.
+    ("incentive-pool", "add_asset"):              "pool asset add",
+    ("incentive-pool", "remove_asset"):           "pool asset remove",
+    ("incentive-pool", "is_asset_allowed"):       "pool asset is-allowed",
+    ("incentive-pool", "get_allowed_assets"):     "pool asset list",
+    ("incentive-pool", "get_total_deposited"):    "pool asset total-deposited",
+    ("incentive-pool", "get_total_paid"):         "pool asset total-paid",
+    ("incentive-pool", "set_asset_cap"):          "pool asset set-cap",
+    ("incentive-pool", "get_asset_cap"):          "pool asset get-cap",
+    # Push disbursement (#696): approver-initiated, opt-in per attester.
+    ("incentive-pool", "disburse"):               "pool disburse",
+    ("incentive-pool", "set_push_mode"):          "pool set-push-mode",
+    ("incentive-pool", "get_push_mode"):          "pool get-push-mode",
+    # Approval voiding (#697): watermark plus permissionless cleanup.
+    ("incentive-pool", "void_approvals_since"):   "pool void-approvals-since",
+    ("incentive-pool", "get_approver_revoked_since"): "pool get-approver-revoked-since",
+    ("incentive-pool", "sweep_expired"):          "pool sweep-expired",
+    # Per-identity payout caps (#698).
+    ("incentive-pool", "get_identity_key"):       "pool get-identity-key",
+    ("incentive-pool", "get_identity_claimed"):   "pool get-identity-claimed",
+    ("incentive-pool", "set_max_per_identity"):   "pool set-max-per-identity",
+    ("incentive-pool", "get_max_per_identity"):   "pool get-max-per-identity",
+    ("incentive-pool", "get_interface"):          "pool get-interface",
 }
 
 

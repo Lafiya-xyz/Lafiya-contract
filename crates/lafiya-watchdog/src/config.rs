@@ -180,6 +180,38 @@ pub struct PoolRules {
     /// Alert when the pool is paused.
     #[serde(default = "default_pool_paused_severity")]
     pub pool_paused_severity: Severity,
+    /// Alert when the pool's asset allowlist changes (issue #695).
+    #[serde(default = "default_asset_allowlist_severity")]
+    pub asset_allowlist_severity: Severity,
+    /// Alert when a push disbursement batch exceeds this many work items
+    /// (issue #696). `None` disables the rule.
+    #[serde(default)]
+    pub max_disburse_batch: Option<usize>,
+    #[serde(default = "default_disburse_severity")]
+    pub disburse_severity: Severity,
+    /// Alert when approvals are voided via `void_approvals_since` (issue #697).
+    #[serde(default = "default_void_approvals_severity")]
+    pub void_approvals_severity: Severity,
+    /// Alert when an identity-keyed payout cap is hit across multiple attester
+    /// addresses (issue #698).
+    #[serde(default = "default_identity_cap_severity")]
+    pub identity_cap_severity: Severity,
+}
+
+fn default_asset_allowlist_severity() -> Severity {
+    Severity::High
+}
+
+fn default_disburse_severity() -> Severity {
+    Severity::Medium
+}
+
+fn default_void_approvals_severity() -> Severity {
+    Severity::Critical
+}
+
+fn default_identity_cap_severity() -> Severity {
+    Severity::High
 }
 
 fn default_large_withdrawal_severity() -> Severity {

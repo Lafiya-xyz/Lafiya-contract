@@ -177,8 +177,17 @@ fn incentive_pool_scenario_reaches_the_webhook() {
         ev("CPOOL", "pool_claimed", 17, &[&attester, "1000"]),
         // A large withdrawal.
         ev("CPOOL", "pool_withdrawn", 18, &["1000000"]),
+        // The asset allowlist is changed (multi-asset pools).
+        ev("CPOOL", "pool_asset_added", 19, &["USDC"]),
+        ev("CPOOL", "pool_asset_removed", 20, &["EURC"]),
+        // An approver pushes a batch of disbursements.
+        ev("CPOOL", "pool_disbursed", 21, &[&attester, "1000"]),
+        // A compromised approver's past approvals are voided.
+        ev("CPOOL", "pool_approvals_voided", 22, &["GAPPROVER", "100"]),
+        // A payout hits the per-identity cap.
+        ev("CPOOL", "pool_identity_cap_hit", 23, &[&attester, "5000"]),
         // The pool is paused.
-        ev("CPOOL", "pool_paused", 19, &["GADMIN"]),
+        ev("CPOOL", "pool_paused", 24, &["GADMIN"]),
     ];
     let alerts: Vec<_> = scenario.iter().flat_map(|e| engine.evaluate(e)).collect();
 
@@ -191,6 +200,10 @@ fn incentive_pool_scenario_reaches_the_webhook() {
         rules::POOL_APPROVAL_BURST,
         rules::POOL_LARGE_WITHDRAWAL,
         rules::POOL_CLAIM_BY_READDED_ATTESTER,
+        rules::POOL_ASSET_ALLOWLIST_CHANGED,
+        rules::POOL_DISBURSED,
+        rules::POOL_APPROVALS_VOIDED,
+        rules::POOL_IDENTITY_CAP_HIT,
         rules::POOL_PAUSED,
     ] {
         assert!(
@@ -199,9 +212,26 @@ fn incentive_pool_scenario_reaches_the_webhook() {
         );
     }
 
-    // Only the critical pool pause is forwarded to the webhook.
-    let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
-    assert_eq!(body["kind"].as_str().unwrap(), rules::POOL_PAUSED);
+    // Only the critical pool alerts are forwarded to the webhook.
+    let expected_critical = alerts
+        .iter()
+        .filter(|a| a.severity == Severity::Critical)
+        .count();
+    let mut received: Vec<String> = Vec::new();
+    for _ in 0..expected_critical {
+        let body = rx.recv_timeout(std::time::Duration::from_secs(5)).unwrap();
+        received.push(body["kind"].as_str().unwrap().to_string());
+    }
+    for kind in [
+        rules::POOL_ASSET_ALLOWLIST_CHANGED,
+        rules::POOL_APPROVALS_VOIDED,
+        rules::POOL_PAUSED,
+    ] {
+        assert!(
+            received.iter().any(|k| k == kind),
+            "missing {kind} in {received:?}"
+        );
+    }
     assert!(rx.try_recv().is_err());
 }
 

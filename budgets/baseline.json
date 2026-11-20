@@ -229,15 +229,81 @@
   },
   "incentive-pool": {
     "approve_work_items": {
-      "cpu_instructions": 4200000,
-      "memory_bytes": 262144,
-      "ledger_read_entries": 84,
-      "ledger_read_bytes": 24576,
+      "cpu_instructions": 4400000,
+      "memory_bytes": 278528,
+      "ledger_read_entries": 88,
+      "ledger_read_bytes": 26624,
       "ledger_write_entries": 18,
-      "ledger_write_bytes": 4096,
-      "events_size_bytes": 2560,
-      "estimated_fee_stroops": 900000,
-      "worst_case_scenario": "MAX_BATCH_APPROVALS (16) items, distinct attesters, full attestation history window, epoch budget enabled"
+      "ledger_write_bytes": 4352,
+      "events_size_bytes": 2688,
+      "estimated_fee_stroops": 940000,
+      "worst_case_scenario": "MAX_BATCH_APPROVALS (16) items, distinct attesters, full attestation history window, epoch budget enabled, per-asset accounting keys and approved_by/approved_at recorded per item"
+    },
+    "claim": {
+      "cpu_instructions": 380000,
+      "memory_bytes": 24576,
+      "ledger_read_entries": 9,
+      "ledger_read_bytes": 2304,
+      "ledger_write_entries": 5,
+      "ledger_write_bytes": 768,
+      "events_size_bytes": 256,
+      "estimated_fee_stroops": 140000,
+      "worst_case_scenario": "asset-keyed accounting (TotalDeposited/TotalPaid/reservation per asset), identity-key cap lookup via attester-registry, approver revocation watermark check, payout binding with push flag"
+    },
+    "disburse": {
+      "cpu_instructions": 5200000,
+      "memory_bytes": 327680,
+      "ledger_read_entries": 104,
+      "ledger_read_bytes": 30720,
+      "ledger_write_entries": 24,
+      "ledger_write_bytes": 5120,
+      "events_size_bytes": 3072,
+      "estimated_fee_stroops": 1100000,
+      "worst_case_scenario": "MAX_BATCH_DISBURSEMENTS items at maximum batch size, distinct attesters and assets, full guard parity with claim (caps, eligibility, replay protection, revocation watermark), per-item audit events"
+    },
+    "void_approvals_since": {
+      "cpu_instructions": 60000,
+      "memory_bytes": 4096,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 192,
+      "ledger_write_entries": 1,
+      "ledger_write_bytes": 128,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 24000,
+      "worst_case_scenario": "O(1) watermark write to ApproverRevokedSince(approver) by admin or guardian, single audit event"
+    },
+    "sweep_expired": {
+      "cpu_instructions": 2600000,
+      "memory_bytes": 163840,
+      "ledger_read_entries": 56,
+      "ledger_read_bytes": 14336,
+      "ledger_write_entries": 16,
+      "ledger_write_bytes": 3072,
+      "events_size_bytes": 1536,
+      "estimated_fee_stroops": 560000,
+      "worst_case_scenario": "MAX_SWEEP_BATCH expired reservations released lazily across multiple assets, including reservations voided by an approver revocation watermark"
+    },
+    "add_asset": {
+      "cpu_instructions": 180000,
+      "memory_bytes": 12288,
+      "ledger_read_entries": 3,
+      "ledger_read_bytes": 768,
+      "ledger_write_entries": 2,
+      "ledger_write_bytes": 256,
+      "events_size_bytes": 192,
+      "estimated_fee_stroops": 68000,
+      "worst_case_scenario": "admin allowlist add with interface probe (decimals, SAC check) cross-contract call and per-asset cap initialization"
+    },
+    "remove_asset": {
+      "cpu_instructions": 90000,
+      "memory_bytes": 6144,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 384,
+      "ledger_write_entries": 1,
+      "ledger_write_bytes": 128,
+      "events_size_bytes": 128,
+      "estimated_fee_stroops": 34000,
+      "worst_case_scenario": "admin allowlist removal, asset must have zero outstanding reservations and zero balance"
     }
   }
 }

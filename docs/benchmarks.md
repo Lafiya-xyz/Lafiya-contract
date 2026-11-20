@@ -93,3 +93,36 @@ To measure the current checkout without the history:
 cargo build -p lafiya-bench
 scripts/bench_measure.sh | jq .metrics
 ```
+
+## Incentive-pool disbursement batch size
+
+`incentive-pool` has two payout paths: `claim`, which the attester signs
+themselves, and `disburse`, an approver-only push that pays each work item to
+its bound payout address. `disburse` is bounded by
+`MAX_DISBURSE_BATCH` (see `incentive-pool/src/lib.rs`), and that number is
+derived from measurement, not picked by hand.
+
+The harness runs `incentive-pool/disburse_max_batch` at the maximum batch
+size. It reports the per-call totals for CPU instructions, memory, ledger
+read/write entries and bytes, and event size. The limit is the largest batch
+whose per-call footprint stays inside the Soroban per-transaction budget with
+headroom for the transaction envelope and the caller's own logic. The
+scenario also runs at smaller sizes so the per-item cost can be read off the
+series and the headroom re-checked if the guard logic changes.
+
+Because `disburse` shares the guard function with `claim`, a change to the
+caps, eligibility or replay protection moves both scenarios. If
+`incentive-pool/disburse_max_batch` grows past the budget, either lower
+`MAX_DISBURSE_BATCH` or acknowledge the increase in `budgets/trend.json` with
+a note explaining why the larger batch still fits.
+
+To re-measure after changing the guard logic or the batch limit:
+
+```bash
+cargo build -p lafiya-bench
+scripts/bench_measure.sh | jq '.metrics | with_entries(select(.key | startswith("incentive-pool/disburse")))'
+```
+
+Compare the result with the previous commit's `commits/<sha>.json` on the
+`bench-history` branch. If the per-item cost changed, recompute the largest
+batch that fits and update `MAX_DISBURSE_BATCH` and this section together.

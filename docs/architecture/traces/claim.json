@@ -3,9 +3,36 @@
   "title": "Claim an incentive payout",
   "actors": [
     "Attester",
+    "Approver",
     "IncentivePool",
     "AttestationRegistry"
   ],
+  "shared_guard": {
+    "name": "guard_payout",
+    "description": "Single guard function shared by claim and disburse. Enforces caps, eligibility, replay protection, approver-revocation watermark, and identity-keyed caps. Any new payout path must call this guard.",
+    "checks": [
+      {
+        "name": "replay_protection",
+        "description": "Reject work items that have already been paid (per-item claimed flag)."
+      },
+      {
+        "name": "eligibility",
+        "description": "Work item must be approved and not cancelled/expired."
+      },
+      {
+        "name": "caps",
+        "description": "Enforce max_per_attester and pool-level caps."
+      },
+      {
+        "name": "approver_revocation_watermark",
+        "description": "Reject items where approved_by == revoked approver && approved_at >= ApproverRevokedSince(approver). O(1) watermark check; unaffected items from other approvers or before T still pass."
+      },
+      {
+        "name": "identity_keyed_cap",
+        "description": "If registry supports identity keys (negotiated via get_interface), enforce max_per_identity using IdentityClaimed(identity_key). Falls back to per-address behavior when unsupported."
+      }
+    ]
+  },
   "steps": [
     {
       "from": "Attester",
@@ -20,7 +47,66 @@
     },
     {
       "from": "IncentivePool",
+      "to": "AttestationRegistry",
+      "call": "get_interface",
+      "note": "Feature negotiation: detect identity-key support."
+    },
+    {
+      "from": "IncentivePool",
+      "to": "AttestationRegistry",
+      "call": "get_identity_key",
+      "note": "Only when identity-key feature is supported; follows rotations."
+    },
+    {
+      "from": "IncentivePool",
+      "call": "guard_payout",
+      "note": "Shared guard: replay, eligibility, caps, approver-revocation watermark, identity-keyed cap."
+    },
+    {
+      "from": "IncentivePool",
       "event": "PayoutClaimed"
     }
-  ]
+  ],
+  "disburse_path": {
+    "description": "Approver-initiated push disbursement for CHWs who cannot sign claim transactions. Opt-in per attester via a flag on the payout binding; approver cannot push to an address the CHW never chose.",
+    "bounded_batch": true,
+    "max_batch_size": "derived from per-call budget benchmark at maximum batch size; documented in the pool docs",
+    "steps": [
+      {
+        "from": "Approver",
+        "to": "IncentivePool",
+        "call": "disburse",
+        "auth": "Approver",
+        "args": "work_item_ids: Vec<BytesN<32>>"
+      },
+      {
+        "from": "IncentivePool",
+        "to": "AttestationRegistry",
+        "call": "get_attestation",
+        "note": "Per item in batch."
+      },
+      {
+        "from": "IncentivePool",
+        "to": "AttestationRegistry",
+        "call": "get_interface",
+        "note": "Feature negotiation: detect identity-key support."
+      },
+      {
+        "from": "IncentivePool",
+        "to": "AttestationRegistry",
+        "call": "get_identity_key",
+        "note": "Only when identity-key feature is supported; follows rotations."
+      },
+      {
+        "from": "IncentivePool",
+        "call": "guard_payout",
+        "note": "Same shared guard as claim, applied per item. Also verifies push-mode opt-in on the payout binding."
+      },
+      {
+        "from": "IncentivePool",
+        "event": "PayoutDisbursed",
+        "note": "Audit event emitted per item."
+      }
+    ]
+  }
 }

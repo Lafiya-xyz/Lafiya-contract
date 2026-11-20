@@ -134,6 +134,9 @@ fn run(cmd: &mut Command) -> (String, String, bool) {
 // Mutating pool commands: decimal parsing + successful submission
 // ---------------------------------------------------------------------------
 
+/// A representative allowlisted asset (e.g. USDC SAC) used across the tests.
+const ASSET: &str = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
 #[tokio::test]
 async fn pool_fund_parses_decimal_amount() {
     let server = MockServer::start().await;
@@ -154,6 +157,323 @@ async fn pool_fund_parses_decimal_amount() {
     assert!(
         stdout.contains("abc123"),
         "expected tx hash in output, got: {stdout}"
+    );
+}
+
+#[tokio::test]
+async fn pool_fund_with_asset_parses_decimal_amount() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "abc124").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "fund",
+        "--pool",
+        POOL_ID,
+        "--asset",
+        ASSET,
+        "--amount",
+        "12.5",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "fund --asset failed: {stderr}");
+    assert!(stdout.contains("abc124"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_withdraw_with_asset_parses_decimal_amount() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "bbb223").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "withdraw",
+        "--pool",
+        POOL_ID,
+        "--asset",
+        ASSET,
+        "--amount",
+        "3.14159",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "withdraw --asset failed: {stderr}");
+    assert!(stdout.contains("bbb223"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_approve_with_asset_parses_decimal_amount() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "def457").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "approve",
+        "--pool",
+        POOL_ID,
+        "--asset",
+        ASSET,
+        "--amount",
+        "0.0000001",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "approve --asset failed: {stderr}");
+    assert!(stdout.contains("def457"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_claim_with_asset_parses_decimal_amount() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "aaa112").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "claim",
+        "--pool",
+        POOL_ID,
+        "--asset",
+        ASSET,
+        "--amount",
+        "100",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "claim --asset failed: {stderr}");
+    assert!(stdout.contains("aaa112"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_fund_with_asset_rejects_malformed_amount_before_rpc() {
+    // No mocks mounted: the client-side parser must reject the amount before
+    // contacting the network.
+    let server = MockServer::start().await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "fund",
+        "--pool",
+        POOL_ID,
+        "--asset",
+        ASSET,
+        "--amount",
+        "not-a-number",
+        "--yes",
+    ]);
+    let (_stdout, stderr, ok) = run(&mut cmd);
+    assert!(!ok, "expected failure for malformed amount");
+    assert!(
+        stderr.to_lowercase().contains("amount"),
+        "expected amount error, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Asset allowlist management (issue #695)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_asset_add_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "eee555").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "asset",
+        "add",
+        "--pool",
+        POOL_ID,
+        "--asset",
+        ASSET,
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "asset add failed: {stderr}");
+    assert!(stdout.contains("eee555"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_asset_remove_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "fff666").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "asset",
+        "remove",
+        "--pool",
+        POOL_ID,
+        "--asset",
+        ASSET,
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "asset remove failed: {stderr}");
+    assert!(stdout.contains("fff666"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_asset_list_renders_assets() {
+    let server = MockServer::start().await;
+    stub_pool_state(&server).await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args(["pool", "asset", "list", "--pool", POOL_ID]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "asset list failed: {stderr}");
+    let lower = stdout.to_lowercase();
+    assert!(
+        lower.contains("asset") || lower.contains("allowlist"),
+        "expected assets in output, got: {stdout}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Push disbursement (issue #696)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_disburse_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "111aaa").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "disburse",
+        "--pool",
+        POOL_ID,
+        "--work-item",
+        "0000000000000000000000000000000000000000000000000000000000000001",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "disburse failed: {stderr}");
+    assert!(stdout.contains("111aaa"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_disburse_rejects_malformed_work_item_before_rpc() {
+    let server = MockServer::start().await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "disburse",
+        "--pool",
+        POOL_ID,
+        "--work-item",
+        "not-a-hash",
+        "--yes",
+    ]);
+    let (_stdout, stderr, ok) = run(&mut cmd);
+    assert!(!ok, "expected failure for malformed work item id");
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("work") || lower.contains("hash") || lower.contains("hex"),
+        "expected work item error, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Void approvals since T (issue #697)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_void_approvals_since_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "222bbb").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "void-approvals-since",
+        "--pool",
+        POOL_ID,
+        "--approver",
+        SOURCE,
+        "--since",
+        "1700000000",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "void-approvals-since failed: {stderr}");
+    assert!(stdout.contains("222bbb"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn pool_void_approvals_since_rejects_malformed_since() {
+    let server = MockServer::start().await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "void-approvals-since",
+        "--pool",
+        POOL_ID,
+        "--approver",
+        SOURCE,
+        "--since",
+        "not-a-timestamp",
+        "--yes",
+    ]);
+    let (_stdout, stderr, ok) = run(&mut cmd);
+    assert!(!ok, "expected failure for malformed timestamp");
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("since") || lower.contains("timestamp") || lower.contains("time"),
+        "expected timestamp error, got: {stderr}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Permissionless sweep (issue #697)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_sweep_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "333ccc").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args(["pool", "sweep", "--pool", POOL_ID, "--yes"]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "sweep failed: {stderr}");
+    assert!(stdout.contains("333ccc"), "got: {stdout}");
+}
+
+// ---------------------------------------------------------------------------
+// Per-identity cap reads (issue #698)
+// ---------------------------------------------------------------------------
+
+#[tokio::test]
+async fn pool_identity_total_renders_total() {
+    let server = MockServer::start().await;
+    stub_pool_state(&server).await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "pool",
+        "identity-total",
+        "--pool",
+        POOL_ID,
+        "--attester",
+        SOURCE,
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "identity-total failed: {stderr}");
+    let lower = stdout.to_lowercase();
+    assert!(
+        lower.contains("identity") || lower.contains("total"),
+        "expected identity total in output, got: {stdout}"
     );
 }
 
