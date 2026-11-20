@@ -2,6 +2,7 @@ extern crate std;
 
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
+use lafiya_test_utils::{budgeted_env, SystemBuilder};
 use p256::ecdsa::{
     signature::hazmat::PrehashSigner, Signature as P256Signature, SigningKey as P256SigningKey,
 };
@@ -36,11 +37,7 @@ pub(crate) fn register_account(
     keys: &[SigningKey],
     threshold: u32,
 ) -> soroban_sdk::Address {
-    let mut signers = Vec::new(env);
-    for key in keys {
-        signers.push_back(BytesN::from_array(env, &key.verifying_key().to_bytes()));
-    }
-    env.register(MultisigAccount, (signers, threshold))
+    SystemBuilder::new(env).multisig_account(keys, threshold)
 }
 
 pub(crate) fn signatures_for(env: &Env, keys: &[SigningKey], payload: &[u8; 32]) -> Vec<Signature> {
@@ -62,7 +59,7 @@ pub(crate) fn signatures_for(env: &Env, keys: &[SigningKey], payload: &[u8; 32])
 
 #[test]
 fn getters_return_threshold_and_canonical_signer_order() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let configured = [&keys[2], &keys[1], &keys[0]];
     let signers = configured
@@ -73,7 +70,7 @@ fn getters_return_threshold_and_canonical_signer_order() {
     for signer in signers {
         configured_signers.push_back(signer);
     }
-    let account = env.register(MultisigAccount, (configured_signers, 2u32));
+    let account = SystemBuilder::new(&env).multisig_account_with_signers(configured_signers, 2u32);
     let client = MultisigAccountClient::new(&env, &account);
 
     let mut expected_signers = Vec::new(&env);
@@ -116,7 +113,7 @@ fn p256_signature(env: &Env, key: &P256SigningKey, payload: &[u8; 32]) -> Signat
 
 #[test]
 fn one_of_one_signer_authorizes() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys[..1], 1);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -127,7 +124,7 @@ fn one_of_one_signer_authorizes() {
 
 #[test]
 fn two_of_three_signers_authorize() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -138,7 +135,7 @@ fn two_of_three_signers_authorize() {
 
 #[test]
 fn one_of_one_with_zero_signatures_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys[..1], 1);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -152,7 +149,7 @@ fn one_of_one_with_zero_signatures_is_rejected() {
 
 #[test]
 fn fewer_than_threshold_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -166,7 +163,7 @@ fn fewer_than_threshold_is_rejected() {
 
 #[test]
 fn unknown_signer_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -185,7 +182,7 @@ fn unknown_signer_is_rejected() {
 
 #[test]
 fn duplicate_signature_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -207,7 +204,7 @@ fn same_signer_appearing_twice_in_signatures_is_rejected() {
     // are byte-identical to each other — confirming the contract rejects a
     // signer appearing twice regardless of whether the caller submitted a
     // literal copy or re-signed from scratch.
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -239,7 +236,7 @@ fn same_signer_appearing_twice_in_signatures_is_rejected() {
 
 #[test]
 fn signatures_out_of_order_are_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -254,7 +251,7 @@ fn signatures_out_of_order_are_rejected() {
 
 #[test]
 fn signature_for_another_payload_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let signed_payload = BytesN::from_array(&env, &[7; 32]);
@@ -267,7 +264,7 @@ fn signature_for_another_payload_is_rejected() {
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn zero_threshold_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     register_account(&env, &keys, 0);
 }
@@ -277,7 +274,7 @@ fn zero_threshold_is_rejected() {
 fn zero_signers_and_zero_threshold_is_rejected() {
     // When both signers is empty and threshold is 0, the threshold check
     // (line 50: `if threshold == 0 || threshold > signers.len()`) fires first.
-    let env = Env::default();
+    let env = budgeted_env();
     let keys: &[SigningKey] = &[];
     register_account(&env, keys, 0);
 }
@@ -285,7 +282,7 @@ fn zero_signers_and_zero_threshold_is_rejected() {
 #[test]
 #[should_panic(expected = "Error(Contract, #1)")]
 fn threshold_above_signer_count_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     register_account(&env, &keys, 4);
 }
@@ -293,14 +290,14 @@ fn threshold_above_signer_count_is_rejected() {
 #[test]
 #[should_panic(expected = "Error(Contract, #2)")]
 fn duplicate_configured_signer_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let key = SigningKey::from_bytes(&[1; 32]);
     register_account(&env, &[key.clone(), key], 1);
 }
 
 #[test]
 fn check_auth_extends_ttl_on_success() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -312,7 +309,7 @@ fn check_auth_extends_ttl_on_success() {
 
 #[test]
 fn successful_auth_emits_signers_and_payload() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys, 2);
     let payload = BytesN::from_array(&env, &[7; 32]);
@@ -345,7 +342,7 @@ fn successful_auth_emits_signers_and_payload() {
 
 #[test]
 fn too_many_signatures_is_rejected() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     // Configure a 2-of-3 account
     let account = register_account(&env, &keys[..2], 2);
@@ -361,7 +358,7 @@ fn too_many_signatures_is_rejected() {
 
 #[test]
 fn three_of_five_signers_authorize() {
-    let env = Env::default();
+    let env = budgeted_env();
     let mut keys = std::vec![
         SigningKey::from_bytes(&[1; 32]),
         SigningKey::from_bytes(&[2; 32]),
@@ -380,7 +377,7 @@ fn three_of_five_signers_authorize() {
 
 #[test]
 fn get_interface_reports_kind_versions_and_features() {
-    let env = Env::default();
+    let env = budgeted_env();
     let keys = signing_keys();
     let account = register_account(&env, &keys[..2], 1);
     let client = MultisigAccountClient::new(&env, &account);

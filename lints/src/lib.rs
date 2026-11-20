@@ -19,7 +19,12 @@ dylint_linting::dylint_library!();
 #[unsafe(no_mangle)]
 pub fn register_lints(sess: &rustc_session::Session, store: &mut rustc_lint::LintStore) {
     dylint_linting::init_config(sess);
-    store.register_lints(&[PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+    store.register_lints(&[
+        PERSISTENT_SET_WITHOUT_TTL,
+        STORAGE_IN_LOOP,
+        UNCHECKED_AMOUNT_ARITHMETIC,
+        UNLIMITED_BUDGET_IN_TESTS,
+    ]);
     store.register_late_lint_pass(Box::new(|_| Box::new(LafiyaLints)));
 }
 
@@ -35,7 +40,24 @@ rustc_session::declare_lint! {
     /// `+ - *` on an i128/u128 amount.
     pub UNCHECKED_AMOUNT_ARITHMETIC, Warn, "unchecked arithmetic on an amount type"
 }
-rustc_session::declare_lint_pass!(LafiyaLints => [PERSISTENT_SET_WITHOUT_TTL, STORAGE_IN_LOOP, UNCHECKED_AMOUNT_ARITHMETIC]);
+rustc_session::declare_lint! {
+    /// `reset_unlimited()` outside an allowlisted file (benchmarks).
+    pub UNLIMITED_BUDGET_IN_TESTS, Warn, "unlimited budget outside an allowlisted benchmark file"
+}
+rustc_session::declare_lint_pass!(LafiyaLints => [
+    PERSISTENT_SET_WITHOUT_TTL,
+    STORAGE_IN_LOOP,
+    UNCHECKED_AMOUNT_ARITHMETIC,
+    UNLIMITED_BUDGET_IN_TESTS
+]);
+
+/// Files allowed to disable the budget (benchmarks). Matched as a path suffix.
+const UNLIMITED_BUDGET_ALLOWLIST: &[&str] = &["benches/", "/benchmarks/", "benches.rs"];
+
+fn is_budget_allowlisted(span: Span) -> bool {
+    let path = span.source_callsite().get_filename();
+    UNLIMITED_BUDGET_ALLOWLIST.iter().any(|allowed| path.contains(allowed))
+}
 
 /// `x.storage().persistent().set(..)` etc: returns the storage kind and method.
 fn storage_call<'a>(e: &'a Expr<'_>) -> Option<(&'a str, &'a str)> {
@@ -73,6 +95,16 @@ impl<'tcx> Visitor<'tcx> for Scan<'_, 'tcx> {
                 && matches!(self.cx.typeck_results().expr_ty(l).kind(), TyKind::Int(rustc_middle::ty::IntTy::I128) | TyKind::Uint(rustc_middle::ty::UintTy::U128))
             {
                 span_lint(self.cx, UNCHECKED_AMOUNT_ARITHMETIC, e.span, "use checked_add/checked_sub/checked_mul on amounts");
+            }
+        }
+        if let ExprKind::MethodCall(seg, _, _, _) = e.kind {
+            if seg.ident.name.as_str() == "reset_unlimited" && !is_budget_allowlisted(e.span) {
+                span_lint(
+                    self.cx,
+                    UNLIMITED_BUDGET_IN_TESTS,
+                    e.span,
+                    "reset_unlimited() outside an allowlisted benchmark file; use network-realistic budgets",
+                );
             }
         }
         if matches!(e.kind, ExprKind::Loop(..)) {

@@ -37,3 +37,65 @@ retries = 0
 
 [profile.flaky.junit]
 path = "junit.xml"
+
+# ---------------------------------------------------------------------------
+# Proptest tiers (#721)
+#
+# PR runs use a fast case count; nightly runs use a deep case count. Both
+# profiles set PROPTEST_CASES for the test process so every crate's proptests
+# pick up the same tier. The seed is printed on failure by proptest itself;
+# see TESTING_ARCHITECTURE.md for local reproduction steps.
+# ---------------------------------------------------------------------------
+
+[profile.pr]
+# Fast tier: keep PR feedback quick.
+fail-fast = false
+slow-timeout = { period = "60s", terminate-after = 5 }
+failure-output = "immediate-final"
+retries = 0
+
+[profile.pr.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
+
+[profile.pr.overrides]
+# Fast proptest case count for PR runs.
+env = { PROPTEST_CASES = "256" }
+
+[profile.nightly]
+# Deep tier: run many more proptest cases to shake out rare failures.
+fail-fast = false
+slow-timeout = { period = "120s", terminate-after = 10 }
+failure-output = "immediate-final"
+retries = 0
+
+[profile.nightly.junit]
+path = "junit.xml"
+store-success-output = false
+store-failure-output = true
+
+[profile.nightly.overrides]
+# Deep proptest case count for nightly runs.
+env = { PROPTEST_CASES = "50000" }
+
+# ---------------------------------------------------------------------------
+# Per-test cost reporting (#720)
+#
+# JUnit output includes per-test timing. Contract tests run under
+# network-realistic budgets via lafiya-test-utils; the cost ceilings are
+# asserted in-test and surfaced through the JUnit report so trends are visible.
+# ---------------------------------------------------------------------------
+
+[profile.ci.junit.report-name]
+# Keep the report name stable so CI can diff per-test cost trends.
+name = "junit"
+
+# ---------------------------------------------------------------------------
+# Regression-file cleanliness check hook (#721)
+#
+# After the run, CI verifies that every crate with proptests has committed
+# its proptest-regressions/ files. The check is implemented as a script that
+# CI invokes; nextest exposes the hook via the `test-runner`-adjacent step in
+# the workflow. See docs/ci.md and TESTING_ARCHITECTURE.md.
+# ---------------------------------------------------------------------------

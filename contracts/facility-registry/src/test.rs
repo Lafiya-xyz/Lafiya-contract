@@ -1,15 +1,12 @@
 extern crate std;
 
 use super::*;
+use lafiya_test_utils::SystemBuilder;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 
 fn setup() -> (Env, FacilityRegistryClient<'static>) {
-    let env = Env::default();
-    env.mock_all_auths();
-    env.ledger().set_timestamp(100);
-    let admin = Address::generate(&env);
-    let id = env.register(FacilityRegistry, (admin,));
-    (env.clone(), FacilityRegistryClient::new(&env, &id))
+    let system = SystemBuilder::new().with_timestamp(100).build();
+    (system.env().clone(), system.facility_registry())
 }
 
 fn license(env: &Env) -> BytesN<32> {

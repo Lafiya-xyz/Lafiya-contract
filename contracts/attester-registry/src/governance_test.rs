@@ -1,18 +1,18 @@
 extern crate std;
 
 use super::*;
+use lafiya_test_utils::SystemBuilder;
 use soroban_sdk::testutils::{Address as _, Ledger as _};
 use soroban_sdk::{token, Env, Map};
 
 const DAY: u64 = 24 * 60 * 60;
 
 fn setup() -> (Env, AttesterRegistryClient<'static>, Address) {
-    let env = Env::default();
-    env.mock_all_auths();
+    let system = SystemBuilder::new().with_attester_registry().build();
+    let env = system.env();
     env.ledger().set_timestamp(1_000);
-    let admin = Address::generate(&env);
-    let id = env.register(AttesterRegistry, (admin.clone(),));
-    let client = AttesterRegistryClient::new(&env, &id);
+    let admin = system.admin();
+    let client = system.attester_registry();
     client.grant_role(&Role::Registrar, &admin);
     client.grant_role(&Role::Guardian, &admin);
     (env, client, admin)
@@ -274,13 +274,16 @@ const MIN_BOND: i128 = 1_000;
 const WINDOW: u64 = DAY;
 
 fn bond_setup(quorum: u32) -> BondFixture {
-    let (env, client, admin) = setup();
+    let system = SystemBuilder::new().with_attester_registry().build();
+    let env = system.env();
+    env.ledger().set_timestamp(1_000);
+    let admin = system.admin();
+    let client = system.attester_registry();
+    client.grant_role(&Role::Registrar, &admin);
+    client.grant_role(&Role::Guardian, &admin);
     let guardian = Address::generate(&env);
     client.grant_role(&Role::Guardian, &guardian);
-    let token_admin = Address::generate(&env);
-    let token_id = env
-        .register_stellar_asset_contract_v2(token_admin)
-        .address();
+    let token_id = system.bond_token();
     let recipient = Address::generate(&env);
     client.set_bond_config(
         &token_id,

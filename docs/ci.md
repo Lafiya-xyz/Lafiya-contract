@@ -17,9 +17,11 @@ to its `needs` list.
 | `shell-lint`, `docs-checks` | always | Shell lint; README tables, error/event catalog drift, verification-model truth table. |
 | `fmt`, `clippy`, `build-wasm` | `rust` changed | As before. `build-wasm` uploads the release wasm (`release-wasm` artifact) for downstream jobs to reuse. |
 | `build-tests` | `rust` changed | Compiles all test binaries once (`cargo nextest archive --all-features`). |
-| `test` (2 partitions) | after `build-tests` | Runs the archive with `--partition count:N/2`, profile `ci`, and uploads JUnit XML. |
+| `test` (2 partitions) | after `build-tests` | Runs the archive with `--partition count:N/2`, profile `ci`, and uploads JUnit XML (including per-test CPU/memory). |
 | `fuzz` | after `build-tests` | Proptest cases from the same archive (non-blocking). |
-| `test-report` | after `test` | Shows JUnit results on the PR (`dorny/test-reporter`). |
+| `budget-allowlist` | `rust` changed | Grep/Dylint check forbidding `reset_unlimited` outside the allowlisted benchmark files. |
+| `proptest-regressions` | `rust` changed | Fails when any crate's `proptest-regressions/` file has uncommitted changes. |
+| `test-report` | after `test` | Shows JUnit results on the PR (`dorny/test-reporter`), including per-test CPU/memory. |
 | `indexer` | `rust` changed | Builds `lafiya-indexer`, runs `clippy -D warnings`, and runs its tests (including the e2e suite) against a Postgres service container. |
 | `qr` | `rust` changed | Builds `lafiya-qr`, runs `clippy -D warnings`, and runs its tests. |
 | `deny` | `rust` changed | `cargo deny check` across the whole workspace, covering `lafiya-indexer` and `lafiya-qr`. |
@@ -63,14 +65,48 @@ Configuration lives in `.config/nextest.toml`:
   `fuzz_test`), JUnit output at `target/nextest/ci/junit.xml`.
 - **No blanket retries.** A known-flaky test can be made retry-tolerant with an explicit
   `[[profile.ci.overrides]]` entry that links its tracking issue.
+- `nightly` profile: same as `ci` but with the deep proptest tier (see below).
 
 Locally: `cargo install cargo-nextest`, then `cargo nextest run --workspace --all-features`.
+
+## Budget-constrained contract tests
+
+Contract tests run under network-realistic budgets by default. `lafiya-test-utils` provides
+a helper that builds an `Env` whose CPU and memory limits are read from
+`config/network-limits.json`, and the tests use it instead of the default test
+configuration. Code paths that pass in tests therefore stay within real network limits.
+
+Unlimited budgets (`reset_unlimited()`) are forbidden outside an explicit allowlist
+(benchmarks). The `budget-allowlist` job enforces this with a grep/Dylint check; adding a
+new allowlisted file requires a reviewable change to the allowlist.
+
+Per-test CPU and memory are written into the JUnit XML by the test harness, so the
+`test-report` job surfaces cost per test on the PR and trends stay visible.
+
+## Proptest tiers
+
+`PROPTEST_CASES` is standardized across crates via nextest profiles:
+
+- PR (`ci` profile): fast tier, e.g. 256 cases.
+- Nightly (`nightly` profile): deep tier, e.g. 50,000 cases.
+
+Every crate with proptests commits its `proptest-regressions/` directory. The
+`proptest-regressions` job fails CI when a regression file has uncommitted changes, so
+failures found in CI or nightly runs are never lost. The seed is printed on failure;
+local reproduction steps are documented in `TESTING_ARCHITECTURE.md`.
 
 ## Flaky-test detection
 
 `.github/workflows/flaky-tests.yml` runs nightly (and on demand). It runs the suite N times
 (default 5) with `--retries 0` and opens or comments on a "Flaky tests detected" issue
 listing each test that both passed and failed.
+
+## Nightly deep runs
+
+The nightly workflow uses the `nightly` nextest profile (deep proptest tier). When a
+proptest fails, the workflow opens a deduplicated issue (one per failing test, matched by
+title) containing the failing seed and the reproduction command, so the failure is
+actionable without digging through logs.
 
 ## Caching
 
