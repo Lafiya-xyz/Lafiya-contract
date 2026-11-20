@@ -6,7 +6,10 @@ use p256::ecdsa::{
     signature::hazmat::PrehashSigner, Signature as P256Signature, SigningKey as P256SigningKey,
 };
 use soroban_sdk::testutils::Events as _;
-use soroban_sdk::{auth::Context, BytesN, Env, Event, IntoVal, Vec};
+use soroban_sdk::{
+    auth::{Context, ContractContext},
+    BytesN, Env, Event, IntoVal, Symbol, Vec,
+};
 
 pub(crate) fn signing_keys() -> std::vec::Vec<SigningKey> {
     let mut keys = std::vec![
@@ -376,6 +379,397 @@ fn three_of_five_signers_authorize() {
     let signatures = signatures_for(&env, &keys[..3], &payload.to_array());
 
     assert_eq!(check_auth(&env, &account, &payload, signatures), Ok(()));
+}
+
+// ---------------------------------------------------------------------------
+// Context-policy helpers and tests (#703)
+// ---------------------------------------------------------------------------
+
+fn contract_context(
+    env: &Env,
+    contract: &soroban_sdk::Address,
+    fn_name: &str,
+) -> Context {
+    Context::Contract(ContractContext {
+        contract: contract.clone(),
+        fn_name: Symbol::new(env, fn_name),
+        args: Vec::new(env),
+    })
+}
+
+fn check_auth_with_contexts(
+    env: &Env,
+    account: &soroban_sdk::Address,
+    payload: &BytesN<32>,
+    signatures: Vec<Signature>,
+    contexts: Vec<Context>,
+) -> Result<(), Result<Error, soroban_sdk::InvokeError>> {
+    env.try_invoke_contract_check_auth::<Error>(
+        account,
+        payload,
+        signatures.into_val(env),
+        &contexts,
+    )
+}
+
+#[test]
+fn context_policy_can_be_configured_and_reported() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let target = env.register(MultisigAccount, (Vec::<SignerKey>::new(&env), 1u32));
+
+    client.set_context_policy(&target, &Symbol::new(&env, "add_attester"), &1u32);
+
+    assert_eq!(
+        client.get_context_policy(&target, &Symbol::new(&env, "add_attester")),
+        1
+    );
+    // Unconfigured contexts report the default policy.
+    assert_eq!(
+        client.get_context_policy(&target, &Symbol::new(&env, "upgrade")),
+        client.get_threshold()
+    );
+}
+
+#[test]
+fn strictest_policy_applies_across_multiple_contexts() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let target = env.register(MultisigAccount, (Vec::<SignerKey>::new(&env), 1u32));
+
+    // Routine operation needs one signer, catastrophic one needs all three.
+    client.set_context_policy(&target, &Symbol::new(&env, "add_attester"), &1u32);
+    client.set_context_policy(&target, &Symbol::new(&env, "upgrade"), &3u32);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let contexts = Vec::from_array(
+        &env,
+        [
+            contract_context(&env, &target, "add_attester"),
+            contract_context(&env, &target, "upgrade"),
+        ],
+    );
+
+    // One signature satisfies the routine policy but not the strictest one.
+    let one = signatures_for(&env, &keys[..1], &payload.to_array());
+    assert_eq!(
+        check_auth_with_contexts(&env, &account, &payload, one, contexts.clone()),
+        Err(Ok(Error::NotEnoughSigners))
+    );
+
+    // Three signatures satisfy the strictest policy across all contexts.
+    let three = signatures_for(&env, &keys, &payload.to_array());
+    assert_eq!(
+        check_auth_with_contexts(&env, &account, &payload, three, contexts),
+        Ok(())
+    );
+}
+
+#[test]
+fn single_context_uses_its_configured_policy() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 3);
+    let client = MultisigAccountClient::new(&env, &account);
+    let target = env.register(MultisigAccount, (Vec::<SignerKey>::new(&env), 1u32));
+
+    client.set_context_policy(&target, &Symbol::new(&env, "add_attester"), &1u32);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let contexts = Vec::from_array(&env, [contract_context(&env, &target, "add_attester")]);
+    let one = signatures_for(&env, &keys[..1], &payload.to_array());
+
+    assert_eq!(
+        check_auth_with_contexts(&env, &account, &payload, one, contexts),
+        Ok(())
+    );
+}
+
+#[test]
+fn unknown_context_falls_back_to_strictest_configured_policy() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let target = env.register(MultisigAccount, (Vec::<SignerKey>::new(&env), 1u32));
+
+    // Configure a strict policy for a known context; the default is lower.
+    client.set_context_policy(&target, &Symbol::new(&env, "upgrade"), &3u32);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let contexts = Vec::from_array(&env, [contract_context(&env, &target, "unknown_fn")]);
+    let two = signatures_for(&env, &keys[..2], &payload.to_array());
+
+    // The unknown context must require the strictest configured policy (3).
+    assert_eq!(
+        check_auth_with_contexts(&env, &account, &payload, two, contexts),
+        Err(Ok(Error::NotEnoughSigners))
+    );
+}
+
+#[test]
+fn contract_creation_context_falls_back_to_strictest_policy() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let target = env.register(MultisigAccount, (Vec::<SignerKey>::new(&env), 1u32));
+
+    client.set_context_policy(&target, &Symbol::new(&env, "upgrade"), &3u32);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let contexts = Vec::from_array(
+        &env,
+        [Context::CreateContractHostFn(
+            soroban_sdk::auth::CreateContractHostFnContext {
+                executable: soroban_sdk::auth::ContractExecutable::Wasm(
+                    BytesN::from_array(&env, &[0; 32]),
+                ),
+                salt: BytesN::from_array(&env, &[1; 32]),
+            },
+        )],
+    );
+    let two = signatures_for(&env, &keys[..2], &payload.to_array());
+
+    assert_eq!(
+        check_auth_with_contexts(&env, &account, &payload, two, contexts),
+        Err(Ok(Error::NotEnoughSigners))
+    );
+}
+
+#[test]
+fn context_policy_mutation_requires_strictest_policy() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+    let target = env.register(MultisigAccount, (Vec::<SignerKey>::new(&env), 1u32));
+
+    client.set_context_policy(&target, &Symbol::new(&env, "upgrade"), &3u32);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let contexts = Vec::from_array(
+        &env,
+        [contract_context(&env, &account, "set_context_policy")],
+    );
+    let two = signatures_for(&env, &keys[..2], &payload.to_array());
+
+    // Changing context policies must itself satisfy the strictest policy.
+    assert_eq!(
+        check_auth_with_contexts(&env, &account, &payload, two, contexts.clone()),
+        Err(Ok(Error::NotEnoughSigners))
+    );
+
+    let three = signatures_for(&env, &keys, &payload.to_array());
+    assert_eq!(
+        check_auth_with_contexts(&env, &account, &payload, three, contexts),
+        Ok(())
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Atomic replace_signer tests (#705)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn replace_signer_preserves_weight_and_roles_for_ed25519() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let old_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &keys[0].verifying_key().to_bytes(),
+    ));
+    let new_signing = SigningKey::from_bytes(&[42; 32]);
+    let new_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &new_signing.verifying_key().to_bytes(),
+    ));
+
+    let old_weight = client.get_signer_weight(&old_key);
+    let old_roles = client.get_signer_roles(&old_key);
+
+    client.replace_signer(&old_key, &new_key);
+
+    assert_eq!(client.get_signer_weight(&new_key), old_weight);
+    assert_eq!(client.get_signer_roles(&new_key), old_roles);
+    assert!(!client.is_signer(&old_key));
+    assert!(client.is_signer(&new_key));
+}
+
+#[test]
+fn replace_signer_preserves_weight_and_roles_for_secp256r1() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let old_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &keys[0].verifying_key().to_bytes(),
+    ));
+    let p256_key = P256SigningKey::from_bytes(&[7u8; 32].into()).unwrap();
+    let public_key = p256_key.verifying_key().to_encoded_point(false);
+    let public_key_bytes: [u8; 65] = public_key.as_bytes().try_into().unwrap();
+    let new_key = SignerKey::Secp256r1(BytesN::from_array(&env, &public_key_bytes));
+
+    let old_weight = client.get_signer_weight(&old_key);
+    let old_roles = client.get_signer_roles(&old_key);
+
+    client.replace_signer(&old_key, &new_key);
+
+    assert_eq!(client.get_signer_weight(&new_key), old_weight);
+    assert_eq!(client.get_signer_roles(&new_key), old_roles);
+    assert!(!client.is_signer(&old_key));
+    assert!(client.is_signer(&new_key));
+}
+
+#[test]
+fn replace_signer_rejects_duplicate_new_key() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let old_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &keys[0].verifying_key().to_bytes(),
+    ));
+    let existing_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &keys[1].verifying_key().to_bytes(),
+    ));
+
+    assert_eq!(
+        client.try_replace_signer(&old_key, &existing_key),
+        Err(Ok(Error::DuplicateSigner))
+    );
+}
+
+#[test]
+fn replace_signer_rejects_unknown_old_key() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let unknown = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &SigningKey::from_bytes(&[99; 32]).verifying_key().to_bytes(),
+    ));
+    let new_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes(),
+    ));
+
+    assert_eq!(
+        client.try_replace_signer(&unknown, &new_key),
+        Err(Ok(Error::UnknownSigner))
+    );
+}
+
+#[test]
+fn replace_signer_emits_signer_replaced_event() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let old_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &keys[0].verifying_key().to_bytes(),
+    ));
+    let new_key = SignerKey::Ed25519(BytesN::from_array(
+        &env,
+        &SigningKey::from_bytes(&[42; 32]).verifying_key().to_bytes(),
+    ));
+
+    client.replace_signer(&old_key, &new_key);
+
+    let expected = SignerReplaced {
+        old_fingerprint: old_key.fingerprint(&env),
+        new_fingerprint: new_key.fingerprint(&env),
+        config_version: client.get_config_version(),
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected.to_xdr(&env, &account)]
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Worst-case mixed-key CPU budget regression (#706)
+// ---------------------------------------------------------------------------
+
+#[test]
+fn worst_case_mixed_key_auth_fits_cpu_budget() {
+    let env = Env::default();
+    let keys = signing_keys();
+
+    // Configure the maximum number of signers, mixing ed25519 and secp256r1.
+    let mut signers = Vec::new(&env);
+    let mut ed_keys = std::vec::Vec::new();
+    let mut p256_keys = std::vec::Vec::new();
+    for index in 0..MAX_SIGNERS {
+        if index % 2 == 0 {
+            let key = SigningKey::from_bytes(&[(index as u8) + 1; 32]);
+            signers.push_back(SignerKey::Ed25519(BytesN::from_array(
+                &env,
+                &key.verifying_key().to_bytes(),
+            )));
+            ed_keys.push(key);
+        } else {
+            let key = P256SigningKey::from_bytes(&[(index as u8) + 1; 32].into()).unwrap();
+            let point = key.verifying_key().to_encoded_point(false);
+            let bytes: [u8; 65] = point.as_bytes().try_into().unwrap();
+            signers.push_back(SignerKey::Secp256r1(BytesN::from_array(&env, &bytes)));
+            p256_keys.push(key);
+        }
+    }
+    let account = env.register(MultisigAccount, (signers, MAX_SIGNERS as u32));
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let payload = BytesN::from_array(&env, &[7; 32]);
+    let mut signatures = Vec::new(&env);
+    for key in &ed_keys {
+        signatures.push_back(Signature {
+            public_key: SignerKey::Ed25519(BytesN::from_array(
+                &env,
+                &key.verifying_key().to_bytes(),
+            )),
+            signature: BytesN::from_array(&env, &key.sign(&payload.to_array()).to_bytes()),
+        });
+    }
+    for key in &p256_keys {
+        signatures.push_back(p256_signature(&env, key, &payload.to_array()));
+    }
+
+    // Worst case: every signer is required and all contexts are evaluated.
+    let target = env.register(MultisigAccount, (Vec::<SignerKey>::new(&env), 1u32));
+    let contexts = Vec::from_array(&env, [contract_context(&env, &target, "upgrade")]);
+
+    let budget = env.budget();
+    budget.reset_unlimited();
+    let result = check_auth_with_contexts(&env, &account, &payload, signatures, contexts);
+    let cpu = budget.cpu_instruction_cost();
+    let mem = budget.memory_bytes_cost();
+
+    assert_eq!(result, Ok(()));
+    assert!(
+        cpu <= MAX_AUTH_CPU_BUDGET,
+        "worst-case auth used {cpu} CPU instructions, budget is {MAX_AUTH_CPU_BUDGET}"
+    );
+    assert!(
+        mem <= MAX_AUTH_MEMORY_BUDGET,
+        "worst-case auth used {mem} memory bytes, budget is {MAX_AUTH_MEMORY_BUDGET}"
+    );
+    let _ = client;
 }
 
 #[test]

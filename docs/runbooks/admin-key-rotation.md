@@ -28,11 +28,30 @@ sign. The retired key may be one of them.
    scripts/verify_signer_set.py hash --threshold <t> <new G... list>
    ```
 
-3. Build `set_signers(<new hex keys>, <t>)` on the account, collect `t`
-   signatures with a [`@lafiya/multisig-auth`](../../packages/multisig-auth/README.md)
-   ceremony file, and submit it. To change weights or roles, use
-   `set_policy`. Then extend the record format and the `verify` policy check
-   in the same PR.
+3. Build `replace_signer(<old signer key>, <new signer config>)` on the
+   account, collect `t` signatures with a
+   [`@lafiya/multisig-auth`](../../packages/multisig-auth/README.md)
+   ceremony file, and submit it. This is the preferred path for a single
+   seat: it is atomic and keeps the seat's weight and roles unless the new
+   config overrides them explicitly. It rejects a `new` key that is already
+   present in the signer set (duplicate) and runs the satisfiability check
+   before committing, so the account can never drop below `t` reachable
+   weight. The CLI wraps the same call:
+
+   ```bash
+   lafiya-multisig replace-signer \
+     --account <G...> \
+     --old <old signer key> \
+     --new <new signer key> \
+     --ceremony docs/security/ceremonies/<id>.json
+   ```
+
+   The transaction emits `SignerReplaced { old_fingerprint, new_fingerprint,
+   config_version }`. Record all three values in the ceremony transcript;
+   `config_version` must be exactly one greater than the previous value.
+   To change weights or roles for several seats at once, use `set_policy`
+   instead. Then extend the record format and the `verify` policy check in
+   the same PR.
 4. Write the new record (`docs/security/ceremonies/<id>.json`, which names the
    record it replaces) and run `verify` against it. Then try one admin-gated
    call signed by the retired key plus another signer. It must fail with
@@ -61,7 +80,8 @@ step.
 
 ## 4. Rollback
 
-`set_signers` takes effect immediately and is not timelocked. If the new
-record fails `verify`, the current signers (old or new, whichever set holds
-`t` honest keys) submit a corrective `set_signers` at once. Record the event
-as a deviation in the transcript.
+`replace_signer` and `set_signers` take effect immediately and are not
+timelocked. If the new record fails `verify`, the current signers (old or
+new, whichever set holds `t` honest keys) submit a corrective
+`replace_signer` (or `set_signers`) at once. Record the event as a deviation
+in the transcript.
