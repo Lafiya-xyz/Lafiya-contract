@@ -7,6 +7,7 @@ on:
       - "crates/lafiya-indexer/consumer-contracts/**"
       - "scripts/check_consumer_contracts.py"
       - ".github/workflows/consumer-contracts.yml"
+  merge_group:
 
 permissions:
   contents: read

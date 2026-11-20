@@ -23,6 +23,7 @@ on:
       - ".github/workflows/python-tooling.yml"
   push:
     branches: [main]
+  merge_group:
 
 jobs:
   python-tooling:
