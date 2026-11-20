@@ -1,0 +1,10 @@
+{
+  "$comment": "Recorded JSON-RPC responses for the standard verdict scenario (issue #763). Keys are `<method>:<JSON params>`; `default` answers anything unrecorded so the harness never hits the network.",
+  "default": {
+    "jsonrpc": "2.0",
+    "id": 1,
+    "result": {
+      "status": "NOT_FOUND"
+    }
+  }
+}
