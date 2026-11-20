@@ -22,6 +22,7 @@
 // `panic_with_error!` to reject invalid construction parameters with a contract error
 // code, which the blanket deny would flag despite being the correct pattern here.
 
+use lafiya_contract_common::validate;
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
     contract, contracterror, contractevent, contractimpl, contracttype,
@@ -144,7 +145,16 @@ pub enum Error {
     RoleQuorumNotMet = 9,
     /// A signer weight, role requirement, or policy threshold is invalid.
     InvalidPolicy = 10,
+    /// A String or Bytes input exceeds its documented bound.
+    InputTooLong = 11,
+    /// A String input contains characters outside its allowed set.
+    InvalidInputCharset = 12,
 }
+
+/// Maximum length, in bytes, of a role symbol name accepted in a policy.
+pub const MAX_ROLE_LEN: u32 = 32;
+/// Maximum length, in bytes, of a signer role symbol name accepted in a policy.
+pub const MAX_SIGNER_ROLE_LEN: u32 = 32;
 
 /// Instance storage TTL policy:
 /// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
@@ -385,6 +395,7 @@ impl MultisigAccount {
             minimum_signers,
             &role_requirements,
         )?;
+        Self::validate_inputs(&signers, &role_requirements)?;
 
         let old_signers = match env
             .storage()
@@ -474,6 +485,30 @@ impl MultisigAccount {
         }
         .publish(&env);
 
+        Ok(())
+    }
+
+    /// Validate every String/Bytes-derived input against the shared bounds.
+    ///
+    /// Role names are `Symbol`s, which are bounded by the SDK, but we still
+    /// enforce an explicit byte-length cap so worst-case entry sizes stay
+    /// documented and predictable.
+    fn validate_inputs(
+        signers: &Vec<SignerConfig>,
+        role_requirements: &Vec<RoleRequirement>,
+    ) -> Result<(), Error> {
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
+        for signer in signers.iter() {
+            if let Some(role) = &signer.role {
+                validate::bounded_symbol(role, MAX_SIGNER_ROLE_LEN)
+                    .map_err(|_| Error::InputTooLong)?;
+            }
+        }
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
+        for requirement in role_requirements.iter() {
+            validate::bounded_symbol(&requirement.role, MAX_ROLE_LEN)
+                .map_err(|_| Error::InputTooLong)?;
+        }
         Ok(())
     }
 

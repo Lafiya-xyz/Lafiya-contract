@@ -206,6 +206,19 @@ Data: `epoch_length`, `epoch_budget`, `rollover`, `effective_at`.
 ### `EpochConfigApplied`
 Data: `epoch_length`, `epoch_budget`, `rollover`.
 
+### `VestingGrantCreated`
+Topics: `grant_id`, `attester`. Data: `total`, `start`, `cliff`, `duration`.
+The grant vests linearly after `cliff`; unvested amounts are reserved
+liabilities of the pool.
+
+### `VestingClaimed`
+Topics: `grant_id`, `attester`. Data: `recipient` (bound payout address),
+`amount`, `claimed_total`.
+
+### `VestingForfeited`
+Topics: `grant_id`, `attester`. Data: `forfeited_by`, `amount` (unvested
+remainder returned to the pool), `forfeited_at`.
+
 Epoch budget views: `get_epoch_config`, `get_pending_epoch_config`,
 `get_epoch_approved(epoch_start)`, `get_epoch_remaining`. Epochs start at
 multiples of `epoch_length`; with `rollover` the unused budget of the
@@ -305,6 +318,78 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `attester` | `Address` | topic_list |
 | `reason` | `Symbol` | data |
 | `since` | `u64` | data |
+| `seq` | `u64` | data |
+
+### `ProbationCompleted`
+
+- **Prefix topics:** `probation_completed`
+- **Data format:** `map`
+
+Emitted by the permissionless `try_promote(attester)` once every criterion of
+the active (versioned) probation policy is satisfied. `policy_version`
+identifies the criteria set that was evaluated.
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `policy_version` | `u32` | data |
+| `attestation_count` | `u32` | data |
+| `tenure_ledgers` | `u32` | data |
+| `upheld_disputes` | `u32` | data |
+| `revocations` | `u32` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+### `ProbationExtended`
+
+- **Prefix topics:** `probation_extended`
+- **Data format:** `map`
+
+Admin-only; extends probation past the objective criteria.
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `extended_until` | `u64` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+### `BondReconciled`
+
+- **Prefix topics:** `bond_reconciled`
+- **Data format:** `map`
+
+Emitted when `bond_reconcile()` observes a token balance delta that matches
+the expected change for a deposit, withdraw, or slash.
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `operation` | `Symbol` | data |
+| `expected_delta` | `i128` | data |
+| `observed_delta` | `i128` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+### `BondSlashed`
+
+- **Prefix topics:** `bond_slashed`
+- **Data format:** `map`
+
+`destination` records where the slashed amount was sent (treasury, burn, or
+incentive pool) and `swept_by` the authority that performed the sweep.
+
+| Field | Type | Location |
+|---|---|---|
+| `attester` | `Address` | topic_list |
+| `amount` | `i128` | data |
+| `destination` | `Symbol` | data |
+| `swept_by` | `Address` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
 | `seq` | `u64` | data |
 
 ### `Initialized`

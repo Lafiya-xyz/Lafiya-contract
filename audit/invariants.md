@@ -34,6 +34,13 @@ Test paths are relative to `contracts/<crate>/src/`.
 | INV-AR-6 | `get_attester_status` agrees with `is_attester` and `get_attester_info`. | `test.rs::get_attester_status_reports_metadata_and_suspension_consistently`, `get_attester_status_for_removed_attester_is_none`, `get_attester_status_for_unknown_attester_is_none` |
 | INV-AR-7 | While paused, no allowlist mutation succeeds. | `test.rs::update_attester_info_while_paused_fails` (partial — **gap** for add/remove/suspend) |
 | INV-AR-8 | Persistent entries and the instance have their TTL extended on write, so live state is not archived under normal use. | **gap** — no dedicated test |
+| INV-AR-9 | Bond accounting reconciles: `sum(bonds) + slashed_unswept == token.balance(contract)`; `bond_reconcile()` reports this and `check_invariants()` covers it. | `bond_test.rs::bond_reconcile_matches_token_balance`, `check_invariants_covers_bond_accounting`; `bond_fuzz_test.rs::bond_accounting_invariant_holds_over_any_op_sequence` |
+| INV-AR-10 | Deposit, withdraw, and slash each reconcile the token balance delta against the recorded bond/slashed amounts, including for fee-charging tokens. | `bond_test.rs::deposit_checks_balance_delta`, `withdraw_checks_balance_delta`, `slash_checks_balance_delta`, `fee_on_transfer_token_reconciles`; `bond_fuzz_test.rs::bond_accounting_invariant_holds_over_any_op_sequence` |
+| INV-AR-11 | Slashed funds are held as `slashed_unswept` until swept by the authorized sweeper to the documented destination; only that authority can sweep. | `bond_test.rs::slash_destination_is_recorded`, `sweep_by_unauthorized_caller_fails`, `sweep_by_authorized_caller_succeeds` |
+| INV-AR-12 | Probation exit is objective and permissionless: `try_promote(a)` succeeds only when the versioned policy criteria (attestations, tenure, zero upheld disputes, no revocations) are met, and emits `ProbationCompleted`. | `probation_test.rs::try_promote_succeeds_when_criteria_met`, `try_promote_fails_when_criteria_unmet`, `try_promote_is_permissionless`, `admin_can_extend_probation` |
+| INV-AR-13 | Promotion criteria are versioned in a policy struct; changing the policy version does not retroactively alter already-promoted attesters. | `probation_test.rs::policy_version_is_reported`, `promotion_uses_policy_at_promotion_time` |
+| INV-AR-14 | The probation promotion data flow is acyclic: counters are updated through narrow hooks or event-sourced receipts with no circular cross-contract calls. | documented call graph in `docs/specs/attester-probation.md`; `probation_test.rs::promotion_call_graph_has_no_cycles` |
+=======
 
 ## attestation-registry (INV-AT)
 
@@ -48,6 +55,15 @@ Test paths are relative to `contracts/<crate>/src/`.
 | INV-AT-7 | `set_attester_registry` requires admin auth and emits `AttesterRegistryRepointed`. | `test.rs::set_attester_registry_by_admin_succeeds`, `set_attester_registry_by_non_admin_fails`, `set_attester_registry_before_initialize_fails` |
 | INV-AT-8 | While paused, `attest` fails with `ContractPaused`. | **gap** — no dedicated test |
 | INV-AT-9 | Every successful `attest` emits exactly one attestation event. | `test.rs::attest_emits_event` |
+
+## incentive-pool (INV-IP)
+
+| ID | Invariant | Checked by |
+|---|---|---|
+| INV-IP-1 | Vesting grants vest linearly after the cliff; `claim_vested` pays exactly the vested-but-unclaimed amount, with rounding never overpaying. | `vesting_test.rs::linear_vesting_after_cliff`, `claim_pays_vested_unclaimed_only`, `rounding_never_overpays`; `fuzz_test.rs::vesting_claim_never_exceeds_vested` |
+| INV-IP-2 | On removal for cause, only the admin/guardian can `forfeit` the unvested remainder, which returns to the pool. | `vesting_test.rs::forfeit_returns_unvested_to_pool`, `forfeit_by_unauthorized_caller_fails` |
+| INV-IP-3 | Reserved liabilities include unvested and unclaimed grant amounts, so `withdraw` cannot drain them and solvency holds. | `vesting_test.rs::withdraw_cannot_drain_reserved_vesting`, `solvency_holds_with_vesting_grants`; `fuzz_test.rs::solvency_holds_with_vesting_over_any_op_sequence` |
+=======
 
 ## multisig-account (INV-MS)
 

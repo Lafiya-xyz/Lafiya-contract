@@ -25,7 +25,10 @@ impl StorageKey for DataKey {
             | DataKey::AttesterCount
             | DataKey::PendingAdminExpiresAt
             | DataKey::Role(..)
-            | DataKey::RegionalRegistrar(..) => Durability::Instance,
+            | DataKey::RegionalRegistrar(..)
+            | DataKey::ProbationPolicy
+            | DataKey::SlashedUnswept
+            | DataKey::BondReconcile => Durability::Instance,
             DataKey::Attester(..)
             | DataKey::Suspended(..)
             | DataKey::AttesterRotation(..)
@@ -33,7 +36,8 @@ impl StorageKey for DataKey {
             | DataKey::AttesterStatusChangeCount(..)
             | DataKey::AttesterValidity(..)
             | DataKey::RegionalRegistrarCount(..)
-            | DataKey::RegionalAttester(..) => Durability::Persistent,
+            | DataKey::RegionalAttester(..)
+            | DataKey::AttesterCounters(..) => Durability::Persistent,
         }
     }
 }
@@ -77,6 +81,10 @@ mod tests {
             DataKey::RegionalRegistrar(Address::generate(env)),
             DataKey::RegionalRegistrarCount(Address::generate(env)),
             DataKey::RegionalAttester(Address::generate(env)),
+            DataKey::ProbationPolicy,
+            DataKey::AttesterCounters(Address::generate(env)),
+            DataKey::SlashedUnswept,
+            DataKey::BondReconcile,
         ]
     }
 

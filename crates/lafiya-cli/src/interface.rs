@@ -142,7 +142,7 @@ pub struct Requirement {
 
 pub const ATTESTER_REGISTRY: Requirement = Requirement {
     contract_kind: "lafiya_attester_registry",
-    min_interface_version: 1,
+    min_interface_version: 2,
 };
 
 pub const ATTESTATION_REGISTRY: Requirement = Requirement {
@@ -152,8 +152,29 @@ pub const ATTESTATION_REGISTRY: Requirement = Requirement {
 
 pub const INCENTIVE_POOL: Requirement = Requirement {
     contract_kind: "lafiya_incentive_pool",
-    min_interface_version: 1,
+    min_interface_version: 2,
 };
+
+/// Feature flag: attester-registry exposes `bond_reconcile()` and includes the
+/// bond accounting invariant in `check_invariants()`.
+pub const FEATURE_BOND_RECONCILE: &str = "bond_reconcile";
+
+/// Feature flag: attester-registry exposes permissionless `try_promote()` with
+/// a versioned probation policy.
+pub const FEATURE_PROBATION_PROMOTION: &str = "probation_promotion";
+
+/// Feature flag: incentive-pool supports vesting grants (`claim_vested`,
+/// `forfeit`) with reserved vesting liabilities in its solvency accounting.
+pub const FEATURE_VESTING: &str = "vesting";
+
+/// Features this CLI build knows how to drive, per contract kind.
+pub fn required_features(req: Requirement) -> &'static [&'static str] {
+    match req.contract_kind {
+        "lafiya_attester_registry" => &[FEATURE_BOND_RECONCILE, FEATURE_PROBATION_PROMOTION],
+        "lafiya_incentive_pool" => &[FEATURE_VESTING],
+        _ => &[],
+    }
+}
 
 /// Check the raw `get_interface` output against `req`.
 ///
@@ -186,6 +207,19 @@ pub fn negotiate(
             info.interface_version, req.min_interface_version
         ));
     }
+    let missing: Vec<&str> = required_features(req)
+        .iter()
+        .copied()
+        .filter(|f| !info.supports(f))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "contract {contract_id} ({}) is missing required feature(s): {}; \
+             upgrade the contract or use an older CLI",
+            info.contract_kind,
+            missing.join(", ")
+        ));
+    }
     Ok(info)
 }
 
@@ -193,15 +227,43 @@ pub fn negotiate(
 mod tests {
     use super::*;
 
-    const NEW: &str = r#"{"contract_kind":"lafiya_attester_registry","interface_version":1,
-        "features":["pause","roles"],"schema_version":2,"event_version":1}"#;
+    const NEW: &str = r#"{"contract_kind":"lafiya_attester_registry","interface_version":2,
+        "features":["pause","roles","bond_reconcile","probation_promotion"],
+        "schema_version":2,"event_version":1}"#;
+
+    const POOL: &str = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":2,
+        "features":["pause","vesting"],"schema_version":2,"event_version":1}"#;
 
     #[test]
     fn accepts_current_contract_and_reports_features() {
         let info = negotiate("CDX", Some(NEW), ATTESTER_REGISTRY).unwrap();
-        assert_eq!(info.interface_version, 1);
+        assert_eq!(info.interface_version, 2);
         assert!(info.supports("pause"));
+        assert!(info.supports(FEATURE_BOND_RECONCILE));
         assert!(!info.supports("attest_many"));
+    }
+
+    #[test]
+    fn accepts_pool_with_vesting() {
+        let info = negotiate("CDX", Some(POOL), INCENTIVE_POOL).unwrap();
+        assert!(info.supports(FEATURE_VESTING));
+    }
+
+    #[test]
+    fn rejects_contract_missing_required_features() {
+        let old = r#"{"contract_kind":"lafiya_attester_registry","interface_version":2,
+            "features":["pause","roles"],"schema_version":2,"event_version":1}"#;
+        let err = negotiate("CDX", Some(old), ATTESTER_REGISTRY).unwrap_err();
+        assert!(err.contains(FEATURE_BOND_RECONCILE), "{err}");
+        assert!(err.contains(FEATURE_PROBATION_PROMOTION), "{err}");
+    }
+
+    #[test]
+    fn rejects_pool_without_vesting() {
+        let old = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":2,
+            "features":["pause"],"schema_version":2,"event_version":1}"#;
+        let err = negotiate("CDX", Some(old), INCENTIVE_POOL).unwrap_err();
+        assert!(err.contains(FEATURE_VESTING), "{err}");
     }
 
     #[test]
@@ -217,7 +279,7 @@ mod tests {
             ..ATTESTER_REGISTRY
         };
         let err = negotiate("CDX", Some(NEW), req).unwrap_err();
-        assert_eq!(err, "contract CDX is interface v1; this CLI requires >= v3");
+        assert_eq!(err, "contract CDX is interface v2; this CLI requires >= v3");
     }
 
     #[test]

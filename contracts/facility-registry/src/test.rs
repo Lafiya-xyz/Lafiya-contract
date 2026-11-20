@@ -119,3 +119,43 @@ fn every_mutation_advances_the_cursor() {
     assert!(client.try_reactivate_facility(&id).is_err());
     assert_eq!(client.get_mutation_seq(), 5);
 }
+
+#[test]
+fn enroll_rejects_oversized_metadata() {
+    let (env, client) = setup();
+    let mut long = [b'a'; 256];
+    let oversized = String::from_str(&env, core::str::from_utf8(&long).unwrap());
+    assert_eq!(
+        client.try_enroll_facility(&license(&env), &Some(oversized)),
+        Err(Ok(Error::InputTooLong))
+    );
+    // Boundary: exactly at the limit is accepted.
+    long[0] = b'a';
+    let at_limit = String::from_str(&env, core::str::from_utf8(&long[..MAX_METADATA_LEN]).unwrap());
+    assert!(client.try_enroll_facility(&license(&env), &Some(at_limit)).is_ok());
+}
+
+#[test]
+fn enroll_rejects_invalid_charset_metadata() {
+    let (env, client) = setup();
+    let bad = String::from_str(&env, "clinic\u{00e9}");
+    assert_eq!(
+        client.try_enroll_facility(&license(&env), &Some(bad)),
+        Err(Ok(Error::InvalidCharset))
+    );
+}
+
+#[test]
+fn enroll_rejects_oversized_and_invalid_license_bytes() {
+    let (env, client) = setup();
+    let oversized = Bytes::from_slice(&env, &[1u8; 64]);
+    assert_eq!(
+        client.try_enroll_facility(&oversized, &None),
+        Err(Ok(Error::InputTooLong))
+    );
+    let empty = Bytes::new(&env);
+    assert_eq!(
+        client.try_enroll_facility(&empty, &None),
+        Err(Ok(Error::InvalidInput))
+    );
+}

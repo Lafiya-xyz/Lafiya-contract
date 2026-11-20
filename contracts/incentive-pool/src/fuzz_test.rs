@@ -5,7 +5,8 @@
 //! custody invariant still holds.
 //!
 //! Targets: `fuzz_fund`, `fuzz_withdraw`, `fuzz_approve`, `fuzz_claim`,
-//! `fuzz_caps`, plus the sequence-driven `fuzz_sequence`.
+//! `fuzz_caps`, `fuzz_create_vesting_grant`, `fuzz_claim_vested`,
+//! `fuzz_forfeit`, plus the sequence-driven `fuzz_sequence`.
 //!
 //! Findings triaged into regression tests below:
 //! - `claim` overflowed (`attester_claimed + amount`, `total_paid + amount`)
@@ -38,6 +39,18 @@ fn custody_holds(h: &Harness) {
     let (d, p) = (h.pool.get_total_deposited(), h.pool.get_total_paid());
     assert!(p <= d);
     assert_eq!(h.token.balance(&h.pool.address), d - p);
+}
+
+/// Solvency invariant: token balance covers paid-out funds plus every
+/// reserved vesting liability (vested-but-unclaimed and unvested amounts of
+/// live grants). Forfeited remainders return to the pool, so they must not
+/// be counted as reserved.
+fn solvency_holds(h: &Harness) {
+    custody_holds(h);
+    let reserved = h.pool.get_total_vesting_reserved();
+    assert!(reserved >= 0);
+    assert!(h.pool.get_total_paid() + reserved <= h.pool.get_total_deposited());
+    assert!(h.token.balance(&h.pool.address) >= reserved);
 }
 
 proptest! {
@@ -100,9 +113,91 @@ proptest! {
     }
 
     #[test]
+    fn fuzz_create_vesting_grant(
+        total in any::<i128>(),
+        start in any::<u64>(),
+        cliff in any::<u64>(),
+        duration in any::<u64>(),
+        fund in 0i128..=ADMIN_BALANCE,
+    ) {
+        let h = harness();
+        if fund > 0 {
+            h.pool.fund(&fund);
+        }
+        let r = outcome!(h.pool.try_create_vesting_grant(
+            &h.attesters[0], &total, &start, &cliff, &duration
+        ));
+        // Grants must be positive, have a non-zero duration, and fit within
+        // the pool's unreserved balance.
+        prop_assert_eq!(r.is_ok(), total > 0 && duration > 0 && total <= fund);
+        solvency_holds(&h);
+    }
+
+    #[test]
+    fn fuzz_claim_vested(
+        total in 1i128..=ADMIN_BALANCE,
+        start in any::<u64>(),
+        cliff in any::<u64>(),
+        duration in 1u64..=u64::MAX,
+        now in any::<u64>(),
+    ) {
+        let h = harness();
+        h.pool.fund(&total);
+        let grant_id = h.pool.create_vesting_grant(
+            &h.attesters[0], &total, &start, &cliff, &duration
+        );
+        h.env.ledger().set_timestamp(now);
+        let r = outcome!(h.pool.try_claim_vested(&grant_id));
+        // Claiming before the cliff or before anything vests is a typed error.
+        let vested = vested_amount(total, start, cliff, duration, now);
+        prop_assert_eq!(r.is_ok(), vested > 0);
+        solvency_holds(&h);
+    }
+
+    #[test]
+    fn fuzz_forfeit(
+        total in 1i128..=ADMIN_BALANCE,
+        start in any::<u64>(),
+        cliff in any::<u64>(),
+        duration in 1u64..=u64::MAX,
+        now in any::<u64>(),
+        by_admin in any::<bool>(),
+    ) {
+        let h = harness();
+        h.pool.fund(&total);
+        let grant_id = h.pool.create_vesting_grant(
+            &h.attesters[0], &total, &start, &cliff, &duration
+        );
+        h.env.ledger().set_timestamp(now);
+        let caller = if by_admin { h.admin.clone() } else { h.guardian.clone() };
+        let r = outcome!(h.pool.try_forfeit(&caller, &grant_id));
+        // Admin/guardian may forfeit a live grant exactly once.
+        prop_assert!(r.is_ok());
+        prop_assert!(outcome!(h.pool.try_forfeit(&caller, &grant_id)).is_err());
+        solvency_holds(&h);
+    }
+
+    #[test]
     fn fuzz_sequence(ops in prop::collection::vec(op_strategy(), 1..60)) {
         replay(ops);
     }
+}
+
+/// Reference linear-vesting math: nothing before the cliff, then linear
+/// release over `duration` from `start`, saturating at `total`.
+fn vested_amount(total: i128, start: u64, cliff: u64, duration: u64, now: u64) -> i128 {
+    let cliff_end = start.saturating_add(cliff);
+    if now < cliff_end {
+        return 0;
+    }
+    let elapsed = now.saturating_sub(start).min(duration);
+    if elapsed >= duration {
+        return total;
+    }
+    // `elapsed * total / duration` with i128 math; `elapsed <= duration` and
+    // `total <= ADMIN_BALANCE`, so the product cannot overflow.
+    (total / duration as i128) * elapsed as i128
+        + (total % duration as i128) * elapsed as i128 / duration as i128
 }
 
 #[test]
@@ -121,4 +216,20 @@ fn regression_claim_cap_overflow() {
         Err(Error::AttesterClaimCapExceeded)
     );
     custody_holds(&h);
+}
+
+#[test]
+fn regression_vesting_reserved_blocks_withdraw() {
+    let h = harness();
+    h.pool.fund(&100);
+    let grant_id = h.pool.create_vesting_grant(&h.attesters[0], &100, &0, &0, &100);
+    // The full unvested grant is reserved, so nothing can be withdrawn.
+    assert_eq!(
+        outcome!(h.pool.try_withdraw(&h.admin, &1)),
+        Err(Error::InsufficientPoolBalance)
+    );
+    h.env.ledger().set_timestamp(100);
+    h.pool.claim_vested(&grant_id);
+    assert_eq!(h.pool.get_total_vesting_reserved(), 0);
+    solvency_holds(&h);
 }

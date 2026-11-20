@@ -58,6 +58,9 @@ const SCHEMA_VERSION: u32 = 1;
 /// Domain separator for work-item id derivation (see `derive_work_item_id`).
 const WORK_ITEM_DOMAIN: &[u8] = b"LAFIYA-WORK-ITEM-v1";
 
+/// Domain separator for vesting grant id derivation.
+const VESTING_GRANT_DOMAIN: &[u8] = b"LAFIYA-VESTING-GRANT-v1";
+
 /// Maximum number of items accepted by `approve_work_items`.
 ///
 /// Each item writes one persistent `WorkItem` entry; the batch additionally
@@ -139,6 +142,12 @@ enum DataKey {
     PendingEpochConfig,
     /// Amount approved in the epoch starting at the given timestamp.
     EpochApproved(u64),
+    /// A vesting grant (`VestingGrant`), keyed by grant id.
+    VestingGrant(BytesN<32>),
+    /// Cumulative amount claimed from a vesting grant (i128).
+    VestingClaimed(BytesN<32>),
+    /// Monotonic counter used to derive vesting grant ids.
+    VestingGrantCount,
 }
 
 /// One entry of an `approve_work_items` batch.
@@ -258,6 +267,35 @@ pub struct FundingTotals {
     pub custody: i128,
     pub programmes_total: i128,
     pub unallocated: i128,
+}
+
+/// A CHW retention bonus that vests linearly after a cliff.
+///
+/// `total` is reserved in the pool from creation until it is either claimed
+/// or forfeited. The vested amount at time `t` is:
+/// - `0` while `t < start + cliff`
+/// - `total * (t - start - cliff) / duration` afterwards, capped at `total`
+///
+/// Integer division floors, so the contract never over-pays; the final
+/// claim after `start + cliff + duration` releases any rounding remainder.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct VestingGrant {
+    /// The attester entitled to the vested funds.
+    pub attester: Address,
+    /// Total amount reserved for this grant.
+    pub total: i128,
+    /// Ledger timestamp at which the schedule starts.
+    pub start: u64,
+    /// Seconds after `start` before any amount vests.
+    pub cliff: u64,
+    /// Seconds of linear vesting after the cliff. Must be positive.
+    pub duration: u64,
+    /// Cumulative amount already paid out.
+    pub claimed: i128,
+    /// Set when the grant was forfeited; the unvested remainder returned
+    /// to the pool. A forfeited grant can never be claimed again.
+    pub forfeited_at: Option<u64>,
 }
 
 // ──────────────────────────── Events ────────────────────────────
@@ -467,6 +505,41 @@ pub struct ProgrammeRefunded {
 
 #[contractevent]
 #[derive(Clone, Debug)]
+pub struct VestingGrantCreated {
+    #[topic]
+    pub grant_id: BytesN<32>,
+    #[topic]
+    pub attester: Address,
+    pub total: i128,
+    pub start: u64,
+    pub cliff: u64,
+    pub duration: u64,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct VestingClaimed {
+    #[topic]
+    pub grant_id: BytesN<32>,
+    #[topic]
+    pub attester: Address,
+    pub recipient: Address,
+    pub amount: i128,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct VestingForfeited {
+    #[topic]
+    pub grant_id: BytesN<32>,
+    #[topic]
+    pub attester: Address,
+    pub returned: i128,
+    pub by: Address,
+}
+
+#[contractevent]
+#[derive(Clone, Debug)]
 pub struct Paused {
     #[topic]
     pub by: Address,
@@ -533,6 +606,14 @@ pub enum Error {
     DelayNotElapsed = 22,
     /// Epoch length or budget is invalid (zero / negative).
     InvalidEpochConfig = 23,
+    /// The vesting grant does not exist.
+    VestingGrantNotFound = 24,
+    /// The vesting grant has already been forfeited.
+    VestingGrantForfeited = 25,
+    /// The vesting schedule is invalid (zero duration or start in the past).
+    InvalidVestingSchedule = 26,
+    /// Nothing has vested yet, or the vested amount was already claimed.
+    NothingToClaim = 27,
 }
 
 // ──────────────────────────── Contract ────────────────────────────
@@ -856,6 +937,8 @@ impl IncentivePool {
 
     /// Withdraw `amount` tokens from the pool to `to`. Requires admin auth.
     /// This is the recovery mechanism for excess or misallocated funds.
+    /// Reserved liabilities (open work items and unclaimed vesting grants)
+    /// are excluded from the withdrawable balance.
     pub fn withdraw(env: Env, to: Address, amount: i128) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         Self::require_not_paused(&env)?;
@@ -867,6 +950,8 @@ impl IncentivePool {
         let total_paid = Self::total_paid(&env);
         let available = Self::total_deposited(&env)
             .checked_sub(total_paid)
+            .ok_or(Error::ArithmeticOverflow)?
+            .checked_sub(Self::total_reserved(&env))
             .ok_or(Error::ArithmeticOverflow)?;
         if amount > available {
             return Err(Error::InsufficientPoolBalance);
@@ -1547,6 +1632,245 @@ impl IncentivePool {
         Ok(())
     }
 
+    // ── Admin: vesting grants ──
+
+    /// Create a linearly-vesting retention grant for `attester`. Requires
+    /// admin auth. `total` is reserved in the pool immediately, so it can
+    /// never be withdrawn while the grant is outstanding. `duration` must be
+    /// positive; `start` must not be in the past. Returns the grant id.
+    pub fn create_vesting_grant(
+        env: Env,
+        attester: Address,
+        total: i128,
+        start: u64,
+        cliff: u64,
+        duration: u64,
+    ) -> Result<BytesN<32>, Error> {
+        Self::admin(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
+
+        if total <= 0 {
+            return Err(Error::NonPositiveAmount);
+        }
+        if duration == 0 || start < env.ledger().timestamp() {
+            return Err(Error::InvalidVestingSchedule);
+        }
+
+        // The grant must be fully backed by unreserved pool funds.
+        let available = Self::total_deposited(&env)
+            .checked_sub(Self::total_paid(&env))
+            .ok_or(Error::ArithmeticOverflow)?
+            .checked_sub(Self::total_reserved(&env))
+            .ok_or(Error::ArithmeticOverflow)?;
+        if total > available {
+            return Err(Error::InsufficientPoolBalance);
+        }
+
+        let count: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VestingGrantCount)
+            .unwrap_or(0);
+        let next = count.checked_add(1).ok_or(Error::ArithmeticOverflow)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::VestingGrantCount, &next);
+
+        let mut preimage = Bytes::from_slice(&env, VESTING_GRANT_DOMAIN);
+        preimage.append(&Bytes::from(attester.to_xdr(&env)));
+        preimage.append(&Bytes::from_slice(&env, &next.to_be_bytes()));
+        let grant_id: BytesN<32> = env.crypto().sha256(&preimage).into();
+
+        let grant = VestingGrant {
+            attester: attester.clone(),
+            total,
+            start,
+            cliff,
+            duration,
+            claimed: 0,
+            forfeited_at: None,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::VestingGrant(grant_id.clone()), &grant);
+
+        let reserved = Self::total_reserved(&env)
+            .checked_add(total)
+            .ok_or(Error::ArithmeticOverflow)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalReserved, &reserved);
+        Self::bump_instance(&env);
+
+        VestingGrantCreated {
+            grant_id: grant_id.clone(),
+            attester,
+            total,
+            start,
+            cliff,
+            duration,
+        }
+        .publish(&env);
+
+        Ok(grant_id)
+    }
+
+    /// Claim the vested-but-unclaimed amount of a grant. Requires the
+    /// grant's attester auth. Pays the attester's bound payout address.
+    pub fn claim_vested(env: Env, grant_id: BytesN<32>) -> Result<i128, Error> {
+        Self::require_not_paused(&env)?;
+
+        let mut grant: VestingGrant = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VestingGrant(grant_id.clone()))
+            .ok_or(Error::VestingGrantNotFound)?;
+        if grant.forfeited_at.is_some() {
+            return Err(Error::VestingGrantForfeited);
+        }
+        grant.attester.require_auth();
+
+        let now = env.ledger().timestamp();
+        let vested = Self::vested_amount(&grant, now);
+        let claimable = vested
+            .checked_sub(grant.claimed)
+            .ok_or(Error::ArithmeticOverflow)?;
+        if claimable <= 0 {
+            return Err(Error::NothingToClaim);
+        }
+
+        // Custody check: refuse to pay while accounting and the actual
+        // token balance disagree.
+        let rec = Self::reconciliation(&env)?;
+        if Self::is_drift_detected(env.clone()) || rec.drift < 0 {
+            return Err(Error::ReconciliationRequired);
+        }
+
+        let token_addr = Self::token(&env)?;
+        let pool_addr = env.current_contract_address();
+        let token_client = token::Client::new(&env, &token_addr);
+        let recipient = Self::get_payout_address(env.clone(), grant.attester.clone());
+        if !matches!(
+            token_client.try_transfer(&pool_addr, &recipient, &claimable),
+            Ok(Ok(()))
+        ) {
+            return Err(Error::TransferFailed);
+        }
+
+        grant.claimed = vested;
+        env.storage()
+            .persistent()
+            .set(&DataKey::VestingGrant(grant_id.clone()), &grant);
+
+        let new_paid = Self::total_paid(&env)
+            .checked_add(claimable)
+            .ok_or(Error::ArithmeticOverflow)?;
+        env.storage().instance().set(&DataKey::TotalPaid, &new_paid);
+
+        // Release the paid portion of the reservation.
+        Self::release_reservation(&env, claimable)?;
+        Self::bump_persistent(&env, &DataKey::VestingGrant(grant_id.clone()));
+        Self::bump_instance(&env);
+
+        VestingClaimed {
+            grant_id,
+            attester: grant.attester,
+            recipient,
+            amount: claimable,
+        }
+        .publish(&env);
+
+        Ok(claimable)
+    }
+
+    /// Forfeit a grant after the attester was removed for cause. Callable by
+    /// the admin. The unvested remainder (and any vested-but-unclaimed
+    /// amount) is returned to the pool by releasing its reservation.
+    pub fn forfeit(env: Env, grant_id: BytesN<32>) -> Result<i128, Error> {
+        let admin = Self::admin(&env)?;
+        admin.require_auth();
+
+        let mut grant: VestingGrant = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VestingGrant(grant_id.clone()))
+            .ok_or(Error::VestingGrantNotFound)?;
+        if grant.forfeited_at.is_some() {
+            return Err(Error::VestingGrantForfeited);
+        }
+
+        let now = env.ledger().timestamp();
+        let vested = Self::vested_amount(&grant, now);
+        let unclaimed = grant
+            .total
+            .checked_sub(grant.claimed)
+            .ok_or(Error::ArithmeticOverflow)?;
+        // Only the unvested remainder is forfeited; anything already vested
+        // but unclaimed stays reserved for the attester to claim.
+        let returned = unclaimed
+            .checked_sub(vested.saturating_sub(grant.claimed))
+            .ok_or(Error::ArithmeticOverflow)?
+            .max(0);
+
+        grant.forfeited_at = Some(now);
+        env.storage()
+            .persistent()
+            .set(&DataKey::VestingGrant(grant_id.clone()), &grant);
+
+        Self::release_reservation(&env, returned)?;
+        Self::bump_persistent(&env, &DataKey::VestingGrant(grant_id.clone()));
+        Self::bump_instance(&env);
+
+        VestingForfeited {
+            grant_id,
+            attester: grant.attester,
+            returned,
+            by: admin,
+        }
+        .publish(&env);
+
+        Ok(returned)
+    }
+
+    /// Read a vesting grant, if it exists.
+    pub fn get_vesting_grant(env: Env, grant_id: BytesN<32>) -> Option<VestingGrant> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::VestingGrant(grant_id))
+    }
+
+    /// Amount vested so far for a grant at the current ledger time.
+    pub fn get_vested_amount(env: Env, grant_id: BytesN<32>) -> Option<i128> {
+        let grant: VestingGrant = env
+            .storage()
+            .persistent()
+            .get(&DataKey::VestingGrant(grant_id))?;
+        Some(Self::vested_amount(&grant, env.ledger().timestamp()))
+    }
+
+    /// Linear-after-cliff vesting math. Floors, so the contract never
+    /// over-pays; the final claim releases any rounding remainder.
+    fn vested_amount(grant: &VestingGrant, now: u64) -> i128 {
+        let cliff_end = match grant.start.checked_add(grant.cliff) {
+            Some(v) => v,
+            None => return 0,
+        };
+        if now < cliff_end {
+            return 0;
+        }
+        let elapsed = now.saturating_sub(cliff_end);
+        if elapsed >= grant.duration {
+            return grant.total;
+        }
+        // total * elapsed / duration, floored. `elapsed < duration` and
+        // `total <= i128::MAX`, so the product fits for realistic totals;
+        // use i128 math with a checked multiply.
+        match grant.total.checked_mul(elapsed as i128) {
+            Some(product) => product / (grant.duration as i128),
+            None => grant.total,
+        }
+    }
+
     // ── Pause / unpause ──
 
     /// Pause the contract, blocking `fund`, `withdraw`,
@@ -1775,6 +2099,18 @@ impl IncentivePool {
             .instance()
             .get(&DataKey::TotalReserved)
             .unwrap_or(0)
+    }
+
+    fn bump_instance(env: &Env) {
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+    }
+
+    fn bump_persistent(env: &Env, key: &DataKey) {
+        env.storage()
+            .persistent()
+            .extend_ttl(key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
     }
 
     fn default_ttl(env: &Env) -> u64 {

@@ -1412,3 +1412,485 @@ fn revoke_session_key_is_idempotent() {
         Err(Ok(Error::SessionNotFound))
     );
 }
+
+// ---------------------------------------------------------------------------
+// Bond accounting: reconcile view, balance-delta checks, slash destination and
+// sweep authority.
+// ---------------------------------------------------------------------------
+
+/// Registers a plain SAC-like token for bond tests and returns its address.
+fn setup_bond_token(env: &Env, admin: &Address) -> Address {
+    let token_id = env.register(lafiya_test_utils::TestToken, ());
+    let token = lafiya_test_utils::TestTokenClient::new(env, &token_id);
+    token.initialize(admin, &7u32, &String::from_str(env, "Bond Token"), &String::from_str(env, "BND"));
+    token_id
+}
+
+#[test]
+fn bond_reconcile_reports_balanced_state_after_deposit() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &1_000);
+
+    let report = client.bond_reconcile();
+    assert_eq!(report.total_bonds, 1_000);
+    assert_eq!(report.slashed_unswept, 0);
+    assert_eq!(report.token_balance, 1_000);
+    assert!(!report.drift_detected);
+}
+
+#[test]
+fn bond_reconcile_detects_drift_when_tokens_are_removed_out_of_band() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &500);
+
+    // Simulate an out-of-band transfer that breaks the invariant.
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    token.transfer(&client.address, &Address::generate(&env), &100);
+
+    let report = client.bond_reconcile();
+    assert_eq!(report.total_bonds, 500);
+    assert_eq!(report.token_balance, 400);
+    assert!(report.drift_detected);
+}
+
+#[test]
+fn bond_deposit_checks_token_balance_delta() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &250);
+
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&client.address), 250);
+    assert_eq!(client.get_bond(&attester), 250);
+}
+
+#[test]
+fn bond_withdraw_checks_token_balance_delta() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &400);
+    client.unbond(&attester, &150);
+
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&client.address), 250);
+    assert_eq!(token.balance(&attester), 150);
+    assert_eq!(client.get_bond(&attester), 250);
+}
+
+#[test]
+fn bond_slash_checks_token_balance_delta_and_tracks_unswept() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &1_000);
+
+    client.slash(&admin, &attester, &300);
+
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    // Slashed funds stay in the contract until swept.
+    assert_eq!(token.balance(&client.address), 1_000);
+    assert_eq!(client.get_bond(&attester), 700);
+
+    let report = client.bond_reconcile();
+    assert_eq!(report.total_bonds, 700);
+    assert_eq!(report.slashed_unswept, 300);
+    assert_eq!(report.token_balance, 1_000);
+    assert!(!report.drift_detected);
+}
+
+#[test]
+fn bond_slash_with_fee_charging_token_keeps_invariant() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    // Configure a 100 bps (1%) transfer fee on the token.
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    token.set_transfer_fee_bps(&100);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &1_000);
+
+    // Deposit delta must be measured net of the fee.
+    let report = client.bond_reconcile();
+    assert_eq!(report.total_bonds, 990);
+    assert_eq!(report.token_balance, 990);
+    assert!(!report.drift_detected);
+
+    client.slash(&admin, &attester, &500);
+    let report = client.bond_reconcile();
+    assert_eq!(report.total_bonds, 490);
+    assert_eq!(report.slashed_unswept, 500);
+    assert_eq!(report.token_balance, 990);
+    assert!(!report.drift_detected);
+}
+
+#[test]
+fn slash_destination_treasury_receives_swept_funds() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let treasury = Address::generate(&env);
+    client.set_slash_destination(&admin, &SlashDestination::Treasury(treasury.clone()));
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &1_000);
+    client.slash(&admin, &attester, &400);
+
+    client.sweep_slashed(&admin);
+
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    assert_eq!(token.balance(&treasury), 400);
+    assert_eq!(token.balance(&client.address), 600);
+    assert_eq!(client.bond_reconcile().slashed_unswept, 0);
+    assert!(!client.bond_reconcile().drift_detected);
+}
+
+#[test]
+fn slash_destination_burn_removes_funds_from_circulation() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+    client.set_slash_destination(&admin, &SlashDestination::Burn);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &1_000);
+    client.slash(&admin, &attester, &250);
+
+    client.sweep_slashed(&admin);
+
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    assert_eq!(token.total_supply(), 750);
+    assert_eq!(token.balance(&client.address), 750);
+    assert_eq!(client.bond_reconcile().slashed_unswept, 0);
+}
+
+#[test]
+fn sweep_slashed_requires_admin_authority() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &1_000);
+    client.slash(&admin, &attester, &100);
+
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_sweep_slashed(&stranger),
+        Err(Ok(Error::Unauthorized))
+    );
+    assert_eq!(client.bond_reconcile().slashed_unswept, 100);
+}
+
+#[test]
+fn sweep_slashed_with_nothing_to_sweep_is_a_no_op() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    client.sweep_slashed(&admin);
+    assert_eq!(client.bond_reconcile().slashed_unswept, 0);
+}
+
+#[test]
+fn check_invariants_covers_bond_accounting() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+    let token_id = setup_bond_token(&env, &admin);
+    client.set_bond_token(&admin, &token_id);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.bond(&attester, &1_000);
+    client.slash(&admin, &attester, &200);
+
+    assert_eq!(client.check_invariants(), Ok(()));
+
+    // Break the invariant out-of-band and confirm check_invariants reports it.
+    let token = lafiya_test_utils::TestTokenClient::new(&env, &token_id);
+    token.transfer(&client.address, &Address::generate(&env), &50);
+    assert_eq!(
+        client.check_invariants(),
+        Err(Ok(Error::InvariantViolation))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Probation: permissionless try_promote and versioned policy.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn try_promote_succeeds_when_criteria_are_met() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.set_probation(&admin, &attester, &true);
+
+    // Record enough attestations to satisfy the default policy.
+    for _ in 0..client.get_probation_policy().min_attestations {
+        client.record_attestation(&attester);
+    }
+
+    // Anyone can call try_promote; no admin auth required.
+    let caller = Address::generate(&env);
+    client.try_promote(&caller, &attester);
+
+    assert!(!client.is_on_probation(&attester));
+    let expected_event = ProbationCompleted {
+        attester: attester.clone(),
+        policy_version: client.get_probation_policy().version,
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+}
+
+#[test]
+fn try_promote_refuses_when_attestation_count_is_insufficient() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.set_probation(&admin, &attester, &true);
+
+    let caller = Address::generate(&env);
+    assert_eq!(
+        client.try_promote(&caller, &attester),
+        Err(Ok(Error::ProbationCriteriaNotMet))
+    );
+    assert!(client.is_on_probation(&attester));
+}
+
+#[test]
+fn try_promote_refuses_when_an_upheld_dispute_exists() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.set_probation(&admin, &attester, &true);
+    for _ in 0..client.get_probation_policy().min_attestations {
+        client.record_attestation(&attester);
+    }
+    client.record_dispute_upheld(&attester);
+
+    let caller = Address::generate(&env);
+    assert_eq!(
+        client.try_promote(&caller, &attester),
+        Err(Ok(Error::ProbationCriteriaNotMet))
+    );
+    assert!(client.is_on_probation(&attester));
+}
+
+#[test]
+fn try_promote_refuses_when_tenure_is_too_short() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.set_probation(&admin, &attester, &true);
+    for _ in 0..client.get_probation_policy().min_attestations {
+        client.record_attestation(&attester);
+    }
+
+    // Policy requires a minimum tenure; the ledger clock has not advanced.
+    let policy = client.get_probation_policy();
+    assert!(policy.min_tenure_secs > 0);
+    let caller = Address::generate(&env);
+    assert_eq!(
+        client.try_promote(&caller, &attester),
+        Err(Ok(Error::ProbationCriteriaNotMet))
+    );
+
+    env.ledger().set_timestamp(env.ledger().timestamp() + policy.min_tenure_secs);
+    client.try_promote(&caller, &attester);
+    assert!(!client.is_on_probation(&attester));
+}
+
+#[test]
+fn admin_can_extend_probation_after_criteria_are_met() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    client.set_probation(&admin, &attester, &true);
+    for _ in 0..client.get_probation_policy().min_attestations {
+        client.record_attestation(&attester);
+    }
+
+    client.extend_probation(&admin, &attester, &1_000);
+
+    let caller = Address::generate(&env);
+    assert_eq!(
+        client.try_promote(&caller, &attester),
+        Err(Ok(Error::ProbationCriteriaNotMet))
+    );
+    assert!(client.is_on_probation(&attester));
+}
+
+#[test]
+fn probation_policy_is_versioned_and_bumps_on_update() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let initial = client.get_probation_policy();
+    let updated = ProbationPolicy {
+        version: initial.version + 1,
+        min_attestations: initial.min_attestations + 5,
+        min_tenure_secs: initial.min_tenure_secs,
+        max_upheld_disputes: initial.max_upheld_disputes,
+        max_revocations: initial.max_revocations,
+    };
+    client.set_probation_policy(&admin, &updated);
+
+    let stored = client.get_probation_policy();
+    assert_eq!(stored.version, initial.version + 1);
+    assert_eq!(stored.min_attestations, initial.min_attestations + 5);
+}
+
+#[test]
+fn set_probation_policy_requires_admin() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let stranger = Address::generate(&env);
+    let policy = client.get_probation_policy();
+    assert_eq!(
+        client.try_set_probation_policy(&stranger, &policy),
+        Err(Ok(Error::Unauthorized))
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Shared bounded validation for String / Bytes inputs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn add_attester_with_info_rejects_oversized_region() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    // Region codes are bounded; a long string must be rejected with a typed error.
+    let oversized = String::from_str(&env, "NG-LAGOS-ISLAND-DISTRICT-EXTRA-LONG-CODE");
+    assert_eq!(
+        client.try_add_attester_with_info(&admin, &attester, &None, &Some(oversized), &None, &None),
+        Err(Ok(Error::InputTooLong))
+    );
+    assert_eq!(client.get_attester_info(&attester), None);
+}
+
+#[test]
+fn add_attester_with_info_rejects_invalid_region_charset() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    // Lowercase and punctuation are outside the region-code charset.
+    let invalid = String::from_str(&env, "ng_la!");
+    assert_eq!(
+        client.try_add_attester_with_info(&admin, &attester, &None, &Some(invalid), &None, &None),
+        Err(Ok(Error::InvalidCharset))
+    );
+    assert_eq!(client.get_attester_info(&attester), None);
+}
+
+#[test]
+fn suspend_attester_rejects_oversized_reason() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+
+    let oversized = String::from_str(
+        &env,
+        "this suspension reason is far longer than the documented bound allows",
+    );
+    assert_eq!(
+        client.try_suspend_attester_with_reason(&admin, &attester, &oversized),
+        Err(Ok(Error::InputTooLong))
+    );
+    assert!(client.is_attester(&attester));
+}
+
+#[test]
+fn set_regional_registrar_rejects_invalid_region_charset() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let registrar = Address::generate(&env);
+    let invalid = String::from_str(&env, "NG LA");
+    assert_eq!(
+        client.try_set_regional_registrar(&registrar, &invalid, &1),
+        Err(Ok(Error::InvalidCharset))
+    );
+    assert_eq!(client.get_regional_registrar(&registrar), None);
+}
+
+#[test]
+fn update_attester_info_rejects_oversized_license_metadata() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+
+    // Bytes metadata is bounded; an oversized blob must be rejected.
+    let oversized = Bytes::from_array(&env, &[0u8; 1_024]);
+    assert_eq!(
+        client.try_update_attester_info(
+            &admin,
+            &attester,
+            &None,
+            &None,
+            &Some(oversized),
+            &None,
+        ),
+        Err(Ok(Error::InputTooLong))
+    );
+}

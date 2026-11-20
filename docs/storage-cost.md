@@ -36,7 +36,68 @@ Last source verification: contract commit `82f7473`, with `soroban-sdk 27.0.0`
 from the workspace lockfile. Update this reference and review the ceilings
 whenever contract behavior or the pinned SDK cost model changes.
 
+## Bounded input validation
+
+All `String` and `Bytes` parameters on every contract entry point are checked
+by the shared `validate` module in `lafiya-contract-common` before any state is
+written. The module exposes three helpers:
+
+| Helper | Rule |
+|---|---|
+| `bounded_ascii(max)` | Length in bytes `<= max`; every byte is printable ASCII (`0x20..=0x7E`). Rejects control characters, non-ASCII, and empty strings. |
+| `bounded_bytes(max)` | Length in bytes `<= max`. No charset restriction (used for opaque hashes and commitments). |
+| `region_code()` | Length exactly 2; both bytes are uppercase ASCII `A..=Z` (ISO 3166-1 alpha-2 style). |
+
+Violations return typed errors (`InputTooLong`, `InvalidCharset`,
+`InvalidRegionCode`) rather than panicking, so callers can distinguish an
+oversized input from a malformed one. The bounds are enforced on write only;
+reads never re-validate, so existing entries stay readable.
+
+### Per-contract bounds
+
+| Contract | Parameter | Helper | Max bytes |
+|---|---|---|---:|
+| `attester-registry` | `region` | `region_code()` | 2 |
+| `attester-registry` | `registrar_info` | `bounded_ascii(128)` | 128 |
+| `attester-registry` | `suspension_reason` | `bounded_ascii(256)` | 256 |
+| `attestation-registry` | `region` | `region_code()` | 2 |
+| `attestation-registry` | `metadata` | `bounded_ascii(256)` | 256 |
+| `attestation-registry` | `record_hash` | `bounded_bytes(32)` | 32 |
+| `status-list` | `issuer` | `bounded_ascii(128)` | 128 |
+| `status-list` | `commitment` | `bounded_bytes(32)` | 32 |
+| `licence-registry` | `licence_id` | `bounded_ascii(64)` | 64 |
+| `licence-registry` | `issuer` | `bounded_ascii(128)` | 128 |
+| `licence-registry` | `metadata` | `bounded_ascii(256)` | 256 |
+| `verifier-registry` | `name` | `bounded_ascii(128)` | 128 |
+| `verifier-registry` | `public_key` | `bounded_bytes(64)` | 64 |
+
+The list above is generated from the contract specs; a CI script
+(`scripts/check-input-validation.sh`) fails the build if a spec declares a
+`String`/`Bytes` parameter that is not covered here.
+
+### Worst-case persistent entry sizes
+
+Soroban rent is charged on the serialized entry size, so the bounds above put a
+hard ceiling on what one write can cost. Worst case assumes every bounded field
+is at its maximum and the remaining fields are at their typical size:
+
+| Contract | Entry | Bounded fields (max bytes) | Approx. worst-case entry bytes |
+|---|---|---|---:|
+| `attester-registry` | `Attester` | `region` 2, `registrar_info` 128 | ~220 |
+| `attester-registry` | `Suspension` | `suspension_reason` 256 | ~340 |
+| `attestation-registry` | `Attestation` | `region` 2, `metadata` 256, `record_hash` 32 | ~400 |
+| `status-list` | `Segment` | `issuer` 128, `commitment` 32 | ~260 |
+| `licence-registry` | `Licence` | `licence_id` 64, `issuer` 128, `metadata` 256 | ~560 |
+| `verifier-registry` | `Verifier` | `name` 128, `public_key` 64 | ~300 |
+
+These are upper bounds, not measurements: the exact figure depends on the
+pinned `soroban-sdk` XDR encoding and the ledger-entry overhead. They are
+useful for budgeting because they are constant per entry — no input can make a
+single entry arbitrarily large, so per-entry rent stays predictable and cannot
+be inflated by a registrar storing free-form text on-chain.
+
 ## Attestation rate limiting
+=======
 
 `attestation-registry` can cap how many attestations each attester records
 per window (`set_attestation_rate_limit(max_per_window, window_ledgers)`),

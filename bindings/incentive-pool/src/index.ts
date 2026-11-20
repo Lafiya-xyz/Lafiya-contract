@@ -119,6 +119,54 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
     returns: "void",
   },
   {
+    kind: ContractEntryKind.Function,
+    name: "create_vesting_grant",
+    doc: "Creates a vesting grant for an attester with a cliff and linear vesting.",
+    args: [
+      { name: "attester", type: "Address" },
+      { name: "total", type: "i128" },
+      { name: "start", type: "u64" },
+      { name: "cliff", type: "u64" },
+      { name: "duration", type: "u64" },
+    ],
+    returns: "u64",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "claim_vested",
+    doc: "Claims the vested-but-unclaimed amount of a vesting grant.",
+    args: [{ name: "grant_id", type: "u64" }],
+    returns: "i128",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "forfeit",
+    doc: "Forfeits the unvested remainder of a vesting grant back to the pool.",
+    args: [{ name: "grant_id", type: "u64" }],
+    returns: "i128",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "vesting_grant",
+    doc: "Returns the vesting grant with the given id.",
+    args: [{ name: "grant_id", type: "u64" }],
+    returns: "VestingGrant",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "vested_amount",
+    doc: "Returns the currently vested amount of a vesting grant.",
+    args: [{ name: "grant_id", type: "u64" }],
+    returns: "i128",
+  },
+  {
+    kind: ContractEntryKind.Function,
+    name: "reserved_liabilities",
+    doc: "Returns the total reserved liabilities, including unvested and unclaimed grants.",
+    args: [],
+    returns: "i128",
+  },
+  {
     kind: ContractEntryKind.Event,
     name: "initialized",
     doc: "Emitted when the pool is initialized.",
@@ -157,6 +205,39 @@ export const INCENTIVE_POOL_SPEC: readonly ContractSpecEntry[] = [
     data: [
       { name: "old_admin", type: "Address" },
       { name: "new_admin", type: "Address" },
+    ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "vesting_grant_created",
+    doc: "Emitted when a vesting grant is created.",
+    topics: ["vesting_grant_created", "attester"],
+    data: [
+      { name: "grant_id", type: "u64" },
+      { name: "total", type: "i128" },
+      { name: "start", type: "u64" },
+      { name: "cliff", type: "u64" },
+      { name: "duration", type: "u64" },
+    ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "vesting_claimed",
+    doc: "Emitted when the vested amount of a grant is claimed.",
+    topics: ["vesting_claimed", "attester"],
+    data: [
+      { name: "grant_id", type: "u64" },
+      { name: "amount", type: "i128" },
+    ],
+  },
+  {
+    kind: ContractEntryKind.Event,
+    name: "vesting_forfeited",
+    doc: "Emitted when the unvested remainder of a grant is forfeited.",
+    topics: ["vesting_forfeited", "attester"],
+    data: [
+      { name: "grant_id", type: "u64" },
+      { name: "amount", type: "i128" },
     ],
   },
 ] as const;
@@ -202,13 +283,51 @@ export interface AdminChangedEvent {
   readonly newAdmin: Address;
 }
 
+/** Decoded payload of the `vesting_grant_created` event. */
+export interface VestingGrantCreatedEvent {
+  readonly attester: Address;
+  readonly grantId: bigint;
+  readonly total: bigint;
+  readonly start: bigint;
+  readonly cliff: bigint;
+  readonly duration: bigint;
+}
+
+/** Decoded payload of the `vesting_claimed` event. */
+export interface VestingClaimedEvent {
+  readonly attester: Address;
+  readonly grantId: bigint;
+  readonly amount: bigint;
+}
+
+/** Decoded payload of the `vesting_forfeited` event. */
+export interface VestingForfeitedEvent {
+  readonly attester: Address;
+  readonly grantId: bigint;
+  readonly amount: bigint;
+}
+
 /** Union of every decoded incentive-pool event. */
 export type IncentivePoolEvent =
   | ({ readonly type: "initialized" } & InitializedEvent)
   | ({ readonly type: "deposit" } & DepositEvent)
   | ({ readonly type: "withdraw" } & WithdrawEvent)
   | ({ readonly type: "claim" } & ClaimEvent)
-  | ({ readonly type: "admin_changed" } & AdminChangedEvent);
+  | ({ readonly type: "admin_changed" } & AdminChangedEvent)
+  | ({ readonly type: "vesting_grant_created" } & VestingGrantCreatedEvent)
+  | ({ readonly type: "vesting_claimed" } & VestingClaimedEvent)
+  | ({ readonly type: "vesting_forfeited" } & VestingForfeitedEvent);
+
+/** A vesting grant as stored on-chain. */
+export interface VestingGrant {
+  readonly attester: Address;
+  readonly total: bigint;
+  readonly start: bigint;
+  readonly cliff: bigint;
+  readonly duration: bigint;
+  readonly claimed: bigint;
+  readonly forfeitedAt: bigint | null;
+}
 
 /** Options for constructing an {@link IncentivePoolClient}. */
 export interface IncentivePoolClientOptions {
@@ -280,6 +399,61 @@ export class IncentivePoolClient {
   /** Builds an unsigned invocation of `set_admin`. */
   setAdmin(args: { newAdmin: Address }): xdr.Operation {
     return this.contract.call("set_admin", args.newAdmin.toScVal());
+  }
+
+  /** Builds an unsigned invocation of `create_vesting_grant`. */
+  createVestingGrant(args: {
+    attester: Address;
+    total: bigint;
+    start: bigint;
+    cliff: bigint;
+    duration: bigint;
+  }): xdr.Operation {
+    return this.contract.call(
+      "create_vesting_grant",
+      args.attester.toScVal(),
+      nativeToScVal(args.total, { type: "i128" }),
+      nativeToScVal(args.start, { type: "u64" }),
+      nativeToScVal(args.cliff, { type: "u64" }),
+      nativeToScVal(args.duration, { type: "u64" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `claim_vested`. */
+  claimVested(args: { grantId: bigint }): xdr.Operation {
+    return this.contract.call(
+      "claim_vested",
+      nativeToScVal(args.grantId, { type: "u64" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `forfeit`. */
+  forfeit(args: { grantId: bigint }): xdr.Operation {
+    return this.contract.call(
+      "forfeit",
+      nativeToScVal(args.grantId, { type: "u64" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `vesting_grant`. */
+  vestingGrant(args: { grantId: bigint }): xdr.Operation {
+    return this.contract.call(
+      "vesting_grant",
+      nativeToScVal(args.grantId, { type: "u64" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `vested_amount`. */
+  vestedAmount(args: { grantId: bigint }): xdr.Operation {
+    return this.contract.call(
+      "vested_amount",
+      nativeToScVal(args.grantId, { type: "u64" }),
+    );
+  }
+
+  /** Builds an unsigned invocation of `reserved_liabilities`. */
+  reservedLiabilities(): xdr.Operation {
+    return this.contract.call("reserved_liabilities");
   }
 
   /** Builds a transaction for the given operation using the supplied source. */
@@ -357,6 +531,44 @@ export function decodeIncentivePoolEvent(
         type: "admin_changed",
         oldAdmin: Address.fromString(oldAdmin),
         newAdmin: Address.fromString(newAdmin),
+      };
+    }
+    case "vesting_grant_created": {
+      const [grantId, total, start, cliff, duration] = scValToNative(
+        event.value,
+      ) as [bigint, bigint, bigint, bigint, bigint];
+      return {
+        type: "vesting_grant_created",
+        attester: Address.fromString(String(topics[1])),
+        grantId,
+        total,
+        start,
+        cliff,
+        duration,
+      };
+    }
+    case "vesting_claimed": {
+      const [grantId, amount] = scValToNative(event.value) as [
+        bigint,
+        bigint,
+      ];
+      return {
+        type: "vesting_claimed",
+        attester: Address.fromString(String(topics[1])),
+        grantId,
+        amount,
+      };
+    }
+    case "vesting_forfeited": {
+      const [grantId, amount] = scValToNative(event.value) as [
+        bigint,
+        bigint,
+      ];
+      return {
+        type: "vesting_forfeited",
+        attester: Address.fromString(String(topics[1])),
+        grantId,
+        amount,
       };
     }
     default:
