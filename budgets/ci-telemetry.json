@@ -1,0 +1,5 @@
+{
+  "threshold": 0.2,
+  "workflow": "ci.yml",
+  "history_branch": "ci-telemetry"
+}

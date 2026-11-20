@@ -1,0 +1,94 @@
+name: CI telemetry
+
+# Collects per-job duration and billable minutes for the `CI` workflow into
+# the `ci-telemetry` data branch (jobs.jsonl), renders a static report, and
+# keeps one `ci-regression` issue open while the p50 PR pipeline duration of
+# the last complete week is more than 20% above the previous week
+# (scripts/ci_telemetry.py, budgets/ci-telemetry.json).
+
+on:
+  schedule:
+    - cron: "0 6 * * 1"
+  workflow_dispatch:
+    inputs:
+      days:
+        description: "Days of completed runs to collect"
+        default: "14"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-telemetry
+  cancel-in-progress: false
+
+env:
+  HISTORY_BRANCH: ci-telemetry
+
+jobs:
+  telemetry:
+    name: Collect, render, alert
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      actions: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"
+
+      - name: Check out the history branch
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git fetch origin "$HISTORY_BRANCH"; then
+            git worktree add -B "$HISTORY_BRANCH" history "origin/$HISTORY_BRANCH"
+          else
+            git worktree add --orphan -b "$HISTORY_BRANCH" history
+          fi
+
+      - name: Collect per-job duration history
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 scripts/ci_telemetry.py collect --history history --days "${{ inputs.days || '14' }}"
+
+      - name: Evaluate regression and render the report
+        run: |
+          python3 scripts/ci_telemetry.py alerts --history history --json alerts.json --markdown alerts.md
+          python3 scripts/ci_telemetry.py report --history history --out history/index.html --json history/summary.json
+          cat alerts.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Push the history branch
+        working-directory: history
+        run: |
+          git add -A
+          git diff --cached --quiet || git commit -q -m "ci: record telemetry $(date -u +%Y-%m-%d)"
+          git push origin "HEAD:$HISTORY_BRANCH"
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ci-telemetry-report
+          path: |
+            history/index.html
+            alerts.json
+            alerts.md
+
+      - name: Sync the regression issue
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh label create ci-regression --color d03b3b --description "CI pipeline duration regression" --force
+          open=$(gh issue list --label ci-regression --state open --json number -q '.[0].number')
+          if jq -e '.regression' alerts.json >/dev/null; then
+            printf '\n\nReport: artifact `ci-telemetry-report` of %s/%s/actions/runs/%s\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID" >> alerts.md
+            if [ -n "$open" ]; then
+              gh issue edit "$open" --body-file alerts.md
+            else
+              gh issue create --title "CI pipeline duration regression" --label ci-regression --body-file alerts.md
+            fi
+          elif [ -n "$open" ]; then
+            gh issue close "$open" --comment "Regression cleared as of $(date -u +%Y-%m-%d)."
+          fi

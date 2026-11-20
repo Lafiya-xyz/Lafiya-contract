@@ -3,6 +3,11 @@
 **Audience:** ceremony lead and on-call operator rotating a signer of the admin
 or guardian `multisig-account`.
 
+**Incident severity:** **SEV1** for compromise-driven rotation; **SEV3** for
+scheduled rotation. Roles: IC = on-call maintainer, operations lead = ceremony
+lead, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 **Before you start:** the new key must come out of a ceremony. Run
 [§3 to §4.5 of the key-generation ceremony](key-ceremony.md#4-procedure) for
 the new seat(s). Never rotate in a key that was generated outside a

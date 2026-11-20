@@ -2,6 +2,11 @@
 
 **Audience:** ceremony lead, key holders, witnesses, and auditors.
 
+**Incident severity:** **SEV1** for a suspected compromise; **SEV3** for a planned
+ceremony. Roles: IC = ceremony lead, operations lead = key holders, communications
+lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 **Scope:** creating, rotating, and recovering the ed25519 keys behind the two
 `multisig-account` contracts that control the deployment:
 

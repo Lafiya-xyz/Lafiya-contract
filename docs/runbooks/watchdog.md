@@ -1,5 +1,11 @@
 # Runbook: Security Watchdog (`lafiya-watchdog`)
 
+**Incident severity:** **SEV1** for an unexplained privileged event; **SEV3** for
+watchdog blindness (no pages when events are known to be flowing). Roles: IC =
+on-call maintainer, operations lead = on-call operator, communications lead =
+communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 The watchdog follows privileged contract events in real time and pages on-call.
 Several controls (two-step admin transfer, upgrade review, recovery delays)
 only work if someone notices the first step; this is that someone.

@@ -1,5 +1,10 @@
 # Runbook: TTL keeper (`scripts/ops/ttl_keeper.py`)
 
+**Incident severity:** **SEV3**; **SEV2** if an entry has already archived. Roles:
+IC = on-call maintainer, operations lead = on-call operator, communications lead =
+communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 TTL policies live in contract code, but rarely-written instance and persistent entries still
 archive unless someone extends them. The keeper scans watched entries over RPC and extends any
 whose remaining TTL is below a threshold, within a spend cap. See [storage cost](../storage-cost.md).
