@@ -79,9 +79,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
+      - uses: ./.github/actions/setup-python
       # Includes the reproducibility check: regenerates the site from the
       # pinned synthetic ledger range and compares it with the committed output.
       - run: python -m unittest discover -s dashboard -v
@@ -117,12 +115,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-python@v5
+      - uses: ./.github/actions/setup-python
+      - uses: ./.github/actions/setup-node-pnpm
         with:
-          python-version: "3.12"
-      - uses: actions/setup-node@v4
-        with:
-          node-version: 22
+          pnpm: "false"
       - name: LRC-1 (TypeScript)
         run: node --experimental-strip-types crates/lafiya-commitment/reference-ts/lrc1.test.ts
       - name: LRC-1 (Python)
@@ -139,7 +135,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: rustfmt
       - run: cargo fmt --all -- --check
@@ -151,10 +147,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
 
   # Build once, test many: compile every test binary a single time and fan
@@ -168,8 +163,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - uses: taiki-e/install-action@nextest
       - run: cargo nextest archive --workspace --all-features --locked --archive-file nextest-archive.tar.zst
       - uses: actions/upload-artifact@v7
@@ -255,8 +249,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - run: cargo build --locked -p lafiya-indexer -p lafiya-qr
 
   crates-clippy:
@@ -266,10 +259,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
         with:
           components: clippy
-      - uses: Swatinem/rust-cache@v2
       - run: cargo clippy --locked -p lafiya-indexer -p lafiya-qr --all-targets -- -D warnings
 
   crates-test:
@@ -295,8 +287,7 @@ jobs:
       DATABASE_URL: postgres://lafiya:lafiya@localhost:5432/lafiya_indexer_test
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: ./.github/actions/setup-rust
       - name: Test lafiya-qr
         run: cargo test --locked -p lafiya-qr
       - name: Test lafiya-indexer (includes Postgres e2e)
@@ -309,7 +300,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
+      - uses: ./.github/actions/setup-rust
       - uses: taiki-e/install-action@cargo-deny
       - run: cargo deny check
 
@@ -322,13 +313,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
-      - name: Install stellar-cli
-        run: |
-          curl -sSL "https://github.com/stellar/stellar-cli/releases/download/v${STELLAR_CLI_VERSION}/stellar-cli-${STELLAR_CLI_VERSION}-x86_64-unknown-linux-gnu.tar.gz" \
-            | tar -xz -C /usr/local/bin stellar
-          stellar --version
+      - uses: ./.github/actions/setup-rust
+      - uses: ./.github/actions/setup-stellar-cli
       - name: Regenerate bindings
         run: bash scripts/generate_bindings.sh
       - name: Fail on drift
@@ -341,10 +327,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: ./.github/actions/setup-rust
         with:
           targets: wasm32v1-none
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       # Only the Soroban contract crates target wasm32v1-none; the other
       # workspace members (lafiya-cli, lafiya-config, lafiya-commitment) are
       # std binaries/libs that can't build for this no_std-only target.
@@ -376,10 +361,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      - uses: ./.github/actions/setup-rust
         with:
           targets: wasm32-unknown-unknown
-      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - name: Build lafiya-qr for wasm32-unknown-unknown
         run: cargo build --release --locked --target wasm32-unknown-unknown -p lafiya-qr
       - name: Report bundle size and enforce budget
@@ -401,9 +385,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@v4
+      - uses: ./.github/actions/setup-node-pnpm
         with:
           node-version: "20"
+          pnpm: "false"
       - uses: actions/download-artifact@v4
         with:
           name: lafiya-qr-wasm
