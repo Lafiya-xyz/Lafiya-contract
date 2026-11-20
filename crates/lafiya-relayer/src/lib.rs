@@ -11,6 +11,10 @@
 use lafiya_rpc_resilience::{RpcProvider, SignedTx, SubmitOutcome, TxState};
 use std::collections::{HashMap, HashSet};
 
+pub mod store;
+
+pub use store::{MemorySpendStore, Reservation, ReservationState, SpendStore, StoreError};
+
 #[derive(Debug, Clone)]
 pub struct RelayerConfig {
     /// Only these (allowlisted) attester addresses are ever sponsored.
@@ -64,6 +68,8 @@ pub enum RelayError {
     KeyReused,
     /// The provider refused the submission before it reached the network.
     SubmitFailed(String),
+    /// The persistent spend store rejected the write.
+    Store(String),
 }
 
 /// One row of the append-only spend ledger.
@@ -86,17 +92,51 @@ pub struct Relayer<P: RpcProvider> {
     seen: HashMap<String, (String, usize)>,
     /// tx hash -> ledger index; blocks replay of one envelope under new keys.
     by_hash: HashMap<String, usize>,
+    /// Crash-consistent idempotency and spend-cap state (issue #746).
+    store: Box<dyn SpendStore>,
 }
 
 impl<P: RpcProvider> Relayer<P> {
     pub fn new(cfg: RelayerConfig, provider: P) -> Self {
+        Self::with_store(cfg, provider, Box::new(MemorySpendStore::new()))
+    }
+
+    /// Build a relayer backed by a caller-supplied [`SpendStore`] (e.g. a
+    /// shared Postgres store so replicas enforce caps together).
+    pub fn with_store(cfg: RelayerConfig, provider: P, store: Box<dyn SpendStore>) -> Self {
         Relayer {
             cfg,
             provider,
             ledger: Vec::new(),
             seen: HashMap::new(),
             by_hash: HashMap::new(),
+            store,
         }
+    }
+
+    /// The persistent spend store, for inspection and reconciliation.
+    pub fn store(&self) -> &dyn SpendStore {
+        self.store.as_ref()
+    }
+
+    /// Reconcile reservations left open by a previous process: poll each
+    /// submitted hash and move it to a final state. Returns the number of
+    /// entries resolved. Unresolved entries stay open and keep counting
+    /// against the caps.
+    pub fn reconcile(&mut self) -> usize {
+        let mut resolved = 0;
+        for row in self.store.open() {
+            let state = match self.provider.get_transaction(&row.tx_hash) {
+                Ok(TxState::Accepted { ledger }) => ReservationState::Accepted { ledger },
+                Ok(TxState::Rejected { reason }) => ReservationState::Rejected { reason },
+                Ok(TxState::Expired { .. }) => ReservationState::Abandoned,
+                _ => continue,
+            };
+            if self.store.transition(&row.idempotency_key, state).is_ok() {
+                resolved += 1;
+            }
+        }
+        resolved
     }
 
     /// The auditable record of every sponsored submission, in order.
