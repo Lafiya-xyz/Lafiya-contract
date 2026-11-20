@@ -17,6 +17,9 @@ pub const WATCHDOG_FAILING: &str = "watchdog_failing";
 pub const ATTESTATION_EXPIRING: &str = "attestation_expiring";
 /// A patient-initiated dispute overlay was recorded on an attestation.
 pub const ATTESTATION_DISPUTED: &str = "attestation_disputed";
+/// A multisig-account upgrade was announced and is still pending execution
+/// (or was cancelled/executed) — surfaced so guardians can review it.
+pub const ACCOUNT_UPGRADE_PENDING: &str = "account_upgrade_pending";
 
 pub struct Engine {
     rules: Vec<EventRule>,
@@ -75,6 +78,17 @@ pub fn default_rules() -> Vec<EventRule> {
             "work_item_endorsement",
             &["work_item_proposed", "work_item_endorsed"],
             Severity::Info,
+        ),
+        // multisig-account: guarded self-upgrade lifecycle.
+        rule(
+            "account_upgrade_announced",
+            &["upgrade_announced"],
+            Severity::High,
+        ),
+        rule(
+            "account_upgrade_cancelled",
+            &["upgrade_cancelled"],
+            Severity::High,
         ),
     ]
 }
@@ -187,6 +201,28 @@ impl Engine {
                 ));
             }
             self.expected_wasm.insert(e.contract.clone(), hash);
+        }
+
+        if e.name == "upgrade_announced" {
+            // Announcement opens the mandatory delay window; guardians must
+            // review before `upgrade` can execute. The new wasm hash is the
+            // first topic, the executable-at ledger the second (if present).
+            let hash = e
+                .topics
+                .first()
+                .cloned()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let executable_at = e.topics.get(1).cloned().unwrap_or_default();
+            let mut summary = format!(
+                "multisig-account upgrade to wasm {hash} announced on {}",
+                e.contract
+            );
+            if !executable_at.is_empty() {
+                summary.push_str(&format!("; executable at ledger {executable_at}"));
+            }
+            summary.push_str(" — guardians may cancel before execution");
+            alerts.push(self.alert(ACCOUNT_UPGRADE_PENDING, Severity::High, summary, e));
         }
 
         if self.alert_on_dispute && e.name == "attestation_disputed" {
@@ -604,6 +640,31 @@ mod tests {
         assert_eq!(
             kinds(&a),
             vec![(ATTESTATION_DISPUTED, Severity::High)]
+        );
+    }
+
+    #[test]
+    fn pending_account_upgrade_is_flagged() {
+        let a = Engine::new(&cfg()).evaluate(&ev(
+            "upgrade_announced",
+            1,
+            &[&"ee".repeat(32), "1234"],
+        ));
+        assert!(kinds(&a).contains(&(ACCOUNT_UPGRADE_PENDING, Severity::High)));
+        let pending = a
+            .iter()
+            .find(|a| a.kind == ACCOUNT_UPGRADE_PENDING)
+            .unwrap();
+        assert!(pending.summary.contains(&"ee".repeat(32)));
+        assert!(pending.summary.contains("1234"));
+    }
+
+    #[test]
+    fn account_upgrade_cancellation_is_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("upgrade_cancelled", 1, &[]));
+        assert_eq!(
+            kinds(&a),
+            vec![("account_upgrade_cancelled", Severity::High)]
         );
     }
 

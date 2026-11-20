@@ -42,6 +42,24 @@ describe.skipIf(!enabled)("quickstart integration", () => {
     expect((await verifier.verifyCard(card("00".repeat(32)))).verdict).toBe("not_found");
   });
 
+  it("reports an archived record as archived and recovers after restoration", async () => {
+    // The sandbox scenario archives the record's persistent entry (by letting
+    // its TTL lapse) before this test runs. Until restoration happens the
+    // verifier must surface `archived`, never `not_verified`/`not_found`.
+    const archived = await verifier.verifyCard(card(env.LAFIYA_IT_RECORD_HASH!));
+    expect(archived.verdict).toBe("archived");
+
+    // Restore the archived footprint through the shared RPC layer, then the
+    // same card must verify again.
+    const restored = await verifier.restoreArchived({
+      network: "local",
+      recordHash: env.LAFIYA_IT_RECORD_HASH!,
+    });
+    expect(restored.restored).toBe(true);
+
+    expect((await verifier.verifyCard(card(env.LAFIYA_IT_RECORD_HASH!))).verdict).toBe("verified");
+  });
+
   it("syncs status-list segments, validates the signed root, and checks revocation offline", async () => {
     const statusListId = env.LAFIYA_IT_STATUS_LIST_ID;
     if (!statusListId) {

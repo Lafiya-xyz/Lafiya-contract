@@ -9,8 +9,8 @@
 
 use lafiya_rpc_resilience::mock::{ScriptedProvider, Shared};
 use lafiya_rpc_resilience::{
-    FailoverClient, RecoveryLog, RecoveryResult, RetryPolicy, RpcError, RpcProvider, SignedTx,
-    SubmitOutcome, TxState,
+    FailoverClient, RecoveryLog, RecoveryResult, RestoreFootprint, RetryPolicy, RpcError,
+    RpcProvider, SignedTx, SubmitOutcome, TxState,
 };
 
 fn policy() -> RetryPolicy {
@@ -356,4 +356,173 @@ fn exhausting_poll_rounds_escalates_to_the_operator_as_unknown() {
         "still exactly one submission despite the unresolved poll"
     );
     assert_eq!(handle.borrow().poll_calls, 3);
+}
+
+#[test]
+fn archived_entries_trigger_restore_before_the_real_transaction() {
+    // Simulation reports archived persistent entries (e.g. an old attestation
+    // card). The client must submit a restore transaction first, then the real
+    // transaction, without duplicating either.
+    let node = Shared::new(
+        ScriptedProvider::new("solo")
+            .then_restore(SubmitOutcome::Ack(TxState::Accepted { ledger: 10 }))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 11 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+    let mut log = RecoveryLog::new();
+
+    let footprint = RestoreFootprint::new(vec!["attestation:card-1".to_string()]);
+    let result = client.submit_with_restore(
+        &SignedTx::new("tx-after-restore", ""),
+        &footprint,
+        &mut log,
+    );
+
+    assert_eq!(
+        result,
+        RecoveryResult::Accepted {
+            ledger: 11,
+            provider: "solo".to_string(),
+            submit_attempts: 2,
+        }
+    );
+    assert_eq!(
+        handle.borrow().restore_calls,
+        1,
+        "the restore footprint must be submitted exactly once"
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        1,
+        "the real transaction is submitted exactly once, after restoration"
+    );
+    assert!(
+        log.lines().iter().any(|l| l.contains("restore")),
+        "the recovery log must record the restore step for operators"
+    );
+}
+
+#[test]
+fn restore_failure_escalates_without_submitting_the_real_transaction() {
+    // If restoration cannot be confirmed, the real transaction must not be
+    // submitted: it would fail against still-archived entries.
+    let node = Shared::new(
+        ScriptedProvider::new("solo")
+            .then_restore(SubmitOutcome::Definite(RpcError::ProviderUnavailable)),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(
+        providers,
+        RetryPolicy {
+            max_submit_rounds: 2,
+            ..policy()
+        },
+    );
+    let mut log = RecoveryLog::new();
+
+    let footprint = RestoreFootprint::new(vec!["work_item:wo-9".to_string()]);
+    let result = client.submit_with_restore(
+        &SignedTx::new("tx-blocked-by-archive", ""),
+        &footprint,
+        &mut log,
+    );
+
+    assert_eq!(
+        result,
+        RecoveryResult::ExhaustedNeedsOperator {
+            last_known: TxState::NotSubmitted,
+        }
+    );
+    assert_eq!(
+        handle.borrow().restore_calls,
+        2,
+        "restore retries must respect the configured round budget"
+    );
+    assert_eq!(
+        handle.borrow().submit_calls,
+        0,
+        "the real transaction must not be submitted while entries stay archived"
+    );
+}
+
+#[test]
+fn ambiguous_restore_is_reconciled_without_duplicate_restore() {
+    // The restore transaction's ack is lost. Reconciliation must prove it
+    // landed via getTransaction rather than blindly resubmitting it.
+    let node = Shared::new(
+        ScriptedProvider::new("solo")
+            .then_restore(SubmitOutcome::Ambiguous(RpcError::Timeout))
+            .then_poll(Ok(TxState::Accepted { ledger: 20 }))
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 21 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+    let mut log = RecoveryLog::new();
+
+    let footprint = RestoreFootprint::new(vec!["attester_info:att-3".to_string()]);
+    let result = client.submit_with_restore(
+        &SignedTx::new("tx-after-ambiguous-restore", ""),
+        &footprint,
+        &mut log,
+    );
+
+    assert_eq!(
+        result,
+        RecoveryResult::Accepted {
+            ledger: 21,
+            provider: "solo".to_string(),
+            submit_attempts: 2,
+        }
+    );
+    assert_eq!(
+        handle.borrow().restore_calls,
+        1,
+        "an ambiguous restore must never be blindly resubmitted"
+    );
+    assert_eq!(
+        handle.borrow().poll_calls,
+        1,
+        "reconciliation must query getTransaction for the restore"
+    );
+    assert_eq!(handle.borrow().submit_calls, 1);
+}
+
+#[test]
+fn no_restore_footprint_skips_restoration_entirely() {
+    // When simulation reports no archived entries, the client must go straight
+    // to the real transaction and never touch the restore path.
+    let node = Shared::new(
+        ScriptedProvider::new("solo")
+            .then_submit(SubmitOutcome::Ack(TxState::Accepted { ledger: 30 })),
+    );
+    let handle = node.handle();
+    let providers: Vec<Box<dyn RpcProvider>> = vec![Box::new(node)];
+    let mut client = FailoverClient::new(providers, policy());
+    let mut log = RecoveryLog::new();
+
+    let footprint = RestoreFootprint::empty();
+    let result = client.submit_with_restore(
+        &SignedTx::new("tx-no-archive", ""),
+        &footprint,
+        &mut log,
+    );
+
+    assert_eq!(
+        result,
+        RecoveryResult::Accepted {
+            ledger: 30,
+            provider: "solo".to_string(),
+            submit_attempts: 1,
+        }
+    );
+    assert_eq!(
+        handle.borrow().restore_calls,
+        0,
+        "an empty footprint must not produce a restore transaction"
+    );
+    assert_eq!(handle.borrow().submit_calls, 1);
 }

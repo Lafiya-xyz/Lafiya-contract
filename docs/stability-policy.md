@@ -47,6 +47,35 @@ functions do not emit a `Deprecated { fn_name }` event.**
   3. once #443 lands, remove its feature flag from `get_interface().features` in the release that removes it (not the one that deprecates it).
 - CLI deprecations print `warning: <old> is deprecated and will be removed in vX.Y; use <new>` to stderr and keep a zero exit code.
 
+### Deprecated surfaces
+
+| Surface | Deprecated since | Replacement | Removal release | `get_interface().features` |
+| --- | --- | --- | --- | --- |
+| `multisig-account::set_signers(Vec<BytesN<32>>, threshold)` | `0.4.0` ([#708](https://github.com/Lafiya-xyz/Lafiya-contract/issues/708)) | `set_policy(SignerPolicy)` (or the policy-based constructor for new deployments) | `0.6.0` | `set_signers` stays listed until `0.6.0`; it is dropped from `features` in the release that removes the function, not in `0.4.0` |
+
+`set_signers` is ed25519-only and unweighted, so it cannot express secp256r1
+signers or roles. It is kept as a thin wrapper that builds a `SignerPolicy`
+and runs the full `set_policy` validation, so both paths share one set of
+checks; it rejects a call when the current policy holds non-ed25519 signers
+or roles rather than silently dropping them. New deployments use the
+policy-based constructor; the legacy `Vec<BytesN<32>>` constructor is
+deprecated on the same schedule. The rustdoc, the generated bindings' JSDoc,
+and `get_interface()` all mark the legacy surface deprecated.
+
+### `multisig-account` upgrade decision
+
+[ADR-0021](adr/0021-multisig-account-upgrade.md) decides whether
+`multisig-account` is immutable by design or upgradable under guards
+([#709](https://github.com/Lafiya-xyz/Lafiya-contract/issues/709)). If the
+account is upgradable, `upgrade(new_wasm)` is a contract function and follows
+the rules above: the pending-upgrade state, the mandatory delay, the
+announcement event, and the guardian cancellation path are part of its
+interface, and the account is added to the upgrade-compatibility harness. The
+watchdog alerts on pending account upgrades. If the account is immutable, the
+ADR records the migration procedure and its rehearsal instead, and no
+`upgrade` entry point is added.
+=======
+
 ## Making a breaking change
 
 1. Check the table above. If the change is "never allowed" (renumbering

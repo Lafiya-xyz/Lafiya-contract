@@ -13,6 +13,11 @@
  *   Not retried. A missing *attestation* is not an error: it is `null`.
  * - `untrusted`: the request was refused before it was sent because the
  *   transport cannot be trusted (e.g. plain HTTP without `allowHttp`).
+ * - `archived`: the server answered, but the persistent entry (attestation,
+ *   attester info, work item) has lapsed its TTL and is archived. The entry
+ *   still exists and can be restored; this is a distinct state, not a
+ *   verification failure. Not retried as-is: a restore footprint must be
+ *   submitted first (see `isArchivedError`).
  */
 export const TRANSPORT_ERROR_KINDS = [
   "network",
@@ -21,6 +26,7 @@ export const TRANSPORT_ERROR_KINDS = [
   "protocol",
   "not_found",
   "untrusted",
+  "archived",
 ] as const;
 
 export type TransportErrorKind = (typeof TRANSPORT_ERROR_KINDS)[number];
@@ -52,6 +58,7 @@ export type AbortedError = TransportError<"aborted">;
 export type ProtocolError = TransportError<"protocol">;
 export type NotFoundError = TransportError<"not_found">;
 export type UntrustedError = TransportError<"untrusted">;
+export type ArchivedError = TransportError<"archived">;
 
 /** Type guard, optionally narrowed to one kind. */
 export function isTransportError<K extends TransportErrorKind>(
@@ -59,6 +66,38 @@ export function isTransportError<K extends TransportErrorKind>(
   kind?: K,
 ): err is TransportError<K> {
   return err instanceof TransportError && (kind === undefined || err.kind === kind);
+}
+
+/** Whether an error means the entry is archived (restorable) rather than missing. */
+export function isArchivedError(err: unknown): err is ArchivedError {
+  return isTransportError(err, "archived");
+}
+
+/**
+ * Build the `archived` error for a persistent entry. `keys` are the ledger
+ * keys (base64 XDR) whose TTL lapsed, when the caller knows them.
+ */
+export function archivedError(
+  message: string,
+  options: { cause?: unknown; keys?: readonly string[] } = {},
+): ArchivedError {
+  const err = new TransportError("archived", message, { cause: options.cause });
+  if (options.keys !== undefined) {
+    Object.defineProperty(err, "keys", {
+      value: Object.freeze([...options.keys]),
+      enumerable: true,
+    });
+  }
+  return err;
+}
+
+const ARCHIVED_PATTERN = /archived|restorePreamble|restore_footprint|entry is archived/i;
+
+/** Whether a thrown value or message describes an archived (restorable) entry. */
+export function looksArchived(err: unknown): boolean {
+  if (isArchivedError(err)) return true;
+  const message = err instanceof Error ? err.message : String(err);
+  return ARCHIVED_PATTERN.test(message);
 }
 
 const NETWORK_CODES = new Set([
@@ -98,8 +137,10 @@ export function classifyError(err: unknown): TransportError {
       if (status === 429 || status >= 500) {
         return new TransportError("network", message, { cause: err });
       }
+      if (looksArchived(err)) return archivedError(message, { cause: err });
       return new TransportError("protocol", message, { cause: err });
     }
+    if (looksArchived(err)) return archivedError(message, { cause: err });
     const code = typeof e.code === "string" ? e.code : undefined;
     const causeCode = (e.cause as Record<string, unknown> | undefined)?.code;
     if (
@@ -113,5 +154,6 @@ export function classifyError(err: unknown): TransportError {
   if (/insecure|allowHttp/i.test(message)) {
     return new TransportError("untrusted", message, { cause: err });
   }
+  if (looksArchived(err)) return archivedError(message, { cause: err });
   return new TransportError("protocol", message, { cause: err });
 }

@@ -50,6 +50,12 @@ enum DataKey {
     TypedSignerDetails(SignerKey),
     /// Ordered typed signer keys used when replacing the set.
     TypedSignerSet,
+    /// Hash of the announced but not yet executed WASM upgrade.
+    PendingUpgrade,
+    /// Ledger sequence at which the pending upgrade may be executed.
+    UpgradeExecuteAfter,
+    /// Presence of this key (mapped to `()`) means upgrades are permanently disabled.
+    UpgradeRenounced,
 }
 
 /// Public key type used by an authorized signer.
@@ -144,6 +150,14 @@ pub enum Error {
     RoleQuorumNotMet = 9,
     /// A signer weight, role requirement, or policy threshold is invalid.
     InvalidPolicy = 10,
+    /// An upgrade is already pending; cancel it before announcing another.
+    UpgradeAlreadyPending = 11,
+    /// No upgrade has been announced.
+    NoPendingUpgrade = 12,
+    /// The mandatory upgrade delay has not yet elapsed.
+    UpgradeDelayNotElapsed = 13,
+    /// Upgrades have been permanently renounced.
+    UpgradeRenounced = 14,
 }
 
 /// Instance storage TTL policy:
@@ -151,6 +165,11 @@ pub enum Error {
 /// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
 const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
 const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
+
+/// Mandatory delay, in ledgers, between announcing and executing an upgrade.
+/// 17280 ledgers is roughly one day at 5-second ledgers, giving guardians time
+/// to inspect the new WASM and cancel a malicious or buggy upgrade.
+pub const UPGRADE_DELAY_LEDGERS: u32 = 17_280;
 
 /// Interface kind reported by `get_interface`, used by clients as a weak
 /// identity check when wiring contracts (not proof of authenticity).
@@ -177,7 +196,12 @@ soroban_sdk::contractmeta!(key = "interface_version", val = "1");
 pub const EVENT_VERSION: u32 = 1;
 
 /// Optional features this build supports, reported by `get_interface`.
-pub const FEATURES: [&str; 2] = ["ed25519", "unscoped_auth"];
+pub const FEATURES: [&str; 4] = [
+    "ed25519",
+    "unscoped_auth",
+    "policy_constructor",
+    "guarded_upgrade",
+];
 
 /// Interface and capability metadata returned by `get_interface`, so
 /// clients can negotiate features with one call instead of probing.
@@ -221,12 +245,45 @@ pub struct AuthorizationApproved {
     pub signers: Vec<SignerKey>,
 }
 
+/// Emitted when an upgrade is announced and enters its mandatory delay.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct UpgradeAnnounced {
+    /// Hash of the new WASM that will be installed.
+    pub new_wasm_hash: BytesN<32>,
+    /// Ledger sequence at which the upgrade may be executed.
+    pub execute_after: u32,
+}
+
+/// Emitted when a pending upgrade is cancelled.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct UpgradeCancelled {}
+
+/// Emitted when the account permanently renounces upgrades.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct UpgradeRenounced {}
+
+/// Emitted when a pending upgrade is applied.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct UpgradeExecuted {
+    /// Hash of the WASM that was installed.
+    pub new_wasm_hash: BytesN<32>,
+}
+
 #[contract]
 pub struct MultisigAccount;
 
 #[contractimpl]
 impl MultisigAccount {
     /// Initialize the multisig account with a set of authorized signers and a signature threshold.
+    ///
+    /// **Deprecated since v1.0:** use `__constructor_policy` instead. This legacy
+    /// constructor only supports equal-weight ed25519 signers with no roles; new
+    /// deployments should use the policy-based constructor so secp256r1 signers
+    /// and role quorums are configured from genesis.
     ///
     /// # Arguments
     /// * `signers` — A vector of ed25519 public keys (32 bytes each) authorized to sign transactions.
@@ -285,6 +342,81 @@ impl MultisigAccount {
             .set(&DataKey::TypedSignerSet, &typed_signers);
         MultisigConfigured {
             threshold,
+            signers: Self::sorted_signers(&env, &typed_signers),
+        }
+        .publish(&env);
+    }
+
+    /// Initialize the multisig account from a full weighted, role-based policy.
+    ///
+    /// This is the preferred constructor for new deployments. The supplied
+    /// policy is validated with the same rules as `set_policy`; invalid
+    /// policies abort construction with the corresponding [`Error`].
+    ///
+    /// # Arguments
+    /// * `signers` — Weighted and optionally role-tagged Ed25519/secp256r1 signers.
+    /// * `weight_threshold` — Minimum sum of approving signer weights.
+    /// * `minimum_signers` — Minimum number of distinct approving signers.
+    /// * `role_requirements` — Additional per-role approval minimums.
+    pub fn __constructor_policy(
+        env: Env,
+        signers: Vec<SignerConfig>,
+        weight_threshold: u32,
+        minimum_signers: u32,
+        role_requirements: Vec<RoleRequirement>,
+    ) {
+        if let Err(error) = Self::validate_policy(
+            &signers,
+            weight_threshold,
+            minimum_signers,
+            &role_requirements,
+        ) {
+            panic_with_error!(&env, error);
+        }
+
+        let mut legacy_signers = Vec::new(&env);
+        let mut typed_signers = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
+        for signer in signers.iter() {
+            env.storage()
+                .instance()
+                .set(&DataKey::TypedSigner(signer.public_key.clone()), &());
+            env.storage().instance().set(
+                &DataKey::TypedSignerDetails(signer.public_key.clone()),
+                &signer,
+            );
+            if let SignerKey::Ed25519(public_key) = &signer.public_key {
+                env.storage()
+                    .instance()
+                    .set(&DataKey::Signer(public_key.clone()), &());
+                legacy_signers.push_back(public_key.clone());
+            }
+            typed_signers.push_back(signer.public_key.clone());
+        }
+
+        env.storage()
+            .instance()
+            .set(&DataKey::Threshold, &minimum_signers);
+        env.storage()
+            .instance()
+            .set(&DataKey::SignerCount, &signers.len());
+        env.storage()
+            .instance()
+            .set(&DataKey::SignerSet, &legacy_signers);
+        env.storage()
+            .instance()
+            .set(&DataKey::TypedSignerSet, &typed_signers);
+        env.storage().instance().set(
+            &DataKey::Policy,
+            &SignerPolicy {
+                signers,
+                weight_threshold,
+                minimum_signers,
+                role_requirements,
+            },
+        );
+        MultisigConfigured {
+            threshold: minimum_signers,
             signers: Self::sorted_signers(&env, &typed_signers),
         }
         .publish(&env);
@@ -351,8 +483,25 @@ impl MultisigAccount {
 
     /// Replace the signer set with equal-weight signers and no role constraints.
     ///
+    /// **Deprecated since v1.0:** use `set_policy` instead. This entry point is a
+    /// thin wrapper that builds a [`SignerPolicy`] and routes through the same
+    /// validation as `set_policy`. It is rejected with [`Error::InvalidPolicy`]
+    /// when the current policy contains non-ed25519 signers or role
+    /// requirements, because replacing the set would silently drop them.
+    ///
     /// The account itself must authorize this call under its current policy.
     pub fn set_signers(env: Env, signers: Vec<BytesN<32>>, threshold: u32) -> Result<(), Error> {
+        let current = Self::policy(&env)?;
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
+        for signer in current.signers.iter() {
+            if !matches!(signer.public_key, SignerKey::Ed25519(_)) {
+                return Err(Error::InvalidPolicy);
+            }
+        }
+        if !current.role_requirements.is_empty() {
+            return Err(Error::InvalidPolicy);
+        }
+
         let mut configs = Vec::new(&env);
         // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set; no on-chain size cap, oversized sets fail deterministically at the CPU limit
         for public_key in signers.iter() {
@@ -588,6 +737,108 @@ impl MultisigAccount {
             schema_version: SCHEMA_VERSION,
             event_version: EVENT_VERSION,
         }
+    }
+
+    /// Announce a pending WASM upgrade of this account.
+    ///
+    /// The account itself must authorize this call under its current policy.
+    /// The upgrade does not take effect until [`Self::execute_upgrade`] is
+    /// called after [`UPGRADE_DELAY_LEDGERS`] ledgers, giving guardians time to
+    /// inspect the new code and cancel via [`Self::cancel_upgrade`].
+    pub fn upgrade(env: Env, new_wasm_hash: BytesN<32>) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+        if env.storage().instance().has(&DataKey::UpgradeRenounced) {
+            return Err(Error::UpgradeRenounced);
+        }
+        if env.storage().instance().has(&DataKey::PendingUpgrade) {
+            return Err(Error::UpgradeAlreadyPending);
+        }
+        let execute_after = env.ledger().sequence() + UPGRADE_DELAY_LEDGERS;
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingUpgrade, &new_wasm_hash);
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeExecuteAfter, &execute_after);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        UpgradeAnnounced {
+            new_wasm_hash,
+            execute_after,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Cancel a pending upgrade. Authorized by the account's current policy.
+    pub fn cancel_upgrade(env: Env) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+        if !env.storage().instance().has(&DataKey::PendingUpgrade) {
+            return Err(Error::NoPendingUpgrade);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradeExecuteAfter);
+        UpgradeCancelled {}.publish(&env);
+        Ok(())
+    }
+
+    /// Permanently renounce the ability to upgrade this account.
+    ///
+    /// Authorized by the account's current policy. Once set, `upgrade` always
+    /// fails with [`Error::UpgradeRenounced`].
+    pub fn renounce_upgrade(env: Env) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+        env.storage()
+            .instance()
+            .set(&DataKey::UpgradeRenounced, &());
+        UpgradeRenounced {}.publish(&env);
+        Ok(())
+    }
+
+    /// Apply a previously announced upgrade once the mandatory delay elapsed.
+    ///
+    /// Authorized by the account's current policy.
+    pub fn execute_upgrade(env: Env) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+        let new_wasm_hash: BytesN<32> = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingUpgrade)
+            .ok_or(Error::NoPendingUpgrade)?;
+        let execute_after: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeExecuteAfter)
+            .ok_or(Error::NoPendingUpgrade)?;
+        if env.ledger().sequence() < execute_after {
+            return Err(Error::UpgradeDelayNotElapsed);
+        }
+        env.storage().instance().remove(&DataKey::PendingUpgrade);
+        env.storage()
+            .instance()
+            .remove(&DataKey::UpgradeExecuteAfter);
+        env.deployer()
+            .update_current_contract_wasm(new_wasm_hash.clone());
+        UpgradeExecuted { new_wasm_hash }.publish(&env);
+        Ok(())
+    }
+
+    /// Return the pending upgrade hash and its earliest execution ledger, if any.
+    pub fn get_pending_upgrade(env: Env) -> Option<(BytesN<32>, u32)> {
+        let hash: BytesN<32> = env.storage().instance().get(&DataKey::PendingUpgrade)?;
+        let execute_after: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::UpgradeExecuteAfter)?;
+        Some((hash, execute_after))
+    }
+
+    /// Return whether the account has permanently renounced upgrades.
+    pub fn is_upgrade_renounced(env: Env) -> bool {
+        env.storage().instance().has(&DataKey::UpgradeRenounced)
     }
 }
 

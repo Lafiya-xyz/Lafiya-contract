@@ -18,8 +18,8 @@ use anyhow::{bail, Context};
 use lafiya_config::NetworkConfig;
 use lafiya_rpc_resilience::xdr::apply_ledger_bounds;
 use lafiya_rpc_resilience::{
-    max_ledger_for, FailoverClient, RecoveryLog, RecoveryResult, RetryPolicy, RpcError,
-    RpcProvider, SubmitOutcome, TxState,
+    max_ledger_for, restore_preamble_from_simulation, FailoverClient, RecoveryLog, RecoveryResult,
+    RestorePreamble, RetryPolicy, RpcError, RpcProvider, SubmitOutcome, TxState,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -68,6 +68,15 @@ pub fn run_bounded(
         let sim = rpc
             .simulate_transaction(&unsigned)
             .context("simulateTransaction failed; refusing to submit (pass --skip-preview to override)")?;
+
+        // Archived entries (attestations, attester info, work items) must be
+        // restored before the real transaction can touch them. The shared RPC
+        // layer detects the `restorePreamble` and we submit the restore first,
+        // bounded like any other write (issue #710).
+        if let Some(preamble) = restore_preamble_from_simulation(&sim) {
+            restore_archived_entries(cfg, &mut rpc, &preamble, window)?;
+        }
+
         let preview = preview::build_preview(&sim, &cfg.network_passphrase)?;
         preview::render(&preview, opts)?;
         if opts.preview_only {
@@ -151,6 +160,91 @@ pub fn run_bounded(
         }
     }
     unreachable!("the final attempt always returns")
+}
+
+/// Submit the restore transaction described by a simulation `restorePreamble`.
+///
+/// The preamble carries the restore footprint and the minimum resource fee the
+/// simulation estimated for it. We build a `RestoreFootprintOp` envelope over
+/// that footprint, bound it to `latest + window`, sign it, and submit it with
+/// the same bounded failover path as any other write. The real transaction is
+/// only attempted once the restore is accepted.
+fn restore_archived_entries(
+    cfg: &NetworkConfig,
+    rpc: &mut SorobanRpc,
+    preamble: &RestorePreamble,
+    window: u32,
+) -> anyhow::Result<()> {
+    let latest = rpc
+        .latest_ledger()
+        .map_err(|e| anyhow::anyhow!("getLatestLedger failed: {e}"))?;
+    let max_ledger = max_ledger_for(latest, window);
+
+    let unsigned = rpc
+        .build_restore_transaction(preamble, max_ledger)
+        .context("building restore footprint transaction failed")?;
+    let (bounded, bounds) = apply_ledger_bounds(&unsigned, max_ledger)?;
+    let signed = stellar(&tx_args(cfg, "sign", &[], &bounded))?;
+    let tx_hash = tx_hash(&signed, &cfg.network_passphrase)?;
+    println!(
+        "Restoring archived entries with {tx_hash} (fee {}, valid through ledger {max_ledger})",
+        preamble.fee
+    );
+
+    let dir = state_dir();
+    let mut intent = SubmissionIntent {
+        tx_hash: tx_hash.clone(),
+        max_ledger,
+        sequence: bounds.sequence,
+        source_account: bounds.source_account.clone(),
+        recorded_at_ledger: latest,
+        final_state: None,
+    };
+    save_intent(&dir, &intent)?;
+
+    rpc.envelope = Some(signed);
+    let mut client = FailoverClient::new(vec![Box::new(SorobanRpc::new(&rpc.url))], RetryPolicy::default());
+    let mut log = RecoveryLog::new();
+    let result = client.submit_with_bounds(&tx_hash, &bounds, &mut log);
+    for line in log.lines() {
+        eprintln!("  {line}");
+    }
+    match result {
+        RecoveryResult::Accepted { ledger, .. } => {
+            intent.final_state = Some(FinalState::Succeeded { ledger });
+            save_intent(&dir, &intent)?;
+            println!("Restore transaction {tx_hash} succeeded in ledger {ledger}");
+            Ok(())
+        }
+        RecoveryResult::RejectedOnChain { reason } => {
+            intent.final_state = Some(FinalState::Failed {
+                reason: reason.clone(),
+            });
+            save_intent(&dir, &intent)?;
+            bail!("restore transaction {tx_hash} failed on-chain: {reason}")
+        }
+        RecoveryResult::Expired { latest_ledger, .. } => {
+            intent.final_state = Some(FinalState::Expired { latest_ledger });
+            save_intent(&dir, &intent)?;
+            bail!("restore transaction {tx_hash} expired at ledger {latest_ledger}; nothing was restored")
+        }
+        RecoveryResult::SequenceConsumed { consumed_by } => {
+            intent.final_state = Some(FinalState::SequenceConsumed {
+                consumed_by: consumed_by.clone(),
+            });
+            save_intent(&dir, &intent)?;
+            bail!(
+                "sequence {} of {} was consumed by {}; restore transaction {tx_hash} can never be included",
+                bounds.sequence,
+                bounds.source_account,
+                consumed_by.as_deref().unwrap_or("another transaction")
+            )
+        }
+        RecoveryResult::ExhaustedNeedsOperator { last_known } => bail!(
+            "could not determine the outcome of restore {tx_hash} (last known: {last_known:?}); the intent is recorded at {} -- run `tx status {tx_hash}` to reconcile",
+            intent_path(&dir, &tx_hash).display()
+        ),
+    }
 }
 
 /// Build, bound, sign, and submit an `extend_attestation_ttl` invocation.
@@ -348,6 +442,32 @@ impl SorobanRpc {
             json!({ "transaction": envelope_b64 }),
         )
         .map_err(|(_, e)| anyhow::anyhow!("{e}"))
+    }
+
+    /// Build an unsigned `RestoreFootprintOp` envelope over the footprint in
+    /// `preamble`, bounded to `max_ledger` and carrying the simulated fee.
+    fn build_restore_transaction(
+        &self,
+        preamble: &RestorePreamble,
+        max_ledger: u32,
+    ) -> anyhow::Result<String> {
+        let mut args = vec![
+            "tx".to_string(),
+            "restore".to_string(),
+            "--rpc-url".to_string(),
+            self.url.clone(),
+            "--footprint".to_string(),
+            preamble.footprint_xdr.clone(),
+            "--fee".to_string(),
+            preamble.fee.to_string(),
+            "--max-ledger".to_string(),
+            max_ledger.to_string(),
+        ];
+        if let Some(source) = &preamble.source_account {
+            args.push("--source-account".to_string());
+            args.push(source.clone());
+        }
+        stellar(&args)
     }
 
     /// Call `method`. Errors are split the ADR-0011 way: a failure to
@@ -617,5 +737,26 @@ mod tests {
         // The preview module reuses `auth_decode::decode_entry`; ensure the
         // symbol is reachable from this crate.
         let _ = auth_decode::decode_entry;
+    }
+
+    #[test]
+    fn restore_preamble_is_detected_from_simulation() {
+        // A simulation result carrying `restorePreamble` must be recognized so
+        // the restore transaction is submitted before the real one.
+        let sim = json!({
+            "restorePreamble": {
+                "transactionData": "AAAAAA==",
+                "minResourceFee": "1234"
+            }
+        });
+        let preamble = restore_preamble_from_simulation(&sim)
+            .expect("restorePreamble must be detected");
+        assert_eq!(preamble.fee, 1234);
+    }
+
+    #[test]
+    fn restore_preamble_absent_for_live_entries() {
+        let sim = json!({ "results": [] });
+        assert!(restore_preamble_from_simulation(&sim).is_none());
     }
 }

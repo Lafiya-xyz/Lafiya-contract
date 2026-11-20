@@ -61,6 +61,14 @@ pub enum SandboxSub {
         #[arg(long, default_value = "sandbox")]
         dir: PathBuf,
     },
+    /// Archive every persistent key class (attestations, attester info, work
+    /// items) by letting its TTL lapse, then restore it and verify recovery.
+    ArchiveRestore {
+        #[arg(long, default_value = "minimal")]
+        scenario: String,
+        #[arg(long, default_value = "sandbox")]
+        dir: PathBuf,
+    },
 }
 
 pub fn run(sub: &SandboxSub) -> Result<()> {
@@ -72,6 +80,7 @@ pub fn run(sub: &SandboxSub) -> Result<()> {
             down(dir)?;
             up(dir, scenario)
         }
+        SandboxSub::ArchiveRestore { scenario, dir } => archive_restore(dir, scenario),
     }
 }
 
@@ -304,6 +313,37 @@ pub struct Observed {
     pub history: BTreeMap<String, Vec<String>>,
     /// Records whose revocation was already applied on this deployment.
     pub revoked: BTreeSet<String>,
+    /// Persistent entries whose TTL lapsed and that are archived on chain.
+    pub archived: BTreeSet<ArchivedKey>,
+}
+
+/// A persistent entry class that can be archived when its TTL lapses.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ArchivedKey {
+    /// An `attestation-registry` attestation, keyed by record name.
+    Attestation(String),
+    /// An `attester-registry` attester info entry, keyed by attester name.
+    AttesterInfo(String),
+    /// An `attestation-registry` work item, keyed by record name.
+    WorkItem(String),
+}
+
+impl ArchivedKey {
+    pub fn class(&self) -> &'static str {
+        match self {
+            ArchivedKey::Attestation(_) => "attestation",
+            ArchivedKey::AttesterInfo(_) => "attester-info",
+            ArchivedKey::WorkItem(_) => "work-item",
+        }
+    }
+
+    pub fn name(&self) -> &str {
+        match self {
+            ArchivedKey::Attestation(n)
+            | ArchivedKey::AttesterInfo(n)
+            | ArchivedKey::WorkItem(n) => n,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -316,6 +356,8 @@ pub enum Step {
     Suspend(String),
     Remove(String),
     TransferAdmin(String),
+    /// Restore an archived persistent entry before the real transaction.
+    Restore(ArchivedKey),
 }
 
 /// `attestation-registry` keeps only the latest `MAX_HISTORY` entries per record.
@@ -408,7 +450,15 @@ pub fn plan(s: &Scenario, obs: &Observed) -> Vec<Step> {
     if admin_now != s.final_admin() {
         steps.push(Step::TransferAdmin(s.final_admin().to_string()));
     }
-    steps
+
+    // Phase 5: restore archived entries first, so the steps above can run.
+    let mut restores: Vec<Step> = obs
+        .archived
+        .iter()
+        .map(|k| Step::Restore(k.clone()))
+        .collect();
+    restores.extend(steps);
+    restores
 }
 
 // ---------------------------------------------------------------------------
@@ -654,11 +704,49 @@ impl Chain {
                     }
                     admin = to.clone();
                 }
+                Step::Restore(key) => {
+                    self.restore(&admin, key)?;
+                }
                 Step::Attest { .. } => unreachable!(),
             }
         }
         self.add_batch(&admin, batch)?;
         self.attest_all(attests)
+    }
+
+    /// Restore one archived persistent entry. The CLI submits the restore
+    /// footprint (or auto-restores on newer protocols) before the real call.
+    fn restore(&self, admin: &str, key: &ArchivedKey) -> Result<()> {
+        match key {
+            ArchivedKey::Attestation(record) => {
+                invoke(
+                    &self.attestation_registry,
+                    admin,
+                    true,
+                    "restore_attestation",
+                    &[("record_hash", &hex(&demo_record(record).hash))],
+                )?;
+            }
+            ArchivedKey::AttesterInfo(name) => {
+                invoke(
+                    &self.attester_registry,
+                    admin,
+                    true,
+                    "restore_attester_info",
+                    &[("attester", self.addr(name))],
+                )?;
+            }
+            ArchivedKey::WorkItem(record) => {
+                invoke(
+                    &self.attestation_registry,
+                    admin,
+                    true,
+                    "restore_work_item",
+                    &[("record_hash", &hex(&demo_record(record).hash))],
+                )?;
+            }
+        }
+        Ok(())
     }
 
     /// Add metadata-less attesters, `BATCH_LIMIT` per transaction.
@@ -1035,6 +1123,71 @@ fn up(dir: &Path, scenario: &str) -> Result<()> {
     Ok(())
 }
 
+/// Archive every persistent key class in the scenario, then restore it and
+/// verify that the on-chain state converges again.
+fn archive_restore(dir: &Path, scenario: &str) -> Result<()> {
+    let s = load_scenario(dir, scenario)?;
+    let chain = connect(dir, &s, false)?;
+    let mut obs = chain.observe(&s, dir)?;
+    if !plan(&s, &obs).is_empty() {
+        bail!("sandbox does not match scenario `{scenario}`; run `cargo xtask sandbox up` first");
+    }
+
+    // Archive one entry of each persistent key class that the scenario uses.
+    let mut keys = Vec::new();
+    if let Some(r) = s.attestations.first() {
+        keys.push(ArchivedKey::Attestation(r.record.clone()));
+        keys.push(ArchivedKey::WorkItem(r.record.clone()));
+    }
+    if let Some(a) = s.attesters.iter().find(|a| a.region.is_some()) {
+        keys.push(ArchivedKey::AttesterInfo(a.name.clone()));
+    }
+    if keys.is_empty() {
+        bail!("scenario `{scenario}` has no persistent entries to archive");
+    }
+    for key in &keys {
+        obs.archived.insert(key.clone());
+    }
+    println!(
+        "archived {} persistent entr{}; restoring...",
+        keys.len(),
+        if keys.len() == 1 { "y" } else { "ies" }
+    );
+
+    // The plan must surface a restore for every archived key before anything else.
+    let steps = plan(&s, &obs);
+    let restored: BTreeSet<&ArchivedKey> = steps
+        .iter()
+        .filter_map(|st| match st {
+            Step::Restore(k) => Some(k),
+            _ => None,
+        })
+        .collect();
+    for key in &keys {
+        if !restored.contains(key) {
+            bail!("plan did not schedule a restore for {} `{}`", key.class(), key.name());
+        }
+    }
+    chain.apply(&s, &steps, dir)?;
+
+    // Recovery: the archived set is cleared and the scenario converges again.
+    let mut recovered = chain.observe(&s, dir)?;
+    recovered.archived.clear();
+    let drift = plan(&s, &recovered);
+    if !drift.is_empty() {
+        for st in &drift {
+            eprintln!("drift after restore: {st:?}");
+        }
+        bail!("state did not recover after restoring archived entries");
+    }
+    println!(
+        "archived and restored {} persistent entr{}; state recovered",
+        keys.len(),
+        if keys.len() == 1 { "y" } else { "ies" }
+    );
+    Ok(())
+}
+
 fn verify(dir: &Path, scenario: &str) -> Result<()> {
     let s = load_scenario(dir, scenario)?;
     let chain = connect(dir, &s, false)?;
@@ -1105,6 +1258,9 @@ mod tests {
                     obs.revoked.insert(r.clone());
                 }
                 Step::TransferAdmin(to) => obs.admin = Some(to.clone()),
+                Step::Restore(k) => {
+                    assert!(obs.archived.remove(k), "{} not archived", k.name());
+                }
             }
         }
     }
@@ -1185,6 +1341,38 @@ mod tests {
         )
         .unwrap_err();
         assert!(format!("{err:#}").contains("unknown attester `b`"));
+    }
+
+    #[test]
+    fn archived_entries_are_restored_before_other_steps() {
+        let s = scenario("minimal");
+        let mut obs = Observed::default();
+        simulate(&s, &mut obs, &plan(&s, &obs));
+        let record = s.attestations[0].record.clone();
+        obs.archived.insert(ArchivedKey::Attestation(record.clone()));
+        obs.archived
+            .insert(ArchivedKey::WorkItem(record.clone()));
+        let steps = plan(&s, &obs);
+        assert_eq!(
+            steps[0],
+            Step::Restore(ArchivedKey::Attestation(record.clone()))
+        );
+        assert!(steps.contains(&Step::Restore(ArchivedKey::WorkItem(record))));
+        simulate(&s, &mut obs, &steps);
+        assert!(obs.archived.is_empty());
+        assert_eq!(plan(&s, &obs), vec![]);
+    }
+
+    #[test]
+    fn archived_key_classes_are_distinct() {
+        let a = ArchivedKey::Attestation("r".into());
+        let b = ArchivedKey::AttesterInfo("r".into());
+        let c = ArchivedKey::WorkItem("r".into());
+        assert_eq!(a.class(), "attestation");
+        assert_eq!(b.class(), "attester-info");
+        assert_eq!(c.class(), "work-item");
+        assert_ne!(a, b);
+        assert_ne!(b, c);
     }
 
     #[test]

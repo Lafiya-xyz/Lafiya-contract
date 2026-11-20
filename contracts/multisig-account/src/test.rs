@@ -379,6 +379,71 @@ fn three_of_five_signers_authorize() {
 }
 
 #[test]
+fn legacy_set_signers_matches_policy_validation() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let mut new_signers = Vec::new(&env);
+    for key in &keys[..2] {
+        new_signers.push_back(BytesN::from_array(&env, &key.verifying_key().to_bytes()));
+    }
+    client.set_signers(&new_signers, &1u32);
+
+    let mut expected = Vec::new(&env);
+    for key in &keys[..2] {
+        expected.push_back(SignerKey::Ed25519(BytesN::from_array(
+            &env,
+            &key.verifying_key().to_bytes(),
+        )));
+    }
+    assert_eq!(client.get_threshold(), 1);
+    assert_eq!(client.get_signers(), expected);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")]
+fn legacy_set_signers_rejects_zero_threshold() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(BytesN::from_array(&env, &keys[0].verifying_key().to_bytes()));
+    client.set_signers(&new_signers, &0u32);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #1)")]
+fn legacy_set_signers_rejects_threshold_above_signer_count() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(BytesN::from_array(&env, &keys[0].verifying_key().to_bytes()));
+    client.set_signers(&new_signers, &2u32);
+}
+
+#[test]
+#[should_panic(expected = "Error(Contract, #2)")]
+fn legacy_set_signers_rejects_duplicate_signers() {
+    let env = Env::default();
+    let keys = signing_keys();
+    let account = register_account(&env, &keys, 2);
+    let client = MultisigAccountClient::new(&env, &account);
+
+    let key = BytesN::from_array(&env, &keys[0].verifying_key().to_bytes());
+    let mut new_signers = Vec::new(&env);
+    new_signers.push_back(key.clone());
+    new_signers.push_back(key);
+    client.set_signers(&new_signers, &1u32);
+}
+
+#[test]
 fn get_interface_reports_kind_versions_and_features() {
     let env = Env::default();
     let keys = signing_keys();
@@ -396,4 +461,10 @@ fn get_interface_reports_kind_versions_and_features() {
     assert!(info
         .features
         .contains(soroban_sdk::Symbol::new(&env, "unscoped_auth")));
+    assert!(info
+        .features
+        .contains(soroban_sdk::Symbol::new(&env, "deprecated_set_signers")));
+    assert!(info
+        .features
+        .contains(soroban_sdk::Symbol::new(&env, "guarded_upgrade")));
 }

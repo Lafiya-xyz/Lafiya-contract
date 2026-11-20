@@ -25,14 +25,75 @@ an authorized signer, with signatures ordered in ascending public-key order.
 ### `__constructor`
 
 ```rust
-fn __constructor(signers: Vec<BytesN<32>>, threshold: u32)
+fn __constructor(policy: SignerPolicy)
 ```
 
-Initialize the multisig account with a set of authorized signers and a signature threshold.
+Initialize the multisig account from a signer policy.
+
+This is the preferred constructor for new deployments. It accepts weighted ed25519 and
+secp256r1 signers as well as roles, and runs the same validation as `set_policy`.
+
+# Arguments
+* `policy` \xe2\x80\x94 The initial signer policy, including signers, roles, and threshold.
+
+### `set_signers`
+
+```rust
+fn set_signers(signers: Vec<BytesN<32>>, threshold: u32) -> Result<(), Error>
+```
+
+**Deprecated.** Use `set_policy` instead.
+
+Legacy ed25519-only, unweighted signer configuration. This entry point is a thin wrapper
+that builds an equivalent `SignerPolicy` and routes it through the full `set_policy`
+validation, so both paths enforce identical rules. It is retained only for backwards
+compatibility and will be removed under the stability policy.
 
 # Arguments
 * `signers` \xe2\x80\x94 A vector of ed25519 public keys (32 bytes each) authorized to sign transactions.
 * `threshold` \xe2\x80\x94 The minimum number of signatures required to authorize a transaction; must be > 0 and \xe2\x89\xa4 the signer count.
+
+### `set_policy`
+
+```rust
+fn set_policy(policy: SignerPolicy) -> Result<(), Error>
+```
+
+Replace the account's signer policy, including weighted signers, roles, and threshold.
+
+# Arguments
+* `policy` \xe2\x80\x94 The new signer policy to install.
+
+### `upgrade`
+
+```rust
+fn upgrade(new_wasm_hash: BytesN<32>) -> Result<(), Error>
+```
+
+Schedule a guarded self-upgrade of the account to a new Wasm hash.
+
+The upgrade is not applied immediately: it enters a pending state for a mandatory delay,
+emits an announcement event, and can be cancelled by the guardians before it is applied.
+See the account upgrade ADR for the full guard model.
+
+# Arguments
+* `new_wasm_hash` \xe2\x80\x94 The hash of the new account Wasm to install after the delay.
+
+### `cancel_upgrade`
+
+```rust
+fn cancel_upgrade() -> Result<(), Error>
+```
+
+Cancel a pending self-upgrade before it is applied.
+
+### `apply_upgrade`
+
+```rust
+fn apply_upgrade() -> Result<(), Error>
+```
+
+Apply a pending self-upgrade once the mandatory delay has elapsed.
 
 ## Types
 

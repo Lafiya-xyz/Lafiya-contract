@@ -6,7 +6,7 @@
 //! [`RecoveryResult`](crate::RecoveryResult) and the number of calls made to
 //! each provider (to prove a duplicate submission never happened).
 
-use crate::{RpcError, RpcProvider, SignedTx, SubmitOutcome, TxState};
+use crate::{RestorePreamble, RpcError, RpcProvider, SignedTx, SubmitOutcome, TxState};
 use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::rc::Rc;
@@ -22,6 +22,8 @@ pub struct ScriptedProvider {
     poll_script: VecDeque<Result<TxState, RpcError>>,
     ledger_script: VecDeque<u32>,
     sequence_script: VecDeque<i64>,
+    restore_script: VecDeque<Option<RestorePreamble>>,
+    restore_submit_script: VecDeque<SubmitOutcome>,
     submit_latency_script: VecDeque<LatencyMs>,
     poll_latency_script: VecDeque<LatencyMs>,
     ledger_latency_script: VecDeque<LatencyMs>,
@@ -29,6 +31,8 @@ pub struct ScriptedProvider {
     pub submit_calls: u32,
     pub poll_calls: u32,
     pub ledger_calls: u32,
+    /// Number of restore transactions submitted via `submit_restore`.
+    pub restore_submit_calls: u32,
     /// Total simulated latency consumed by `submit` calls.
     pub submit_latency_total: LatencyMs,
     /// Total simulated latency consumed by `get_transaction` calls.
@@ -45,6 +49,8 @@ impl ScriptedProvider {
             poll_script: VecDeque::new(),
             ledger_script: VecDeque::new(),
             sequence_script: VecDeque::new(),
+            restore_script: VecDeque::new(),
+            restore_submit_script: VecDeque::new(),
             submit_latency_script: VecDeque::new(),
             poll_latency_script: VecDeque::new(),
             ledger_latency_script: VecDeque::new(),
@@ -52,6 +58,7 @@ impl ScriptedProvider {
             submit_calls: 0,
             poll_calls: 0,
             ledger_calls: 0,
+            restore_submit_calls: 0,
             submit_latency_total: 0,
             poll_latency_total: 0,
             ledger_latency_total: 0,
@@ -103,6 +110,21 @@ impl ScriptedProvider {
     /// Queue the next `account_sequence` answer (sticky, like ledgers).
     pub fn then_account_sequence(mut self, sequence: i64) -> Self {
         self.sequence_script.push_back(sequence);
+        self
+    }
+
+    /// Queue the next `simulate_restore_preamble` answer. The last queued
+    /// value is sticky, so a test can script "archived once, then live" by
+    /// queuing `Some(preamble)` followed by `None`. With nothing queued the
+    /// provider reports no restore preamble (nothing archived).
+    pub fn then_restore_preamble(mut self, preamble: Option<RestorePreamble>) -> Self {
+        self.restore_script.push_back(preamble);
+        self
+    }
+
+    /// Queue the next `submit_restore` call's outcome.
+    pub fn then_restore_submit(mut self, outcome: SubmitOutcome) -> Self {
+        self.restore_submit_script.push_back(outcome);
         self
     }
 
@@ -159,6 +181,24 @@ impl RpcProvider for ScriptedProvider {
         next_sticky(&mut self.sequence_script).ok_or(RpcError::ProviderUnavailable)
     }
 
+    /// Reports no archived entries unless a preamble is scripted, so existing
+    /// tests that never mention restoration keep their current behavior.
+    fn simulate_restore_preamble(
+        &mut self,
+        _tx: &SignedTx,
+    ) -> Result<Option<RestorePreamble>, RpcError> {
+        Ok(next_sticky(&mut self.restore_script).flatten())
+    }
+
+    /// Falls back to `ProviderUnavailable` once the script runs out, matching
+    /// `submit`'s under-scripted behavior.
+    fn submit_restore(&mut self, _tx: &SignedTx) -> SubmitOutcome {
+        self.restore_submit_calls += 1;
+        self.restore_submit_script
+            .pop_front()
+            .unwrap_or(SubmitOutcome::Definite(RpcError::ProviderUnavailable))
+    }
+
     fn find_transaction_by_sequence(
         &mut self,
         _account: &str,
@@ -209,6 +249,17 @@ impl<P: RpcProvider> RpcProvider for Shared<P> {
 
     fn account_sequence(&mut self, account: &str) -> Result<i64, RpcError> {
         self.inner.borrow_mut().account_sequence(account)
+    }
+
+    fn simulate_restore_preamble(
+        &mut self,
+        tx: &SignedTx,
+    ) -> Result<Option<RestorePreamble>, RpcError> {
+        self.inner.borrow_mut().simulate_restore_preamble(tx)
+    }
+
+    fn submit_restore(&mut self, tx: &SignedTx) -> SubmitOutcome {
+        self.inner.borrow_mut().submit_restore(tx)
     }
 
     fn find_transaction_by_sequence(

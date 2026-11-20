@@ -212,8 +212,32 @@ fi
 echo "==> Deployer source: ${SOURCE_ACCOUNT:-<default>}"
 echo "==> Admin address: $ADMIN_ADDRESS"
 
+# multisig-account constructor selection.
+#
+# New deployments should use the policy-based constructor
+# (`__constructor_policy`), which accepts a full SignerPolicy (weighted
+# ed25519 and secp256r1 signers plus roles). The legacy constructor
+# (`__constructor`) takes a flat Vec<BytesN<32>> of ed25519 keys and is
+# deprecated under the stability policy; it is kept only for existing
+# tooling and emits a warning here.
+#
+# Set MULTISIG_ACCOUNT_LEGACY_CONSTRUCTOR=true to opt back into the legacy
+# constructor for a specific run.
+MULTISIG_ACCOUNT_LEGACY_CONSTRUCTOR="${MULTISIG_ACCOUNT_LEGACY_CONSTRUCTOR:-false}"
+if [[ "$MULTISIG_ACCOUNT_LEGACY_CONSTRUCTOR" == "true" ]]; then
+    echo "WARNING: MULTISIG_ACCOUNT_LEGACY_CONSTRUCTOR=true -- the legacy multisig-account" >&2
+    echo "         constructor (__constructor) is deprecated and only supports unweighted" >&2
+    echo "         ed25519 signers. New deployments should use the policy constructor" >&2
+    echo "         (__constructor_policy). See docs/stability.md." >&2
+else
+    echo "==> multisig-account constructor: policy-based (__constructor_policy)"
+fi
+=======
+
 ATTESTER_WASM="$REPO_ROOT/target/wasm32v1-none/release/attester_registry.wasm"
 ATTESTATION_WASM="$REPO_ROOT/target/wasm32v1-none/release/attestation_registry.wasm"
+MULTISIG_ACCOUNT_WASM="$REPO_ROOT/target/wasm32v1-none/release/multisig_account.wasm"
+=======
 
 if [[ "$DRY_RUN" != "true" ]]; then
     if [[ ! -f "$ATTESTER_WASM" ]]; then
@@ -225,7 +249,13 @@ if [[ "$DRY_RUN" != "true" ]]; then
         echo "ERROR: WASM not found at $ATTESTATION_WASM" >&2
         exit 1
     fi
+    if [[ ! -f "$MULTISIG_ACCOUNT_WASM" ]]; then
+        echo "ERROR: WASM not found at $MULTISIG_ACCOUNT_WASM" >&2
+        echo "Run cargo build --workspace --release --target wasm32v1-none or use --dry-run" >&2
+        exit 1
+    fi
 fi
+=======
 
 # deploy_contract's stdout is captured with `$(...)` by its callers, which
 # runs it in a subshell -- a plain variable it sets would not be visible to
@@ -327,22 +357,56 @@ ATTESTATION_ID="$(echo "$ATTESTATION_ID" | tr -d '\n' | xargs)"
 echo "    attestation-registry ID: $ATTESTATION_ID"
 [[ "$DRY_RUN" == "true" ]] || record_deployment deploy attestation-registry "$ATTESTATION_ID" "$ATTESTATION_WASM"
 
+# Deploy multisig-account using the policy-based constructor.
+#
+# The policy constructor takes a SignerPolicy so weighted ed25519 and
+# secp256r1 signers and roles can be configured atomically. The legacy
+# constructor is deprecated; see the warning emitted above.
+MULTISIG_ACCOUNT_ID="$(deploy_contract "$MULTISIG_ACCOUNT_WASM" "$NETWORK" "$LAFIYA_RPC_URL" "$LAFIYA_NETWORK_PASSPHRASE" "multisig-account" \
+    --admin "$ADMIN_ADDRESS")"
+MULTISIG_ACCOUNT_ID="$(echo "$MULTISIG_ACCOUNT_ID" | tr -d '\n' | xargs)"
+echo "    multisig-account ID: $MULTISIG_ACCOUNT_ID"
+[[ "$DRY_RUN" == "true" ]] || record_deployment deploy multisig-account "$MULTISIG_ACCOUNT_ID" "$MULTISIG_ACCOUNT_WASM"
+
+if [[ "$MULTISIG_ACCOUNT_LEGACY_CONSTRUCTOR" == "true" ]]; then
+    echo "WARNING: initializing multisig-account with the deprecated legacy constructor." >&2
+    echo "         Signers are unweighted ed25519 keys only; secp256r1 signers and roles" >&2
+    echo "         cannot be configured. Migrate to the policy constructor." >&2
+    initialize_contract "$MULTISIG_ACCOUNT_ID" __constructor "$ADMIN_ADDRESS"
+else
+    # The policy is supplied by the operator via MULTISIG_ACCOUNT_POLICY (a
+    # JSON/XDR SignerPolicy argument accepted by the stellar CLI). When it is
+    # absent we skip initialization and print the exact invocation to run.
+    if [[ -n "${MULTISIG_ACCOUNT_POLICY:-}" ]]; then
+        initialize_contract "$MULTISIG_ACCOUNT_ID" __constructor_policy "$MULTISIG_ACCOUNT_POLICY"
+    else
+        echo "NOTE: MULTISIG_ACCOUNT_POLICY not set; skipping multisig-account initialization." >&2
+        echo "      Initialize it with the policy constructor:" >&2
+        echo "      stellar contract invoke --id $MULTISIG_ACCOUNT_ID -- __constructor_policy '<SignerPolicy>'" >&2
+    fi
+fi
+
 # Guard against a truncated or noisy deploy output being written back to config.
 if [[ "$DRY_RUN" != "true" ]]; then
     lafiya_validate_contract_id "deployed attester_registry id" "$ATTESTER_ID" || exit 1
     lafiya_validate_contract_id "deployed attestation_registry id" "$ATTESTATION_ID" || exit 1
+    lafiya_validate_contract_id "deployed multisig_account id" "$MULTISIG_ACCOUNT_ID" || exit 1
 fi
+=======
 
 echo ""
 echo "==> Deployment complete for network: $NETWORK"
 echo "    attester_registry = \"$ATTESTER_ID\""
 echo "    attestation_registry = \"$ATTESTATION_ID\""
+echo "    multisig_account = \"$MULTISIG_ACCOUNT_ID\""
 echo ""
 echo "Next steps:"
 echo "  1. Update config/networks.toml:"
 echo "     [$NETWORK.contracts]"
 echo "     attester_registry = \"$ATTESTER_ID\""
 echo "     attestation_registry = \"$ATTESTATION_ID\""
+echo "     multisig_account = \"$MULTISIG_ACCOUNT_ID\""
+=======
 echo ""
 echo "  2. Verify with admin CLI:"
 echo "     ./scripts/admin.sh --network $NETWORK list-attesters"
@@ -354,9 +418,10 @@ if [[ "$DRY_RUN" != "true" ]]; then
     echo ""
     read -rp "Update config/networks.toml automatically? [y/N]: " confirm
     if [[ "$confirm" =~ ^[Yy]$ ]]; then
-        python3 - "$CONFIG_PATH" "$NETWORK" "$ATTESTER_ID" "$ATTESTATION_ID" <<'PY'
+        python3 - "$CONFIG_PATH" "$NETWORK" "$ATTESTER_ID" "$ATTESTATION_ID" "$MULTISIG_ACCOUNT_ID" <<'PY'
 import sys
-config_path, network, attester_id, attestation_id = sys.argv[1:5]
+config_path, network, attester_id, attestation_id, multisig_account_id = sys.argv[1:6]
+=======
 try:
     import tomllib
 except ModuleNotFoundError:
@@ -382,7 +447,9 @@ def update_section(text, net, key, value):
 
 text = update_section(text, network, "attester_registry", attester_id)
 text = update_section(text, network, "attestation_registry", attestation_id)
+text = update_section(text, network, "multisig_account", multisig_account_id)
 pathlib.Path(config_path).write_text(text)
+=======
 print(f"Updated {config_path}")
 PY
     fi

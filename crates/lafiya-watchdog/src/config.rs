@@ -43,6 +43,9 @@ pub struct Config {
     /// Guarded auto-response proposals (#533).
     #[serde(default)]
     pub auto_response: AutoResponse,
+    /// Alert on pending `multisig-account` self-upgrades (#709).
+    #[serde(default)]
+    pub pending_account_upgrade: PendingAccountUpgrade,
 }
 
 fn default_poll() -> u64 {
@@ -367,6 +370,51 @@ fn default_rate_limit() -> usize {
 
 fn default_rate_window() -> u64 {
     3600
+}
+
+/// Watchdog guidance for the guarded `multisig-account` self-upgrade path
+/// (#709). A pending upgrade is announced on-chain and only executable after a
+/// mandatory delay, during which guardians can cancel it. The watchdog alerts
+/// as soon as the announcement is observed so the delay window is never silent.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PendingAccountUpgrade {
+    /// Alert on every newly observed pending upgrade announcement.
+    #[serde(default = "default_true")]
+    pub alert_on_pending: bool,
+    /// Expected mandatory delay (in ledgers) between announcement and
+    /// execution. A pending upgrade whose delay is shorter than this is
+    /// reported at `severity` as a policy violation.
+    #[serde(default = "default_upgrade_delay_ledgers")]
+    pub min_delay_ledgers: u32,
+    /// Alert when a pending upgrade is still unexecuted and uncancelled this
+    /// many ledgers before its executable ledger (final-call reminder).
+    #[serde(default = "default_upgrade_final_call_ledgers")]
+    pub final_call_ledgers: u32,
+    #[serde(default = "default_critical")]
+    pub severity: Severity,
+}
+
+impl Default for PendingAccountUpgrade {
+    fn default() -> Self {
+        PendingAccountUpgrade {
+            alert_on_pending: true,
+            min_delay_ledgers: default_upgrade_delay_ledgers(),
+            final_call_ledgers: default_upgrade_final_call_ledgers(),
+            severity: Severity::Critical,
+        }
+    }
+}
+
+fn default_upgrade_delay_ledgers() -> u32 {
+    17_280
+}
+
+fn default_upgrade_final_call_ledgers() -> u32 {
+    720
+}
+
+fn default_critical() -> Severity {
+    Severity::Critical
 }
 
 #[derive(Debug, Clone, Deserialize)]
