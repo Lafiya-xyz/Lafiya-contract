@@ -1,0 +1,9 @@
+# Single pnpm workspace for every TypeScript package in the repo.
+# One lockfile (pnpm-lock.yaml at the root), shared tooling config, and
+# `workspace:*` for internal dependencies. See docs/issues/756-pnpm-workspace.md.
+packages:
+  - "bindings/*"
+  - "packages/*"
+
+# Supply-chain policy: no dependency may run install scripts.
+strictDepBuilds: true
