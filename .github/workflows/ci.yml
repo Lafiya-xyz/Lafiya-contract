@@ -23,13 +23,21 @@ jobs:
     name: Detect changes
     runs-on: ubuntu-latest
     outputs:
-      rust: ${{ steps.filter.outputs.rust }}
-      indexer: ${{ steps.filter.outputs.indexer }}
+      rust: ${{ steps.resolve.outputs.rust }}
+      indexer: ${{ steps.resolve.outputs.indexer }}
+      # Fail-safe: true when any changed path is not covered by a known filter
+      # (or when the change set cannot be determined). Downstream jobs treat
+      # this as "run everything".
+      unknown: ${{ steps.resolve.outputs.unknown }}
     steps:
       - uses: actions/checkout@v7
       - uses: dorny/paths-filter@v3
         id: filter
         with:
+          # `predicate-quantifier: every` makes the `unknown` filter match only
+          # when *all* changed paths are outside the known set, so it is
+          # inverted below into a positive "unknown paths present" signal.
+          predicate-quantifier: every
           filters: |
             rust:
               - 'contracts/**'
@@ -49,6 +57,66 @@ jobs:
               - 'Cargo.toml'
               - 'Cargo.lock'
               - '.github/workflows/ci.yml'
+            # Paths that are known to be safe to skip the Rust pipeline for.
+            # Anything not listed here is "unknown" and forces the full run.
+            known:
+              - 'contracts/**'
+              - 'crates/**'
+              - 'tests/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.config/nextest.toml'
+              - '.github/workflows/ci.yml'
+              - 'deploy/observability/**'
+              - 'docs/**'
+              - 'scripts/**'
+              - 'bindings/**'
+              - 'catalog/**'
+              - 'config/**'
+              - 'dashboard/**'
+              - 'deployments/**'
+              - 'audit/**'
+              - 'budgets/**'
+              - 'xtask/**'
+              - '.github/**'
+              - '.cargo/**'
+              - '.config/**'
+              - '.devcontainer/**'
+              - '.semgrep/**'
+              - '*.md'
+              - '*.toml'
+              - '*.json'
+              - '*.py'
+              - '*.yaml'
+              - '*.yml'
+              - 'LICENSE'
+              - '.gitignore'
+              - '.gitleaks.toml'
+              - '.pre-commit-config.yaml'
+      - name: Resolve fail-safe flags
+        id: resolve
+        env:
+          # `known` is true only when every changed path is known; invert it.
+          ALL_KNOWN: ${{ steps.filter.outputs.known }}
+          RUST: ${{ steps.filter.outputs.rust }}
+          INDEXER: ${{ steps.filter.outputs.indexer }}
+        run: |
+          set -euo pipefail
+          if [ "${ALL_KNOWN}" = "true" ]; then
+            unknown=false
+          else
+            unknown=true
+          fi
+          echo "unknown=${unknown}" >> "$GITHUB_OUTPUT"
+          if [ "${unknown}" = "true" ]; then
+            echo "::warning::Unrecognised changed paths detected; running the full pipeline."
+            echo "rust=true" >> "$GITHUB_OUTPUT"
+            echo "indexer=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "rust=${RUST}" >> "$GITHUB_OUTPUT"
+            echo "indexer=${INDEXER}" >> "$GITHUB_OUTPUT"
+          fi
 
   shell-lint:
     name: Shell lint (smoke-test.sh)
