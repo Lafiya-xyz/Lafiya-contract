@@ -16,6 +16,7 @@ members = [
     "crates/lafiya-fraud-scoring",
     "crates/lafiya-indexer",
     "crates/lafiya-qr",
+    "crates/lafiya-events",
 ]
 
 [workspace.package]
