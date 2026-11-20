@@ -195,6 +195,48 @@ pub async fn bump_fencing_token(pool: &PgPool) -> Result<i64, sqlx::Error> {
     Ok(token)
 }
 
+/// Width of one `raw_events` partition, in ledgers.
+pub const RAW_EVENTS_PARTITION_WIDTH: i64 = 100_000;
+
+/// First ledger of the partition that holds `ledger`.
+pub fn partition_start(ledger: u32) -> i64 {
+    (i64::from(ledger) / RAW_EVENTS_PARTITION_WIDTH) * RAW_EVENTS_PARTITION_WIDTH
+}
+
+/// Name of the `raw_events` partition that holds `ledger`.
+pub fn partition_name(ledger: u32) -> String {
+    format!("raw_events_p{:012}", partition_start(ledger))
+}
+
+/// Create the `raw_events` partition covering `ledger` if it does not exist
+/// yet, and record it in `raw_events_partitions`. Idempotent and safe to call
+/// on every page.
+pub async fn ensure_raw_events_partition(
+    tx: &mut Transaction<'_, Postgres>,
+    ledger: u32,
+) -> Result<(), sqlx::Error> {
+    let from = partition_start(ledger);
+    let to = from + RAW_EVENTS_PARTITION_WIDTH;
+    let name = partition_name(ledger);
+    sqlx::query(&format!(
+        "CREATE TABLE IF NOT EXISTS {name} PARTITION OF raw_events \
+         FOR VALUES FROM ({from}) TO ({to})"
+    ))
+    .execute(&mut **tx)
+    .await?;
+    sqlx::query(
+        "INSERT INTO raw_events_partitions (partition_name, ledger_from, ledger_to)
+         VALUES ($1, $2, $3)
+         ON CONFLICT (partition_name) DO NOTHING",
+    )
+    .bind(&name)
+    .bind(from)
+    .bind(to)
+    .execute(&mut **tx)
+    .await?;
+    Ok(())
+}
+
 /// Apply `events` (in chain order) and move the checkpoint to `next`, in one
 /// transaction: a crash either keeps or discards the whole page, and events
 /// already in `raw_events` are never applied twice. Returns the number of
@@ -222,11 +264,14 @@ pub async fn apply_page(
     let mut applied = 0;
     for raw in events.iter().filter(|e| e.in_successful_contract_call) {
         let event = decode(raw)?;
+        // `raw_events` is partitioned by ledger range; make sure the target
+        // partition exists before inserting into it.
+        ensure_raw_events_partition(&mut tx, raw.ledger).await?;
         let inserted = sqlx::query(
             "INSERT INTO raw_events
                  (id, contract_id, ledger, ledger_closed_at, tx_hash, name, topics, value, decoded)
              VALUES ($1, $2, $3, $4::text::timestamptz, $5, $6, $7, $8, $9)
-             ON CONFLICT (id) DO NOTHING",
+             ON CONFLICT (id, ledger) DO NOTHING",
         )
         .bind(&raw.id)
         .bind(&raw.contract_id)
