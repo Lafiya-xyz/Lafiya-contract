@@ -77,6 +77,22 @@ def _normalize_type_keys(node: Any) -> Any:
     return node
 
 
+# UDT kinds that describe stored data layouts. The storage-layout checker
+# compares these between the last released wasm and HEAD.
+UDT_KINDS = ("udt_struct_v0", "udt_union_v0", "udt_enum_v0")
+
+
+def extract_udts(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Filter an interface snapshot down to its UDT type definitions.
+
+    Returns the `SCSpecUdtStructV0` / `SCSpecUdtUnionV0` / `SCSpecUdtEnumV0`
+    entries (already normalized by `extract`) so the storage-layout
+    compatibility checker can diff field order, variant names and payload
+    types between releases.
+    """
+    return [entry for entry in snapshot if entry["kind"] in UDT_KINDS]
+
+
 def extract_events(snapshot: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Filter an interface snapshot down to its event entries.
 
@@ -142,7 +158,7 @@ def extract(wasm_path: Path) -> list[dict[str, Any]]:
 
 def main() -> None:
     if len(sys.argv) not in (2, 3):
-        sys.exit(f"usage: {sys.argv[0]} <path-to-wasm> [events|views]")
+        sys.exit(f"usage: {sys.argv[0]} <path-to-wasm> [events|views|udts]")
 
     snapshot = extract(Path(sys.argv[1]))
     if len(sys.argv) == 3:
@@ -151,8 +167,10 @@ def main() -> None:
             snapshot = extract_events(snapshot)
         elif section == "views":
             snapshot = extract_views(snapshot)
+        elif section == "udts":
+            snapshot = extract_udts(snapshot)
         else:
-            sys.exit(f"error: unknown section {section!r} (expected 'events' or 'views')")
+            sys.exit(f"error: unknown section {section!r} (expected 'events', 'views' or 'udts')")
 
     json.dump(snapshot, sys.stdout, indent=2, sort_keys=True)
     sys.stdout.write("\n")

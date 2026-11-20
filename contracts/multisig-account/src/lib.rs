@@ -22,6 +22,7 @@
 // `panic_with_error!` to reject invalid construction parameters with a contract error
 // code, which the blanket deny would flag despite being the correct pattern here.
 
+use lafiya_contract_common::ttl::{INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
 use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
     contract, contracterror, contractevent, contractimpl, contracttype,
@@ -145,12 +146,6 @@ pub enum Error {
     /// A signer weight, role requirement, or policy threshold is invalid.
     InvalidPolicy = 10,
 }
-
-/// Instance storage TTL policy:
-/// - Threshold: 30 days (17280 * 30 = 518400 ledgers)
-/// - Extend to: 90 days (17280 * 90 = 1555200 ledgers)
-const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
 /// Interface kind reported by `get_interface`, used by clients as a weak
 /// identity check when wiring contracts (not proof of authenticity).

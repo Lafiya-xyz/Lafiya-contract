@@ -36,13 +36,19 @@
     "is_attester": {
       "cpu_instructions": 25000,
       "memory_bytes": 1024,
-      "ledger_read_entries": 1,
-      "ledger_read_bytes": 128,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 192,
       "ledger_write_entries": 0,
       "ledger_write_bytes": 0,
       "events_size_bytes": 0,
       "estimated_fee_stroops": 10000,
-      "worst_case_scenario": "cache miss"
+      "worst_case_scenario": "cache miss",
+      "instance_entry_bytes": 96,
+      "hot_path_read_bytes_before": 128,
+      "hot_path_read_bytes_after": 192,
+      "hot_path_fee_stroops_before": 10000,
+      "hot_path_fee_stroops_after": 10000,
+      "cold_key_relocation": "Role(..) moved from instance to persistent storage; instance entry now holds only admin/pause flags"
     },
     "delegate_session_key": {
       "cpu_instructions": 110000,
@@ -58,26 +64,38 @@
     "is_session_valid": {
       "cpu_instructions": 32000,
       "memory_bytes": 1536,
-      "ledger_read_entries": 1,
-      "ledger_read_bytes": 192,
+      "ledger_read_entries": 2,
+      "ledger_read_bytes": 256,
       "ledger_write_entries": 0,
       "ledger_write_bytes": 0,
       "events_size_bytes": 0,
       "estimated_fee_stroops": 12000,
-      "worst_case_scenario": "session lookup with expiry and scope check at boundary"
+      "worst_case_scenario": "session lookup with expiry and scope check at boundary",
+      "instance_entry_bytes": 96,
+      "hot_path_read_bytes_before": 192,
+      "hot_path_read_bytes_after": 256,
+      "hot_path_fee_stroops_before": 12000,
+      "hot_path_fee_stroops_after": 12000,
+      "cold_key_relocation": "Role(..) moved from instance to persistent storage; instance entry now holds only admin/pause flags"
     }
   },
   "attestation-registry": {
     "attest": {
       "cpu_instructions": 142000,
       "memory_bytes": 12288,
-      "ledger_read_entries": 5,
-      "ledger_read_bytes": 896,
+      "ledger_read_entries": 6,
+      "ledger_read_bytes": 960,
       "ledger_write_entries": 3,
       "ledger_write_bytes": 384,
       "events_size_bytes": 256,
       "estimated_fee_stroops": 52000,
-      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, full signature verification"
+      "worst_case_scenario": "ring-buffer head write at MAX_HISTORY, full signature verification",
+      "instance_entry_bytes": 96,
+      "hot_path_read_bytes_before": 896,
+      "hot_path_read_bytes_after": 960,
+      "hot_path_fee_stroops_before": 52000,
+      "hot_path_fee_stroops_after": 52000,
+      "cold_key_relocation": "Role(..) and per-class policy tables moved from instance to persistent storage; instance entry now holds only admin/pause flags"
     },
     "attest_with_session": {
       "cpu_instructions": 168000,

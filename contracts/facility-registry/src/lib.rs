@@ -9,16 +9,13 @@
 #![no_std]
 #![deny(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 
+use lafiya_contract_common::ttl::{INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
 use soroban_sdk::{
     contract, contracterror, contractevent, contractimpl, contracttype, Address, BytesN, Env,
     String, Vec,
 };
 
 const SCHEMA_VERSION: u32 = 1;
-
-/// Instance storage TTL policy, matching the other registries.
-const INSTANCE_BUMP_AMOUNT: u32 = 1_555_200;
-const INSTANCE_LIFETIME_THRESHOLD: u32 = 518_400;
 
 /// Upper bound on enrolled facilities.
 pub const MAX_FACILITIES: u64 = 10_000;
@@ -31,7 +28,6 @@ pub const MAX_PERIODS: u32 = 8;
 #[contracttype]
 #[derive(Clone)]
 enum DataKey {
-    Admin,
     SchemaVersion,
     /// Highest facility id allocated (instance storage).
     FacilityCount,
@@ -153,7 +149,7 @@ pub struct FacilityRegistry;
 impl FacilityRegistry {
     /// Configure the admin at deployment.
     pub fn __constructor(env: Env, admin: Address) {
-        env.storage().instance().set(&DataKey::Admin, &admin);
+        lafiya_contract_common::admin::set_admin(&env, &admin);
         env.storage()
             .instance()
             .set(&DataKey::SchemaVersion, &SCHEMA_VERSION);
@@ -379,10 +375,7 @@ impl FacilityRegistry {
 
 impl FacilityRegistry {
     fn admin(env: &Env) -> Result<Address, Error> {
-        env.storage()
-            .instance()
-            .get(&DataKey::Admin)
-            .ok_or(Error::NotInitialized)
+        lafiya_contract_common::admin::get_admin(env).ok_or(Error::NotInitialized)
     }
 
     fn facility(env: &Env, facility_id: u64) -> Result<FacilityInfo, Error> {

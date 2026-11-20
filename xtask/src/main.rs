@@ -33,6 +33,18 @@ enum Task {
     Test,
     /// Run build, lint, and test across all workspace members
     Check,
+    /// Build the target wasm and report instance-storage entry size per contract
+    Footprint {
+        /// Scenario file used to seed the sandbox before measuring
+        #[arg(long, default_value = "scenarios/seed.toml")]
+        scenario: std::path::PathBuf,
+    },
+    /// Run the interface and storage-layout conformance checks
+    Conformance {
+        /// Baseline wasm (or release manifest) to compare the storage layout against
+        #[arg(long)]
+        baseline: Option<std::path::PathBuf>,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
@@ -47,6 +59,8 @@ fn main() -> anyhow::Result<()> {
             lint()?;
             test()
         }
+        Task::Footprint { scenario } => footprint(&scenario),
+        Task::Conformance { baseline } => conformance(baseline.as_deref()),
     }
 }
 
@@ -79,4 +93,57 @@ fn lint() -> anyhow::Result<()> {
 
 fn test() -> anyhow::Result<()> {
     cargo(&["test", "--workspace", "--all-features"])
+}
+
+/// Build the target wasm, seed the sandbox from `scenario`, and report the
+/// instance-storage entry size of every contract so cold-key relocation can be
+/// measured before and after.
+fn footprint(scenario: &std::path::Path) -> anyhow::Result<()> {
+    cargo(&[
+        "build",
+        "--workspace",
+        "--target",
+        "wasm32-unknown-unknown",
+        "--release",
+    ])?;
+    let status = std::process::Command::new(env!("CARGO"))
+        .args(["run", "-p", "xtask", "--", "sandbox", "seed", "--scenario"])
+        .arg(scenario)
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("sandbox seeding failed with {status}");
+    }
+    let script = std::path::Path::new("scripts/conformance/instance_footprint.py");
+    let status = std::process::Command::new("python3")
+        .arg(script)
+        .arg("--report")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("instance footprint report failed with {status}");
+    }
+    Ok(())
+}
+
+/// Run the interface conformance check (#711) and the static storage-layout
+/// compatibility check (#714) against the given baseline.
+fn conformance(baseline: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let interface = std::path::Path::new("scripts/conformance/extract_interface.py");
+    let status = std::process::Command::new("python3")
+        .arg(interface)
+        .arg("--check")
+        .status()?;
+    if !status.success() {
+        anyhow::bail!("interface conformance check failed with {status}");
+    }
+    let layout = std::path::Path::new("scripts/conformance/storage_layout.py");
+    let mut cmd = std::process::Command::new("python3");
+    cmd.arg(layout).arg("--check");
+    if let Some(baseline) = baseline {
+        cmd.arg("--baseline").arg(baseline);
+    }
+    let status = cmd.status()?;
+    if !status.success() {
+        anyhow::bail!("storage-layout compatibility check failed with {status}");
+    }
+    Ok(())
 }
