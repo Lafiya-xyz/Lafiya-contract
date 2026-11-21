@@ -48,6 +48,10 @@ Test paths are relative to `contracts/<crate>/src/`.
 | INV-AT-7 | `set_attester_registry` requires admin auth and emits `AttesterRegistryRepointed`. | `test.rs::set_attester_registry_by_admin_succeeds`, `set_attester_registry_by_non_admin_fails`, `set_attester_registry_before_initialize_fails` |
 | INV-AT-8 | While paused, `attest` fails with `ContractPaused`. | **gap** — no dedicated test |
 | INV-AT-9 | Every successful `attest` emits exactly one attestation event. | `test.rs::attest_emits_event` |
+| INV-AT-10 | A patient can revoke an unconsumed consent grant at any time, including while paused; a later `attest` then fails with `PatientConsentRequired`. If `attest` and `revoke_consent` land in the same ledger, transaction order decides. | `test.rs::revoke_consent_blocks_subsequent_attest`, `revoke_consent_works_while_paused` |
+| INV-AT-11 | A record's quorum requirement is snapshotted at its first attestation; later policy changes do not alter its verdict until an explicit, event-emitting `reevaluate_record`. | `test.rs::quorum_policy_change_does_not_flip_existing_verdict` |
+| INV-AT-12 | `set_record_class` fails with `RecordClassLocked` once the record has any attestation or co-attestation. | `test.rs::set_record_class_rejected_once_attested` |
+| INV-AT-13 | Version chains: (1) at most one successor per hash; (2) acyclic; (3) a predecessor must be attested, active (not withdrawn) and not revoked at link time; (4) revoking or withdrawing a middle node leaves its successors' links and attestations unchanged, and verifiers walk lineage via the bounded `get_record_lineage`. | `test.rs::version_chain_has_no_forks_or_cycles_and_lineage_is_bounded`, `version_link_rejects_withdrawn_predecessor` |
 
 ## multisig-account (INV-MS)
 

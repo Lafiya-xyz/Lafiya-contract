@@ -225,6 +225,10 @@ enum DataKey {
     StatusListSegment(u32),
     /// The signed status-list root and its version.
     StatusListRoot,
+    /// Monotonic version counter bumped on every quorum policy change.
+    QuorumPolicyVersion,
+    /// Quorum policy snapshotted for a record hash at its first attestation.
+    RecordQuorumSnapshot(BytesN<32>),
 }
 
 /// Revoker-configured per-attester attestation rate limit: at most
@@ -374,6 +378,43 @@ pub struct QuorumStatus {
     pub required: u32,
     /// Whether `count >= required` (or no policy applies).
     pub satisfied: bool,
+    /// Quorum policy version the verdict was evaluated against.
+    pub policy_version: u32,
+}
+
+/// Quorum requirement captured for a record when its first attestation
+/// lands, so later policy changes cannot flip existing verdicts.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct QuorumSnapshot {
+    pub policy_version: u32,
+    pub required: u32,
+}
+
+/// Maximum number of hashes returned by `get_record_lineage`.
+pub const MAX_LINEAGE_DEPTH: u32 = 64;
+
+/// Emitted when a patient revokes an unconsumed consent grant.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ConsentRevoked {
+    #[topic]
+    pub record_hash: BytesN<32>,
+    #[topic]
+    pub patient: Address,
+    pub attester: Address,
+}
+
+/// Emitted when the admin explicitly re-evaluates a record against the
+/// current quorum policy.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct RecordQuorumReevaluated {
+    #[topic]
+    pub record_hash: BytesN<32>,
+    pub old_policy_version: u32,
+    pub new_policy_version: u32,
+    pub required: u32,
 }
 
 /// Verification state surfaced to verifiers, including the dispute overlay.
@@ -725,6 +766,8 @@ pub enum Error {
     DisputeClearUnauthorized = 29,
     /// The supplied status-list segment is malformed or stale.
     InvalidStatusListSegment = 30,
+    /// The record already has attestations, so its class can no longer change.
+    RecordClassLocked = 31,
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -1067,6 +1110,39 @@ impl AttestationRegistry {
         storage::extend_ttl(&env, &validity_key, CONSENT_TTL_THRESHOLD, CONSENT_TTL_BUMP);
         storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
 
+        Ok(())
+    }
+
+    /// Revoke an unconsumed consent grant. Requires the patient's
+    /// authorization and is allowed while paused, since it only reduces
+    /// risk. If `attest` and `revoke_consent` land in the same ledger,
+    /// transaction order decides which one takes effect.
+    pub fn revoke_consent(
+        env: Env,
+        patient: Address,
+        attester: Address,
+        record_hash: BytesN<32>,
+    ) -> Result<(), Error> {
+        patient.require_auth();
+        let key = DataKey::PatientConsent(record_hash.clone(), patient.clone(), attester.clone());
+        if !storage::has(&env, &key) {
+            return Err(Error::PatientConsentRequired);
+        }
+        storage::remove(&env, &key);
+        storage::remove(
+            &env,
+            &DataKey::PatientConsentValidity(
+                record_hash.clone(),
+                patient.clone(),
+                attester.clone(),
+            ),
+        );
+        ConsentRevoked {
+            record_hash,
+            patient,
+            attester,
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -1764,6 +1840,14 @@ impl AttestationRegistry {
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
         let key = DataKey::QuorumPolicy(record_class.clone());
+        let version: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::QuorumPolicyVersion)
+            .unwrap_or(0);
+        env.storage()
+            .instance()
+            .set(&DataKey::QuorumPolicyVersion, &version.saturating_add(1));
         if required == 0 {
             env.storage().instance().remove(&key);
         } else {
@@ -1780,13 +1864,17 @@ impl AttestationRegistry {
     }
 
     /// Assign a record class to a record hash. Requires the admin's
-    /// authorization.
+    /// authorization. Fails with `RecordClassLocked` once the record has any
+    /// attestation or co-attestation.
     pub fn set_record_class(
         env: Env,
         record_hash: BytesN<32>,
         record_class: Symbol,
     ) -> Result<(), Error> {
         Self::admin(&env)?.require_auth();
+        if Self::has_any_attestation(&env, &record_hash) {
+            return Err(Error::RecordClassLocked);
+        }
         env.storage()
             .persistent()
             .set(&DataKey::RecordClass(record_hash), &record_class);
@@ -1820,6 +1908,7 @@ impl AttestationRegistry {
         if set.len() >= MAX_CO_ATTESTERS {
             return Ok(set.len());
         }
+        Self::snapshot_quorum_if_absent(&env, &record_hash);
         set.push_back(attester);
         env.storage().persistent().set(&key, &set);
         env.storage().persistent().extend_ttl(
@@ -1839,23 +1928,60 @@ impl AttestationRegistry {
             .persistent()
             .get(&DataKey::CoAttesters(record_hash.clone()))
             .unwrap_or_else(|| Vec::new(&env));
-        let required = env
+        let snapshot = env
             .storage()
             .persistent()
-            .get::<_, Symbol>(&DataKey::RecordClass(record_hash))
-            .and_then(|class| {
-                env.storage()
-                    .instance()
-                    .get::<_, QuorumPolicy>(&DataKey::QuorumPolicy(class))
-            })
-            .map(|policy| policy.required)
-            .unwrap_or(0);
+            .get::<_, QuorumSnapshot>(&DataKey::RecordQuorumSnapshot(record_hash.clone()))
+            .unwrap_or_else(|| Self::current_quorum(&env, &record_hash));
         let count = set.len();
         QuorumStatus {
             count,
-            required,
-            satisfied: required == 0 || count >= required,
+            required: snapshot.required,
+            satisfied: snapshot.required == 0 || count >= snapshot.required,
+            policy_version: snapshot.policy_version,
         }
+    }
+
+    /// Explicitly re-evaluate `record_hash` against the current quorum
+    /// policy, replacing its snapshot. Requires the admin's authorization
+    /// and emits `RecordQuorumReevaluated`.
+    pub fn reevaluate_record(env: Env, record_hash: BytesN<32>) -> Result<QuorumSnapshot, Error> {
+        Self::admin(&env)?.require_auth();
+        let key = DataKey::RecordQuorumSnapshot(record_hash.clone());
+        let old_policy_version = env
+            .storage()
+            .persistent()
+            .get::<_, QuorumSnapshot>(&key)
+            .map(|snapshot| snapshot.policy_version)
+            .unwrap_or(0);
+        let snapshot = Self::current_quorum(&env, &record_hash);
+        storage::set(&env, &key, &snapshot);
+        RecordQuorumReevaluated {
+            record_hash,
+            old_policy_version,
+            new_policy_version: snapshot.policy_version,
+            required: snapshot.required,
+        }
+        .publish(&env);
+        Ok(snapshot)
+    }
+
+    /// Walk the version chain forward from `record_hash`, returning at most
+    /// `max` hashes (capped at `MAX_LINEAGE_DEPTH`), starting with
+    /// `record_hash` itself. The bound keeps verifiers from looping on
+    /// corrupted state.
+    pub fn get_record_lineage(env: Env, record_hash: BytesN<32>, max: u32) -> Vec<BytesN<32>> {
+        let limit = max.min(MAX_LINEAGE_DEPTH);
+        let mut lineage = Vec::new(&env);
+        let mut current = Some(record_hash);
+        while let Some(hash) = current {
+            if lineage.len() >= limit || lineage.contains(&hash) {
+                break;
+            }
+            current = storage::get(&env, &DataKey::NextRecordHash(hash.clone()));
+            lineage.push_back(hash);
+        }
+        lineage
     }
 
     /// Raise a patient dispute overlay for `record_hash`. The patient signs
@@ -2536,6 +2662,47 @@ impl AttestationRegistry {
         }
     }
 
+    /// Whether `record_hash` has any attestation or co-attestation.
+    fn has_any_attestation(env: &Env, record_hash: &BytesN<32>) -> bool {
+        storage::has(env, &DataKey::AttestationSequence(record_hash.clone()))
+            || env
+                .storage()
+                .persistent()
+                .get::<_, Vec<Address>>(&DataKey::CoAttesters(record_hash.clone()))
+                .is_some_and(|set| !set.is_empty())
+    }
+
+    /// The quorum requirement the current policy assigns to `record_hash`.
+    fn current_quorum(env: &Env, record_hash: &BytesN<32>) -> QuorumSnapshot {
+        let required = env
+            .storage()
+            .persistent()
+            .get::<_, Symbol>(&DataKey::RecordClass(record_hash.clone()))
+            .and_then(|class| {
+                env.storage()
+                    .instance()
+                    .get::<_, QuorumPolicy>(&DataKey::QuorumPolicy(class))
+            })
+            .map(|policy| policy.required)
+            .unwrap_or(0);
+        QuorumSnapshot {
+            policy_version: env
+                .storage()
+                .instance()
+                .get(&DataKey::QuorumPolicyVersion)
+                .unwrap_or(0),
+            required,
+        }
+    }
+
+    /// Snapshot the current quorum policy for `record_hash` unless one exists.
+    fn snapshot_quorum_if_absent(env: &Env, record_hash: &BytesN<32>) {
+        let key = DataKey::RecordQuorumSnapshot(record_hash.clone());
+        if !storage::has(env, &key) {
+            storage::set(env, &key, &Self::current_quorum(env, record_hash));
+        }
+    }
+
     /// Validate and store the optional previous-version link. Returns the
     /// previous hash when a new link must be written.
     fn check_version_link(
@@ -2547,7 +2714,9 @@ impl AttestationRegistry {
             return Ok(None);
         };
         if &previous_hash == record_hash
-            || !storage::has(env, &DataKey::AttestationSequence(previous_hash.clone()))
+            || Self::latest_active(env, &previous_hash).is_none()
+            || storage::get::<_, bool>(env, &DataKey::RecordRevoked(previous_hash.clone()))
+                .unwrap_or(false)
         {
             return Err(Error::InvalidRecordVersion);
         }
@@ -2614,6 +2783,7 @@ impl AttestationRegistry {
         Self::consume_rate_limit(env, &attester)?;
         Self::consume_probation_cap(env, &attester)?;
         let attestation_expires_at = Self::consume_consent(env, &attester, patient, &record_hash)?;
+        Self::snapshot_quorum_if_absent(env, &record_hash);
         env.storage()
             .persistent()
             .remove(&DataKey::AttestationCoverage(
