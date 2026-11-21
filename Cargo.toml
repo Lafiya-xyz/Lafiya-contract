@@ -16,13 +16,24 @@ members = [
     "crates/lafiya-fraud-scoring",
     "crates/lafiya-indexer",
     "crates/lafiya-qr",
+    "crates/lafiya-bench",
+    "crates/lafiya-test-utils",
+    "crates/lafiya-verification-model",
+    "xtask",
 ]
+# Every directory with a Cargo.toml under crates/, contracts/ or xtask/ must be
+# listed in `members` or here, with a justification. Enforced by
+# `cargo xtask workspace-lint`.
+exclude = []
 
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
 license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+# MSRV for reusable native library crates (docs/stability-policy.md#msrv).
+# Contract crates track the pinned toolchain in rust-toolchain.toml instead.
+rust-version = "1.85"
 
 [workspace.dependencies]
 soroban-sdk = "28.0.0"
@@ -42,6 +53,11 @@ uuid = { version = "1.10", features = ["v4", "serde"] }
 qrcode = "0.14"
 image = { version = "0.25", default-features = false, features = ["png"] }
 base64 = "0.22"
+sha2 = "0.10"
+hex = "0.4"
+rand = "0.8"
+axum = "0.7"
+prometheus = { version = "0.13", default-features = false }
 
 [profile.release]
 opt-level = "z"

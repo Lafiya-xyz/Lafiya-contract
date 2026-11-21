@@ -33,6 +33,7 @@ opentelemetry-otlp = { version = "0.31", default-features = false, features = ["
 tracing-opentelemetry = { version = "0.32", optional = true }
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tempfile = "3.10"
+schemars = { version = "0.8", features = ["derive"], optional = true }
 
 [features]
 # OTLP trace export for long-running deployments (see docs/observability.md).

@@ -248,6 +248,30 @@ jobs:
   # First-class workspace members: lafiya-indexer and lafiya-qr are built,
   # linted, and tested on every PR so they cannot rot or drift from shared
   # dependency versions.
+  workspace-lint:
+    name: Workspace membership lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo xtask workspace-lint
+
+  # MSRV for reusable native library crates (docs/stability-policy.md#msrv).
+  # Keep the toolchain in sync with `rust-version` in the root Cargo.toml.
+  msrv:
+    name: MSRV (library crates)
+    needs: changes
+    if: needs.changes.outputs.rust == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@1.85
+      - uses: Swatinem/rust-cache@v2
+      # lafiya-qr and lafiya-rpc-resilience also declare rust-version; add them
+      # here once they compile on main again.
+      - run: cargo +1.85 check --locked -p lafiya-commitment -p lafiya-verification-model
+
   crates-build:
     name: Crates build (indexer, qr)
     needs: changes
@@ -487,7 +511,7 @@ jobs:
   ci-success:
     name: ci-success
     if: always()
-    needs: [shell-lint, changes, fmt, clippy, build-tests, test, test-report, crates-build, crates-clippy, crates-test, crates-deny, bindings-drift, build-wasm, docs-checks]
+    needs: [shell-lint, changes, workspace-lint, msrv, fmt, clippy, build-tests, test, test-report, crates-build, crates-clippy, crates-test, crates-deny, bindings-drift, build-wasm, docs-checks]
     runs-on: ubuntu-latest
     steps:
       - name: Aggregate results

@@ -21,6 +21,12 @@ export {
 export { VERDICTS, VERDICT_DESCRIPTIONS, verdictOf, type Reason, type Verdict } from "./verdict.js";
 export { encodeQrPayload, parseQrPayload, QrPayloadError, type QrPayload } from "./qr.js";
 export { commitV1, encodePayload, toHex, type FieldValue } from "./commitment.js";
+export {
+  DISPUTE_DOMAIN_V2,
+  disputeMessageV2,
+  disputePreimageV2,
+  type DisputeMessageInput,
+} from "./dispute.js";
 export { loadTrustAnchors, TrustError, type NetworkTrust, type TrustAnchors, type TrustSource } from "./trust.js";
 export {
   OfflineChainReader,

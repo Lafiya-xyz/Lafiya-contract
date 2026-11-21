@@ -1,0 +1,75 @@
+name: Feature matrix
+
+# Bounded feature-powerset compilation with cargo-hack (docs/ci.md#feature-matrix).
+# Catches features that do not compile on their own and `dep:` references to
+# non-optional or dev-only crates.
+
+on:
+  pull_request:
+    paths:
+      - 'crates/**/Cargo.toml'
+      - 'crates/**/src/**'
+      - 'contracts/**/Cargo.toml'
+      - 'contracts/**/src/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.github/workflows/features.yml'
+  schedule:
+    - cron: "41 2 * * *" # nightly, everything
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+concurrency:
+  group: features-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  native:
+    name: Feature powerset (native crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-hack
+      - uses: taiki-e/install-action@cargo-hack
+      # --depth 2 caps combinations; each crate has at most 3 features today so
+      # no --exclude-features entry is needed. Add one here (with a comment)
+      # if a crate grows enough features to blow up the matrix.
+      - run: >-
+          cargo hack check --locked --feature-powerset --depth 2 --no-dev-deps
+          -p lafiya-cli -p lafiya-config -p lafiya-qr -p lafiya-commitment
+
+  contracts:
+    name: Each feature (contract crates)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: cargo-hack
+      - uses: taiki-e/install-action@cargo-hack
+      # `testutils` pulls in soroban-sdk/testutils, which is host-only, so it is
+      # excluded on the wasm target and checked on the host instead.
+      - name: wasm target (default features)
+        run: >-
+          cargo hack check --locked --each-feature --no-dev-deps --exclude-features testutils
+          --target wasm32v1-none
+          -p multisig-account -p attester-registry -p facility-registry
+          -p attestation-registry -p incentive-pool
+      - name: host (each feature, including testutils)
+        run: >-
+          cargo hack check --locked --each-feature --no-dev-deps
+          -p multisig-account -p attester-registry -p facility-registry
+          -p attestation-registry -p incentive-pool

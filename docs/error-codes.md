@@ -67,6 +67,8 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `31` | `DisputeLimitExceeded` | The per-record dispute spam bound has been reached; further disputes are rejected until existing ones are cleared. |
 | `32` | `InvalidStatusListProof` | The supplied status-list inclusion proof does not validate against the signed segment root. |
 | `33` | `StatusListSegmentNotFound` | No status-list segment exists for the requested version or index. |
+| `34` | `DisputeExpired` | The dispute message's `expires_at` is earlier than the current ledger timestamp ([dispute-signature-v2](specs/dispute-signature-v2.md)). Sign a new message with a later expiry. |
+| `35` | `DisputeNonceUsed` | This ed25519 signer key has already used the dispute nonce. Sign a new message with a fresh nonce. |
 
 ## `multisig-account`
 

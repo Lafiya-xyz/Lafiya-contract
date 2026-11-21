@@ -43,6 +43,36 @@ root. When adding a dependency, prefer the workspace entry over a crate-local ve
 the two crates stay in lockstep with the rest of the workspace. `cargo tree -d` must not
 show new duplicate major versions; any remaining duplicate must be justified in the PR.
 
+### Membership
+
+Every directory containing a `Cargo.toml` under `crates/`, `contracts/` or `xtask/` must be
+listed in the root `[workspace].members`, or in `[workspace].exclude` with a comment explaining
+why. `lafiya-bench`, `lafiya-test-utils`, `lafiya-verification-model` and `xtask` are members
+like every other crate. The `workspace-lint` job runs `cargo xtask workspace-lint` to enforce this.
+
+### MSRV
+
+Reusable native library crates inherit `rust-version` from `[workspace.package]`. The `msrv`
+job installs that toolchain and runs `cargo +<msrv> check` on them. Reproduce it locally with
+`rustup toolchain install 1.85 && cargo +1.85 check -p lafiya-commitment -p lafiya-verification-model`.
+See [stability-policy.md](stability-policy.md#msrv) for the bump policy.
+
+## Feature matrix
+
+`.github/workflows/features.yml` uses [cargo-hack](https://github.com/taiki-e/cargo-hack) to
+compile feature combinations that default and `--all-features` builds miss, such as a feature
+that doesn't compile on its own or a `dep:` entry pointing at a non-optional or dev-only crate.
+It runs on PRs that change a crate's `Cargo.toml` or `src/`, and nightly over everything.
+
+| Crates | Command | Notes |
+| --- | --- | --- |
+| `lafiya-cli`, `lafiya-config`, `lafiya-qr`, `lafiya-commitment` | `cargo hack check --feature-powerset --depth 2 --no-dev-deps` | Each crate has at most 3 features, so `--depth 2` is enough and needs no `--exclude-features` |
+| Contract crates (`wasm32v1-none`) | `cargo hack check --each-feature --no-dev-deps --exclude-features testutils --target wasm32v1-none` | `testutils` enables host-only `soroban-sdk/testutils` |
+| Contract crates (host) | `cargo hack check --each-feature --no-dev-deps` | Covers `testutils` |
+
+Reproduce it locally with `cargo install cargo-hack`, then run the same commands. Add any new
+`--exclude-features` entry to the workflow with a comment saying why it's there.
+
 ## Required branch-protection checks
 
 Branch protection should require **only** the `ci-success` aggregator. Because `ci-success`

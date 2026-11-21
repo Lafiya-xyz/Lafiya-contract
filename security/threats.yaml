@@ -583,6 +583,24 @@ threats:
       - "crates/lafiya-qr/src/lib.rs::round_trip_offline_receipt"
       - "packages/verifier-sdk/test/verifier.test.ts::verifies offline from a snapshot bundle"
 
+  T-152:
+    title: "Patient dispute signature replayed across deployments, networks or protocols"
+    component: "attestation-registry"
+    stride: "S,R"
+    mitigation: "dispute_attestation verifies an ed25519 signature over sha256 of a versioned, domain-separated preimage binding network id, contract address, record hash, signer, signer key, nonce and expiry; expired messages and reused nonces are rejected (docs/specs/dispute-signature-v2.md)"
+    owner: "@davismas23"
+    status: "mitigated"
+    code:
+      - "contracts/attestation-registry/src/lib.rs::dispute_message_v2"
+      - "docs/specs/dispute-signature-v2.md"
+    tests:
+      - "sec_t152_dispute_valid_signature_accepted"
+      - "sec_t152_dispute_rejects_other_contract_instance"
+      - "sec_t152_dispute_rejects_other_network"
+      - "sec_t152_dispute_rejects_different_signer_key"
+      - "sec_t152_dispute_rejects_expired_message"
+      - "sec_t152_dispute_rejects_reused_nonce"
+
   # Build and distribution of off-chain artifacts
   T-151:
     title: "Compromised build injects code into CLI, indexer, watchdog, or SDK releases"

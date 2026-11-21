@@ -8,9 +8,7 @@ soroban-sdk = { workspace = true }
 
 [dev-dependencies]
 soroban-sdk = { workspace = true, features = ["testutils"] }
+proptest = "1.11"
 
 [lib]
 crate-type = ["rlib"]
-
-[dev-dependencies]
-proptest = "1.11"

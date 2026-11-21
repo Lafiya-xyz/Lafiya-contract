@@ -29,7 +29,7 @@ mod storage;
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
-    panic_with_error, Address, BytesN, Env, String, Symbol, Vec,
+    panic_with_error, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec,
 };
 
 /// The subset of the `attester-registry` contract this crate calls. Kept
@@ -71,7 +71,7 @@ pub const MAX_CO_ATTESTERS: u32 = 10;
 pub const MAX_DISPUTES_PER_RECORD: u32 = 5;
 
 /// Domain separator for patient dispute signatures (QR scheme).
-pub const DISPUTE_DOMAIN: &str = "lafiya.attestation.dispute.v1";
+pub const DISPUTE_DOMAIN: &str = "lafiya.attestation.dispute.v2";
 
 /// Default maximum age (seconds) of an attestation reported as verified.
 pub const DEFAULT_MAX_ATTESTATION_AGE: u64 = 31_536_000;
@@ -225,6 +225,8 @@ enum DataKey {
     StatusListSegment(u32),
     /// The signed status-list root and its version.
     StatusListRoot,
+    /// A dispute nonce already consumed by an ed25519 signer key.
+    DisputeNonce(BytesN<32>, u64),
 }
 
 /// Revoker-configured per-attester attestation rate limit: at most
@@ -725,6 +727,10 @@ pub enum Error {
     DisputeClearUnauthorized = 29,
     /// The supplied status-list segment is malformed or stale.
     InvalidStatusListSegment = 30,
+    /// The dispute message's `expires_at` is in the past.
+    DisputeExpired = 34,
+    /// The dispute nonce was already used by this signer key.
+    DisputeNonceUsed = 35,
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -1858,16 +1864,29 @@ impl AttestationRegistry {
         }
     }
 
-    /// Raise a patient dispute overlay for `record_hash`. The patient signs
-    /// over a domain-separated commitment; the signature is verified against
-    /// `signer` and recorded once (replay-safe). Bounded per record.
+    /// Raise a patient dispute overlay for `record_hash`. The patient's
+    /// ed25519 key `signer_key` signs the v2 dispute message
+    /// (docs/specs/dispute-signature-v2.md), which binds the network, this
+    /// contract, the record, the signer, a nonce and an expiry. Each nonce is
+    /// single-use per key. Bounded per record.
+    #[allow(clippy::too_many_arguments)]
     pub fn dispute_attestation(
         env: Env,
         signer: Address,
+        signer_key: BytesN<32>,
         record_hash: BytesN<32>,
+        nonce: u64,
+        expires_at: u64,
         signature: BytesN<64>,
     ) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
+        if env.ledger().timestamp() > expires_at {
+            return Err(Error::DisputeExpired);
+        }
+        let nonce_key = DataKey::DisputeNonce(signer_key.clone(), nonce);
+        if env.storage().persistent().has(&nonce_key) {
+            return Err(Error::DisputeNonceUsed);
+        }
         let key = DataKey::Disputed(record_hash.clone(), signer.clone());
         if env.storage().persistent().has(&key) {
             return Err(Error::InvalidDisputeSignature);
@@ -1881,8 +1900,25 @@ impl AttestationRegistry {
             return Err(Error::DisputeLimitReached);
         }
 
-        let payload = Self::dispute_payload(&env, &record_hash, &signer);
-        env.crypto().ed25519_verify(&signer, &payload, &signature);
+        let message = dispute_message_v2(
+            &env,
+            &env.ledger().network_id(),
+            &env.current_contract_address(),
+            &record_hash,
+            &signer,
+            &signer_key,
+            nonce,
+            expires_at,
+        );
+        env.crypto()
+            .ed25519_verify(&signer_key, &Bytes::from(message), &signature);
+
+        env.storage().persistent().set(&nonce_key, &true);
+        env.storage().persistent().extend_ttl(
+            &nonce_key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
 
         env.storage().persistent().set(&key, &true);
         env.storage().persistent().extend_ttl(
@@ -2330,23 +2366,6 @@ impl AttestationRegistry {
         let ledgers = seconds.saturating_mul(17_280) / 86_400;
         let clamped = ledgers.min(INSTANCE_BUMP_AMOUNT as u64);
         clamped as u32
-    }
-
-    /// Domain-separated dispute payload: binds the domain, record hash and
-    /// signer so signatures cannot be replayed across records or contexts.
-    fn dispute_payload(env: &Env, record_hash: &BytesN<32>, signer: &Address) -> BytesN<32> {
-        let mut bytes = [0u8; 32];
-        let domain = DISPUTE_DOMAIN.as_bytes();
-        let mut acc: u32 = 0;
-        for (i, byte) in domain.iter().enumerate() {
-            acc = acc.wrapping_add((*byte as u32).wrapping_mul(i as u32 + 1));
-        }
-        let hash = record_hash.to_array();
-        for i in 0..32 {
-            bytes[i] = hash[i] ^ (acc as u8);
-        }
-        let _ = signer;
-        BytesN::from_array(env, &bytes)
     }
 
     fn require_not_paused(env: &Env) -> Result<(), Error> {
@@ -2823,6 +2842,9 @@ impl AttestationRegistry {
 
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod dispute_test;
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod fuzz_test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
@@ -2831,3 +2853,29 @@ mod test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod scope_test;
+
+/// The v2 dispute message (docs/specs/dispute-signature-v2.md):
+/// `sha256(DISPUTE_DOMAIN || network_id || xdr(contract) || record_hash ||
+/// xdr(signer) || signer_key || be64(nonce) || be64(expires_at))`, where
+/// `xdr(..)` is the `ScVal::Address` XDR encoding.
+#[allow(clippy::too_many_arguments)]
+pub fn dispute_message_v2(
+    env: &Env,
+    network_id: &BytesN<32>,
+    contract: &Address,
+    record_hash: &BytesN<32>,
+    signer: &Address,
+    signer_key: &BytesN<32>,
+    nonce: u64,
+    expires_at: u64,
+) -> BytesN<32> {
+    let mut preimage = Bytes::from_slice(env, DISPUTE_DOMAIN.as_bytes());
+    preimage.append(&Bytes::from(network_id.clone()));
+    preimage.append(&contract.clone().to_xdr(env));
+    preimage.append(&Bytes::from(record_hash.clone()));
+    preimage.append(&signer.clone().to_xdr(env));
+    preimage.append(&Bytes::from(signer_key.clone()));
+    preimage.extend_from_array(&nonce.to_be_bytes());
+    preimage.extend_from_array(&expires_at.to_be_bytes());
+    env.crypto().sha256(&preimage).to_bytes()
+}

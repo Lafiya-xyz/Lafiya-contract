@@ -2,6 +2,7 @@
 name = "lafiya-commitment"
 version = "0.2.0"
 edition = "2021"
+rust-version.workspace = true
 description = "Reference implementation of the Lafiya Record Commitment (LRC-1) canonicalization and domain-separated hashing scheme"
 license = "MIT"
 repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
