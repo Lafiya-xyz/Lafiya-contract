@@ -113,6 +113,12 @@ A verifier MUST perform these reads, in this order, for every scan:
 Reads are simulation-only (`simulateTransaction`) and need no signature or fee.
 Step 3 MUST NOT be skipped, even if step 2 is served from cache.
 
+**Canonical status read.** When a verifier needs the record's lifecycle state
+(revoked, withdrawn, disputed), it MUST use `get_verification_state`.
+`is_verified`, `is_attestation_trusted`, `get_record_status`,
+`get_attestation_status` and `get_attester_attestation_status` are deprecated
+projections of it; see [Canonical verification read](../api.md#canonical-verification-read).
+
 ### Caching rules
 
 | Data | Max cache age | Invalidation |

@@ -229,6 +229,20 @@ qualifier:
   (and written to the GitHub job summary); a verdict that is never reached fails
   the run.
 
+### Expiry composition (on-chain)
+
+The contract input to `age_exceeds_policy` is the attestation's stored
+effective expiry: `effective_expires_at = min(patient_expiry, attested_at +
+max_age_at_attest_time)`, snapshotted when the attestation is recorded.
+`consent_attestation` rejects a patient expiry greater than `now + max_age`.
+Later `set_max_attestation_age` changes are prospective: they never expire or
+revive existing attestations, so the same state at the same time always yields
+the same verdict. Each change emits `MaxAttestationAgeChanged { old, new }`,
+which the watchdog alerts on (`max_attestation_age_changed`, high). A
+retroactive tightening, if ever needed, must be an explicit, event-emitting
+operation. Attestations recorded before snapshotting (no stored expiry) fall
+back to the current max age.
+
 ### Extending the model
 
 When adding an input, an enum value, or a verdict:
@@ -247,3 +261,36 @@ When adding an input, an enum value, or a verdict:
    `pnpm build` there and `python3 scripts/differential_verification.py`.
 4. If the input space grows past `--max-exhaustive`, the run falls back to
    seeded sampling; raise `--samples` in CI so every verdict stays covered.
+
+## 9. On-chain conformance
+
+`contracts/attestation-registry/src/conformance_test.rs` builds every scenario
+of a bounded corpus in the Soroban test environment against the real
+attester-registry and compares the contract's reads with
+`lafiya-verification-model`. The corpus is every combination of record
+lifecycle (never attested, active, withdrawn, revoked) x attester status
+(active, suspended, removed) x disputed x expired (48 scenarios); withdrawn and
+revoked, and suspended and removed, are mutually exclusive on-chain. Inputs the
+contract cannot express (network, read failures, compromise window,
+superseded, offline, quorum, status list) stay at `default_input`. It runs with
+the Rust test suite in CI on changes to `contracts/**`, `crates/**` or
+`docs/specs/verification-model.json`. The TypeScript SDK and the Rust crate are
+checked against each other over the full input space by section 7.
+
+Checked agreement:
+
+- `NotFound` iff `get_verification_state` is `NeverAttested` or `Withdrawn`.
+- `Revoked` iff `get_verification_state` is `Revoked`.
+- `is_verified` is `true` iff the model verdict is `Verified`.
+
+Intentional divergences:
+
+- **D1 — dispute overlay.** The Rust crate implements model `1.0.0`, which has no
+  `disputed` input; `get_verification_state` reports `Disputed`, while
+  `is_verified` ignores disputes. The test asserts `Disputed` iff the scenario
+  is disputed, and agreement of `is_verified` with the dispute-free verdict.
+- **D2 — expiry and attester status.** `get_verification_state` reports
+  lifecycle only and returns `Verified`/`Disputed` for an attested,
+  unrevoked record even when the model verdict is `Expired`,
+  `AttesterSuspended` or `AttesterRemoved`. Verifiers combine it with the stored
+  expiry and attester-registry status (as `is_verified` does).

@@ -284,6 +284,7 @@ version = "0.1.0"
 dependencies = [
  "attester-registry",
  "facility-registry",
+ "lafiya-verification-model",
  "proptest",
  "soroban-sdk",
 ]
@@ -1844,6 +1845,14 @@ dependencies = [
  "tracing",
  "ureq",
  "wiremock",
+]
+
+[[package]]
+name = "lafiya-verification-model"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

@@ -664,7 +664,8 @@ fn is_verified_applies_age_and_current_attester_status() {
     assert_eq!(client.get_max_attestation_age(), 0);
     env.ledger()
         .set_timestamp(attestation.timestamp.saturating_add(1));
-    assert!(!client.is_verified(&record_hash));
+    // Max-age changes are prospective: the expiry stored at attest time holds.
+    assert!(client.is_verified(&record_hash));
 
     client.set_max_attestation_age(&DEFAULT_MAX_ATTESTATION_AGE);
     env.ledger().set_timestamp(attestation.timestamp);
