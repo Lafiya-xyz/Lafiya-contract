@@ -1792,3 +1792,132 @@ fn status_list_segment_and_root_accessors() {
     let segment = client.get_status_list_segment(&0);
     assert!(segment.is_some());
 }
+
+// ─────────────── Consent revocation, quorum snapshot, lineage ───────────────
+
+#[test]
+fn revoke_consent_blocks_subsequent_attest() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 120);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+
+    client.revoke_consent(&patient, &attester, &record_hash);
+    assert_eq!(
+        client.try_attest(&attester, &patient, &record_hash),
+        Err(Ok(Error::PatientConsentRequired))
+    );
+}
+
+#[test]
+fn revoke_consent_works_while_paused() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 121);
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &record_hash, &expires_at);
+
+    client.pause(&admin);
+    client.revoke_consent(&patient, &attester, &record_hash);
+    client.unpause();
+    assert_eq!(
+        client.try_attest(&attester, &patient, &record_hash),
+        Err(Ok(Error::PatientConsentRequired))
+    );
+}
+
+#[test]
+fn revoke_consent_without_grant_fails() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    assert_eq!(
+        client.try_revoke_consent(&patient, &attester, &hash(&env, 122)),
+        Err(Ok(Error::PatientConsentRequired))
+    );
+}
+
+#[test]
+fn quorum_policy_change_does_not_flip_existing_verdict() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let class = Symbol::new(&env, "critical");
+    let record_hash = hash(&env, 123);
+
+    client.set_quorum_policy(&class, &1);
+    client.set_record_class(&record_hash, &class);
+    client.co_attest(&attester, &record_hash);
+    let before = client.get_quorum_status(&record_hash);
+    assert!(before.satisfied);
+
+    client.set_quorum_policy(&class, &3);
+    assert_eq!(client.get_quorum_status(&record_hash), before);
+
+    let snapshot = client.reevaluate_record(&record_hash);
+    assert_eq!(snapshot.required, 3);
+    let after = client.get_quorum_status(&record_hash);
+    assert!(!after.satisfied);
+    assert_eq!(after.policy_version, snapshot.policy_version);
+}
+
+#[test]
+fn set_record_class_rejected_once_attested() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let record_hash = hash(&env, 124);
+    client.set_record_class(&record_hash, &Symbol::new(&env, "critical"));
+
+    attest_with_consent(&env, &client, &attester, &record_hash);
+    assert_eq!(
+        client.try_set_record_class(&record_hash, &Symbol::new(&env, "routine")),
+        Err(Ok(Error::RecordClassLocked))
+    );
+}
+
+#[test]
+fn version_link_rejects_withdrawn_predecessor() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let v1 = hash(&env, 125);
+    let v2 = hash(&env, 126);
+    attest_with_consent(&env, &client, &attester, &v1);
+    client.withdraw_attestation(&attester, &v1);
+
+    let expires_at = env.ledger().timestamp() + 10_000;
+    client.consent_attestation(&patient, &attester, &v2, &expires_at);
+    assert_eq!(
+        client.try_attest_version(&attester, &patient, &v2, &v1),
+        Err(Ok(Error::InvalidRecordVersion))
+    );
+}
+
+#[test]
+fn version_chain_has_no_forks_or_cycles_and_lineage_is_bounded() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let v1 = hash(&env, 127);
+    let v2 = hash(&env, 128);
+    let fork = hash(&env, 129);
+    attest_with_consent(&env, &client, &attester, &v1);
+
+    let link = |record: &BytesN<32>, previous: &BytesN<32>| {
+        let patient = Address::generate(&env);
+        let expires_at = env.ledger().timestamp() + 10_000;
+        client.consent_attestation(&patient, &attester, record, &expires_at);
+        client.try_attest_version(&attester, &patient, record, previous)
+    };
+    assert!(link(&v2, &v1).is_ok());
+    // No forks: v1 already has a successor.
+    assert_eq!(link(&fork, &v1), Err(Ok(Error::InvalidRecordVersion)));
+    // No cycles: v1 is a chain head with a successor.
+    assert_eq!(link(&v1, &v2), Err(Ok(Error::InvalidRecordVersion)));
+
+    let lineage = client.get_record_lineage(&v1, &10);
+    assert_eq!(lineage.len(), 2);
+    assert_eq!(lineage.get(1), Some(v2));
+    assert_eq!(client.get_record_lineage(&v1, &1).len(), 1);
+}

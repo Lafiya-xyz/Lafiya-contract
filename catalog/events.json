@@ -533,6 +533,69 @@
       ]
     },
     {
+      "contract": "attestation-registry",
+      "name": "ConsentRevoked",
+      "prefix_topics": [
+        "consent_revoked"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "patient",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attestation-registry",
+      "name": "RecordQuorumReevaluated",
+      "prefix_topics": [
+        "record_quorum_reevaluated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "record_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "old_policy_version",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "new_policy_version",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "required",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
       "contract": "attester-registry",
       "name": "AttesterRemovalScheduled",
       "prefix_topics": [
