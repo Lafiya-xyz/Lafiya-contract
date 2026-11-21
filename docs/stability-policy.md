@@ -78,6 +78,20 @@ records each wasm's `meta_digest` (sha256 of the sorted `key=value` lines).
 Bumping `INTERFACE_VERSION` also requires updating that contract's
 `interface_version` `contractmeta!` entry (literal only; the check catches drift).
 
+## MSRV
+
+Reusable native library crates (`lafiya-commitment`, `lafiya-qr`, `lafiya-verification-model`,
+`lafiya-rpc-resilience`) declare a minimum supported Rust version through `rust-version`,
+inherited from `[workspace.package]` in the root `Cargo.toml` unless a crate overrides it.
+Contract crates aren't covered: they follow the pinned Soroban toolchain in `rust-toolchain.toml`.
+
+- Raising the MSRV of a published crate counts as a **minor** version bump (or a patch bump while
+  the crate is `0.x`), never a patch release on a `1.x` line. Note it in the changelog.
+- Raise the MSRV only when a dependency or language feature needs it, and keep it at least six
+  months behind the latest stable Rust release.
+- The `msrv` CI job checks the declared version. Update its toolchain in the same PR that changes
+  `rust-version`.
+
 ## Enforcement
 
 | Rule | Status |
@@ -91,6 +105,7 @@ Bumping `INTERFACE_VERSION` also requires updating that contract's
 | Bindings match the contract spec | **Enforced locally** by `check_bindings_drift.py` (see #448). npm deprecation is not applicable until packages are published ([PUBLISHING.md](../PUBLISHING.md)) |
 | CLI deprecation warnings and window | **Reviewer-enforced**. Consolidating the scripts into the CLI: [#402](https://github.com/Lafiya-xyz/Lafiya-contract/issues/402), full subcommand coverage: [#394](https://github.com/Lafiya-xyz/Lafiya-contract/issues/394) |
 | Native crates' breaking API changes carry a version bump | **Enforced in CI** by the `Semver checks (native crates)` job (`cargo semver-checks` against the PR merge base) |
+| Native library crates build on their declared `rust-version` | **Enforced in CI** by the `MSRV (library crates)` job |
 | Native crates are free of undefined behaviour | **Nightly, non-blocking**: Miri and sanitizers in `native-crates-nightly.yml`; failures are tracked in an issue |
 | Commitment encodings are only ever added as new versions | **Reviewer-enforced** under ADR-0008. Cross-implementation vectors in CI: [#387](https://github.com/Lafiya-xyz/Lafiya-contract/issues/387) |
 | Consumers can check a release against their requirements | **Available** through `scripts/check_manifest_compatibility.py` (ADR-0010), which consumers run in their own CI |

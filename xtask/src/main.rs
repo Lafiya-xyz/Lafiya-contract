@@ -4,6 +4,7 @@ use clap::{Parser, Subcommand};
 
 mod docs;
 mod sandbox;
+mod workspace_lint;
 
 #[derive(Parser, Debug)]
 #[command(name = "cargo xtask", about = "Lafiya developer tasks")]
@@ -33,6 +34,8 @@ enum Task {
     Test,
     /// Run build, lint, and test across all workspace members
     Check,
+    /// Fail if a crate directory is neither a workspace member nor excluded
+    WorkspaceLint,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -42,6 +45,7 @@ fn main() -> anyhow::Result<()> {
         Task::Build => build(),
         Task::Lint => lint(),
         Task::Test => test(),
+        Task::WorkspaceLint => workspace_lint::run(),
         Task::Check => {
             build()?;
             lint()?;

@@ -10,6 +10,7 @@
 
 use anyhow::{bail, Context, Result};
 use clap::Subcommand;
+#[allow(deprecated)]
 use lafiya_commitment::{commit_v1, FieldValue};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -278,7 +279,8 @@ pub fn demo_record(record: &str) -> DemoRecord {
         .collect();
     values.push(FieldValue::Bytes(salt.to_vec()));
     DemoRecord {
-        hash: commit_v1(&values),
+        #[allow(deprecated)]
+        hash: commit_v1(&values).expect("demo record fields always encode"),
         fields,
         salt,
     }

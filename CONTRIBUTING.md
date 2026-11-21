@@ -191,6 +191,7 @@ no GNU make or WSL required. Run `cargo xtask help` for the full list:
 | `cargo xtask conformance [--update]` | interface snapshot, error docs, events doc, bindings drift |
 | `cargo xtask budgets` | large-allowlist resource-budget load test |
 | `cargo xtask release-manifest` / `docs` | release manifest; rustdoc with `-D warnings` |
+| `cargo xtask workspace-lint` | fails if a directory with a `Cargo.toml` under `crates/`, `contracts/` or `xtask/` is neither in `[workspace].members` nor in `[workspace].exclude` (runs in CI) |
 
 The conformance scripts are still Python (stdlib only, plus `stellar-cli` to decode the contract
 spec); `check` skips them with a warning when `stellar` isn't on `PATH`, `ci` in a full

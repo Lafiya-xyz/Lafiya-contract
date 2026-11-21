@@ -24,6 +24,8 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 facility-registry = { path = "../facility-registry", features = ["testutils"] }
 proptest = "1.11"
+ed25519-dalek = "2"
+serde_json = { workspace = true }
 
 [features]
 testutils = ["soroban-sdk/testutils"]
