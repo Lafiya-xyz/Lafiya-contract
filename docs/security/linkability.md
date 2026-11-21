@@ -119,3 +119,20 @@ for 1M entries are tracked in #547.
 5. Research spike: batch anchoring and CHW activity privacy (channels 2 and 4).
 6. Dispute flags (#546): domain-separated patient signature, bounded disputes, attester/admin clearing.
 7. Status-list index allocation (#547): PRF-based indices, versioned commitments, index-correlation analysis.
+
+## Consent tokens (#662)
+
+**Before:** `consent_attestation` wrote `PatientConsent(record_hash, patient,
+attester)` to persistent storage, publicly linking the patient's long-term
+address to the record hash and attester, and the patient had to submit a
+transaction.
+
+**After:** `attest_with_consent_token` takes a token signed off-chain by a
+per-record ed25519 key over `consent_token_digest(record_hash, attester,
+nonce, expires_at, attestation_expires_at)`, which also binds the domain,
+network id and contract. The contract stores only a temporary
+`ConsentTokenUsed(digest)` marker that outlives `expires_at`; no persistent key
+or event contains the patient's address, and the patient submits nothing.
+Tokens are single-use, expire within 7 days, and are rejected for a different
+attester, network or contract. `consent_attestation` is deprecated and kept
+only for migration.

@@ -65,3 +65,7 @@ Test paths are relative to `contracts/<crate>/src/`.
 | ID | Invariant | Checked by |
 |---|---|---|
 | INV-C-1 | The Rust and TypeScript LRC-1 implementations produce identical commitments for every published test vector. | `crates/lafiya-commitment` tests, `crates/lafiya-commitment/reference-ts/lrc1.test.ts`, `vectors/lrc1-test-vectors.json` |
+| INV-B-1 | A batch is identified by `(attester, root)`; anchoring a root never changes the attester of another attester's batch. | `anchor_batch_same_root_by_second_attester_does_not_squat` |
+| INV-B-2 | `anchor_batch` charges `leaf_count` rate-limit and probation units and rejects `leaf_count > MAX_BATCH_LEAVES`. | `anchor_batch_rejects_too_many_leaves` |
+| INV-B-3 | A leaf is reported revoked iff its batch or its leaf bit was revoked by the attester or a Revoker. | `batch_leaf_and_whole_batch_revocation` |
+| INV-C-2 | A consent token is accepted at most once, before `expires_at`, only for the attester, network and contract it was signed for; the patient address is never persisted. | `consent_token_is_single_use_and_bound` |

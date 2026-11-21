@@ -307,3 +307,10 @@ listed as residual risk at the mainnet gate below.
 - Review this document at every milestone gate and whenever an ADR is added
   or superseded.
 - When an issue linked here closes, update its leaf to **mitigated (by …)**.
+
+## Merkle batch root squatting (#659)
+
+Threat: an allowlisted attester front-runs another attester's root to claim
+it. Mitigation: batches are keyed by `(attester, root)`, and leaves commit to
+the attester so verifiers reject proofs that do not match the anchoring
+attester.

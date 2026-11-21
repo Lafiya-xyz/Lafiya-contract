@@ -563,7 +563,7 @@ fn anchor_batch_stores_one_root_and_returns_metadata() {
 
     assert_eq!(batch.attester, attester);
     assert_eq!(batch.leaf_count, 3);
-    assert_eq!(client.get_attestation_batch(&root), Some(batch));
+    assert_eq!(client.get_attestation_batch(&attester, &root), Some(batch));
 }
 
 #[test]
@@ -576,7 +576,7 @@ fn anchor_batch_rejects_empty_batch() {
         client.try_anchor_batch(&attester, &root, &0),
         Err(Ok(Error::EmptyBatch))
     );
-    assert_eq!(client.get_attestation_batch(&root), None);
+    assert_eq!(client.get_attestation_batch(&attester, &root), None);
 }
 
 #[test]
@@ -589,7 +589,7 @@ fn anchor_batch_rejects_non_allowlisted_attester() {
         client.try_anchor_batch(&attester, &root, &2),
         Err(Ok(Error::AttesterNotAllowlisted))
     );
-    assert_eq!(client.get_attestation_batch(&root), None);
+    assert_eq!(client.get_attestation_batch(&attester, &root), None);
 }
 
 #[test]
@@ -602,6 +602,92 @@ fn anchor_batch_rejects_reused_root() {
     assert_eq!(
         client.try_anchor_batch(&attester, &root, &2),
         Err(Ok(Error::BatchAlreadyAnchored))
+    );
+}
+
+#[test]
+fn anchor_batch_same_root_by_second_attester_does_not_squat() {
+    let (env, client, attester_registry, admin) = setup();
+    let first = enroll(&env, &attester_registry, &admin);
+    let squatter = enroll(&env, &attester_registry, &admin);
+    let root = hash(&env, 25);
+    client.anchor_batch(&squatter, &root, &2);
+    let batch = client.anchor_batch(&first, &root, &3);
+
+    assert_eq!(batch.attester, first);
+    assert_eq!(client.get_attestation_batch(&first, &root), Some(batch));
+    assert_eq!(
+        client
+            .get_attestation_batch(&squatter, &root)
+            .unwrap()
+            .attester,
+        squatter
+    );
+}
+
+#[test]
+fn anchor_batch_rejects_too_many_leaves() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let root = hash(&env, 26);
+    assert_eq!(
+        client.try_anchor_batch(&attester, &root, &(MAX_BATCH_LEAVES + 1)),
+        Err(Ok(Error::BatchTooLarge))
+    );
+}
+
+#[test]
+fn batch_leaf_and_whole_batch_revocation() {
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let root = hash(&env, 27);
+    client.anchor_batch(&attester, &root, &200);
+
+    assert!(!client.is_batch_leaf_revoked(&attester, &root, &130));
+    client.revoke_batch_leaf(&attester, &attester, &root, &130);
+    assert!(client.is_batch_leaf_revoked(&attester, &root, &130));
+    assert!(!client.is_batch_leaf_revoked(&attester, &root, &129));
+    assert_eq!(
+        client.try_revoke_batch_leaf(&attester, &attester, &root, &200),
+        Err(Ok(Error::LeafIndexOutOfRange))
+    );
+
+    let stranger = Address::generate(&env);
+    assert_eq!(
+        client.try_revoke_batch(&stranger, &attester, &root),
+        Err(Ok(Error::RoleNotGranted))
+    );
+    client.revoke_batch(&attester, &attester, &root);
+    assert!(client.is_batch_leaf_revoked(&attester, &root, &0));
+}
+
+#[test]
+fn consent_token_is_single_use_and_bound() {
+    use ed25519_dalek::{Signer, SigningKey};
+    let (env, client, attester_registry, admin) = setup();
+    let attester = enroll(&env, &attester_registry, &admin);
+    let other = enroll(&env, &attester_registry, &admin);
+    let record = hash(&env, 28);
+    let nonce = hash(&env, 29);
+    let key = SigningKey::from_bytes(&[7u8; 32]);
+    let pk = BytesN::from_array(&env, &key.verifying_key().to_bytes());
+    let now = env.ledger().timestamp();
+    let (exp, att_exp) = (now + 3600, now + 86_400);
+    let digest = client.consent_token_digest(&record, &attester, &nonce, &exp, &att_exp);
+    let sig = BytesN::from_array(&env, &key.sign(&digest.to_array()).to_bytes());
+
+    assert!(client
+        .try_attest_with_consent_token(&other, &record, &pk, &nonce, &exp, &att_exp, &sig)
+        .is_err());
+    client.attest_with_consent_token(&attester, &record, &pk, &nonce, &exp, &att_exp, &sig);
+    assert_eq!(
+        client.try_attest_with_consent_token(&attester, &record, &pk, &nonce, &exp, &att_exp, &sig),
+        Err(Ok(Error::ConsentTokenReplayed))
+    );
+    env.ledger().with_mut(|l| l.timestamp = exp);
+    assert_eq!(
+        client.try_attest_with_consent_token(&attester, &record, &pk, &nonce, &exp, &att_exp, &sig),
+        Err(Ok(Error::PatientConsentExpired))
     );
 }
 

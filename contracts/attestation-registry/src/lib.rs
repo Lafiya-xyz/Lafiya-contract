@@ -29,7 +29,7 @@ mod storage;
 
 use soroban_sdk::{
     contract, contractclient, contracterror, contractevent, contractimpl, contracttype,
-    panic_with_error, Address, BytesN, Env, String, Symbol, Vec,
+    panic_with_error, xdr::ToXdr, Address, Bytes, BytesN, Env, String, Symbol, Vec,
 };
 
 /// The subset of the `attester-registry` contract this crate calls. Kept
@@ -58,6 +58,12 @@ const MAX_HISTORY: u64 = 10;
 
 /// Maximum number of requests accepted by one `batch_attest` call.
 pub const BATCH_LIMIT: u32 = 50;
+/// Maximum number of leaves a single anchored Merkle batch may claim.
+pub const MAX_BATCH_LEAVES: u32 = 1024;
+/// Leaves tracked per batch leaf-revocation bitmap segment.
+const LEAF_SEGMENT_BITS: u32 = 128;
+/// Domain separator for off-chain patient consent tokens.
+const CONSENT_TOKEN_DOMAIN: &[u8] = b"lafiya-consent-token-v1";
 
 /// Maximum horizon (seconds from now) to which `extend_attestation_ttl` may
 /// push an attestation's storage lifetime. Bounds the rent a single caller
@@ -199,8 +205,19 @@ enum DataKey {
     PatientConsentValidity(BytesN<32>, Address, Address),
     /// Expiry timestamp for an attestation at a specific sequence number.
     AttestationExpiry(BytesN<32>, u64),
-    /// Metadata for an anchored Merkle batch, keyed by its root.
+    /// Legacy metadata for an anchored Merkle batch, keyed by its root only.
+    /// Read-only: kept so batches anchored before attester namespacing stay
+    /// resolvable. New batches use `AttesterBatch`.
     AttestationBatch(BytesN<32>),
+    /// Metadata for an anchored Merkle batch, namespaced by its attester.
+    AttesterBatch(Address, BytesN<32>),
+    /// Whether an anchored batch was revoked as a whole.
+    BatchRevoked(Address, BytesN<32>),
+    /// Revoked-leaf bitmap for one 128-leaf segment of an anchored batch.
+    BatchLeafRevoked(Address, BytesN<32>, u32),
+    /// Single-use marker for a consumed consent token, keyed by its digest
+    /// (temporary storage; expires after the token does).
+    ConsentTokenUsed(BytesN<32>),
     /// Whether an attester withdrew a specific retained attestation.
     AttestationWithdrawn(BytesN<32>, u64),
     /// Whether all attestations for a record hash were revoked by a revoker.
@@ -526,6 +543,29 @@ pub struct AttestationBatchAnchored {
     pub seq: u64,
 }
 
+/// Emitted when an anchored batch is revoked as a whole.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationBatchRevoked {
+    #[topic]
+    pub root: BytesN<32>,
+    pub attester: Address,
+    pub by: Address,
+    pub seq: u64,
+}
+
+/// Emitted when a single leaf of an anchored batch is revoked.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct AttestationBatchLeafRevoked {
+    #[topic]
+    pub root: BytesN<32>,
+    pub attester: Address,
+    pub leaf_index: u32,
+    pub by: Address,
+    pub seq: u64,
+}
+
 /// Emitted when an attester records the last attestation its rate-limit
 /// window allows. Published at most once per attester per window, so it
 /// cannot itself be used to spam; further attempts in the window fail with
@@ -725,6 +765,22 @@ pub enum Error {
     DisputeClearUnauthorized = 29,
     /// The supplied status-list segment is malformed or stale.
     InvalidStatusListSegment = 30,
+    /// The consent token was already consumed.
+    ConsentTokenReplayed = 31,
+    /// The consent token's validity window is malformed or too long.
+    InvalidConsentToken = 32,
+    /// No anchored batch exists for this attester and root.
+    BatchNotFound = 33,
+    /// The leaf index is outside the anchored batch.
+    LeafIndexOutOfRange = 34,
+}
+
+/// Internal source of patient consent for an attestation.
+enum ConsentSource {
+    /// Legacy on-chain grant written by `consent_attestation`.
+    Grant(Address),
+    /// Verified off-chain consent token carrying the attestation expiry.
+    Token(u64),
 }
 
 // Source-provenance metadata (SEP-46 `contractmetav0`, keys per SEP-55
@@ -1033,6 +1089,9 @@ impl AttestationRegistry {
         Self::max_attestation_age(&env)
     }
 
+    /// Deprecated: prefer `attest_with_consent_token`, which never writes the
+    /// patient's address to storage. Kept for migration.
+    ///
     /// Grant a one-time authorization for `attester` to attest `record_hash`.
     /// The patient must authorize this call. The grant is bound to the patient,
     /// attester, and record hash, expires after seven days, and is consumed by
@@ -1089,6 +1148,93 @@ impl AttestationRegistry {
         Self::require_not_paused(&env)?;
         Self::require_allowlisted_attester(&env, &attester)?;
         Self::record_attestation(&env, attester, patient, record_hash, 0, None, None)
+    }
+
+    /// Record an attestation using an off-chain patient consent token.
+    ///
+    /// The patient signs, with an ed25519 key derived per record,
+    /// `sha256(domain || network_id || contract || record_hash || attester ||
+    /// nonce || expires_at || attestation_expires_at)` (see
+    /// `consent_token_digest`). The patient submits no transaction and their
+    /// long-term address is never stored; only a temporary single-use marker
+    /// keyed by the digest is written.
+    #[allow(clippy::too_many_arguments)]
+    pub fn attest_with_consent_token(
+        env: Env,
+        attester: Address,
+        record_hash: BytesN<32>,
+        patient_key: BytesN<32>,
+        nonce: BytesN<32>,
+        expires_at: u64,
+        attestation_expires_at: u64,
+        signature: BytesN<64>,
+    ) -> Result<Attestation, Error> {
+        attester.require_auth();
+        Self::require_not_paused(&env)?;
+        Self::require_allowlisted_attester(&env, &attester)?;
+
+        let now = env.ledger().timestamp();
+        if now >= expires_at {
+            return Err(Error::PatientConsentExpired);
+        }
+        if expires_at - now > CONSENT_VALIDITY_SECONDS {
+            return Err(Error::InvalidConsentToken);
+        }
+        if attestation_expires_at <= now {
+            return Err(Error::InvalidAttestationExpiry);
+        }
+
+        let digest = Self::consent_token_digest(
+            env.clone(),
+            record_hash.clone(),
+            attester.clone(),
+            nonce,
+            expires_at,
+            attestation_expires_at,
+        );
+        let marker = DataKey::ConsentTokenUsed(digest.clone());
+        if env.storage().temporary().has(&marker) {
+            return Err(Error::ConsentTokenReplayed);
+        }
+        env.crypto()
+            .ed25519_verify(&patient_key, &digest.clone().into(), &signature);
+
+        env.storage().temporary().set(&marker, &true);
+        env.storage()
+            .temporary()
+            .extend_ttl(&marker, CONSENT_TTL_BUMP, CONSENT_TTL_BUMP);
+
+        Self::record_attestation_with(
+            &env,
+            attester,
+            ConsentSource::Token(attestation_expires_at),
+            record_hash,
+            0,
+            None,
+            None,
+        )
+    }
+
+    /// The digest a patient signs to produce a consent token for
+    /// `attest_with_consent_token`. Bound to the domain, network, this
+    /// contract, the record, the attester, a nonce and both expiries.
+    pub fn consent_token_digest(
+        env: Env,
+        record_hash: BytesN<32>,
+        attester: Address,
+        nonce: BytesN<32>,
+        expires_at: u64,
+        attestation_expires_at: u64,
+    ) -> BytesN<32> {
+        let mut msg = Bytes::from_slice(&env, CONSENT_TOKEN_DOMAIN);
+        msg.append(&env.ledger().network_id().into());
+        msg.append(&env.current_contract_address().to_xdr(&env));
+        msg.append(&record_hash.into());
+        msg.append(&attester.to_xdr(&env));
+        msg.append(&nonce.into());
+        msg.extend_from_array(&expires_at.to_be_bytes());
+        msg.extend_from_array(&attestation_expires_at.to_be_bytes());
+        env.crypto().sha256(&msg).into()
     }
 
     /// Record an attestation authorized by a delegated session key.
@@ -1393,13 +1539,19 @@ impl AttestationRegistry {
         if leaf_count == 0 {
             return Err(Error::EmptyBatch);
         }
+        if leaf_count > MAX_BATCH_LEAVES {
+            return Err(Error::BatchTooLarge);
+        }
 
         Self::require_allowlisted_attester(&env, &attester)?;
 
-        let key = DataKey::AttestationBatch(root.clone());
-        if storage::has(&env, &key) {
+        let key = DataKey::AttesterBatch(attester.clone(), root.clone());
+        if Self::find_batch(&env, &attester, &root).is_some() {
             return Err(Error::BatchAlreadyAnchored);
         }
+        // Batches are charged one rate-limit and probation unit per leaf.
+        Self::consume_rate_limit_units(&env, &attester, leaf_count)?;
+        Self::consume_probation_units(&env, &attester, leaf_count)?;
 
         let batch = AttestationBatch {
             attester: attester.clone(),
@@ -1427,9 +1579,99 @@ impl AttestationRegistry {
         Ok(batch)
     }
 
-    /// Look up metadata for a Merkle batch root, if it has been anchored.
-    pub fn get_attestation_batch(env: Env, root: BytesN<32>) -> Option<AttestationBatch> {
-        storage::get(&env, &DataKey::AttestationBatch(root))
+    /// Look up metadata for a Merkle batch root anchored by `attester`.
+    pub fn get_attestation_batch(
+        env: Env,
+        attester: Address,
+        root: BytesN<32>,
+    ) -> Option<AttestationBatch> {
+        Self::find_batch(&env, &attester, &root)
+    }
+
+    /// Revoke an entire anchored batch. Callable by the anchoring attester or
+    /// by an account holding the Revoker role.
+    pub fn revoke_batch(
+        env: Env,
+        caller: Address,
+        attester: Address,
+        root: BytesN<32>,
+    ) -> Result<(), Error> {
+        Self::require_batch_revoker(&env, &caller, &attester)?;
+        Self::find_batch(&env, &attester, &root).ok_or(Error::BatchNotFound)?;
+        let key = DataKey::BatchRevoked(attester.clone(), root.clone());
+        storage::set(&env, &key, &true);
+        storage::extend_ttl(
+            &env,
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        AttestationBatchRevoked {
+            root,
+            attester,
+            by: caller,
+            seq: storage::next_event_seq(&env),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Revoke one leaf of an anchored batch. Storage is one 128-bit bitmap per
+    /// segment containing a revoked leaf, so cost is O(revoked), not O(leaves).
+    pub fn revoke_batch_leaf(
+        env: Env,
+        caller: Address,
+        attester: Address,
+        root: BytesN<32>,
+        leaf_index: u32,
+    ) -> Result<(), Error> {
+        Self::require_batch_revoker(&env, &caller, &attester)?;
+        let batch = Self::find_batch(&env, &attester, &root).ok_or(Error::BatchNotFound)?;
+        if leaf_index >= batch.leaf_count {
+            return Err(Error::LeafIndexOutOfRange);
+        }
+        let key = DataKey::BatchLeafRevoked(
+            attester.clone(),
+            root.clone(),
+            leaf_index / LEAF_SEGMENT_BITS,
+        );
+        let bits: u128 = storage::get(&env, &key).unwrap_or(0);
+        storage::set(
+            &env,
+            &key,
+            &(bits | (1u128 << (leaf_index % LEAF_SEGMENT_BITS))),
+        );
+        storage::extend_ttl(
+            &env,
+            &key,
+            INSTANCE_LIFETIME_THRESHOLD,
+            INSTANCE_BUMP_AMOUNT,
+        );
+        AttestationBatchLeafRevoked {
+            root,
+            attester,
+            leaf_index,
+            by: caller,
+            seq: storage::next_event_seq(&env),
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Whether a batch leaf is revoked, either individually or because the
+    /// whole batch was revoked. Verifiers check this after inclusion proofs.
+    pub fn is_batch_leaf_revoked(
+        env: Env,
+        attester: Address,
+        root: BytesN<32>,
+        leaf_index: u32,
+    ) -> bool {
+        if storage::has(&env, &DataKey::BatchRevoked(attester.clone(), root.clone())) {
+            return true;
+        }
+        let key = DataKey::BatchLeafRevoked(attester, root, leaf_index / LEAF_SEGMENT_BITS);
+        let bits: u128 = storage::get(&env, &key).unwrap_or(0);
+        bits & (1u128 << (leaf_index % LEAF_SEGMENT_BITS)) != 0
     }
 
     /// Revoke all attestations for `record_hash` without erasing the
@@ -2212,6 +2454,11 @@ impl AttestationRegistry {
     /// storage; if the entry is archived early the attester simply starts a
     /// fresh window (fails open), which is acceptable for rate limiting.
     fn consume_rate_limit(env: &Env, attester: &Address) -> Result<(), Error> {
+        Self::consume_rate_limit_units(env, attester, 1)
+    }
+
+    /// Like `consume_rate_limit`, charging `units` attestations at once.
+    fn consume_rate_limit_units(env: &Env, attester: &Address, units: u32) -> Result<(), Error> {
         let limit: RateLimit = match storage::get(env, &DataKey::RateLimit) {
             Some(limit) => limit,
             None => return Ok(()),
@@ -2222,10 +2469,10 @@ impl AttestationRegistry {
             window_start_ledger: now,
             count: 0,
         });
-        if window.count >= max {
+        if window.count.saturating_add(units) > max {
             return Err(Error::RateLimited);
         }
-        window.count += 1;
+        window.count += units;
 
         let window_end = window
             .window_start_ledger
@@ -2249,6 +2496,11 @@ impl AttestationRegistry {
     /// Enforce the rate cap an attester is under while on probation. A
     /// registry that predates probation (or fails the call) imposes no cap.
     fn consume_probation_cap(env: &Env, attester: &Address) -> Result<(), Error> {
+        Self::consume_probation_units(env, attester, 1)
+    }
+
+    /// Like `consume_probation_cap`, charging `units` attestations at once.
+    fn consume_probation_units(env: &Env, attester: &Address, units: u32) -> Result<(), Error> {
         let Ok(registry_id) = Self::attester_registry(env) else {
             return Ok(());
         };
@@ -2275,10 +2527,10 @@ impl AttestationRegistry {
                 window_start_ledger: now,
                 count: 0,
             });
-        if window.count >= limits.rate_cap {
+        if window.count.saturating_add(units) > limits.rate_cap {
             return Err(Error::ProbationRateLimited);
         }
-        window.count += 1;
+        window.count += units;
         let remaining = window
             .window_start_ledger
             .saturating_add(limits.rate_window_ledgers)
@@ -2571,6 +2823,25 @@ impl AttestationRegistry {
         Ok(existing_previous.is_none().then_some(previous_hash))
     }
 
+    /// Resolve a batch by attester, falling back to the legacy root-only key
+    /// for batches anchored before namespacing (only if the attester matches).
+    fn find_batch(env: &Env, attester: &Address, root: &BytesN<32>) -> Option<AttestationBatch> {
+        storage::get(env, &DataKey::AttesterBatch(attester.clone(), root.clone())).or_else(|| {
+            storage::get::<_, AttestationBatch>(env, &DataKey::AttestationBatch(root.clone()))
+                .filter(|batch| &batch.attester == attester)
+        })
+    }
+
+    /// Batch revocation is allowed for the anchoring attester or a Revoker.
+    fn require_batch_revoker(env: &Env, caller: &Address, attester: &Address) -> Result<(), Error> {
+        if caller == attester {
+            caller.require_auth();
+            Ok(())
+        } else {
+            Self::require_role(env, Role::Revoker, caller)
+        }
+    }
+
     /// Consume the patient's consent grant for this attester and record,
     /// returning the patient-selected attestation expiry.
     fn consume_consent(
@@ -2610,10 +2881,35 @@ impl AttestationRegistry {
         previous_record_hash: Option<BytesN<32>>,
         scope: Option<AttestationScope>,
     ) -> Result<Attestation, Error> {
+        Self::record_attestation_with(
+            env,
+            attester,
+            ConsentSource::Grant(patient),
+            record_hash,
+            commitment_version,
+            previous_record_hash,
+            scope,
+        )
+    }
+
+    fn record_attestation_with(
+        env: &Env,
+        attester: Address,
+        consent: ConsentSource,
+        record_hash: BytesN<32>,
+        commitment_version: u32,
+        previous_record_hash: Option<BytesN<32>>,
+        scope: Option<AttestationScope>,
+    ) -> Result<Attestation, Error> {
         let new_previous_link = Self::check_version_link(env, &record_hash, previous_record_hash)?;
         Self::consume_rate_limit(env, &attester)?;
         Self::consume_probation_cap(env, &attester)?;
-        let attestation_expires_at = Self::consume_consent(env, &attester, patient, &record_hash)?;
+        let attestation_expires_at = match consent {
+            ConsentSource::Grant(patient) => {
+                Self::consume_consent(env, &attester, patient, &record_hash)?
+            }
+            ConsentSource::Token(expires_at) => expires_at,
+        };
         env.storage()
             .persistent()
             .remove(&DataKey::AttestationCoverage(

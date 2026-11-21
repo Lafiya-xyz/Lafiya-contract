@@ -248,3 +248,11 @@ itself, and indices are assigned in allocation order rather than by any
 record-derived ordering. See
 [`adr/0012-w3c-vc-export-format.md`](adr/0012-w3c-vc-export-format.md) for
 the threat analysis of index correlation.
+
+## Batch leaf revocation
+
+Revoking a leaf writes at most one persistent entry per 128-leaf segment
+(`BatchLeafRevoked`, a `u128` bitmap). Additional revocations in the same
+segment rewrite that entry instead of adding one, so the cost per revoked leaf
+is at most one entry and approaches 1/128 of an entry for dense revocation.
+Whole-batch revocation is one boolean entry.
