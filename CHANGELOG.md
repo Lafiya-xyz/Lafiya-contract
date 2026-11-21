@@ -12,6 +12,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **attestation-registry: bounded, snapshotted attestation expiry (#669, #670).**
+  `consent_attestation` rejects `attestation_expires_at > now +
+  max_attestation_age` with `InvalidAttestationExpiry`. `attest` stores
+  `min(patient_expiry, attested_at + max_age)`, so `set_max_attestation_age` is
+  prospective and no longer expires or revives existing attestations; it now
+  emits `MaxAttestationAgeChanged { old, new }`, with a watchdog rule.
+- **attestation-registry: canonical verification read (#668).**
+  `get_verification_state` is canonical. `is_verified`,
+  `is_attestation_trusted`, `get_record_status`, `get_attestation_status` and
+  `get_attester_attestation_status` are deprecated and listed in the new
+  `get_interface().deprecated` field (`INTERFACE_VERSION` 3).
+- **attestation-registry: on-chain conformance test (#667)** against
+  `lafiya-verification-model`; divergences documented in
+  `docs/specs/verification-model.md` section 9.
+
 ### Security
 
 - **`lafiya-cli config env` command injection fix (issue #396).**

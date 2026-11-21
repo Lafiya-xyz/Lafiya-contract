@@ -24,6 +24,7 @@ soroban-sdk = { workspace = true, features = ["testutils"] }
 attester-registry = { path = "../attester-registry", features = ["testutils"] }
 facility-registry = { path = "../facility-registry", features = ["testutils"] }
 proptest = "1.11"
+lafiya-verification-model = { path = "../../crates/lafiya-verification-model" }
 
 [features]
 testutils = ["soroban-sdk/testutils"]

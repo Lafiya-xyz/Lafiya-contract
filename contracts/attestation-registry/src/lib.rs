@@ -94,12 +94,21 @@ pub const CONTRACT_KIND: &str = "lafiya_attestation_registry";
 /// Version of the public contract interface (functions, errors, types).
 /// Bump on any breaking ABI change; `scripts/conformance/check_snapshot.py`
 /// refuses a breaking snapshot update without a bump.
-pub const INTERFACE_VERSION: u32 = 2;
+pub const INTERFACE_VERSION: u32 = 3;
 
 /// Version of the emitted event schemas (see `docs/events.md`).
 pub const EVENT_VERSION: u32 = 2;
 
 /// Optional features this build supports, reported by `get_interface`.
+/// Read functions superseded by the canonical `get_verification_state`.
+pub const DEPRECATED_READS: [&str; 5] = [
+    "is_verified",
+    "is_attestation_trusted",
+    "get_record_status",
+    "get_attestation_status",
+    "get_attester_attestation_status",
+];
+
 pub const FEATURES: [&str; 11] = [
     "pause",
     "history",
@@ -129,6 +138,8 @@ pub struct InterfaceInfo {
     pub schema_version: u32,
     /// Event schema version.
     pub event_version: u32,
+    /// Public functions deprecated under `docs/stability-policy.md`.
+    pub deprecated: Vec<Symbol>,
 }
 
 /// Instance storage TTL policy:
@@ -402,6 +413,17 @@ pub struct StatusListSegment {
 pub struct StatusListRoot {
     pub version: u32,
     pub root: BytesN<32>,
+}
+
+/// Emitted when the admin changes the maximum attestation age. The change is
+/// prospective: attestations recorded earlier keep their stored expiry.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct MaxAttestationAgeChanged {
+    pub old: u64,
+    pub new: u64,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
 }
 
 /// Emitted when the current admin nominates a successor.
@@ -697,7 +719,7 @@ pub enum Error {
     PatientConsentExpired = 15,
     /// The current ledger timestamp cannot be safely advanced to calculate a time bound.
     TimestampOverflow = 16,
-    /// The patient-selected attestation expiry is not in the future.
+    /// The patient-selected attestation expiry is not in the future or exceeds `now + max_attestation_age`.
     InvalidAttestationExpiry = 17,
     /// The configured attester-registry could not be called.
     AttesterRegistryUnavailable = 18,
@@ -738,7 +760,7 @@ soroban_sdk::contractmeta!(key = "home_domain", val = "lafiya-xyz.github.io");
 soroban_sdk::contractmeta!(key = "crate_name", val = env!("CARGO_PKG_NAME"));
 soroban_sdk::contractmeta!(key = "crate_version", val = env!("CARGO_PKG_VERSION"));
 soroban_sdk::contractmeta!(key = "source_rev", val = env!("LAFIYA_GIT_COMMIT"));
-soroban_sdk::contractmeta!(key = "interface_version", val = "2");
+soroban_sdk::contractmeta!(key = "interface_version", val = "3");
 
 /// The attestation registry contract.
 #[contract]
@@ -1020,10 +1042,22 @@ impl AttestationRegistry {
 
     /// Set the maximum age in seconds for which an attestation is considered
     /// current. Requires the admin's authorization.
+    ///
+    /// The change is prospective: each attestation snapshots
+    /// `min(patient_expiry, attested_at + max_age)` when it is recorded, so a
+    /// later change never expires or revives existing attestations. Emits
+    /// `MaxAttestationAgeChanged`.
     pub fn set_max_attestation_age(env: Env, max_age: u64) -> Result<(), Error> {
         let admin = Self::admin(&env)?;
         admin.require_auth();
+        let old = Self::max_attestation_age(&env);
         storage::set(&env, &DataKey::MaxAttestationAge, &max_age);
+        MaxAttestationAgeChanged {
+            old,
+            new: max_age,
+            seq: storage::next_event_seq(&env),
+        }
+        .publish(&env);
         Ok(())
     }
 
@@ -1037,7 +1071,9 @@ impl AttestationRegistry {
     /// The patient must authorize this call. The grant is bound to the patient,
     /// attester, and record hash, expires after seven days, and is consumed by
     /// the matching `attest` call. The patient also selects when that
-    /// attestation becomes stale.
+    /// attestation becomes stale: `attestation_expires_at` must satisfy
+    /// `now < attestation_expires_at <= now + get_max_attestation_age()`
+    /// (saturating), otherwise `InvalidAttestationExpiry` is returned.
     pub fn consent_attestation(
         env: Env,
         patient: Address,
@@ -1048,7 +1084,10 @@ impl AttestationRegistry {
         patient.require_auth();
         Self::require_not_paused(&env)?;
 
-        if attestation_expires_at <= env.ledger().timestamp() {
+        let now = env.ledger().timestamp();
+        if attestation_expires_at <= now
+            || attestation_expires_at > now.saturating_add(Self::max_attestation_age(&env))
+        {
             return Err(Error::InvalidAttestationExpiry);
         }
 
@@ -1540,23 +1579,31 @@ impl AttestationRegistry {
     /// an attester who remains allowlisted and unsuspended.
     ///
     /// An attestation is verified only when it exists, has not been revoked or
-    /// withdrawn, is no older than `get_max_attestation_age`, has not passed
-    /// its patient-selected expiry, and its attester is currently active in
-    /// the configured attester-registry. A registry call failure returns
+    /// withdrawn, has not passed its effective expiry (snapshotted at attest
+    /// time as `min(patient_expiry, attested_at + max_age)`), and its attester
+    /// is currently active in the configured attester-registry. Attestations
+    /// without a stored expiry fall back to the current
+    /// `get_max_attestation_age`. A registry call failure returns
     /// `AttesterRegistryUnavailable`.
+    ///
+    /// **Deprecated:** projection of `get_verification_state` (`Verified` or
+    /// `Disputed`) further filtered by expiry and attester status; see
+    /// `docs/api.md#canonical-verification-read`.
     pub fn is_verified(env: Env, record_hash: BytesN<32>) -> Result<bool, Error> {
         let Some((sequence, attestation)) = Self::latest_active(&env, &record_hash) else {
             return Ok(false);
         };
         let now = env.ledger().timestamp();
-        if attestation.timestamp > now
-            || now - attestation.timestamp > Self::max_attestation_age(&env)
-        {
+        if attestation.timestamp > now {
             return Ok(false);
         }
         let expiry: Option<u64> =
             storage::get(&env, &DataKey::AttestationExpiry(record_hash, sequence));
-        if expiry.is_some_and(|expires_at| now >= expires_at) {
+        let expired = match expiry {
+            Some(expires_at) => now >= expires_at,
+            None => now - attestation.timestamp > Self::max_attestation_age(&env),
+        };
+        if expired {
             return Ok(false);
         }
 
@@ -1571,6 +1618,10 @@ impl AttestationRegistry {
     /// Whether the latest active attestation was made before its attester's
     /// trust cutoff. Raw attestations remain available through
     /// `get_attestation` for auditability.
+    ///
+    /// **Deprecated:** returns `false` whenever `get_verification_state` is
+    /// `NeverAttested`, `Withdrawn` or `Revoked`; see
+    /// `docs/api.md#canonical-verification-read`.
     pub fn is_attestation_trusted(env: Env, record_hash: BytesN<32>) -> bool {
         let Some((_, attestation)) = Self::latest_active(&env, &record_hash) else {
             return false;
@@ -1610,6 +1661,10 @@ impl AttestationRegistry {
     /// Look up the latest active attestation with its patient-selected
     /// expiry status. An attestation without a recorded expiry is treated as
     /// stale.
+    ///
+    /// **Deprecated:** `None` exactly when `get_verification_state` is
+    /// `NeverAttested`, `Withdrawn` or `Revoked`; see
+    /// `docs/api.md#canonical-verification-read`.
     pub fn get_attestation_status(env: Env, record_hash: BytesN<32>) -> Option<AttestationStatus> {
         let (sequence, attestation) = Self::latest_active(&env, &record_hash)?;
         Some(Self::attestation_status(
@@ -1622,6 +1677,9 @@ impl AttestationRegistry {
 
     /// Return whether a record hash is unverified, verified, withdrawn, or
     /// explicitly revoked. This remains informative after revocation.
+    ///
+    /// **Deprecated:** equals `get_verification_state` with `Disputed`
+    /// collapsed into `Verified`; see `docs/api.md#canonical-verification-read`.
     pub fn get_record_status(env: Env, record_hash: BytesN<32>) -> RecordStatus {
         if storage::get::<_, bool>(&env, &DataKey::RecordRevoked(record_hash.clone()))
             .unwrap_or(false)
@@ -1639,6 +1697,9 @@ impl AttestationRegistry {
 
     /// Return whether `attester` has an active, withdrawn, or revoked
     /// verification for `record_hash`.
+    ///
+    /// **Deprecated:** per-attester view of `get_verification_state`; see
+    /// `docs/api.md#canonical-verification-read`.
     pub fn get_attester_attestation_status(
         env: Env,
         record_hash: BytesN<32>,
@@ -1941,6 +2002,13 @@ impl AttestationRegistry {
 
     /// Return the verification state for `record_hash`, surfacing the
     /// dispute overlay to verifiers.
+    ///
+    /// This is the canonical verification read. `get_record_status`,
+    /// `get_attestation_status`, `get_attester_attestation_status`,
+    /// `is_verified` and `is_attestation_trusted` are deprecated projections
+    /// of it (listed in `get_interface().deprecated`). It does not evaluate
+    /// expiry or attester status; combine it with `get_attestation_status`
+    /// expiry and the attester-registry, as `is_verified` does.
     pub fn get_verification_state(env: Env, record_hash: BytesN<32>) -> VerificationState {
         if env
             .storage()
@@ -2053,6 +2121,7 @@ impl AttestationRegistry {
             features,
             schema_version: Self::get_schema_version(env.clone()),
             event_version: EVENT_VERSION,
+            deprecated: Self::deprecated_reads(&env),
         }
     }
 
@@ -2318,6 +2387,15 @@ impl AttestationRegistry {
             .is_ok()
     }
 
+    fn deprecated_reads(env: &Env) -> Vec<Symbol> {
+        let mut deprecated = Vec::new(env);
+        // loop-bound: DEPRECATED_READS -- fixed compile-time array
+        for name in DEPRECATED_READS {
+            deprecated.push_back(Symbol::new(env, name));
+        }
+        deprecated
+    }
+
     fn max_attestation_age(env: &Env) -> u64 {
         storage::get(env, &DataKey::MaxAttestationAge).unwrap_or(DEFAULT_MAX_ATTESTATION_AGE)
     }
@@ -2572,7 +2650,9 @@ impl AttestationRegistry {
     }
 
     /// Consume the patient's consent grant for this attester and record,
-    /// returning the patient-selected attestation expiry.
+    /// returning the effective attestation expiry
+    /// `min(patient_expiry, now + max_age)`, snapshotted with the maximum age
+    /// in force at attest time.
     fn consume_consent(
         env: &Env,
         attester: &Address,
@@ -2590,12 +2670,13 @@ impl AttestationRegistry {
             DataKey::PatientConsentValidity(record_hash.clone(), patient, attester.clone());
         let attestation_expires_at: u64 =
             storage::get(env, &validity_key).ok_or(Error::PatientConsentRequired)?;
-        if env.ledger().timestamp() >= attestation_expires_at {
+        let now = env.ledger().timestamp();
+        if now >= attestation_expires_at {
             return Err(Error::InvalidAttestationExpiry);
         }
         storage::remove(env, &consent_key);
         storage::remove(env, &validity_key);
-        Ok(attestation_expires_at)
+        Ok(attestation_expires_at.min(now.saturating_add(Self::max_attestation_age(env))))
     }
 
     /// Shared write path for `attest`, `attest_versioned`, `attest_version`
@@ -2831,3 +2912,7 @@ mod test;
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod scope_test;
+
+#[cfg(test)]
+#[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
+mod conformance_test;
