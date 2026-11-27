@@ -1,0 +1,17 @@
+[package]
+name = "lafiya-events"
+version = "0.1.0"
+edition = "2021"
+description = "Typed Lafiya contract events generated from catalog/events.json, with ScVal and RPC JSON decoding"
+license = "MIT"
+repository = "https://github.com/Lafiya-xyz/Lafiya-contract"
+build = "build.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+stellar-xdr = { workspace = true }
+thiserror = { workspace = true }
+
+[build-dependencies]
+serde_json = { workspace = true }

@@ -1,7 +1,7 @@
 import { Client as AttestationClient } from "@lafiya/attestation-registry";
 import { Client as AttesterClient } from "@lafiya/attester-registry";
 import { Client as StatusListClient } from "@lafiya/status-list";
-import { Buffer } from "buffer";
+import { bytesToHex, hexToBytes } from "./bytes.js";
 import type { AttesterState, ChainReader, OnChainAttestation } from "./chain.js";
 import {
   callWithPolicy,
@@ -61,7 +61,7 @@ export class BindingsChainReader implements ChainReader {
   async getAttestation(trust: NetworkTrust, recordHash: string, opts?: CallOptions) {
     const client = new AttestationClient(this.clientOptions(trust, trust.attestationRegistry));
     const tx = await this.read(
-      () => client.get_attestation({ record_hash: Buffer.from(recordHash, "hex") }),
+      () => client.get_attestation({ record_hash: recordHashArg(recordHash) }),
       opts,
     );
     return tx.result ? toAttestation(tx.result) : null;
@@ -70,7 +70,7 @@ export class BindingsChainReader implements ChainReader {
   async getAttestationHistory(trust: NetworkTrust, recordHash: string, opts?: CallOptions) {
     const client = new AttestationClient(this.clientOptions(trust, trust.attestationRegistry));
     const tx = await this.read(
-      () => client.get_attestation_history({ record_hash: Buffer.from(recordHash, "hex") }),
+      () => client.get_attestation_history({ record_hash: recordHashArg(recordHash) }),
       opts,
     );
     return tx.result.map(toAttestation);
@@ -96,9 +96,9 @@ export class BindingsChainReader implements ChainReader {
     if (!root) return null;
     return {
       version: Number(root.version),
-      root: Buffer.from(root.root).toString("hex"),
+      root: bytesToHex(Uint8Array.from(root.root)),
       timestamp: BigInt(root.timestamp),
-      signature: Buffer.from(root.signature).toString("hex"),
+      signature: bytesToHex(Uint8Array.from(root.signature)),
     };
   }
 
@@ -122,9 +122,7 @@ type RecordHashArg = Parameters<AttestationClient["get_attestation"]>[0]["record
  * out of this package's dependencies.
  */
 function recordHashArg(hex: string): RecordHashArg {
-  const bytes = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < bytes.length; i++) bytes[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
-  return bytes as unknown as RecordHashArg;
+  return hexToBytes(hex) as unknown as RecordHashArg;
 }
 
 function toAttestation(a: { attester: string; timestamp: bigint | number }): OnChainAttestation {
