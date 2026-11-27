@@ -1,5 +1,9 @@
 # Runbook: Continuous Testnet Deployment
 
+**Incident severity:** **SEV4**; **SEV3** if staging is blocked. Roles: IC =
+release manager, operations lead = release manager, communications lead = none.
+See [incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 Workflow: `.github/workflows/deploy-testnet.yml`. Smoke scenario:
 `.github/workflows/smoke-test.yml` (reusable) → `scripts/smoke-test.sh`.
 

@@ -3,6 +3,11 @@
 **Audience:** maintainers on security rotation who receive a private
 vulnerability report for this repository.
 
+**Incident severity:** **SEV1** for Critical/High findings with patient impact;
+**SEV2** for Medium; **SEV3** for Low. Roles: IC = security rotation maintainer,
+operations lead = report owner, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 **Scope:** every report that arrives through GitHub private vulnerability
 reporting (or is moved there from another channel), from intake to public
 advisory. The researcher-facing rules — scope, severity rubric, rewards,

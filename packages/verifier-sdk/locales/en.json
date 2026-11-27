@@ -1,0 +1,21 @@
+{
+  "verdict": {
+    "verified": "Verified",
+    "revoked": "Revoked",
+    "expired": "Expired",
+    "disputed": "Disputed",
+    "unavailable": "Cannot check right now"
+  },
+  "reason": {
+    "commitment_mismatch": "Card does not match record",
+    "attester_removed": "Health worker not on allowlist",
+    "quorum_not_met": "Not enough attesters"
+  },
+  "safety": {
+    "offline_warning": "Offline: result may be stale"
+  },
+  "action": {
+    "rescan": "Scan again",
+    "details": "Show details"
+  }
+}

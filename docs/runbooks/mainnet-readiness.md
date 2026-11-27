@@ -1,5 +1,9 @@
 # Mainnet readiness gate
 
+**Incident severity:** **SEV3**. Roles: IC = release manager, operations lead =
+release manager, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 Mainnet is disabled while every id under `[mainnet.contracts]` in `config/networks.toml` is empty.
 CI (`scripts/check_mainnet_readiness.py`) fails any change that fills one in unless
 `config/mainnet-readiness.json` validates. Owner sign-off is enforced by `.github/CODEOWNERS`,

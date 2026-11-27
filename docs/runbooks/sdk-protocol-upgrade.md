@@ -1,5 +1,9 @@
 # Runbook: Soroban SDK and Stellar Protocol Upgrades
 
+**Incident severity:** **SEV3**. Roles: IC = on-call maintainer, operations lead =
+release manager, communications lead = communications lead. See
+[incident management](../process/incident-management.md#6-runbook-severity-defaults).
+
 Stellar protocol upgrades (new host functions, changed resource limits, new
 ledger-entry types, changed fee models) and major `soroban-sdk` releases can
 change **what compiles**, **the generated contract spec** (and so the
