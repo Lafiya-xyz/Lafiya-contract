@@ -34,6 +34,99 @@ use crate::signer::{SignResult, Signer, SignerError};
 use std::fmt;
 
 // ---------------------------------------------------------------------------
+// Deterministic transaction building (issue #733)
+// ---------------------------------------------------------------------------
+
+/// Fixed inputs that make transaction building reproducible.
+///
+/// Mutating commands run in `--build-only` / `--dry-run` mode with a
+/// [`BuildParams`] injected so the resulting unsigned envelope XDR is
+/// byte-for-byte identical across runs and machines.  Golden fixtures
+/// (issue #733) pin that XDR for fixed inputs.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuildParams {
+    /// Source account (G...) used as the transaction source.
+    pub source_account: String,
+    /// Sequence number to place in the transaction (already incremented).
+    pub sequence: i64,
+    /// Total fee in stroops.
+    pub fee: u32,
+    /// Network passphrase the transaction is built for.
+    pub network_passphrase: String,
+    /// Optional timeout (in seconds) for the transaction's time bounds.
+    pub timeout_seconds: Option<u32>,
+}
+
+impl BuildParams {
+    /// Construct deterministic build parameters.
+    pub fn new(
+        source_account: impl Into<String>,
+        sequence: i64,
+        fee: u32,
+        network_passphrase: impl Into<String>,
+    ) -> Self {
+        Self {
+            source_account: source_account.into(),
+            sequence,
+            fee,
+            network_passphrase: network_passphrase.into(),
+            timeout_seconds: None,
+        }
+    }
+
+    /// Set a fixed timeout for the transaction's time bounds.
+    pub fn with_timeout(mut self, seconds: u32) -> Self {
+        self.timeout_seconds = Some(seconds);
+        self
+    }
+}
+
+/// The result of building an unsigned transaction envelope.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BuiltTransaction {
+    /// Base64-encoded unsigned `TransactionEnvelope` XDR.
+    pub envelope_xdr: String,
+    /// The parameters the envelope was built from.
+    pub params: BuildParams,
+}
+
+/// A single semantic difference between two decoded envelopes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnvelopeDiff {
+    /// JSON-pointer-ish path to the differing field (e.g. `/tx/fee`).
+    pub path: String,
+    /// Value in the expected (fixture) envelope, rendered as JSON.
+    pub expected: String,
+    /// Value in the actual (newly built) envelope, rendered as JSON.
+    pub actual: String,
+}
+
+impl fmt::Display for EnvelopeDiff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}: expected {} but got {}", self.path, self.expected, self.actual)
+    }
+}
+
+/// Decode two base64 envelope XDRs to `stellar-xdr` JSON and produce a
+/// semantic diff suitable for mismatch reporting.
+///
+/// When `stellar-xdr` decoding is unavailable (the dependency is not yet
+/// pinned), this falls back to a byte-level comparison so callers still get
+/// a deterministic, non-panicking result.
+pub fn diff_envelopes(expected_xdr: &str, actual_xdr: &str) -> Vec<EnvelopeDiff> {
+    if expected_xdr == actual_xdr {
+        return Vec::new();
+    }
+    // TODO(issue #733): decode with `stellar-xdr` and walk the JSON tree.
+    // Until then, report the whole envelope as a single semantic difference.
+    vec![EnvelopeDiff {
+        path: "/envelope".to_string(),
+        expected: expected_xdr.to_string(),
+        actual: actual_xdr.to_string(),
+    }]
+}
+
+// ---------------------------------------------------------------------------
 // Domain types
 // ---------------------------------------------------------------------------
 
@@ -301,6 +394,22 @@ pub trait RpcClient: Send + Sync {
     /// Fetch the network passphrase and latest ledger from the RPC node.
     fn get_network_info(&self) -> Result<NetworkInfo, RpcClientError>;
 
+    /// Build an unsigned transaction envelope from fixed [`BuildParams`].
+    ///
+    /// Used by `--build-only` / `--dry-run` so mutating commands can emit a
+    /// deterministic envelope XDR for golden-fixture comparison (issue #733).
+    /// The default implementation returns [`RpcClientError::NotImplemented`];
+    /// implementations that support native building override it.
+    fn build_unsigned(
+        &self,
+        _params: &BuildParams,
+        _operation_xdr: &str,
+    ) -> Result<BuiltTransaction, RpcClientError> {
+        Err(RpcClientError::NotImplemented {
+            detail: "build_unsigned — deterministic envelope building (issue #733)".to_string(),
+        })
+    }
+
     /// High-level convenience: simulate → assemble → sign auth entries →
     /// sign envelope → send → poll.
     ///
@@ -409,6 +518,33 @@ impl RpcClient for NativeRpcClient {
         })
     }
 
+    fn build_unsigned(
+        &self,
+        params: &BuildParams,
+        operation_xdr: &str,
+    ) -> Result<BuiltTransaction, RpcClientError> {
+        // Deterministic assembly: the envelope is a pure function of the
+        // injected params and the operation XDR.  The real XDR encoding via
+        // `stellar-xdr` lands with issue #395; until then we emit a stable,
+        // base64-encoded canonical string so fixtures are reproducible.
+        let canonical = format!(
+            "source={};seq={};fee={};network={};timeout={};op={}",
+            params.source_account,
+            params.sequence,
+            params.fee,
+            params.network_passphrase,
+            params
+                .timeout_seconds
+                .map(|t| t.to_string())
+                .unwrap_or_else(|| "none".to_string()),
+            operation_xdr,
+        );
+        Ok(BuiltTransaction {
+            envelope_xdr: base64_encode(canonical.as_bytes()),
+            params: params.clone(),
+        })
+    }
+
     fn sign_and_submit(
         &self,
         _unsigned_xdr: &str,
@@ -420,6 +556,32 @@ impl RpcClient for NativeRpcClient {
                 .to_string(),
         })
     }
+}
+
+/// Minimal, dependency-free base64 (standard alphabet, padded) encoder.
+fn base64_encode(input: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] =
+        b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((input.len() + 2) / 3 * 4);
+    for chunk in input.chunks(3) {
+        let b0 = chunk[0] as u32;
+        let b1 = *chunk.get(1).unwrap_or(&0) as u32;
+        let b2 = *chunk.get(2).unwrap_or(&0) as u32;
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 0x3f) as usize] as char);
+        out.push(ALPHABET[((n >> 12) & 0x3f) as usize] as char);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((n >> 6) & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(n & 0x3f) as usize] as char);
+        } else {
+            out.push('=');
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -962,6 +1124,41 @@ mod tests {
             client.latest_ledger().unwrap_err(),
             RpcClientError::StellarCli { .. }
         ));
+    }
+
+    #[test]
+    fn build_unsigned_is_deterministic() {
+        let client = NativeRpcClient::new("https://example.org", "Test Net");
+        let params = BuildParams::new("GABC", 42, 100, "Test Net").with_timeout(30);
+        let a = client.build_unsigned(&params, "op-xdr").unwrap();
+        let b = client.build_unsigned(&params, "op-xdr").unwrap();
+        assert_eq!(a.envelope_xdr, b.envelope_xdr);
+        assert_eq!(a.params, params);
+    }
+
+    #[test]
+    fn build_unsigned_changes_with_params() {
+        let client = NativeRpcClient::new("https://example.org", "Test Net");
+        let a = client
+            .build_unsigned(&BuildParams::new("GABC", 1, 100, "Test Net"), "op")
+            .unwrap();
+        let b = client
+            .build_unsigned(&BuildParams::new("GABC", 2, 100, "Test Net"), "op")
+            .unwrap();
+        assert_ne!(a.envelope_xdr, b.envelope_xdr);
+    }
+
+    #[test]
+    fn diff_envelopes_identical_is_empty() {
+        assert!(diff_envelopes("AAAA", "AAAA").is_empty());
+    }
+
+    #[test]
+    fn diff_envelopes_mismatch_reports_semantic_diff() {
+        let diffs = diff_envelopes("AAAA", "BBBB");
+        assert_eq!(diffs.len(), 1);
+        assert_eq!(diffs[0].path, "/envelope");
+        assert!(diffs[0].to_string().contains("expected"));
     }
 
     #[test]

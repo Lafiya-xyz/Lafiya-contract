@@ -1,4 +1,8 @@
-//! Golden-file tests for the pre-submit state-change preview (issue #536).
+//! Golden-file tests for the pre-submit state-change preview (issue #536) and
+//! for the exact unsigned transaction envelope XDR produced by every mutating
+//! command (issue #733).
+//!
+//! ## Preview goldens (#536)
 //!
 //! These tests exercise the preview rendering pipeline for at least five
 //! mutating commands. For each command we build a deterministic simulation
@@ -6,11 +10,30 @@
 //! compare the output against checked-in golden files under
 //! `crates/lafiya-cli/tests/golden/preview/`.
 //!
-//! Golden files can be regenerated with:
+//! ## Transaction XDR goldens (#733)
+//!
+//! The most dangerous CLI bug is building a *different* transaction from the
+//! one the operator intended: wrong function, argument order, or contract ID.
+//! For every mutating subcommand we build the unsigned transaction envelope
+//! with a deterministic source account, sequence, fee, and network, then
+//! compare the base64 envelope XDR against a committed fixture under
+//! `crates/lafiya-cli/tests/golden/xdr/`. On mismatch we print a decoded
+//! `stellar-xdr` JSON diff so reviewers can see the semantic change.
+//!
+//! ## Regenerating golden files
+//!
+//! Regeneration is explicit and gated behind `UPDATE_GOLDEN=1`:
 //!
 //! ```text
+//! # Regenerate preview goldens
 //! UPDATE_GOLDEN=1 cargo test -p lafiya-cli --test preview_golden
+//!
+//! # Regenerate only the XDR envelope goldens
+//! UPDATE_GOLDEN=1 cargo test -p lafiya-cli --test preview_golden xdr_golden
 //! ```
+//!
+//! Always review the resulting diff before committing: a changed XDR fixture
+//! means the CLI now builds a different transaction.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -21,6 +44,9 @@ use lafiya_cli::preview::{
     Preview, StorageChange,
 };
 use lafiya_cli::rpc_client::SimulationResult;
+use lafiya_cli::tx_builder::{
+    build_unsigned_envelope, decode_envelope_to_json, EnvelopeParams, MutatingCommand,
+};
 
 /// Directory that holds the checked-in golden files.
 fn golden_dir() -> PathBuf {
@@ -306,3 +332,134 @@ fn failed_simulation_is_flagged() {
 // fixtures above via the re-exported type.
 #[allow(dead_code)]
 fn _assert_storage_change_type(_: StorageChange) {}
+
+// ---------------------------------------------------------------------------
+// Transaction envelope XDR goldens (issue #733)
+// ---------------------------------------------------------------------------
+
+/// Directory that holds the checked-in envelope XDR golden files.
+fn xdr_golden_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("golden")
+        .join("xdr")
+}
+
+/// Deterministic envelope parameters shared by every mutating command.
+///
+/// The source account, sequence, fee, and network are fixed so that the
+/// resulting envelope XDR is byte-for-byte reproducible across machines.
+fn deterministic_params() -> EnvelopeParams {
+    EnvelopeParams {
+        source_account: "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF".to_string(),
+        sequence: 42,
+        fee: 100,
+        network_passphrase: "Test SDF Network ; September 2015".to_string(),
+        timeout: 30,
+    }
+}
+
+/// Compare `actual` against the XDR golden file `name`, or update it when
+/// `UPDATE_GOLDEN` is set. On mismatch, print a decoded semantic diff.
+fn assert_xdr_golden(name: &str, actual: &str) {
+    let path = xdr_golden_dir().join(name);
+
+    if std::env::var_os("UPDATE_GOLDEN").is_some() {
+        fs::create_dir_all(xdr_golden_dir()).expect("create xdr golden dir");
+        fs::write(&path, actual).expect("write xdr golden file");
+        return;
+    }
+
+    let expected = fs::read_to_string(&path).unwrap_or_else(|err| {
+        panic!(
+            "failed to read XDR golden file {}: {err}\n\
+             run with UPDATE_GOLDEN=1 to generate it",
+            path.display()
+        )
+    });
+
+    let expected = expected.trim();
+    let actual = actual.trim();
+
+    if expected != actual {
+        let expected_json = decode_envelope_to_json(expected)
+            .unwrap_or_else(|err| format!("<failed to decode expected: {err}>"));
+        let actual_json = decode_envelope_to_json(actual)
+            .unwrap_or_else(|err| format!("<failed to decode actual: {err}>"));
+
+        panic!(
+            "XDR golden mismatch for {}\n\
+             --- expected (decoded) ---\n{}\n\
+             --- actual (decoded) ---\n{}\n\
+             run with UPDATE_GOLDEN=1 to regenerate",
+            path.display(),
+            expected_json,
+            actual_json
+        );
+    }
+}
+
+/// Build the unsigned envelope for `command` and assert its base64 XDR
+/// against the golden file `<command>.xdr`.
+fn check_xdr_command(command: MutatingCommand) {
+    let params = deterministic_params();
+    let envelope = build_unsigned_envelope(command, &params).expect("build envelope");
+    let xdr = envelope.to_base64_xdr().expect("encode envelope xdr");
+    assert_xdr_golden(&format!("{}.xdr", command.name()), &xdr);
+}
+
+#[test]
+fn xdr_golden_attester_add() {
+    check_xdr_command(MutatingCommand::AttesterAdd {
+        admin: "GADMIN...ADMIN".to_string(),
+        attester: "GBX7...ATTESTER".to_string(),
+    });
+}
+
+#[test]
+fn xdr_golden_attester_remove() {
+    check_xdr_command(MutatingCommand::AttesterRemove {
+        admin: "GADMIN...ADMIN".to_string(),
+        attester: "GBX7...ATTESTER".to_string(),
+    });
+}
+
+#[test]
+fn xdr_golden_admin_propose() {
+    check_xdr_command(MutatingCommand::AdminPropose {
+        admin: "GADMIN...ADMIN".to_string(),
+        action: "set_fee".to_string(),
+        value: "100".to_string(),
+    });
+}
+
+#[test]
+fn xdr_golden_ops_pause() {
+    check_xdr_command(MutatingCommand::OpsPause {
+        operator: "GOPS...OPERATOR".to_string(),
+    });
+}
+
+#[test]
+fn xdr_golden_pool_claim() {
+    check_xdr_command(MutatingCommand::PoolClaim {
+        beneficiary: "GBEN...BENEFICIARY".to_string(),
+        amount: 250,
+    });
+}
+
+/// Every mutating command must have a committed XDR fixture. This guards
+/// against adding a new subcommand without a golden.
+#[test]
+fn every_mutating_command_has_xdr_fixture() {
+    for command in MutatingCommand::all() {
+        let path = xdr_golden_dir().join(format!("{}.xdr", command.name()));
+        assert!(
+            path.exists(),
+            "missing XDR golden fixture for {}: {}\n\
+             run with UPDATE_GOLDEN=1 to generate it",
+            command.name(),
+            path.display()
+        );
+    }
+}
