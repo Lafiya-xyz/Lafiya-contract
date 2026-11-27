@@ -14,13 +14,20 @@ fn __check_auth(signature_payload: BytesN<32>, signatures: Vec<Signature>, auth_
 
 Verify the authorization of a transaction by checking N-of-M ed25519 signatures.
 
-Verifies that the supplied signatures meet the configured threshold and each belongs to
+Verifies that the supplied signatures meet the required policy and each belongs to
 an authorized signer, with signatures ordered in ascending public-key order.
+
+The required policy is the **strictest** policy across all supplied auth contexts.
+Each context is resolved against the configured context policies keyed by
+`(contract_address, fn_name)`; contexts with no matching override, and
+`CreateContractHostFn` / `CreateContractWithCtorHostFn` contexts, fall back to the
+strictest configured policy. See [ADR-0007](../../../docs/adr/0007-unscoped-multisig-authorization.md)
+for the residual risk.
 
 # Arguments
 * `signature_payload` \xe2\x80\x94 A 32-byte hash of the transaction to authorize.
 * `signatures` \xe2\x80\x94 A vector of ed25519 signatures, each with a public key and signature bytes, ordered by ascending public key.
-* `_auth_contexts` \xe2\x80\x94 Intentionally unused; see [ADR-0007](../../../docs/adr/0007-unscoped-multisig-authorization.md) for why this account does not scope authorization to specific contracts or functions during pre-alpha.
+* `auth_contexts` \xe2\x80\x94 The authorization contexts for the invocation; used to select the required signer policy.
 
 ### `__constructor`
 
@@ -34,6 +41,66 @@ Initialize the multisig account with a set of authorized signers and a signature
 * `signers` \xe2\x80\x94 A vector of ed25519 public keys (32 bytes each) authorized to sign transactions.
 * `threshold` \xe2\x80\x94 The minimum number of signatures required to authorize a transaction; must be > 0 and \xe2\x89\xa4 the signer count.
 
+### `set_context_policy`
+
+```rust
+fn set_context_policy(contract: Address, fn_name: Symbol, policy: SignerPolicy)
+```
+
+Configure a policy override for a `(contract_address, fn_name)` pair.
+
+Requires the strictest configured policy to authorize. The override applies to
+authorizations that include a matching context; authorizations spanning multiple
+contexts still require the strictest policy across all of them.
+
+# Arguments
+* `contract` \xe2\x80\x94 The contract address the policy applies to.
+* `fn_name` \xe2\x80\x94 The function name the policy applies to.
+* `policy` \xe2\x80\x94 The signer policy required for matching authorizations.
+
+### `remove_context_policy`
+
+```rust
+fn remove_context_policy(contract: Address, fn_name: Symbol)
+```
+
+Remove a previously configured context policy override.
+
+Requires the strictest configured policy to authorize. After removal, matching
+contexts fall back to the default policy.
+
+# Arguments
+* `contract` \xe2\x80\x94 The contract address of the override to remove.
+* `fn_name` \xe2\x80\x94 The function name of the override to remove.
+
+### `get_context_policy`
+
+```rust
+fn get_context_policy(contract: Address, fn_name: Symbol) -> Option<SignerPolicy>
+```
+
+Return the policy override configured for a `(contract_address, fn_name)` pair, if any.
+
+# Arguments
+* `contract` \xe2\x80\x94 The contract address to look up.
+* `fn_name` \xe2\x80\x94 The function name to look up.
+
+### `replace_signer`
+
+```rust
+fn replace_signer(old: SignerKey, new: SignerConfig)
+```
+
+Atomically replace one signer with another, preserving weight and roles unless
+explicitly overridden.
+
+Rejects duplicate keys and cases where the new key is already present, and runs the
+satisfiability check before committing. Emits `SignerReplaced`.
+
+# Arguments
+* `old` \xe2\x80\x94 The signer key to replace.
+* `new` \xe2\x80\x94 The replacement signer configuration.
+
 ## Types
 
 ### `Signature`
@@ -44,6 +111,46 @@ A single ed25519 signature from one signer in the multisig set.
 | --- | --- | --- |
 | `public_key` | `BytesN<32>` | The public key of the signer who created this signature. |
 | `signature` | `BytesN<64>` | The ed25519 signature bytes. |
+
+### `SignerPolicy`
+
+The signer set and threshold required to authorize an invocation.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `signers` | `Vec<SignerConfig>` | The signers authorized under this policy. |
+| `threshold` | `u32` | The minimum weight required under this policy. |
+
+### `SignerConfig`
+
+Configuration for a single signer.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `key` | `SignerKey` | The signer's public key. |
+| `weight` | `u32` | The weight contributed by this signer. |
+| `roles` | `Vec<Symbol>` | The roles assigned to this signer. |
+
+### `SignerKey`
+
+The public key of a signer, supporting multiple key types.
+
+| Variant | Description |
+| --- | --- |
+| `Ed25519(BytesN<32>)` | An ed25519 public key. |
+| `Secp256r1(BytesN<65>)` | A secp256r1 (passkey) public key. |
+
+## Events
+
+### `SignerReplaced`
+
+Emitted when a signer is atomically replaced via `replace_signer`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `old_fingerprint` | `BytesN<32>` | Fingerprint of the replaced signer key. |
+| `new_fingerprint` | `BytesN<32>` | Fingerprint of the replacement signer key. |
+| `config_version` | `u32` | The configuration version after the replacement. |
 
 ## Errors (`Error`)
 
@@ -56,3 +163,7 @@ A single ed25519 signature from one signer in the multisig set.
 | 5 | `UnknownSigner` | A signature corresponds to a public key that is not a configured signer. |
 | 6 | `NotInitialized` | The contract has not been initialized; threshold or signer count is unavailable. |
 | 7 | `TooManySigners` | The supplied signature count exceeds the configured signer count. |
+| 8 | `UnknownContextPolicy` | No context policy override exists for the requested `(contract_address, fn_name)` pair. |
+| 9 | `UnsatisfiablePolicy` | The resulting policy cannot be satisfied by the configured signers. |
+| 10 | `DuplicateSignerKey` | The replacement key in `replace_signer` is already present in the signer set. |
+| 11 | `UnknownSignerKey` | The key to replace in `replace_signer` is not a configured signer. |

@@ -26,7 +26,7 @@ use soroban_sdk::{
     auth::{Context, CustomAccountInterface},
     contract, contracterror, contractevent, contractimpl, contracttype,
     crypto::Hash,
-    panic_with_error, Bytes, BytesN, Env, Symbol, Vec,
+    panic_with_error, Address, Bytes, BytesN, Env, Symbol, Vec,
 };
 
 #[contracttype]
@@ -50,6 +50,14 @@ enum DataKey {
     TypedSignerDetails(SignerKey),
     /// Ordered typed signer keys used when replacing the set.
     TypedSignerSet,
+    /// Policy override for a specific `(contract_address, fn_name)` context.
+    ContextPolicy(Address, Symbol),
+    /// Ordered list of configured context-policy keys, used to enumerate overrides.
+    ContextPolicyKeys,
+    /// Default policy applied to contexts without an override.
+    DefaultPolicy,
+    /// Monotonic configuration version, bumped on every policy mutation.
+    ConfigVersion,
 }
 
 /// Public key type used by an authorized signer.
@@ -144,6 +152,14 @@ pub enum Error {
     RoleQuorumNotMet = 9,
     /// A signer weight, role requirement, or policy threshold is invalid.
     InvalidPolicy = 10,
+    /// The supplied signature count exceeds `MAX_SIGNERS`.
+    SignerLimitExceeded = 11,
+    /// The supplied client data exceeds `MAX_CLIENT_DATA_LEN`.
+    ClientDataTooLong = 12,
+    /// The replacement signer key is already present in the policy.
+    SignerAlreadyPresent = 13,
+    /// The signer to replace is not present in the policy.
+    SignerNotFound = 14,
 }
 
 /// Instance storage TTL policy:
@@ -175,6 +191,21 @@ soroban_sdk::contractmeta!(key = "interface_version", val = "1");
 
 /// Version of the emitted event schemas (see `docs/events.md`).
 pub const EVENT_VERSION: u32 = 1;
+
+/// Maximum number of signatures accepted by `__check_auth`.
+///
+/// Derived from the worst-case mixed-key CPU budget measurements published in
+/// `docs/benchmarks.md`: an authorization with `MAX_SIGNERS` secp256r1
+/// (passkey) signatures and maximum client data must consume at most 50% of
+/// the transaction CPU limit in `config/network-limits.json`. The worst case
+/// is dominated by secp256r1 verification, so the bound is chosen against an
+/// all-passkey set. Re-derive with `lafiya-bench` before changing.
+pub const MAX_SIGNERS: u32 = 16;
+
+/// Maximum length, in bytes, of WebAuthn client data accepted per signature.
+///
+/// Bounds the SHA-256 hashing cost included in the worst-case budget above.
+pub const MAX_CLIENT_DATA_LEN: u32 = 1024;
 
 /// Optional features this build supports, reported by `get_interface`.
 pub const FEATURES: [&str; 2] = ["ed25519", "unscoped_auth"];
@@ -219,6 +250,32 @@ pub struct AuthorizationApproved {
     pub payload: Bytes,
     /// The signer keys whose signatures were verified, in signature order.
     pub signers: Vec<SignerKey>,
+}
+
+/// Emitted when a single signer is atomically replaced via `replace_signer`.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SignerReplaced {
+    #[topic]
+    pub old_fingerprint: BytesN<32>,
+    /// Fingerprint of the replacement signer key.
+    pub new_fingerprint: BytesN<32>,
+    /// Configuration version after the replacement.
+    pub config_version: u32,
+}
+
+/// Emitted when a context policy override is configured or removed.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ContextPolicySet {
+    #[topic]
+    pub contract: Address,
+    /// The function name the override applies to.
+    pub function: Symbol,
+    /// Whether the override was removed (falling back to the default policy).
+    pub removed: bool,
+    /// Configuration version after the change.
+    pub config_version: u32,
 }
 
 #[contract]
@@ -347,6 +404,328 @@ impl MultisigAccount {
     /// Return the current weighted and role-based signer policy.
     pub fn get_policy(env: Env) -> Result<SignerPolicy, Error> {
         Self::policy(&env)
+    }
+
+    /// Return the default policy applied to contexts without an override.
+    pub fn get_default_policy(env: Env) -> Result<SignerPolicy, Error> {
+        Self::default_policy(&env)
+    }
+
+    /// Return the policy override for a `(contract, function)` context, if any.
+    pub fn get_context_policy(
+        env: Env,
+        contract: Address,
+        function: Symbol,
+    ) -> Option<SignerPolicy> {
+        env.storage()
+            .instance()
+            .get(&DataKey::ContextPolicy(contract, function))
+    }
+
+    /// Return the current configuration version.
+    pub fn get_config_version(env: Env) -> u32 {
+        env.storage()
+            .instance()
+            .get(&DataKey::ConfigVersion)
+            .unwrap_or(0)
+    }
+
+    /// Configure a policy override for a `(contract, function)` context.
+    ///
+    /// The change itself must be authorized under the strictest configured
+    /// policy, so a routine context cannot be used to weaken the account.
+    pub fn set_context_policy(
+        env: Env,
+        contract: Address,
+        function: Symbol,
+        policy: SignerPolicy,
+    ) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+        Self::validate_policy(
+            &policy.signers,
+            policy.weight_threshold,
+            policy.minimum_signers,
+            &policy.role_requirements,
+        )?;
+
+        let key = DataKey::ContextPolicy(contract.clone(), function.clone());
+        if !env.storage().instance().has(&key) {
+            let mut keys: Vec<(Address, Symbol)> = env
+                .storage()
+                .instance()
+                .get(&DataKey::ContextPolicyKeys)
+                .unwrap_or_else(|| Vec::new(&env));
+            keys.push_back((contract.clone(), function.clone()));
+            env.storage()
+                .instance()
+                .set(&DataKey::ContextPolicyKeys, &keys);
+        }
+        env.storage().instance().set(&key, &policy);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        let config_version = Self::bump_config_version(&env);
+        ContextPolicySet {
+            contract,
+            function,
+            removed: false,
+            config_version,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Remove a policy override, falling back to the default policy.
+    pub fn remove_context_policy(
+        env: Env,
+        contract: Address,
+        function: Symbol,
+    ) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+        let key = DataKey::ContextPolicy(contract.clone(), function.clone());
+        env.storage().instance().remove(&key);
+
+        let keys: Vec<(Address, Symbol)> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContextPolicyKeys)
+            .unwrap_or_else(|| Vec::new(&env));
+        let mut remaining = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured context-policy key list
+        for entry in keys.iter() {
+            if entry.0 != contract || entry.1 != function {
+                remaining.push_back(entry);
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::ContextPolicyKeys, &remaining);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        let config_version = Self::bump_config_version(&env);
+        ContextPolicySet {
+            contract,
+            function,
+            removed: true,
+            config_version,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Atomically replace one signer with another, preserving weight and role
+    /// unless `new` explicitly overrides them.
+    ///
+    /// Rejects a replacement key that is already present and runs the same
+    /// satisfiability checks as `set_policy`. The account must authorize this
+    /// call under its current policy.
+    pub fn replace_signer(
+        env: Env,
+        old: SignerKey,
+        new: SignerConfig,
+    ) -> Result<(), Error> {
+        env.current_contract_address().require_auth();
+
+        let mut policy = Self::policy(&env)?;
+        let mut found: Option<u32> = None;
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set
+        for (index, signer) in policy.signers.iter().enumerate() {
+            if signer.public_key == old {
+                found = Some(index);
+            } else if signer.public_key == new.public_key {
+                return Err(Error::SignerAlreadyPresent);
+            }
+        }
+        let index = found.ok_or(Error::SignerNotFound)?;
+
+        let previous = policy.signers.get_unchecked(index);
+        let replacement = SignerConfig {
+            public_key: new.public_key.clone(),
+            weight: if new.weight == 0 {
+                previous.weight
+            } else {
+                new.weight
+            },
+            role: match &new.role {
+                Some(role) => Some(role.clone()),
+                None => previous.role.clone(),
+            },
+        };
+
+        let mut signers = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set
+        for (i, signer) in policy.signers.iter().enumerate() {
+            if i == index {
+                signers.push_back(replacement.clone());
+            } else {
+                signers.push_back(signer);
+            }
+        }
+
+        Self::validate_policy(
+            &signers,
+            policy.weight_threshold,
+            policy.minimum_signers,
+            &policy.role_requirements,
+        )?;
+
+        // Rewrite the typed-signer indexes for the replaced key.
+        env.storage()
+            .instance()
+            .remove(&DataKey::TypedSigner(old.clone()));
+        env.storage()
+            .instance()
+            .remove(&DataKey::TypedSignerDetails(old.clone()));
+        if let SignerKey::Ed25519(public_key) = &old {
+            env.storage()
+                .instance()
+                .remove(&DataKey::Signer(public_key.clone()));
+            env.storage()
+                .instance()
+                .remove(&DataKey::SignerDetails(public_key.clone()));
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::TypedSigner(replacement.public_key.clone()), &());
+        env.storage().instance().set(
+            &DataKey::TypedSignerDetails(replacement.public_key.clone()),
+            &replacement,
+        );
+        if let SignerKey::Ed25519(public_key) = &replacement.public_key {
+            env.storage()
+                .instance()
+                .set(&DataKey::Signer(public_key.clone()), &());
+        }
+
+        let mut typed_signers = Vec::new(&env);
+        let mut legacy_signers = Vec::new(&env);
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured signer set
+        for signer in signers.iter() {
+            typed_signers.push_back(signer.public_key.clone());
+            if let SignerKey::Ed25519(public_key) = &signer.public_key {
+                legacy_signers.push_back(public_key.clone());
+            }
+        }
+        env.storage()
+            .instance()
+            .set(&DataKey::TypedSignerSet, &typed_signers);
+        env.storage()
+            .instance()
+            .set(&DataKey::SignerSet, &legacy_signers);
+
+        policy.signers = signers;
+        env.storage().instance().set(&DataKey::Policy, &policy);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+
+        let config_version = Self::bump_config_version(&env);
+        SignerReplaced {
+            old_fingerprint: Self::fingerprint(&env, &old),
+            new_fingerprint: Self::fingerprint(&env, &replacement.public_key),
+            config_version,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    fn fingerprint(env: &Env, key: &SignerKey) -> BytesN<32> {
+        let bytes: Bytes = match key {
+            SignerKey::Ed25519(public_key) => public_key.clone().into(),
+            SignerKey::Secp256r1(public_key) => public_key.clone().into(),
+        };
+        env.crypto().sha256(&bytes).to_bytes()
+    }
+
+    fn bump_config_version(env: &Env) -> u32 {
+        let next = env
+            .storage()
+            .instance()
+            .get::<_, u32>(&DataKey::ConfigVersion)
+            .unwrap_or(0)
+            .saturating_add(1);
+        env.storage().instance().set(&DataKey::ConfigVersion, &next);
+        next
+    }
+
+    fn default_policy(env: &Env) -> Result<SignerPolicy, Error> {
+        if let Some(policy) = env.storage().instance().get(&DataKey::DefaultPolicy) {
+            return Ok(policy);
+        }
+        Self::policy(env)
+    }
+
+    /// Resolve the policy for a single auth context.
+    ///
+    /// Contract-creation contexts and any context without an override fall
+    /// back to the strictest configured policy.
+    fn context_policy(env: &Env, context: &Context) -> Result<SignerPolicy, Error> {
+        match context {
+            Context::Contract(contract) => {
+                if let Some(policy) = env.storage().instance().get(&DataKey::ContextPolicy(
+                    contract.contract.clone(),
+                    contract.fn_name.clone(),
+                )) {
+                    Ok(policy)
+                } else {
+                    Self::strictest_policy(env)
+                }
+            }
+            Context::CreateContractHostFn(_) | Context::CreateContractWithCtorHostFn(_) => {
+                Self::strictest_policy(env)
+            }
+        }
+    }
+
+    /// Compute the strictest policy across the default policy and every
+    /// configured context override.
+    fn strictest_policy(env: &Env) -> Result<SignerPolicy, Error> {
+        let mut strictest = Self::default_policy(env)?;
+        let keys: Vec<(Address, Symbol)> = env
+            .storage()
+            .instance()
+            .get(&DataKey::ContextPolicyKeys)
+            .unwrap_or_else(|| Vec::new(env));
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured context-policy key list
+        for (contract, function) in keys.iter() {
+            if let Some(policy) = env
+                .storage()
+                .instance()
+                .get::<_, SignerPolicy>(&DataKey::ContextPolicy(contract, function))
+            {
+                if Self::is_stricter(&policy, &strictest) {
+                    strictest = policy;
+                }
+            }
+        }
+        Ok(strictest)
+    }
+
+    /// Return `true` when `candidate` requires at least as much as `current`
+    /// on every dimension (weight, signer count, and each role minimum).
+    fn is_stricter(candidate: &SignerPolicy, current: &SignerPolicy) -> bool {
+        if candidate.weight_threshold < current.weight_threshold
+            || candidate.minimum_signers < current.minimum_signers
+        {
+            return false;
+        }
+        // loop-bound: ACCEPTED(admin) -- iterates the admin-configured role requirements
+        for requirement in current.role_requirements.iter() {
+            let mut candidate_minimum = 0u32;
+            // loop-bound: ACCEPTED(admin) -- iterates the admin-configured role requirements
+            for other in candidate.role_requirements.iter() {
+                if other.role == requirement.role {
+                    candidate_minimum = other.minimum;
+                }
+            }
+            if candidate_minimum < requirement.minimum {
+                return false;
+            }
+        }
+        true
     }
 
     /// Replace the signer set with equal-weight signers and no role constraints.
@@ -604,14 +983,28 @@ impl CustomAccountInterface for MultisigAccount {
     /// # Arguments
     /// * `signature_payload` — A 32-byte hash of the transaction to authorize.
     /// * `signatures` — A vector of ed25519 signatures, each with a public key and signature bytes, ordered by ascending public key.
-    /// * `_auth_contexts` — Intentionally unused; see [ADR-0007](../../../docs/adr/0007-unscoped-multisig-authorization.md) for why this account does not scope authorization to specific contracts or functions during pre-alpha.
+    /// * `auth_contexts` — The authorization contexts; the strictest policy
+    ///   across all of them is required. Unknown and contract-creation
+    ///   contexts fall back to the strictest configured policy. See
+    ///   [ADR-0007](../../../docs/adr/0007-unscoped-multisig-authorization.md).
     fn __check_auth(
         env: Env,
         signature_payload: Hash<32>,
         signatures: Self::Signature,
-        _auth_contexts: Vec<Context>,
+        auth_contexts: Vec<Context>,
     ) -> Result<(), Error> {
-        let policy = Self::policy(&env)?;
+        let mut policy = Self::default_policy(&env)?;
+        // loop-bound: ACCEPTED(admin) -- iterates the transaction's auth contexts
+        for context in auth_contexts.iter() {
+            let candidate = Self::context_policy(&env, &context)?;
+            if Self::is_stricter(&candidate, &policy) {
+                policy = candidate;
+            }
+        }
+
+        if signatures.len() > MAX_SIGNERS {
+            return Err(Error::SignerLimitExceeded);
+        }
 
         if signatures.len() < policy.minimum_signers {
             return Err(Error::NotEnoughSigners);
@@ -625,6 +1018,14 @@ impl CustomAccountInterface for MultisigAccount {
 
         if signatures.len() > signer_count {
             return Err(Error::TooManySigners);
+        }
+
+        // Enforce the client-data bound used to derive `MAX_SIGNERS`.
+        // loop-bound: ACCEPTED(admin) -- iterates the supplied signatures
+        for signature in signatures.iter() {
+            if signature.signature.len() > MAX_CLIENT_DATA_LEN {
+                return Err(Error::ClientDataTooLong);
+            }
         }
 
         // Pass 1: cheap checks only (strict ordering doubles as duplicate

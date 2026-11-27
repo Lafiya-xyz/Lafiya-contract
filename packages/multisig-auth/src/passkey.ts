@@ -22,6 +22,7 @@
  */
 import { Buffer } from "buffer";
 import { hash } from "@stellar/stellar-sdk";
+import vectors from "../vectors/multisig-auth.json";
 
 /** Order `n` of the P-256 group. */
 export const P256_ORDER = BigInt(
@@ -149,6 +150,114 @@ export function webauthnSignedDigest(
   return Uint8Array.from(
     hash(Buffer.concat([Buffer.from(authenticatorData), hash(Buffer.from(clientDataJSON))])),
   );
+}
+
+/**
+ * The canonical cross-language test vectors shared with the Rust contract
+ * tests (`vectors/multisig-auth.json`). Both implementations must consume the
+ * same file so payload construction, DER handling and flag checks cannot
+ * drift apart. See `runPasskeyVectors` for the self-check.
+ */
+export interface PasskeyVector {
+  name: string;
+  /** `"ed25519"` or `"secp256r1"`. */
+  keyType: "ed25519" | "secp256r1";
+  /** Base64url-encoded 32-byte auth payload (the WebAuthn challenge). */
+  payload: string;
+  /** Base64url-encoded `clientDataJSON`. */
+  clientDataJSON: string;
+  /** Base64url-encoded authenticator data. */
+  authenticatorData: string;
+  /** Base64url-encoded DER signature (secp256r1 only). */
+  signature?: string;
+  /** Expected relying-party id, when the vector pins one. */
+  rpId?: string;
+  /** Expected origin, when the vector pins one. */
+  origin?: string;
+  /** Whether the vector is expected to verify. */
+  valid: boolean;
+  /** For negative vectors: the reason the check must fail. */
+  reason?: string;
+}
+
+export interface PasskeyVectorsFile {
+  version: number;
+  vectors: PasskeyVector[];
+}
+
+const VECTORS = vectors as PasskeyVectorsFile;
+
+/** The canonical vector file, loaded at module init. */
+export function passkeyVectors(): PasskeyVectorsFile {
+  return VECTORS;
+}
+
+/**
+ * Number of vectors in the canonical file. CI compares this against the
+ * count the Rust tests load; a mismatch fails the build.
+ */
+export function passkeyVectorCount(): number {
+  return VECTORS.vectors.length;
+}
+
+function base64UrlDecode(value: string): Uint8Array {
+  const padded = value.replace(/-/g, "+").replace(/_/g, "/");
+  return Uint8Array.from(Buffer.from(padded, "base64"));
+}
+
+export interface PasskeyVectorResult {
+  name: string;
+  keyType: PasskeyVector["keyType"];
+  valid: boolean;
+  /** Whether the vector was accepted by `parsePasskeyAssertion`. */
+  accepted: boolean;
+  /** Whether the vector's signature was normalized from high-S. */
+  normalized: boolean;
+}
+
+/**
+ * Run every secp256r1 vector through `parsePasskeyAssertion` and assert the
+ * outcome matches the vector's `valid` flag. Ed25519 vectors are returned
+ * untouched (they are verified by the Rust side and by the ed25519 helpers).
+ * Throws if any vector disagrees, so a divergence fails the TS test suite.
+ */
+export function runPasskeyVectors(): PasskeyVectorResult[] {
+  return VECTORS.vectors.map((vector) => {
+    if (vector.keyType !== "secp256r1") {
+      return {
+        name: vector.name,
+        keyType: vector.keyType,
+        valid: vector.valid,
+        accepted: vector.valid,
+        normalized: false,
+      };
+    }
+    const payload = base64UrlDecode(vector.payload);
+    const assertion: PasskeyAssertion = {
+      authenticatorData: base64UrlDecode(vector.authenticatorData),
+      clientDataJSON: base64UrlDecode(vector.clientDataJSON),
+      signature: base64UrlDecode(vector.signature ?? ""),
+    };
+    let accepted = true;
+    let normalized = false;
+    try {
+      const parsed = parsePasskeyAssertion(assertion, payload, {
+        origin: vector.origin,
+        rpId: vector.rpId,
+        requireUserVerification: true,
+      });
+      normalized = parsed.normalized;
+    } catch {
+      accepted = false;
+    }
+    if (accepted !== vector.valid) {
+      throw new Error(
+        `passkey vector "${vector.name}" expected valid=${vector.valid} but got ${accepted}` +
+          (vector.reason ? ` (${vector.reason})` : ""),
+      );
+    }
+    return { name: vector.name, keyType: vector.keyType, valid: vector.valid, accepted, normalized };
+  });
 }
 
 /** The raw fields of a `PublicKeyCredential` assertion response. */

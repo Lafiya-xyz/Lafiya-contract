@@ -297,6 +297,61 @@
       "i18n_key": "err.attester.batch_too_large",
       "since": "0.1.0",
       "deprecated": null
+    },
+    {
+      "contract": "multisig-account",
+      "code": 1,
+      "name": "InvalidContextPolicy",
+      "doc": "A context policy override is invalid (for example an empty function name, a zero-weight policy, or a policy that cannot be satisfied by the configured signers). Context policies map `(contract_address, fn_name)` to a signer policy.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.multisig.invalid_context_policy",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "multisig-account",
+      "code": 2,
+      "name": "ContextPolicyChangeRequiresStrictest",
+      "doc": "Changes to context policies (setting or removing an override) must be authorized under the strictest configured policy. Re-submit the authorization with enough signers to satisfy the strictest policy.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.multisig.context_policy_change_requires_strictest",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "multisig-account",
+      "code": 3,
+      "name": "SignerNotFound",
+      "doc": "`replace_signer` referenced an `old` signer key that is not present in the current policy.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.multisig.signer_not_found",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "multisig-account",
+      "code": 4,
+      "name": "DuplicateSigner",
+      "doc": "`replace_signer` was called with a `new` signer key that already exists in the policy, or the replacement would otherwise produce duplicate signer keys. Signer keys must be unique.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.multisig.duplicate_signer",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "multisig-account",
+      "code": 5,
+      "name": "PolicyUnsatisfiable",
+      "doc": "The resulting policy (after `replace_signer` or a context-policy change) cannot satisfy its threshold with the configured signers. The change is rejected so the account never drops below its required quorum.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.multisig.policy_unsatisfiable",
+      "since": "0.3.0",
+      "deprecated": null
     }
   ]
 }

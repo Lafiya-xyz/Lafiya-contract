@@ -15,15 +15,52 @@ import {
 } from "../dist/index.js";
 import { fixtureEntry } from "./fixtures.js";
 
-// Shared with contracts/multisig-account/src/passkey_vectors_test.rs, which
-// checks that `normalized_compact_hex` is what __check_auth accepts and that
-// the high-S `compact_hex` is rejected.
+// Canonical cross-language vectors, shared with
+// contracts/multisig-account/src/passkey_vectors_test.rs. Both sides load the
+// same file and assert the same counts, so a vector skipped on either side
+// fails CI.
 const VECTORS = JSON.parse(
-  readFileSync(new URL("./vectors/passkey-vectors.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../vectors/multisig-auth.json", import.meta.url), "utf8"),
 );
 const hex = (s) => Uint8Array.from(Buffer.from(s, "hex"));
 const toHex = (b) => Buffer.from(b).toString("hex");
 const webauthnVectors = VECTORS.vectors.filter((v) => v.kind === "webauthn");
+const ed25519Vectors = VECTORS.vectors.filter((v) => v.kind === "ed25519");
+const negativeVectors = VECTORS.vectors.filter((v) => v.expect === "reject");
+const positiveVectors = VECTORS.vectors.filter((v) => v.expect === "accept");
+
+// Must stay in lockstep with the Rust side's expected counts.
+const EXPECTED = {
+  total: 12,
+  webauthn: 8,
+  ed25519: 4,
+  negative: 6,
+  positive: 6,
+};
+
+describe("shared vector file", () => {
+  it("is the canonical multisig-auth vector set", () => {
+    expect(VECTORS.version).toBe(1);
+    expect(VECTORS.vectors.length).toBe(EXPECTED.total);
+    expect(webauthnVectors.length).toBe(EXPECTED.webauthn);
+    expect(ed25519Vectors.length).toBe(EXPECTED.ed25519);
+    expect(negativeVectors.length).toBe(EXPECTED.negative);
+    expect(positiveVectors.length).toBe(EXPECTED.positive);
+  });
+
+  it("covers both key types with positive and negative cases", () => {
+    for (const kind of ["webauthn", "ed25519"]) {
+      const ofKind = VECTORS.vectors.filter((v) => v.kind === kind);
+      expect(ofKind.some((v) => v.expect === "accept")).toBe(true);
+      expect(ofKind.some((v) => v.expect === "reject")).toBe(true);
+    }
+  });
+
+  it("has unique names so no vector can be silently shadowed", () => {
+    const names = VECTORS.vectors.map((v) => v.name);
+    expect(new Set(names).size).toBe(names.length);
+  });
+});
 
 function assertionFor(vector, overrides = {}) {
   return {
@@ -117,6 +154,32 @@ describe("parsePasskeyAssertion", () => {
     expect(() => parsePasskeyAssertion(assertionFor(vector), other)).toThrow(/challenge/);
   });
 
+  it("honors every negative vector in the shared file", () => {
+    const negatives = webauthnVectors.filter((v) => v.expect === "reject");
+    expect(negatives.length).toBeGreaterThan(0);
+    for (const v of negatives) {
+      const assertion = assertionFor(v, {
+        ...(v.authenticator_data_hex
+          ? { authenticatorData: hex(v.authenticator_data_hex) }
+          : {}),
+        ...(v.client_data_json
+          ? { clientDataJSON: Uint8Array.from(Buffer.from(v.client_data_json)) }
+          : {}),
+        ...(v.der_hex ? { signature: hex(v.der_hex) } : {}),
+      });
+      const challenge = v.challenge_hex ? hex(v.challenge_hex) : hex(v.payload_hex);
+      const opts = {
+        origin: v.origin,
+        rpId: v.rp_id,
+        requireUserVerification: v.require_user_verification ?? true,
+      };
+      expect(
+        () => parsePasskeyAssertion(assertion, challenge, opts),
+        `vector ${v.name} (${v.reason})`,
+      ).toThrow(new RegExp(v.error));
+    }
+  });
+
   it("rejects wrong origin, rpId, type, and missing flags", () => {
     expect(() =>
       parsePasskeyAssertion(assertionFor(vector), payload, { origin: "https://evil.example" }),
@@ -146,6 +209,27 @@ describe("parsePasskeyAssertion", () => {
         requireUserVerification: true,
       }),
     ).toThrow(/user verification/);
+  });
+});
+
+describe("ed25519 (shared vectors)", () => {
+  it("verifies every positive vector and rejects every negative one", () => {
+    expect(ed25519Vectors.length).toBe(EXPECTED.ed25519);
+    for (const v of ed25519Vectors) {
+      const publicKey = createPublicKey({
+        key: Buffer.from(v.public_key_spki_hex, "hex"),
+        format: "der",
+        type: "spki",
+      });
+      const message = hex(v.payload_hex);
+      const signature = hex(v.signature_hex);
+      const ok = verify(null, message, publicKey, signature);
+      if (v.expect === "accept") {
+        expect(ok, `vector ${v.name}`).toBe(true);
+      } else {
+        expect(ok, `vector ${v.name} (${v.reason})`).toBe(false);
+      }
+    }
   });
 });
 

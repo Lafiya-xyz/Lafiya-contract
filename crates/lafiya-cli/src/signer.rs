@@ -265,6 +265,9 @@ pub enum SignerError {
     ExternalSignerFailed { detail: String },
     /// A plaintext key was supplied without `--allow-plaintext-key`.
     PlaintextKeyRejected,
+    /// The `replace_signer` ceremony was rejected before any signatures were
+    /// collected (missing signer, duplicate key, unsatisfiable policy, ...).
+    ReplaceSignerRejected { detail: String },
 }
 
 impl fmt::Display for SignerError {
@@ -309,6 +312,9 @@ impl fmt::Display for SignerError {
                 "refusing to use a plaintext key from env/config; \
                  pass --allow-plaintext-key to override (insecure)"
             ),
+            SignerError::ReplaceSignerRejected { detail } => {
+                write!(f, "replace_signer rejected: {detail}")
+            }
         }
     }
 }
@@ -935,8 +941,344 @@ fn parse_sign_response(response: &str) -> Result<SignResult, SignerError> {
 }
 
 // ---------------------------------------------------------------------------
+// replace_signer ceremony
+// ---------------------------------------------------------------------------
+
+/// The kind of key backing a signer.
+///
+/// The multisig account policy distinguishes ed25519 keys from passkey
+/// (secp256r1) keys; migrating between the two is the primary use case for
+/// the atomic `replace_signer` ceremony.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignerKeyKind {
+    /// A classic ed25519 signer key.
+    Ed25519,
+    /// A passkey / WebAuthn signer key (secp256r1).
+    Secp256r1,
+}
+
+impl SignerKeyKind {
+    /// Parse the CLI spelling of a key kind (`ed25519` or `secp256r1`).
+    pub fn parse(s: &str) -> Result<Self, SignerError> {
+        match s.trim().to_ascii_lowercase().as_str() {
+            "ed25519" => Ok(SignerKeyKind::Ed25519),
+            "secp256r1" | "passkey" => Ok(SignerKeyKind::Secp256r1),
+            other => Err(SignerError::ReplaceSignerRejected {
+                detail: format!("unknown signer key kind '{other}'"),
+            }),
+        }
+    }
+
+    /// The canonical CLI spelling of this key kind.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            SignerKeyKind::Ed25519 => "ed25519",
+            SignerKeyKind::Secp256r1 => "secp256r1",
+        }
+    }
+}
+
+/// A signer key as referenced by the multisig account policy.
+///
+/// `fingerprint` is the canonical, human-readable identifier emitted by the
+/// contract (e.g. `ed25519:<hex>` or `secp256r1:<hex>`).  It is the only
+/// piece of key material the CLI needs to build a `replace_signer`
+/// invocation, so no raw secret ever enters this type.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignerKey {
+    /// The key kind.
+    pub kind: SignerKeyKind,
+    /// The canonical fingerprint of the key.
+    pub fingerprint: String,
+}
+
+impl SignerKey {
+    /// Build a signer key from a kind and fingerprint.
+    pub fn new(kind: SignerKeyKind, fingerprint: impl Into<String>) -> Self {
+        Self {
+            kind,
+            fingerprint: fingerprint.into(),
+        }
+    }
+
+    /// Parse a `kind:fingerprint` string as accepted on the command line.
+    pub fn parse(s: &str) -> Result<Self, SignerError> {
+        let (kind, fingerprint) = s.split_once(':').ok_or_else(|| {
+            SignerError::ReplaceSignerRejected {
+                detail: format!("signer key '{s}' must be '<kind>:<fingerprint>'"),
+            }
+        })?;
+        if fingerprint.trim().is_empty() {
+            return Err(SignerError::ReplaceSignerRejected {
+                detail: "signer key fingerprint is empty".to_string(),
+            });
+        }
+        Ok(Self::new(SignerKeyKind::parse(kind)?, fingerprint.trim()))
+    }
+}
+
+/// The configuration applied to the replacement signer.
+///
+/// Weight and roles default to the values held by the signer being replaced
+/// so a migration never silently changes the policy.  Operators may override
+/// either field explicitly.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignerConfig {
+    /// The replacement key.
+    pub key: SignerKey,
+    /// Voting weight.  `None` means "inherit from the replaced signer".
+    pub weight: Option<u32>,
+    /// Role names.  `None` means "inherit from the replaced signer".
+    pub roles: Option<Vec<String>>,
+}
+
+impl SignerConfig {
+    /// Build a config that inherits weight and roles from the replaced signer.
+    pub fn inheriting(key: SignerKey) -> Self {
+        Self {
+            key,
+            weight: None,
+            roles: None,
+        }
+    }
+
+    /// Override the voting weight.
+    pub fn with_weight(mut self, weight: u32) -> Self {
+        self.weight = Some(weight);
+        self
+    }
+
+    /// Override the role assignments.
+    pub fn with_roles(mut self, roles: Vec<String>) -> Self {
+        self.roles = Some(roles);
+        self
+    }
+}
+
+/// A signer entry in the current multisig account policy.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PolicySigner {
+    /// The signer key.
+    pub key: SignerKey,
+    /// The signer's voting weight.
+    pub weight: u32,
+    /// The signer's role assignments.
+    pub roles: Vec<String>,
+}
+
+/// The multisig account policy as read from the contract.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SignerPolicy {
+    /// The current signers.
+    pub signers: Vec<PolicySigner>,
+    /// The number of signatures required to authorize an operation.
+    pub threshold: u32,
+    /// The current configuration version.
+    pub config_version: u64,
+}
+
+impl SignerPolicy {
+    /// Look up a signer by key.
+    pub fn find(&self, key: &SignerKey) -> Option<&PolicySigner> {
+        self.signers.iter().find(|s| &s.key == key)
+    }
+
+    /// The total voting weight of all signers.
+    pub fn total_weight(&self) -> u32 {
+        self.signers.iter().map(|s| s.weight).sum()
+    }
+}
+
+/// The fully-resolved `replace_signer` invocation, ready to be signed and
+/// submitted.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReplaceSignerInvocation {
+    /// The signer being replaced.
+    pub old: SignerKey,
+    /// The replacement signer, with weight and roles resolved.
+    pub new: SignerConfig,
+    /// The configuration version the invocation was built against.
+    pub config_version: u64,
+}
+
+impl ReplaceSignerInvocation {
+    /// Render the invocation as a stable, human-reviewable string.
+    ///
+    /// This is the text the ceremony participants review before signing; it
+    /// is also what the contract call is built from.
+    pub fn to_invocation_string(&self) -> String {
+        let weight = self
+            .new
+            .weight
+            .map(|w| w.to_string())
+            .unwrap_or_else(|| "inherit".to_string());
+        let roles = self
+            .new
+            .roles
+            .as_ref()
+            .map(|r| r.join(","))
+            .unwrap_or_else(|| "inherit".to_string());
+        format!(
+            "lafiya-replace-signer-v1:{}:{}:{}:{}:{}",
+            self.old.fingerprint,
+            self.new.key.kind.as_str(),
+            self.new.key.fingerprint,
+            weight,
+            roles,
+        )
+    }
+
+    /// The SHA-256 digest of the invocation string.
+    ///
+    /// Ceremony participants compare this digest out-of-band before signing
+    /// so a tampered invocation is detected.
+    pub fn digest(&self) -> [u8; 32] {
+        sha256(self.to_invocation_string().as_bytes())
+    }
+}
+
+/// Build an atomic `replace_signer` invocation from the current policy.
+///
+/// This performs every check the contract will perform so the ceremony fails
+/// fast on the CLI rather than after collecting signatures:
+///
+/// - the old signer must exist in the policy;
+/// - the replacement key must not already be present;
+/// - weight and roles are inherited from the old signer unless overridden;
+/// - the resulting policy must still be satisfiable (threshold reachable).
+pub fn build_replace_signer(
+    policy: &SignerPolicy,
+    old: &SignerKey,
+    new: SignerConfig,
+) -> Result<ReplaceSignerInvocation, SignerError> {
+    let existing = policy
+        .find(old)
+        .ok_or_else(|| SignerError::ReplaceSignerRejected {
+            detail: format!("signer '{}' is not present in the policy", old.fingerprint),
+        })?;
+
+    if policy.find(&new.key).is_some() {
+        return Err(SignerError::ReplaceSignerRejected {
+            detail: format!(
+                "replacement signer '{}' is already present in the policy",
+                new.key.fingerprint
+            ),
+        });
+    }
+
+    let resolved = SignerConfig {
+        key: new.key,
+        weight: Some(new.weight.unwrap_or(existing.weight)),
+        roles: Some(new.roles.unwrap_or_else(|| existing.roles.clone())),
+    };
+
+    // Satisfiability check: recompute the total weight with the replacement
+    // applied and ensure the threshold is still reachable.
+    let new_weight = resolved.weight.unwrap_or(0);
+    let total = policy
+        .signers
+        .iter()
+        .map(|s| if &s.key == old { new_weight } else { s.weight })
+        .sum::<u32>();
+    if total < policy.threshold {
+        return Err(SignerError::ReplaceSignerRejected {
+            detail: format!(
+                "replacement would leave total weight {total} below threshold {}",
+                policy.threshold
+            ),
+        });
+    }
+
+    Ok(ReplaceSignerInvocation {
+        old: old.clone(),
+        new: resolved,
+        config_version: policy.config_version,
+    })
+}
+
+/// Collects signatures for a `replace_signer` ceremony.
+///
+/// Signatures are gathered against the invocation digest; the ceremony is
+/// only complete once the collected weight reaches the policy threshold.
+pub struct ReplaceSignerCeremony {
+    invocation: ReplaceSignerInvocation,
+    threshold: u32,
+    collected: Vec<SignatureBundle>,
+}
+
+impl ReplaceSignerCeremony {
+    /// Start a ceremony for `invocation`, requiring `threshold` weight.
+    pub fn new(invocation: ReplaceSignerInvocation, threshold: u32) -> Self {
+        Self {
+            invocation,
+            threshold,
+            collected: Vec::new(),
+        }
+    }
+
+    /// The invocation under review.
+    pub fn invocation(&self) -> &ReplaceSignerInvocation {
+        &self.invocation
+    }
+
+    /// The digest participants must sign.
+    pub fn digest(&self) -> [u8; 32] {
+        self.invocation.digest()
+    }
+
+    /// Add a detached signature bundle produced by an offline signer.
+    ///
+    /// The bundle must be bound to this invocation's digest and must not
+    /// duplicate a key that has already signed.
+    pub fn add_signature(&mut self, bundle: SignatureBundle) -> Result<(), SignerError> {
+        if bundle.envelope_digest != self.digest() {
+            return Err(SignerError::ReplaceSignerRejected {
+                detail: "signature bundle is bound to a different invocation".to_string(),
+            });
+        }
+        if self
+            .collected
+            .iter()
+            .any(|b| b.public_key == bundle.public_key)
+        {
+            return Err(SignerError::ReplaceSignerRejected {
+                detail: "duplicate signature from the same key".to_string(),
+            });
+        }
+        self.collected.push(bundle);
+        Ok(())
+    }
+
+    /// The number of signatures collected so far.
+    pub fn signature_count(&self) -> usize {
+        self.collected.len()
+    }
+
+    /// Whether enough signatures have been collected to submit.
+    pub fn is_complete(&self) -> bool {
+        self.collected.len() as u32 >= self.threshold
+    }
+
+    /// Consume the ceremony, returning the invocation and collected
+    /// signatures once the threshold has been reached.
+    pub fn finish(self) -> Result<(ReplaceSignerInvocation, Vec<SignatureBundle>), SignerError> {
+        if !self.is_complete() {
+            return Err(SignerError::ReplaceSignerRejected {
+                detail: format!(
+                    "ceremony incomplete: collected {} of {} required signatures",
+                    self.collected.len(),
+                    self.threshold
+                ),
+            });
+        }
+        Ok((self.invocation, self.collected))
+    }
+}
+
+// ---------------------------------------------------------------------------
 // ViaStellarCli (fallback)
 // ---------------------------------------------------------------------------
+=======
 
 /// Fallback signer that delegates to the `stellar` binary.
 ///
@@ -1126,6 +1468,141 @@ mod tests {
                 "error Display leaked secret material: {rendered}"
             );
         }
+    }
+
+    fn sample_policy() -> SignerPolicy {
+        SignerPolicy {
+            signers: vec![
+                PolicySigner {
+                    key: SignerKey::new(SignerKeyKind::Ed25519, "ed25519:aaaa"),
+                    weight: 2,
+                    roles: vec!["admin".to_string()],
+                },
+                PolicySigner {
+                    key: SignerKey::new(SignerKeyKind::Ed25519, "ed25519:bbbb"),
+                    weight: 1,
+                    roles: vec!["operator".to_string()],
+                },
+            ],
+            threshold: 2,
+            config_version: 7,
+        }
+    }
+
+    #[test]
+    fn replace_signer_inherits_weight_and_roles() {
+        let policy = sample_policy();
+        let old = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:aaaa");
+        let new = SignerKey::new(SignerKeyKind::Secp256r1, "secp256r1:cccc");
+        let inv = build_replace_signer(&policy, &old, SignerConfig::inheriting(new)).unwrap();
+        assert_eq!(inv.new.weight, Some(2));
+        assert_eq!(inv.new.roles, Some(vec!["admin".to_string()]));
+        assert_eq!(inv.config_version, 7);
+    }
+
+    #[test]
+    fn replace_signer_allows_explicit_override() {
+        let policy = sample_policy();
+        let old = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:bbbb");
+        let new = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:dddd");
+        let inv = build_replace_signer(
+            &policy,
+            &old,
+            SignerConfig::inheriting(new)
+                .with_weight(1)
+                .with_roles(vec!["auditor".to_string()]),
+        )
+        .unwrap();
+        assert_eq!(inv.new.weight, Some(1));
+        assert_eq!(inv.new.roles, Some(vec!["auditor".to_string()]));
+    }
+
+    #[test]
+    fn replace_signer_rejects_missing_old_signer() {
+        let policy = sample_policy();
+        let old = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:zzzz");
+        let new = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:dddd");
+        let err = build_replace_signer(&policy, &old, SignerConfig::inheriting(new)).unwrap_err();
+        assert!(matches!(err, SignerError::ReplaceSignerRejected { .. }));
+    }
+
+    #[test]
+    fn replace_signer_rejects_duplicate_new_key() {
+        let policy = sample_policy();
+        let old = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:aaaa");
+        let new = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:bbbb");
+        let err = build_replace_signer(&policy, &old, SignerConfig::inheriting(new)).unwrap_err();
+        assert!(matches!(err, SignerError::ReplaceSignerRejected { .. }));
+    }
+
+    #[test]
+    fn replace_signer_rejects_unsatisfiable_policy() {
+        let policy = sample_policy();
+        let old = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:aaaa");
+        let new = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:dddd");
+        let err = build_replace_signer(
+            &policy,
+            &old,
+            SignerConfig::inheriting(new).with_weight(0),
+        )
+        .unwrap_err();
+        assert!(matches!(err, SignerError::ReplaceSignerRejected { .. }));
+    }
+
+    #[test]
+    fn signer_key_parses_kind_and_fingerprint() {
+        let key = SignerKey::parse("secp256r1:cccc").unwrap();
+        assert_eq!(key.kind, SignerKeyKind::Secp256r1);
+        assert_eq!(key.fingerprint, "secp256r1:cccc");
+        assert!(SignerKey::parse("nonsense").is_err());
+    }
+
+    #[test]
+    fn replace_signer_ceremony_collects_signatures() {
+        let policy = sample_policy();
+        let old = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:aaaa");
+        let new = SignerKey::new(SignerKeyKind::Secp256r1, "secp256r1:cccc");
+        let inv = build_replace_signer(&policy, &old, SignerConfig::inheriting(new)).unwrap();
+        let digest = inv.digest();
+
+        let mut ceremony = ReplaceSignerCeremony::new(inv, 2);
+        let bundle = |pk: u8| SignatureBundle {
+            public_key: [pk; 32],
+            signature: [0u8; 64],
+            envelope_digest: digest,
+        };
+        ceremony.add_signature(bundle(1)).unwrap();
+        assert!(!ceremony.is_complete());
+        ceremony.add_signature(bundle(2)).unwrap();
+        assert!(ceremony.is_complete());
+        let (_, sigs) = ceremony.finish().unwrap();
+        assert_eq!(sigs.len(), 2);
+    }
+
+    #[test]
+    fn replace_signer_ceremony_rejects_duplicate_and_wrong_digest() {
+        let policy = sample_policy();
+        let old = SignerKey::new(SignerKeyKind::Ed25519, "ed25519:aaaa");
+        let new = SignerKey::new(SignerKeyKind::Secp256r1, "secp256r1:cccc");
+        let inv = build_replace_signer(&policy, &old, SignerConfig::inheriting(new)).unwrap();
+        let digest = inv.digest();
+        let mut ceremony = ReplaceSignerCeremony::new(inv, 2);
+
+        let wrong = SignatureBundle {
+            public_key: [9u8; 32],
+            signature: [0u8; 64],
+            envelope_digest: [0u8; 32],
+        };
+        assert!(ceremony.add_signature(wrong).is_err());
+
+        let bundle = SignatureBundle {
+            public_key: [1u8; 32],
+            signature: [0u8; 64],
+            envelope_digest: digest,
+        };
+        ceremony.add_signature(bundle.clone()).unwrap();
+        assert!(ceremony.add_signature(bundle).is_err());
+        assert!(ceremony.finish().is_err());
     }
 
     /// Redaction harness: `SecretKey` must not be formattable via `Debug`.

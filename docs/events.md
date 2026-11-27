@@ -368,3 +368,26 @@ where `attester.to_xdr()` is the `ScVal::Address` XDR. Test vectors (attester
 | `root` | `BytesN<32>` | data |
 | `contract_kind` | `Symbol` | data |
 | `schema_version` | `u32` | data |
+
+## `multisig-account`
+
+### `SignerReplaced`
+
+- **Prefix topics:** `signer_replaced`
+- **Data format:** `map`
+
+| Field | Type | Location |
+|---|---|---|
+| `old_fingerprint` | `BytesN<32>` | topic_list |
+| `new_fingerprint` | `BytesN<32>` | topic_list |
+| `config_version` | `u32` | data |
+| `contract_kind` | `Symbol` | data |
+| `schema_version` | `u32` | data |
+| `seq` | `u64` | data |
+
+Emitted by `replace_signer(old, new)`, which atomically swaps a single
+signer while preserving its weight and roles unless explicitly overridden.
+The operation rejects duplicate keys (including a `new` key that is already
+present) and runs the policy satisfiability check before committing, so the
+signer set never drops below threshold. See
+[`admin-key-rotation.md`](admin-key-rotation.md) for the ceremony runbook.

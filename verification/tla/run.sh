@@ -4,6 +4,11 @@
 #   <Spec>.cfg                      must pass
 #   <Spec>.<name>-counterexample.cfg must FAIL (documents an accepted finding)
 #
+# Per-context policy selection (issue #703) is exercised by the ContextPolicy
+# configurations: the model must show that the strictest policy across all
+# authorization contexts is required, and that unknown / contract-creation
+# contexts fall back to the strictest configured policy.
+#
 # Usage: verification/tla/run.sh [path/to/tla2tools.jar]
 set -euo pipefail
 
@@ -43,4 +48,17 @@ for cfg in *.cfg; do
   fi
   rm -f "${cfg}.log"
 done
+
+# Sanity check: the per-context policy configurations must exist so that the
+# strictest-policy selection and fallback behavior are actually model-checked.
+for required in \
+    "Multisig.ContextPolicy.cfg" \
+    "Multisig.ContextPolicyFallback.cfg" \
+    "Multisig.ContextPolicyStrictest.cfg"; do
+  if [ ! -f "$required" ]; then
+    echo "::error::missing required TLA+ configuration: ${required}"
+    status=1
+  fi
+done
+
 exit "$status"
