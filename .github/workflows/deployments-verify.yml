@@ -15,6 +15,7 @@ on:
       - "deployments/**"
       - "contracts/**"
       - "scripts/check_wasm_meta.py"
+  merge_group:
 
 env:
   CARGO_TERM_COLOR: always
