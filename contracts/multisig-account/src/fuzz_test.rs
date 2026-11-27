@@ -6,15 +6,44 @@
 //!
 //! Run just this target locally with more cases via:
 //! `PROPTEST_CASES=10000 cargo test -p multisig-account fuzz_test -- --nocapture`
+//!
+//! Case counts are tiered via `PROPTEST_CASES` (PR = 256, nightly = 50_000).
+//! On failure proptest prints the seed and the minimal failing input; reproduce
+//! with `PROPTEST_SEED=<seed> PROPTEST_CASES=1 cargo test -p multisig-account
+//! fuzz_test`. Failing cases are persisted under
+//! `contracts/multisig-account/proptest-regressions/` and must be committed.
 
 extern crate std;
 
 use super::*;
 use ed25519_dalek::{Signer as _, SigningKey};
+use lafiya_test_utils::SystemBuilder;
 use proptest::prelude::*;
 use soroban_sdk::{BytesN, Env, IntoVal, Vec};
 
 const MAX_SIGNERS: usize = 8;
+
+/// Case count for the current tier. Defaults to the fast PR tier (256) and is
+/// raised to the deep nightly tier via `PROPTEST_CASES=50000`.
+fn proptest_cases() -> u32 {
+    std::env::var("PROPTEST_CASES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(256)
+}
+
+/// Build a budget-constrained `Env` with the multisig account wired through the
+/// shared `SystemBuilder`, returning the deployed account address.
+fn deploy_multisig(env: &Env, keys: &[SigningKey], threshold: u32) -> Address {
+    let mut signers = Vec::new(env);
+    for key in keys.iter() {
+        signers.push_back(BytesN::from_array(env, &key.verifying_key().to_bytes()));
+    }
+    SystemBuilder::new(env)
+        .with_multisig_account(signers, threshold)
+        .build()
+        .multisig_account()
+}
 
 fn signing_key_strategy() -> impl Strategy<Value = SigningKey> {
     (0u8..MAX_SIGNERS as u8).prop_map(|i| SigningKey::from_bytes(&[i; 32]))
@@ -43,7 +72,14 @@ fn threshold_strategy(signer_count: usize) -> impl Strategy<Value = u32> {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig::with_cases(256))]
+    #![proptest_config(ProptestConfig {
+        cases: proptest_cases(),
+        // Persist failing cases so regressions are replayed on every run.
+        failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::WithSource(
+            "proptest-regressions",
+        ))),
+        ..ProptestConfig::default()
+    })]
 
     /// __check_auth never panics regardless of threshold or signer list
     /// configuration, even when both are invalid (zero signers with zero threshold).
@@ -64,7 +100,9 @@ proptest! {
         // Construction with arbitrary invalid threshold/signer combinations
         // must never panic (though registration may fail, which is ok).
         let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            env.register(MultisigAccount, (signers.clone(), threshold))
+            SystemBuilder::new(&env)
+                .with_multisig_account(signers.clone(), threshold)
+                .build()
         }));
     }
 
@@ -81,16 +119,8 @@ proptest! {
         }
 
         let env = Env::default();
-        let mut signers = Vec::new(&env);
-        for key in keys.iter() {
-            signers.push_back(BytesN::from_array(
-                &env,
-                &key.verifying_key().to_bytes(),
-            ));
-        }
-
         let threshold = (keys.len() as u32).min(3);
-        let account = env.register(MultisigAccount, (signers, threshold));
+        let account = deploy_multisig(&env, &keys, threshold);
 
         let payload = BytesN::from_array(&env, &payload_bytes);
         let sig_keys = &keys[..threshold as usize];
@@ -129,16 +159,8 @@ proptest! {
         }
 
         let env = Env::default();
-        let mut signers = Vec::new(&env);
-        for key in keys.iter() {
-            signers.push_back(BytesN::from_array(
-                &env,
-                &key.verifying_key().to_bytes(),
-            ));
-        }
-
         let threshold = 2u32;
-        let account = env.register(MultisigAccount, (signers, threshold));
+        let account = deploy_multisig(&env, &keys, threshold);
 
         let payload = BytesN::from_array(&env, &payload_bytes);
         let signatures = if keys.len() > 1 {
@@ -185,16 +207,8 @@ proptest! {
         }
 
         let env = Env::default();
-        let mut signers = Vec::new(&env);
-        for key in keys.iter() {
-            signers.push_back(BytesN::from_array(
-                &env,
-                &key.verifying_key().to_bytes(),
-            ));
-        }
-
         let threshold = 2u32;
-        let account = env.register(MultisigAccount, (signers, threshold));
+        let account = deploy_multisig(&env, &keys, threshold);
 
         let payload = BytesN::from_array(&env, &payload_bytes);
         let sig_keys = &keys[..2];

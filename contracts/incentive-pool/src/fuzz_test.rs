@@ -13,25 +13,49 @@
 //!   `AttesterClaimCapExceeded`/`InsufficientPoolBalance`. Fixed with
 //!   saturating adds; see `regression_claim_cap_overflow`.
 //!
-//! Reproduce a failure locally: proptest prints the minimal input and saves
-//! a seed under `proptest-regressions/`; rerun with
+//! Reproduce a failure locally: proptest prints the minimal input and the
+//! seed on failure, and persists the failing case under
+//! `contracts/incentive-pool/proptest-regressions/` (committed, replayed on
+//! every run). Rerun with
 //! `PROPTEST_CASES=10000 cargo test -p incentive-pool fuzz_test -- --nocapture`.
-//! Committed seeds in `proptest-regressions/` are replayed on every run.
+//! The PR tier uses 256 cases and the nightly tier 50k cases via the nextest
+//! profiles in `.config/`; see `TESTING_ARCHITECTURE.md`.
 
 extern crate std;
 
-use super::stateful_test::{harness, item_id, op_strategy, outcome, replay, Harness};
+use super::stateful_test::{item_id, op_strategy, outcome, replay, Harness};
 use super::*;
+use lafiya_test_utils::SystemBuilder;
 use proptest::prelude::*;
 use soroban_sdk::BytesN;
 
 const ADMIN_BALANCE: i128 = 1_000_000_000;
 
+/// PR tier default; the nightly nextest profile overrides via `PROPTEST_CASES`.
+const DEFAULT_CASES: u32 = 256;
+
 fn cases() -> u32 {
     std::env::var("PROPTEST_CASES")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(64)
+        .unwrap_or(DEFAULT_CASES)
+}
+
+/// Proptest config shared by every target: deterministic seed reporting on
+/// failure and persisted regression files under the crate root.
+fn config() -> ProptestConfig {
+    ProptestConfig {
+        cases: cases(),
+        // Print the seed on failure so the case can be replayed exactly.
+        verbose: 1,
+        ..ProptestConfig::default()
+    }
+}
+
+/// Builds the incentive-pool harness through the shared `SystemBuilder` so
+/// the wiring matches production constructors.
+fn harness() -> Harness {
+    SystemBuilder::new().incentive_pool().build().incentive_pool
 }
 
 fn custody_holds(h: &Harness) {
@@ -41,7 +65,7 @@ fn custody_holds(h: &Harness) {
 }
 
 proptest! {
-    #![proptest_config(ProptestConfig { cases: cases(), ..ProptestConfig::default() })]
+    #![proptest_config(config())]
 
     #[test]
     fn fuzz_fund(amount in i128::MIN..=ADMIN_BALANCE) {

@@ -2,9 +2,10 @@
 
 extern crate std;
 
-use crate::{AttesterRegistry, AttesterRegistryClient, Role};
+use crate::Role;
+use lafiya_test_utils::{budget_env, SystemBuilder};
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, Env};
+use soroban_sdk::Address;
 
 struct BudgetCheckpoint {
     attesters: usize,
@@ -40,14 +41,11 @@ const BUDGET_CHECKPOINTS: [BudgetCheckpoint; 3] = [
 
 #[test]
 fn large_attester_allowlist_load() {
-    let (env, client, admin) = {
-        let env = Env::default();
-        env.mock_all_auths();
-        let admin = Address::generate(&env);
-        let contract_id = env.register(AttesterRegistry, (admin.clone(),));
-        let client = AttesterRegistryClient::new(&env, &contract_id);
-        (env, client, admin)
-    };
+    let env = budget_env();
+    env.mock_all_auths();
+    let system = SystemBuilder::new(&env).attester_registry().build();
+    let client = system.attester_registry();
+    let admin = Address::generate(&env);
     client.grant_role(&Role::Registrar, &admin);
     client.grant_role(&Role::Guardian, &admin);
 

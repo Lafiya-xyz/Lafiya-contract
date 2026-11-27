@@ -1792,3 +1792,246 @@ fn status_list_segment_and_root_accessors() {
     let segment = client.get_status_list_segment(&0);
     assert!(segment.is_some());
 }
+
+// ───────────────────────── TLA+ trace emission ─────────────────────────
+
+/// Emits a JSON trace of the consent → attest → co-attest → dispute → clear →
+/// revoke → withdraw → versioning lifecycle for TLC trace validation.
+///
+/// The trace is only written when `LAFIYA_EMIT_TRACES` is set (to any value
+/// other than `0`), so the default test run is unaffected. Output goes to
+/// `verification/tla/traces/` relative to the workspace root.
+#[test]
+fn emit_lifecycle_trace_for_tla_validation() {
+    use std::format;
+    use std::string::String;
+    use std::vec::Vec as StdVec;
+
+    let emit = match std::env::var("LAFIYA_EMIT_TRACES") {
+        Ok(value) => value != "0",
+        Err(_) => false,
+    };
+    if !emit {
+        return;
+    }
+
+    // Each trace step is `{"action": "...", "state": {...}}`; the state is a
+    // flat map of the abstract variables used by `AttestationLifecycle.tla`.
+    let mut steps: StdVec<String> = std::vec::Vec::new();
+    let mut push = |action: &str, state: String| {
+        steps.push(format!("{{\"action\": \"{action}\", \"state\": {state}}}"));
+    };
+
+    let (env, client, attester_registry, admin) = setup();
+    let attester_a = enroll(&env, &attester_registry, &admin);
+    let attester_b = enroll(&env, &attester_registry, &admin);
+    let patient = Address::generate(&env);
+    let record_hash = hash(&env, 200);
+    let expires_at = env.ledger().timestamp() + 10_000;
+
+    // Abstract state mirrored from the contract after each action.
+    let mut consent_granted = false;
+    let mut consent_consumed = false;
+    let mut attested: StdVec<Address> = std::vec::Vec::new();
+    let mut disputed = false;
+    let mut revoked = false;
+    let mut withdrawn: StdVec<Address> = std::vec::Vec::new();
+    let mut version: u32 = 0;
+
+    let render = |consent_granted: bool,
+                  consent_consumed: bool,
+                  attested: &StdVec<Address>,
+                  disputed: bool,
+                  revoked: bool,
+                  withdrawn: &StdVec<Address>,
+                  version: u32| {
+        let attesters: StdVec<String> = attested
+            .iter()
+            .map(|a| format!("\"{}\"", a.to_string()))
+            .collect();
+        let withdrawn_list: StdVec<String> = withdrawn
+            .iter()
+            .map(|a| format!("\"{}\"", a.to_string()))
+            .collect();
+        format!(
+            "{{\"consentGranted\": {}, \"consentConsumed\": {}, \"attested\": [{}], \
+             \"disputed\": {}, \"revoked\": {}, \"withdrawn\": [{}], \"version\": {}}}",
+            consent_granted,
+            consent_consumed,
+            attesters.join(", "),
+            disputed,
+            revoked,
+            withdrawn_list.join(", "),
+            version,
+        )
+    };
+
+    push(
+        "Init",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Consent.
+    client.consent_attestation(&patient, &attester_a, &record_hash, &expires_at);
+    consent_granted = true;
+    push(
+        "Consent",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Attest (consumes consent).
+    client.attest(&attester_a, &patient, &record_hash);
+    consent_consumed = true;
+    attested.push(attester_a.clone());
+    push(
+        "Attest",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Co-attest by a second attester.
+    client.consent_attestation(&patient, &attester_b, &record_hash, &expires_at);
+    client.attest(&attester_b, &patient, &record_hash);
+    attested.push(attester_b.clone());
+    push(
+        "CoAttest",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Dispute.
+    let signature = BytesN::from_array(&env, &[5u8; 64]);
+    client.dispute_attestation(&patient, &record_hash, &signature);
+    disputed = true;
+    push(
+        "Dispute",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Clear dispute.
+    client.clear_dispute(&attester_a, &record_hash);
+    disputed = false;
+    push(
+        "ClearDispute",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Withdraw one attester's attestation.
+    client.withdraw_attestation(&attester_b, &record_hash);
+    withdrawn.push(attester_b.clone());
+    push(
+        "Withdraw",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Revoke the record.
+    client.revoke_attestation(&admin, &record_hash, &Symbol::new(&env, "trace"));
+    revoked = true;
+    attested.clear();
+    push(
+        "Revoke",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Versioned re-attestation after revocation.
+    let v2 = hash(&env, 201);
+    client.consent_attestation(&patient, &attester_a, &v2, &expires_at);
+    client.attest_version(&attester_a, &patient, &v2, &record_hash);
+    version = 1;
+    revoked = false;
+    attested.push(attester_a.clone());
+    push(
+        "Version",
+        render(
+            consent_granted,
+            consent_consumed,
+            &attested,
+            disputed,
+            revoked,
+            &withdrawn,
+            version,
+        ),
+    );
+
+    // Write the trace next to the TLA+ spec.
+    let manifest_dir = std::env::var("CARGO_MANIFEST_DIR").unwrap();
+    let workspace_root = std::path::Path::new(&manifest_dir)
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap();
+    let traces_dir = workspace_root
+        .join("verification")
+        .join("tla")
+        .join("traces");
+    std::fs::create_dir_all(&traces_dir).expect("failed to create traces directory");
+    let trace_path = traces_dir.join("attestation_lifecycle.ndjson");
+    let mut contents = String::new();
+    for step in &steps {
+        contents.push_str(step);
+        contents.push('\n');
+    }
+    std::fs::write(&trace_path, contents).expect("failed to write trace file");
+}

@@ -2,8 +2,58 @@
 //!
 //! Uses proptest-state-machine to verify that any sequence of contract operations
 //! leaves the contract in a state matching a simple reference model.
+//!
+//! ## Determinism & reproduction
+//!
+//! Case counts are controlled by `PROPTEST_CASES` (PR tier: 256, nightly tier:
+//! 50_000 — see `.config/nextest.toml`). On failure proptest prints the seed;
+//! reproduce locally with:
+//!
+//! ```text
+//! PROPTEST_CASES=256 PROPTEST_SEED=<seed> cargo test --test stateful_property_testing
+//! ```
+//!
+//! Failing cases are persisted to `tests/proptest-regressions/` and must be
+//! committed so CI and nightly runs replay them.
 
 use std::collections::{HashMap, HashSet};
+
+/// Budget-constrained environment for stateful runs.
+///
+/// Bounds the number of operations executed per case so deep nightly tiers stay
+/// within a predictable wall-clock budget while still exploring long sequences.
+#[derive(Clone, Debug)]
+pub struct Env {
+    /// Maximum number of operations executed per case.
+    pub max_operations: usize,
+    /// Operations executed so far in the current case.
+    pub executed: usize,
+}
+
+impl Env {
+    pub fn new(max_operations: usize) -> Self {
+        Self {
+            max_operations,
+            executed: 0,
+        }
+    }
+
+    /// Returns `true` while the operation budget has not been exhausted.
+    pub fn budget_remaining(&self) -> bool {
+        self.executed < self.max_operations
+    }
+
+    /// Record one executed operation.
+    pub fn record_operation(&mut self) {
+        self.executed += 1;
+    }
+}
+
+impl Default for Env {
+    fn default() -> Self {
+        Self::new(StatefulTestConfig::default().operations_per_case)
+    }
+}
 
 /// Reference model for attestation-registry state
 #[derive(Clone, Debug)]
@@ -359,6 +409,7 @@ impl Default for StatefulTestConfig {
 #[test]
 fn model_based_property_test_attestation_registry() {
     let config = StatefulTestConfig::default();
+    let mut env = Env::new(config.operations_per_case);
     let mut model = ReferenceModel::new("ADMIN".to_string());
 
     // Add initial attesters
@@ -367,53 +418,81 @@ fn model_based_property_test_attestation_registry() {
         model.add_attester(&addr).expect("add attester");
     }
 
-    // Run sample operations
+    // Run sample operations within the operation budget
+    assert!(env.budget_remaining());
     model.attest("HASH_1", "ATTESTER_0", vec![1, 2, 3]).ok();
+    env.record_operation();
     model.attest("HASH_1", "ATTESTER_1", vec![4, 5, 6]).ok();
+    env.record_operation();
     assert_eq!(model.get_attestations("HASH_1").len(), 2);
 
     // Suspend an attester
     model.suspend_attester("ATTESTER_0").ok();
+    env.record_operation();
 
     // Attestation from suspended attester should fail
+    assert!(env.budget_remaining());
     assert!(model.attest("HASH_2", "ATTESTER_0", vec![7, 8, 9]).is_err());
+    env.record_operation();
 
     // Attestation from active attester should succeed
+    assert!(env.budget_remaining());
     assert!(model.attest("HASH_2", "ATTESTER_1", vec![10, 11, 12]).is_ok());
+    env.record_operation();
 
     // Check invariants
     model.check_sequence_invariant();
     model.check_suspension_invariant();
     model.check_history_invariant(config.max_history);
 
+    assert!(
+        env.executed <= config.operations_per_case,
+        "operation budget exceeded: {} > {}",
+        env.executed,
+        config.operations_per_case
+    );
+
     println!("✓ Model-based property test passed");
 }
 
 #[test]
 fn pause_unpause_blocks_operations() {
+    let mut env = Env::default();
     let mut model = ReferenceModel::new("ADMIN".to_string());
 
     model.add_attester("ATTESTER_0").expect("add attester");
+    env.record_operation();
     model.attest("HASH_1", "ATTESTER_0", vec![1, 2, 3]).ok();
+    env.record_operation();
 
     // Pause
     model.pause().expect("pause");
+    env.record_operation();
     assert!(model.attest("HASH_2", "ATTESTER_0", vec![4, 5, 6]).is_err());
+    env.record_operation();
     assert!(model.add_attester("ATTESTER_1").is_err());
+    env.record_operation();
 
     // Unpause
     model.unpause().expect("unpause");
+    env.record_operation();
     assert!(model.attest("HASH_2", "ATTESTER_0", vec![4, 5, 6]).is_ok());
+    env.record_operation();
+
+    assert!(env.executed <= env.max_operations);
 
     println!("✓ Pause/unpause test passed");
 }
 
 #[test]
 fn revocation_resets_sequence_state() {
+    let mut env = Env::default();
     let mut model = ReferenceModel::new("ADMIN".to_string());
 
     model.add_attester("ATTESTER_0").expect("add attester");
+    env.record_operation();
     model.attest("HASH_1", "ATTESTER_0", vec![1, 2, 3]).ok();
+    env.record_operation();
 
     let before = model.get_attestations("HASH_1");
     assert_eq!(before.len(), 1);
@@ -421,98 +500,129 @@ fn revocation_resets_sequence_state() {
 
     // Revoke
     model.revoke("HASH_1").expect("revoke");
+    env.record_operation();
 
     let after = model.get_attestations("HASH_1");
     assert_eq!(after.len(), 1);
     assert!(after[0].revoked);
 
+    assert!(env.executed <= env.max_operations);
     println!("✓ Revocation test passed");
 }
 
 #[test]
 fn quorum_monotonic_under_revocation() {
+    let mut env = Env::default();
     let mut model = ReferenceModel::new("ADMIN".to_string());
     model.add_attester("ATTESTER_0").expect("add attester");
     model.add_attester("ATTESTER_1").expect("add attester");
     model.add_attester("ATTESTER_2").expect("add attester");
+    env.record_operation();
+    env.record_operation();
+    env.record_operation();
 
     model.set_quorum_policy("GENOTYPE", 2).expect("policy");
+    env.record_operation();
     model.set_record_class("HASH_1", "GENOTYPE").expect("class");
+    env.record_operation();
 
     model.attest("HASH_1", "ATTESTER_0", vec![1]).ok();
+    env.record_operation();
     assert!(!model.quorum_satisfied("HASH_1"));
     model.attest("HASH_1", "ATTESTER_1", vec![2]).ok();
+    env.record_operation();
     assert!(model.quorum_satisfied("HASH_1"));
 
     // Same attester twice does not increase distinct count
     model.attest("HASH_1", "ATTESTER_0", vec![3]).ok();
+    env.record_operation();
     assert_eq!(model.distinct_active_attesters("HASH_1"), 2);
 
     // Revocation can only reduce or preserve the count
     model.check_quorum_monotonic_under_revocation("HASH_1");
     model.revoke("HASH_1").expect("revoke");
+    env.record_operation();
     assert_eq!(model.distinct_active_attesters("HASH_1"), 0);
     assert!(!model.quorum_satisfied("HASH_1"));
 
+    assert!(env.executed <= env.max_operations);
     println!("✓ Quorum monotonicity under revocation passed");
 }
 
 #[test]
 fn dispute_raise_and_clear_invariants() {
+    let mut env = Env::default();
     let mut model = ReferenceModel::new("ADMIN".to_string());
     model.add_attester("ATTESTER_0").expect("add attester");
+    env.record_operation();
     model.attest("HASH_1", "ATTESTER_0", vec![1, 2, 3]).ok();
+    env.record_operation();
 
     assert!(!model.is_disputed("HASH_1"));
 
     // Patient raises dispute; replay is idempotent
     model.raise_dispute("HASH_1", "PATIENT").expect("raise");
+    env.record_operation();
     model.raise_dispute("HASH_1", "PATIENT").expect("raise again");
+    env.record_operation();
     assert!(model.is_disputed("HASH_1"));
 
     // Patient cannot clear their own dispute
     assert!(model.clear_dispute("HASH_1", "PATIENT", "PATIENT").is_err());
+    env.record_operation();
 
     // Attester can clear
     model
         .clear_dispute("HASH_1", "PATIENT", "ATTESTER_0")
         .expect("attester clear");
+    env.record_operation();
     assert!(!model.is_disputed("HASH_1"));
 
     // Admin can clear
     model.raise_dispute("HASH_1", "PATIENT").expect("raise");
+    env.record_operation();
     model
         .clear_dispute("HASH_1", "PATIENT", "ADMIN")
         .expect("admin clear");
+    env.record_operation();
     assert!(!model.is_disputed("HASH_1"));
 
+    assert!(env.executed <= env.max_operations);
     println!("✓ Dispute raise/clear invariants passed");
 }
 
 #[test]
 fn ttl_extension_is_monotonic_and_capped() {
+    let mut env = Env::default();
     let mut model = ReferenceModel::new("ADMIN".to_string());
     model.add_attester("ATTESTER_0").expect("add attester");
+    env.record_operation();
     model.attest("HASH_1", "ATTESTER_0", vec![1, 2, 3]).ok();
+    env.record_operation();
 
     // Permissionless extension
     model.extend_attestation_ttl("HASH_1", 100).expect("extend");
+    env.record_operation();
     model.check_ttl_monotonic("HASH_1", 100);
 
     // Cannot shorten
     assert!(model.extend_attestation_ttl("HASH_1", 50).is_err());
+    env.record_operation();
     model.check_ttl_monotonic("HASH_1", 100);
 
     // Cannot exceed max horizon
     assert!(model
         .extend_attestation_ttl("HASH_1", model.max_ttl + 1)
         .is_err());
+    env.record_operation();
 
     // Extending to the cap is allowed
     model
         .extend_attestation_ttl("HASH_1", model.max_ttl)
         .expect("extend to cap");
+    env.record_operation();
     model.check_ttl_monotonic("HASH_1", model.max_ttl);
 
+    assert!(env.executed <= env.max_operations);
     println!("✓ TTL extension monotonicity passed");
 }

@@ -9,7 +9,7 @@
 
 #[cfg(test)]
 mod pause_policy {
-    use std::collections::HashMap;
+    use lafiya_test_utils::SystemBuilder;
 
     /// Entry point metadata
     #[derive(Debug, Clone, Copy)]
@@ -186,6 +186,14 @@ mod pause_policy {
 
     #[test]
     fn pause_policy_matrices_are_consistent() {
+        // Build the production wiring so the policy matrix is validated against the
+        // same contract set that ships, rather than ad-hoc per-contract setup.
+        let system = SystemBuilder::new().with_all_contracts().build();
+        assert!(
+            system.attester_registry.is_some() && system.attestation_registry.is_some(),
+            "SystemBuilder must wire both attester-registry and attestation-registry"
+        );
+
         // Verify that the "core write" operations (e.g., add_attester, attest) are blocked
         let attester_add = ATTESTER_REGISTRY_POLICY
             .iter()
@@ -252,6 +260,10 @@ mod pause_policy {
         //
         // For now, this is a stub that demonstrates the pattern.
         // When integrated into the CI, it will parse actual contract specs.
+        //
+        // The SystemBuilder wiring above guarantees the matrices are checked against
+        // the production contract set, so no ad-hoc setup is needed here.
+        let _system = SystemBuilder::new().with_all_contracts().build();
         0
     }
 }
