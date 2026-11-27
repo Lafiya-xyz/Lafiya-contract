@@ -584,6 +584,55 @@
     },
     {
       "contract": "attester-registry",
+      "name": "AttesterStateChanged",
+      "prefix_topics": [
+        "attester_state_changed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "status",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "tier",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "region",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "probation",
+          "type": "bool",
+          "location": "data"
+        },
+        {
+          "name": "info_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "data"
+        },
+        {
+          "name": "seq",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
       "name": "Initialized",
       "prefix_topics": [
         "initialized"

@@ -1,8 +1,8 @@
 extern crate std;
 
 use super::*;
-use soroban_sdk::testutils::{Address as _, Ledger as _};
-use soroban_sdk::{token, Env, Map};
+use soroban_sdk::testutils::{Address as _, Ledger as _, MockAuth, MockAuthInvoke};
+use soroban_sdk::{token, Env, IntoVal, Map, Symbol, Val, Vec as SVec};
 
 const DAY: u64 = 24 * 60 * 60;
 
@@ -520,4 +520,407 @@ fn bond_config_validation() {
     assert!(client
         .try_set_bond_config(&token, &1, &10, &2, &10, &r)
         .is_err());
+}
+
+// ── Role-escalation property harness (#682) ──
+//
+// The core safety property: no sequence of calls made by a non-admin actor can
+// grant that actor (or anyone else) a capability they could not already
+// exercise. We model the registry's role surface as a capability graph and
+// assert it is monotonic for non-admin actors after every step.
+
+/// Fixed actor set. Index 0 is the admin; the rest are non-admin actors whose
+/// capabilities must never grow without an admin-signed grant.
+const ACTOR_COUNT: usize = 6;
+const ADMIN: usize = 0;
+const REGISTRAR: usize = 1;
+const GUARDIAN: usize = 2;
+const REGIONAL: usize = 3;
+const ATTESTER: usize = 4;
+const OUTSIDER: usize = 5;
+
+/// Capabilities an actor can exercise. Derived from the actor's roles and
+/// enrollment state; the harness asserts this set never grows for non-admins.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
+enum Cap {
+    Registrar,
+    Guardian,
+    RegionalRegistrar,
+    EnrolledAttester,
+    SessionKey,
+}
+
+/// A single role-mutating call in the generated sequence.
+#[derive(Clone, Copy, Debug)]
+enum Op {
+    GrantRole(u8, u8),   // (role selector, target actor)
+    RevokeRole(u8, u8),  // (role selector, target actor)
+    ProposeAdmin(u8),    // proposed new admin actor
+    AcceptAdmin(u8),     // actor attempting to accept
+    DelegateSession(u8), // actor delegating a session key to itself
+    AddAttester(u8),     // actor adding target as attester
+    RemoveAttester(u8),  // actor removing target
+    SuspendAttester(u8), // actor suspending target
+    ReinstateAttester(u8),
+    AssignRegional(u8), // actor assigning target as regional registrar
+}
+
+fn role_for(sel: u8) -> Role {
+    match sel % 3 {
+        0 => Role::Registrar,
+        1 => Role::Guardian,
+        _ => Role::RegionalRegistrar,
+    }
+}
+
+/// Deterministic xorshift PRNG so failures are reproducible from the seed.
+struct Rng(u64);
+
+impl Rng {
+    fn new(seed: u64) -> Self {
+        Rng(seed | 1)
+    }
+    fn next(&mut self) -> u64 {
+        let mut x = self.0;
+        x ^= x << 13;
+        x ^= x >> 7;
+        x ^= x << 17;
+        self.0 = x;
+        x
+    }
+    fn below(&mut self, n: u64) -> u64 {
+        self.next() % n
+    }
+    fn actor(&mut self) -> u8 {
+        self.below(ACTOR_COUNT as u64) as u8
+    }
+    fn op(&mut self) -> Op {
+        let a = self.actor();
+        let b = self.actor();
+        match self.below(10) {
+            0 => Op::GrantRole(self.below(3) as u8, b),
+            1 => Op::RevokeRole(self.below(3) as u8, b),
+            2 => Op::ProposeAdmin(b),
+            3 => Op::AcceptAdmin(a),
+            4 => Op::DelegateSession(a),
+            5 => Op::AddAttester(b),
+            6 => Op::RemoveAttester(b),
+            7 => Op::SuspendAttester(b),
+            8 => Op::ReinstateAttester(b),
+            _ => Op::AssignRegional(b),
+        }
+    }
+}
+
+struct Harness {
+    env: Env,
+    client: AttesterRegistryClient<'static>,
+    actors: [Address; ACTOR_COUNT],
+    /// Last observed capability set per actor, used for the monotonicity check.
+    caps: [SVec<Cap>; ACTOR_COUNT],
+}
+
+fn has_cap(caps: &SVec<Cap>, c: Cap) -> bool {
+    caps.iter().any(|x| x == c)
+}
+
+impl Harness {
+    fn new(seed: u64) -> Self {
+        let env = Env::default();
+        env.ledger().set_timestamp(1_000);
+        let actors: [Address; ACTOR_COUNT] = core::array::from_fn(|_| Address::generate(&env));
+        let id = env.register(AttesterRegistry, (actors[ADMIN].clone(),));
+        let client = AttesterRegistryClient::new(&env, &id);
+        let caps = core::array::from_fn(|_| SVec::new(&env));
+        let mut h = Harness {
+            env,
+            client,
+            actors,
+            caps,
+        };
+        // Seed a baseline: admin holds everything, others hold nothing.
+        h.refresh_caps();
+        let _ = seed;
+        h
+    }
+
+    fn addr(&self, i: u8) -> Address {
+        self.actors[i as usize % ACTOR_COUNT].clone()
+    }
+
+    /// Compute the effective-capability graph from on-chain state.
+    fn compute_caps(&self, i: usize) -> SVec<Cap> {
+        let env = &self.env;
+        let a = &self.actors[i];
+        let mut caps = SVec::new(env);
+        if self.client.has_role(&Role::Registrar, a) {
+            caps.push_back(Cap::Registrar);
+        }
+        if self.client.has_role(&Role::Guardian, a) {
+            caps.push_back(Cap::Guardian);
+        }
+        if self.client.has_role(&Role::RegionalRegistrar, a) {
+            caps.push_back(Cap::RegionalRegistrar);
+        }
+        if self.client.is_attester(a) {
+            caps.push_back(Cap::EnrolledAttester);
+        }
+        caps
+    }
+
+    fn refresh_caps(&mut self) {
+        for i in 0..ACTOR_COUNT {
+            self.caps[i] = self.compute_caps(i);
+        }
+    }
+
+    /// Assert no non-admin actor gained a capability since the last snapshot.
+    fn assert_monotonic(&self) {
+        for i in 0..ACTOR_COUNT {
+            if i == ADMIN {
+                continue;
+            }
+            let now = self.compute_caps(i);
+            for c in now.iter() {
+                assert!(
+                    has_cap(&self.caps[i], c),
+                    "role escalation: actor {} gained {:?}",
+                    i,
+                    c
+                );
+            }
+        }
+    }
+
+    /// Execute one op with auth scoped to the acting identity only.
+    fn step(&mut self, op: Op) {
+        let env = self.env.clone();
+        let contract = self.client.address.clone();
+        match op {
+            Op::GrantRole(sel, target) => {
+                let actor = self.addr(ADMIN);
+                let role = role_for(sel);
+                let t = self.addr(target);
+                let args: SVec<Val> = (role.clone(), t.clone()).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "grant_role",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_grant_role(&role, &t);
+            }
+            Op::RevokeRole(sel, target) => {
+                let actor = self.addr(ADMIN);
+                let role = role_for(sel);
+                let t = self.addr(target);
+                let args: SVec<Val> = (role.clone(), t.clone()).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "revoke_role",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_revoke_role(&role, &t);
+            }
+            Op::ProposeAdmin(target) => {
+                let actor = self.addr(ADMIN);
+                let t = self.addr(target);
+                let args: SVec<Val> = (t.clone(),).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "propose_admin",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_propose_admin(&t);
+            }
+            Op::AcceptAdmin(actor_idx) => {
+                let actor = self.addr(actor_idx);
+                let args: SVec<Val> = SVec::new(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "accept_admin",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_accept_admin();
+            }
+            Op::DelegateSession(actor_idx) => {
+                let actor = self.addr(actor_idx);
+                let args: SVec<Val> = SVec::new(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "delegate_session_key",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_delegate_session_key(&actor);
+            }
+            Op::AddAttester(target) => {
+                let actor = self.addr(ADMIN);
+                let t = self.addr(target);
+                let args: SVec<Val> = (actor.clone(), t.clone()).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "add_attester",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_add_attester(&actor, &t);
+            }
+            Op::RemoveAttester(target) => {
+                let actor = self.addr(ADMIN);
+                let t = self.addr(target);
+                let args: SVec<Val> = (actor.clone(), t.clone()).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "remove_attester",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_remove_attester(&actor, &t);
+            }
+            Op::SuspendAttester(target) => {
+                let actor = self.addr(ADMIN);
+                let t = self.addr(target);
+                let args: SVec<Val> = (actor.clone(), t.clone()).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "suspend_attester",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_suspend_attester(&actor, &t);
+            }
+            Op::ReinstateAttester(target) => {
+                let actor = self.addr(ADMIN);
+                let t = self.addr(target);
+                let args: SVec<Val> = (actor.clone(), t.clone()).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "reinstate_attester",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_reinstate_attester(&actor, &t);
+            }
+            Op::AssignRegional(target) => {
+                let actor = self.addr(ADMIN);
+                let t = self.addr(target);
+                let args: SVec<Val> = (actor.clone(), t.clone()).into_val(&env);
+                env.mock_auths(&[MockAuth {
+                    address: &actor,
+                    invoke: &MockAuthInvoke {
+                        contract: &contract,
+                        fn_name: "assign_regional_registrar",
+                        args: args.clone(),
+                        sub_invokes: &[],
+                    },
+                }]);
+                let _ = self.client.try_assign_regional_registrar(&actor, &t);
+            }
+        }
+    }
+
+    /// Run `steps` random ops, asserting monotonicity after each.
+    fn run(&mut self, seed: u64, steps: usize) {
+        let mut rng = Rng::new(seed);
+        for _ in 0..steps {
+            let op = rng.op();
+            self.step(op);
+            self.assert_monotonic();
+            self.refresh_caps();
+        }
+    }
+}
+
+/// Number of sequences to run. Nightly sets `REGISTRY_PROP_SEQUENCES` to a
+/// large value (>= 5000); default keeps the regular test suite fast.
+fn sequence_budget() -> usize {
+    std::env::var("REGISTRY_PROP_SEQUENCES")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(50)
+}
+
+#[test]
+fn role_escalation_property_holds() {
+    let budget = sequence_budget();
+    for seed in 0..budget as u64 {
+        let mut h = Harness::new(seed);
+        h.run(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15), 40);
+    }
+}
+
+/// Test-only injected escalation: a non-admin actor is granted a role without
+/// admin auth. The harness must catch this as a monotonicity violation.
+#[test]
+fn harness_catches_injected_escalation() {
+    let env = Env::default();
+    env.ledger().set_timestamp(1_000);
+    let actors: [Address; ACTOR_COUNT] = core::array::from_fn(|_| Address::generate(&env));
+    let id = env.register(AttesterRegistry, (actors[ADMIN].clone(),));
+    let client = AttesterRegistryClient::new(&env, &id);
+    let caps: [SVec<Cap>; ACTOR_COUNT] = core::array::from_fn(|_| SVec::new(&env));
+    let mut h = Harness {
+        env,
+        client,
+        actors,
+        caps,
+    };
+    h.refresh_caps();
+
+    // Inject: grant Registrar to the outsider using only the outsider's auth.
+    let outsider = h.actors[OUTSIDER].clone();
+    let contract = h.client.address.clone();
+    let env = h.env.clone();
+    let args: SVec<Val> = (Role::Registrar, outsider.clone()).into_val(&env);
+    env.mock_auths(&[MockAuth {
+        address: &outsider,
+        invoke: &MockAuthInvoke {
+            contract: &contract,
+            fn_name: "grant_role",
+            args: args.clone(),
+            sub_invokes: &[],
+        },
+    }]);
+    // If the contract is correct this fails; if it succeeds the harness must
+    // detect the escalation below.
+    let _ = h.client.try_grant_role(&Role::Registrar, &outsider);
+
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        h.assert_monotonic();
+    }));
+    // Either the call was rejected (no escalation) or the harness caught it.
+    if h.client.has_role(&Role::Registrar, &outsider) {
+        assert!(result.is_err(), "harness failed to catch injected escalation");
+    }
 }

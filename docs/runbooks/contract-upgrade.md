@@ -1,7 +1,7 @@
 # Runbook: Upgrading a Lafiya Contract in Production
 
 **Audience:** release manager / on-call operator performing an on-chain upgrade of
-`attester-registry` or `attestation-registry`.
+`attester-registry`, `attestation-registry`, or `facility-registry`.
 
 **Scope:** upgrading existing deployed instances (testnet or mainnet). Initial
 deployment is out of scope for this runbook.
@@ -40,7 +40,7 @@ Key mechanics:
 - **Upgrades are reversible.** The previous code entry stays on the ledger, so a
   rollback is a second `upgrade()` call with the old hash (§6).
 - **Schema versioning strategy.** The running code carries a `SCHEMA_VERSION`
-  constant (currently `1` in both contracts); each instance records the version it
+  constant (currently `1` in all three contracts); each instance records the version it
   is on in instance storage under `DataKey::SchemaVersion`. A release that changes
   the *shape or meaning* of stored data bumps `SCHEMA_VERSION` and extends
   `migrate()` with the step that moves stored data from `N-1` to `N`. Code-only
@@ -82,6 +82,7 @@ script enforces items 4–6 automatically; the rest are on you.
       ```bash
       wc -c target/wasm32v1-none/release/attester_registry.wasm    # 8,386 B = 13% of cap
       wc -c target/wasm32v1-none/release/attestation_registry.wasm # 16,296 B = 25% of cap
+      wc -c target/wasm32v1-none/release/facility_registry.wasm    # re-measure every release
       ```
       Above ~85% of the cap, treat the release as blocked: shrink the code (review
       dependencies/features) or symbol-strip further before proceeding. Current
@@ -111,10 +112,11 @@ script enforces items 4–6 automatically; the rest are on you.
       ```
       Also note `get_schema_version` output (or that the call failed → legacy),
       and one known live data point (e.g. an allowlisted attester address,
-      a known `record_hash` attestation) for the post-upgrade spot checks.
+      a known `record_hash` attestation, a known facility id) for the post-upgrade
+      spot checks.
 - [ ] **10. Window & comms.** Maintenance window agreed; `lafiya-web` team notified
-      if the attestation schema or either contract's function signatures changed
-      (they consume these contracts directly).
+      if the attestation schema or any of these contracts' function signatures
+      changed (they consume these contracts directly).
 
 ---
 
@@ -207,6 +209,10 @@ cargo build --release --locked --target wasm32v1-none
 ```bash
 wc -c target/wasm32v1-none/release/attester_registry.wasm        # ≤ 65536
 sha256sum target/wasm32v1-none/release/attester_registry.wasm    # → H_operator (64 hex chars)
+
+# Same two commands for the other contracts in the release, e.g.:
+wc -c target/wasm32v1-none/release/facility_registry.wasm        # ≤ 65536
+sha256sum target/wasm32v1-none/release/facility_registry.wasm    # → H_operator
 ```
 
 ### 4.3 Upload the wasm blob
@@ -219,6 +225,10 @@ stellar contract upload \
   --optimize=false
 # prints H_uploaded — must equal H_operator (and H_reviewed)
 ```
+
+Repeat §4.1–4.3 per contract being upgraded (e.g. `facility_registry.wasm` →
+`facility-registry` instance), keeping each contract's `H_operator`/`H_uploaded`
+pair separate.
 
 ### 4.4 Submit the upgrade
 
@@ -304,6 +314,9 @@ Prove storage survived the code swap + migration before closing the window:
   `Attestation { attester, timestamp }` recorded in snapshot step 9;
   `attester_registry` pointer still consults the right contract (an `attest` by an
   allowlisted attester succeeds on testnet rehearsal).
+- `facility-registry`: `get_facility` for a known facility id → the same record
+  captured in snapshot step 9; `get_admin` still returns the configured admin;
+  `get_schema_version` equals the release's `SCHEMA_VERSION`.
 - Re-running `migrate()` fails with `MigrationNotRequired` — confirming the guard
   (expected behavior, not a problem).
 
@@ -394,7 +407,8 @@ in production.
 ## 8. Reference
 
 - Contract functions: `upgrade`, `migrate`, `get_schema_version` —
-  `contracts/attester-registry/src/lib.rs`, `contracts/attestation-registry/src/lib.rs`
+  `contracts/attester-registry/src/lib.rs`, `contracts/attestation-registry/src/lib.rs`,
+  `contracts/facility-registry/src/lib.rs`
 - Error codes: [`docs/error-codes.md`](../error-codes.md)
 - Automation: [`scripts/upgrade.sh`](../../scripts/upgrade.sh) (`--help` for all flags)
 - Change log expected by checklist item 2: `CHANGELOG.md`

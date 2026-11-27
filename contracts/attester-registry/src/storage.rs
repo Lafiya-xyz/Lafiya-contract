@@ -47,6 +47,43 @@ pub fn next_event_seq(env: &Env) -> u64 {
     seq
 }
 
+/// Full post-state snapshot of a single attester, as carried by the
+/// `AttesterStateChanged` lifecycle event. Built from storage in one place so
+/// every mutating path emits a consistent view and indexers can rebuild the
+/// attesters table without storage reads.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AttesterSnapshot {
+    /// Current lifecycle status code (see `AttesterStatus`).
+    pub status: u32,
+    /// Tier code assigned to the attester.
+    pub tier: u32,
+    /// Region code the attester is registered in.
+    pub region: u32,
+    /// Whether the attester is currently on probation.
+    pub probation: bool,
+    /// Hash of the off-chain metadata document (zero when unset).
+    pub info_hash: soroban_sdk::BytesN<32>,
+    /// Sequence number of the event that carries this snapshot.
+    pub seq: u64,
+}
+
+/// Reads the current post-state for `attester` and stamps it with the next
+/// event sequence number. Call this after applying a mutation and before
+/// emitting `AttesterStateChanged` so the snapshot and the event agree.
+pub fn attester_snapshot(env: &Env, attester: &soroban_sdk::Address) -> AttesterSnapshot {
+    let record: Option<crate::AttesterRecord> = get(env, &DataKey::Attester(attester.clone()));
+    let suspended: bool = has(env, &DataKey::Suspended(attester.clone()));
+    let record = record.unwrap_or_else(|| crate::AttesterRecord::empty(env));
+    AttesterSnapshot {
+        status: record.status,
+        tier: record.tier,
+        region: record.region,
+        probation: record.probation || suspended,
+        info_hash: record.info_hash,
+        seq: next_event_seq(env),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     extern crate std;

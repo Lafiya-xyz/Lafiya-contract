@@ -19,6 +19,35 @@ fn last_seq(env: &Env, contract: &Address) -> u64 {
     })
 }
 
+/// The `AttesterStateChanged` event emitted by the most recent mutation.
+///
+/// Every mutating entry point emits exactly one such event as its last event,
+/// so this is the event indexers use to rebuild attester state.
+fn last_state_changed(env: &Env, contract: &Address) -> AttesterStateChanged {
+    let events = env.events().all();
+    let (_, _, data) = events.last().expect("expected at least one event");
+    AttesterStateChanged::from_xdr(env, contract, &data)
+}
+
+/// The full post-state of `attester` as reported by contract reads.
+fn read_state(
+    env: &Env,
+    client: &AttesterRegistryClient,
+    attester: &Address,
+) -> Option<AttesterStateChanged> {
+    let status = client.get_attester_status(attester)?;
+    let info = status.info;
+    Some(AttesterStateChanged {
+        attester: attester.clone(),
+        status: status.status,
+        tier: info.tier,
+        region: info.region,
+        probation: info.probation,
+        info_hash: info.license_hash,
+        seq: last_seq(env, &client.address),
+    })
+}
+
 fn initialize_for_tests(client: &AttesterRegistryClient, admin: &Address) {
     client.grant_role(&Role::Registrar, admin);
     client.grant_role(&Role::Guardian, admin);
@@ -1381,6 +1410,153 @@ fn rotate_attester_clears_session_keys() {
         client.is_session_valid(&attester, &session_pk, &scope),
         Err(Ok(Error::SessionNotFound))
     );
+}
+
+#[test]
+fn every_attester_mutation_emits_full_post_state() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[4u8; 32]);
+    let region = String::from_str(&env, "NG-LA");
+
+    // add_attester_with_info
+    client.add_attester_with_info(
+        &admin,
+        &attester,
+        &Some(license_hash.clone()),
+        &Some(region.clone()),
+        &None,
+        &None,
+    );
+    let event = last_state_changed(&env, &client.address);
+    assert_eq!(event.attester, attester);
+    assert_eq!(event.status, AttesterStatusKind::Active);
+    assert_eq!(event.region, Some(region.clone()));
+    assert_eq!(event.info_hash, Some(license_hash.clone()));
+    assert!(!event.probation);
+    assert_eq!(event.seq, last_seq(&env, &client.address));
+    assert_eq!(read_state(&env, &client, &attester), Some(event));
+
+    // update_attester_info
+    let updated_hash = BytesN::from_array(&env, &[5u8; 32]);
+    client.update_attester_info(
+        &admin,
+        &attester,
+        &Some(updated_hash.clone()),
+        &None,
+        &None,
+        &None,
+    );
+    let event = last_state_changed(&env, &client.address);
+    assert_eq!(event.info_hash, Some(updated_hash));
+    assert_eq!(event.region, Some(region));
+    assert_eq!(read_state(&env, &client, &attester), Some(event));
+
+    // suspend_attester
+    client.suspend_attester(&admin, &attester);
+    let event = last_state_changed(&env, &client.address);
+    assert_eq!(event.status, AttesterStatusKind::Suspended);
+    assert_eq!(read_state(&env, &client, &attester), Some(event));
+
+    // reinstate_attester
+    client.reinstate_attester(&admin, &attester);
+    let event = last_state_changed(&env, &client.address);
+    assert_eq!(event.status, AttesterStatusKind::Active);
+    assert_eq!(read_state(&env, &client, &attester), Some(event));
+
+    // rotate_attester: the old attester is gone, the new one is active.
+    let rotated = Address::generate(&env);
+    client.rotate_attester(&admin, &attester, &rotated);
+    let event = last_state_changed(&env, &client.address);
+    assert_eq!(event.attester, rotated);
+    assert_eq!(event.status, AttesterStatusKind::Active);
+    assert_eq!(read_state(&env, &client, &rotated), Some(event));
+
+    // remove_attester
+    client.remove_attester(&admin, &rotated);
+    let event = last_state_changed(&env, &client.address);
+    assert_eq!(event.attester, rotated);
+    assert_eq!(event.status, AttesterStatusKind::Removed);
+    assert_eq!(client.get_attester_status(&rotated), None);
+
+    // revoke_attester
+    let revoked = Address::generate(&env);
+    client.add_attester(&admin, &revoked);
+    client.revoke_attester(&revoked);
+    let event = last_state_changed(&env, &client.address);
+    assert_eq!(event.attester, revoked);
+    assert_eq!(event.status, AttesterStatusKind::Removed);
+    assert_eq!(client.get_attester_status(&revoked), None);
+}
+
+#[test]
+fn replayed_events_match_contract_storage() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    // Drive a mix of mutations across several attesters.
+    let mut attesters = Vec::new(&env);
+    for _ in 0..3 {
+        attesters.push_back(Address::generate(&env));
+    }
+    let first = attesters.get(0).unwrap();
+    let second = attesters.get(1).unwrap();
+    let third = attesters.get(2).unwrap();
+
+    client.add_attester_with_info(
+        &admin,
+        &first,
+        &Some(BytesN::from_array(&env, &[1u8; 32])),
+        &Some(String::from_str(&env, "NG-LA")),
+        &None,
+        &None,
+    );
+    client.add_attester(&admin, &second);
+    client.add_attester(&admin, &third);
+    client.update_attester_info(
+        &admin,
+        &second,
+        &Some(BytesN::from_array(&env, &[2u8; 32])),
+        &None,
+        &None,
+        &None,
+    );
+    client.suspend_attester(&admin, &third);
+    client.remove_attester(&admin, &first);
+
+    // Rebuild state purely from the emitted events.
+    let mut replayed: std::vec::Vec<AttesterStateChanged> = std::vec::Vec::new();
+    for (_, _, data) in env.events().all().iter() {
+        if let Ok(event) = AttesterStateChanged::try_from_xdr(&env, &client.address, &data) {
+            replayed.push(event);
+        }
+    }
+    assert!(!replayed.is_empty());
+
+    // Fold the event stream into the latest state per attester.
+    let mut latest: std::vec::Vec<AttesterStateChanged> = std::vec::Vec::new();
+    for event in replayed {
+        match latest.iter_mut().find(|e| e.attester == event.attester) {
+            Some(existing) => *existing = event,
+            None => latest.push(event),
+        }
+    }
+
+    // Compare the replayed state against contract reads.
+    for event in latest {
+        if event.status == AttesterStatusKind::Removed {
+            assert_eq!(client.get_attester_status(&event.attester), None);
+            continue;
+        }
+        let stored = read_state(&env, &client, &event.attester).unwrap();
+        assert_eq!(stored.status, event.status);
+        assert_eq!(stored.tier, event.tier);
+        assert_eq!(stored.region, event.region);
+        assert_eq!(stored.probation, event.probation);
+        assert_eq!(stored.info_hash, event.info_hash);
+    }
 }
 
 #[test]

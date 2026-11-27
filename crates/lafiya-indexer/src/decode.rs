@@ -45,6 +45,17 @@ pub enum LafiyaEvent {
     AttesterInfoUpdated {
         attester: String,
     },
+    /// Full post-state of an attester after any mutation, so indexers can
+    /// rebuild the attesters table without storage reads.
+    AttesterStateChanged {
+        attester: String,
+        status: String,
+        tier: String,
+        region: String,
+        probation: bool,
+        info_hash: String,
+        seq: u64,
+    },
     AttestationRecorded {
         record_hash: String,
         attester: String,
@@ -97,6 +108,7 @@ impl LafiyaEvent {
             Self::AttesterSuspended { .. } => "attester_suspended",
             Self::AttesterReinstated { .. } => "attester_reinstated",
             Self::AttesterInfoUpdated { .. } => "attester_info_updated",
+            Self::AttesterStateChanged { .. } => "attester_state_changed",
             Self::AttestationRecorded { .. } => "attestation_recorded",
             Self::AttestationRevoked { .. } => "attestation_revoked",
             Self::WorkItemApproved { .. } => "work_item_approved",
@@ -173,6 +185,32 @@ pub fn decode(raw: &RawEvent) -> Result<LafiyaEvent, DecodeError> {
         "attester_info_updated" => LafiyaEvent::AttesterInfoUpdated {
             attester: address_topic(1)?,
         },
+        "attester_state_changed" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::AttesterStateChanged {
+                attester: address_topic(1)?,
+                status: map_field(&data, "status")
+                    .and_then(symbol)
+                    .ok_or_else(|| err("data.status missing".into()))?,
+                tier: map_field(&data, "tier")
+                    .and_then(symbol)
+                    .ok_or_else(|| err("data.tier missing".into()))?,
+                region: map_field(&data, "region")
+                    .and_then(symbol)
+                    .ok_or_else(|| err("data.region missing".into()))?,
+                probation: match map_field(&data, "probation") {
+                    Some(ScVal::Bool(b)) => *b,
+                    _ => return Err(err("data.probation missing".into())),
+                },
+                info_hash: map_field(&data, "info_hash")
+                    .and_then(bytes_hex)
+                    .ok_or_else(|| err("data.info_hash missing".into()))?,
+                seq: match map_field(&data, "seq") {
+                    Some(ScVal::U64(n)) => *n,
+                    _ => return Err(err("data.seq missing".into())),
+                },
+            }
+        }
         "attestation_revoked" => LafiyaEvent::AttestationRevoked {
             record_hash: hash_topic(1)?,
         },
@@ -387,6 +425,65 @@ mod tests {
     #[test]
     fn rejects_malformed_known_event() {
         assert!(decode(&raw(vec![sym("attester_added")], ScVal::Void)).is_err());
+    }
+
+    #[test]
+    fn decodes_attester_state_changed() {
+        let (addr, addr_str) = addr();
+        let data = ScVal::Map(Some(ScMap(
+            vec![
+                ScMapEntry {
+                    key: sym("status"),
+                    val: sym("active"),
+                },
+                ScMapEntry {
+                    key: sym("tier"),
+                    val: sym("gold"),
+                },
+                ScMapEntry {
+                    key: sym("region"),
+                    val: sym("north"),
+                },
+                ScMapEntry {
+                    key: sym("probation"),
+                    val: ScVal::Bool(true),
+                },
+                ScMapEntry {
+                    key: sym("info_hash"),
+                    val: ScVal::Bytes(vec![0xcd; 32].try_into().unwrap()),
+                },
+                ScMapEntry {
+                    key: sym("seq"),
+                    val: ScVal::U64(9),
+                },
+            ]
+            .try_into()
+            .unwrap(),
+        )));
+        let ev = decode(&raw(vec![sym("attester_state_changed"), addr], data)).unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::AttesterStateChanged {
+                attester: addr_str,
+                status: "active".into(),
+                tier: "gold".into(),
+                region: "north".into(),
+                probation: true,
+                info_hash: "cd".repeat(32),
+                seq: 9,
+            }
+        );
+        assert_eq!(ev.name(), "attester_state_changed");
+    }
+
+    #[test]
+    fn rejects_malformed_attester_state_changed() {
+        let (addr, _) = addr();
+        assert!(decode(&raw(
+            vec![sym("attester_state_changed"), addr],
+            ScVal::Map(None)
+        ))
+        .is_err());
     }
 
     fn amount_map(amount: i128) -> ScVal {
