@@ -211,6 +211,15 @@ pub trait RpcProvider {
         Err(RpcError::Other("latest_ledger not supported".to_string()))
     }
 
+    /// Server-side simulation of a sponsored envelope (Soroban RPC
+    /// `simulateTransaction`). The relayer re-simulates every envelope it is
+    /// asked to sponsor and checks the declared resource limits and fee
+    /// against the result (issue #747). Providers that cannot simulate return
+    /// an error, which fails closed.
+    fn simulate(&mut self, _tx: &SponsoredTx) -> Result<Simulation, RpcError> {
+        Err(RpcError::Other("simulate not supported".to_string()))
+    }
+
     /// The current sequence number of `account` (from its ledger entry).
     fn account_sequence(&mut self, _account: &str) -> Result<i64, RpcError> {
         Err(RpcError::Other(
