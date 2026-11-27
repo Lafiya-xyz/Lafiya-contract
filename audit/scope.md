@@ -32,6 +32,44 @@ freeze with:
 tokei contracts/*/src/lib.rs          # or: cloc contracts/*/src/lib.rs
 ```
 
+### `attestation-registry` module layout
+
+`contracts/attestation-registry/src/lib.rs` is a thin `#[contractimpl]`
+surface; the logic lives in cohesive modules. All of the following are in
+scope:
+
+| Module | Path | Responsibility |
+|---|---|---|
+| Entry points | `contracts/attestation-registry/src/lib.rs` | `#[contractimpl]` surface only |
+| Admin | `contracts/attestation-registry/src/admin.rs` | Admin, roles, interface metadata, migrations |
+| Consent | `contracts/attestation-registry/src/consent.rs` | Consent grants and revocation |
+| Attestations | `contracts/attestation-registry/src/attest.rs` | Single attestations, versions, scope and coverage |
+| Batches | `contracts/attestation-registry/src/batch.rs` | Batch submission |
+| Quorum | `contracts/attestation-registry/src/quorum.rs` | Quorum attestations |
+| Disputes | `contracts/attestation-registry/src/dispute.rs` | Dispute lifecycle |
+| Status lists | `contracts/attestation-registry/src/status_list.rs` | Bitstring segments, epoch-versioned roots, monotonic revocation and `unrevoke` |
+| Rate limits | `contracts/attestation-registry/src/rate_limit.rs` | Per-caller rate limiting |
+
+The interface, event, and storage snapshots under
+`scripts/conformance/snapshots` must remain byte-identical across this
+layout; drift is a finding.
+
+### `attester-registry` session-key surfaces
+
+In scope within `contracts/attester-registry/src/lib.rs`:
+
+- `SessionGeneration(attester)` storage and the generation check in
+  `is_session_valid` / `resolve_session`.
+- Generation bumps on suspend, remove, rotate, and `revoke_all_sessions`
+  (O(1) mass invalidation of session keys).
+- `MAX_SESSIONS_PER_ATTESTER` enforcement and `list_sessions(attester)`.
+
+### Source size budget
+
+A CI check warns when any contract source file exceeds the configured
+line budget (see `scripts/`). The budget is a review aid, not a security
+property.
+
 Also in scope, as configuration:
 
 - `Cargo.toml` release profile (`overflow-checks = true`, `panic = "abort"`).

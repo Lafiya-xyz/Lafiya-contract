@@ -20,6 +20,7 @@ after a deliberate interface change and commit the result.
 """
 
 import json
+import os
 import pathlib
 import re
 import sys
@@ -32,6 +33,11 @@ Key = tuple[str, str]
 
 VERSIONS_FILE = SNAPSHOT_DIR / "interface_versions.json"
 _VERSION_RE = re.compile(r"pub const INTERFACE_VERSION: u32 = (\d+);")
+
+# File-size budget: warn when any contract source file exceeds this many lines.
+# Configurable via the MAX_SOURCE_LINES environment variable.
+DEFAULT_MAX_SOURCE_LINES = 800
+SOURCE_SUFFIXES = {".rs"}
 
 
 def snapshot_path(name: str) -> pathlib.Path:
@@ -86,6 +92,46 @@ def code_interface_version(crate_dir: pathlib.Path) -> int:
     return int(match.group(1))
 
 
+def max_source_lines() -> int:
+    """The configured per-file line budget (env `MAX_SOURCE_LINES`)."""
+    raw = os.environ.get("MAX_SOURCE_LINES")
+    if raw is None or raw.strip() == "":
+        return DEFAULT_MAX_SOURCE_LINES
+    try:
+        value = int(raw)
+    except ValueError:
+        raise ValueError(f"MAX_SOURCE_LINES must be an integer, got {raw!r}")
+    if value <= 0:
+        raise ValueError(f"MAX_SOURCE_LINES must be positive, got {value}")
+    return value
+
+
+def source_files(crate_dir: pathlib.Path) -> list[pathlib.Path]:
+    """All contract source files under `<crate_dir>/src`."""
+    src = crate_dir / "src"
+    if not src.is_dir():
+        return []
+    return sorted(
+        p for p in src.rglob("*") if p.is_file() and p.suffix in SOURCE_SUFFIXES
+    )
+
+
+def check_file_sizes(crate_dir: pathlib.Path, budget: int) -> bool:
+    """Warn (non-fatally) about source files over `budget` lines.
+
+    Returns True so callers can chain it with other checks without failing the
+    run; the warning is informational and does not affect the exit status.
+    """
+    for path in source_files(crate_dir):
+        lines = len(path.read_text().splitlines())
+        if lines > budget:
+            print(
+                f"warning: {path} has {lines} lines "
+                f"(budget {budget}; set MAX_SOURCE_LINES to adjust)"
+            )
+    return True
+
+
 def load_versions() -> dict[str, int]:
     if not VERSIONS_FILE.exists():
         return {}
@@ -98,6 +144,9 @@ def save_versions(versions: dict[str, int]) -> None:
 
 
 def check_one(name: str, cfg: dict[str, pathlib.Path]) -> bool:
+    budget = max_source_lines()
+    check_file_sizes(cfg["crate_dir"], budget)
+
     snap_file = snapshot_path(name)
     current = extract(cfg["wasm_path"])
 
@@ -135,6 +184,9 @@ def check_one(name: str, cfg: dict[str, pathlib.Path]) -> bool:
 
 
 def update_one(name: str, cfg: dict[str, pathlib.Path]) -> bool:
+    budget = max_source_lines()
+    check_file_sizes(cfg["crate_dir"], budget)
+
     snap_file = snapshot_path(name)
     current = extract(cfg["wasm_path"])
     versions = load_versions()

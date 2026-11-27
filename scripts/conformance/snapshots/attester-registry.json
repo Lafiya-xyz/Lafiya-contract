@@ -216,6 +216,22 @@
   },
   {
     "kind": "function_v0",
+    "name": "get_session_generation",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "get_session_generation",
+      "outputs": [
+        "u32"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
     "name": "initialize",
     "spec": {
       "inputs": [
@@ -259,6 +275,30 @@
       "name": "is_paused",
       "outputs": [
         "bool"
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "list_sessions",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "list_sessions",
+      "outputs": [
+        {
+          "vec": {
+            "element_type": {
+              "udt": {
+                "name": "SessionKey"
+              }
+            }
+          }
+        }
       ]
     }
   },
@@ -372,6 +412,27 @@
         }
       ],
       "name": "remove_attesters",
+      "outputs": [
+        {
+          "result": {
+            "error_type": "error",
+            "ok_type": "void"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "kind": "function_v0",
+    "name": "revoke_all_sessions",
+    "spec": {
+      "inputs": [
+        {
+          "name": "attester",
+          "type": "address"
+        }
+      ],
+      "name": "revoke_all_sessions",
       "outputs": [
         {
           "result": {
@@ -542,6 +603,10 @@
         {
           "name": "BatchTooLarge",
           "value": 8
+        },
+        {
+          "name": "SessionCapExceeded",
+          "value": 9
         }
       ],
       "lib": "",
@@ -688,6 +753,30 @@
   },
   {
     "kind": "event_v0",
+    "name": "SessionsRevoked",
+    "spec": {
+      "data_format": "map",
+      "lib": "",
+      "name": "SessionsRevoked",
+      "params": [
+        {
+          "location": "topic_list",
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "location": "data",
+          "name": "generation",
+          "type_": "u32"
+        }
+      ],
+      "prefix_topics": [
+        "sessions_revoked"
+      ]
+    }
+  },
+  {
+    "kind": "event_v0",
     "name": "Paused",
     "spec": {
       "data_format": "map",
@@ -807,6 +896,32 @@
       ],
       "lib": "",
       "name": "AttesterStatus"
+    }
+  },
+  {
+    "kind": "udt_struct_v0",
+    "name": "SessionKey",
+    "spec": {
+      "fields": [
+        {
+          "name": "attester",
+          "type": "address"
+        },
+        {
+          "name": "generation",
+          "type": "u32"
+        },
+        {
+          "name": "key",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          }
+        }
+      ],
+      "lib": "",
+      "name": "SessionKey"
     }
   },
   {

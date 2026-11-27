@@ -11,7 +11,7 @@ use super::*;
 use attester_registry::{AttesterRegistry, AttesterRegistryClient};
 use proptest::prelude::*;
 use soroban_sdk::testutils::Address as _;
-use soroban_sdk::{Address, BytesN, Env};
+use soroban_sdk::{Address, BytesN, Env, Vec};
 
 fn setup(
     env: &Env,
@@ -220,5 +220,124 @@ proptest! {
         prop_assert!(client.get_verification(&record_hash).disputed);
         let _ = client.try_clear_dispute(&admin, &record_hash);
         prop_assert!(!client.get_verification(&record_hash).disputed);
+    }
+
+    /// A status-list root must never be activated for an epoch unless every
+    /// segment it references has been published for that same epoch. For
+    /// arbitrary (epoch, segment) publish orders, activation either succeeds
+    /// and the epoch is readable, or fails cleanly without panicking.
+    #[test]
+    fn status_list_root_requires_epoch_consistent_segments(
+        epoch in any::<u64>(),
+        segment_count in 1u32..8,
+        publish_mask in proptest::collection::vec(any::<bool>(), 1..8),
+    ) {
+        let env = Env::default();
+        let (client, _attester_registry_client, _admin) = setup(&env);
+
+        let mut published = 0u32;
+        for index in 0..segment_count {
+            let should_publish = publish_mask
+                .get(index as usize)
+                .copied()
+                .unwrap_or(false);
+            if should_publish {
+                let bits = BytesN::from_array(&env, &[0u8; 32]);
+                let segment_hash = BytesN::from_array(&env, &[index as u8; 32]);
+                let _ = client.try_publish_status_list_segment(
+                    &epoch,
+                    &index,
+                    &bits,
+                    &segment_hash,
+                );
+                published += 1;
+            }
+        }
+
+        let root = BytesN::from_array(&env, &[0xABu8; 32]);
+        let result = client.try_set_status_list_root(&epoch, &root);
+        if published == segment_count {
+            prop_assert!(result.is_ok());
+            prop_assert_eq!(client.get_status_list_root(&epoch), Some(root));
+        } else {
+            // Incomplete segment set: activation must not silently succeed.
+            prop_assert!(result.is_err() || client.get_status_list_root(&epoch).is_none());
+        }
+    }
+
+    /// Revocation is monotonic across epochs: once a bit is set for a
+    /// credential, publishing a later epoch that clears it must be rejected
+    /// unless the explicit `unrevoke` path is used.
+    #[test]
+    fn revocation_is_monotonic_across_epochs(
+        first_epoch in 0u64..1_000,
+        epoch_gap in 1u64..100,
+        bit_index in 0u32..8,
+    ) {
+        let env = Env::default();
+        let (client, _attester_registry_client, _admin) = setup(&env);
+
+        let later_epoch = first_epoch.saturating_add(epoch_gap);
+        let mut revoked_bits = [0u8; 32];
+        revoked_bits[(bit_index / 8) as usize] = 1u8 << (bit_index % 8);
+        let revoked = BytesN::from_array(&env, &revoked_bits);
+        let cleared = BytesN::from_array(&env, &[0u8; 32]);
+        let segment_hash = BytesN::from_array(&env, &[0x11u8; 32]);
+
+        // Publish the revocation in the first epoch.
+        let _ = client.try_publish_status_list_segment(
+            &first_epoch,
+            &0u32,
+            &revoked,
+            &segment_hash,
+        );
+
+        // Attempting to clear the bit in a later epoch must not succeed
+        // without the explicit unrevoke path.
+        let clear_result = client.try_publish_status_list_segment(
+            &later_epoch,
+            &0u32,
+            &cleared,
+            &segment_hash,
+        );
+        prop_assert!(clear_result.is_err());
+
+        // The explicit unrevoke path is the only way to clear it.
+        let unrevoke_result = client.try_unrevoke_status_list_bit(&later_epoch, &bit_index);
+        prop_assert!(unrevoke_result.is_ok());
+    }
+
+    /// Verifiers must always be able to read an epoch-consistent
+    /// `(root, segments)` pair: whatever root is returned for an epoch, the
+    /// segments published for that epoch are the ones referenced by it.
+    #[test]
+    fn verifier_reads_epoch_consistent_pair(
+        epoch in any::<u64>(),
+        segment_count in 1u32..6,
+    ) {
+        let env = Env::default();
+        let (client, _attester_registry_client, _admin) = setup(&env);
+
+        let mut segment_hashes = Vec::new(&env);
+        for index in 0..segment_count {
+            let bits = BytesN::from_array(&env, &[0u8; 32]);
+            let segment_hash = BytesN::from_array(&env, &[index as u8; 32]);
+            let _ = client.try_publish_status_list_segment(
+                &epoch,
+                &index,
+                &bits,
+                &segment_hash,
+            );
+            segment_hashes.push_back(segment_hash);
+        }
+
+        let root = BytesN::from_array(&env, &[0xCDu8; 32]);
+        if client.try_set_status_list_root(&epoch, &root).is_ok() {
+            prop_assert_eq!(client.get_status_list_root(&epoch), Some(root));
+            for index in 0..segment_count {
+                let stored = client.get_status_list_segment(&epoch, &index);
+                prop_assert_eq!(stored, Some(segment_hashes.get(index).unwrap()));
+            }
+        }
     }
 }

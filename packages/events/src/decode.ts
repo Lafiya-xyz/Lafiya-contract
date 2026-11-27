@@ -14,6 +14,23 @@ export interface EventMeta {
   txHash: string;
   /** `getEvents` event id; pass as `cursor` to resume after this event. */
   cursor: string;
+  /**
+   * Ordering key derived from RPC metadata: `(ledger, tx index, event index)`.
+   * Replaces the old global on-chain `EventSeq`; use it to order events and to
+   * detect gaps within a ledger.
+   */
+  ordering: EventOrdering;
+}
+
+/**
+ * Chain-derived ordering key for an event. `txIndex` is the position of the
+ * transaction within its ledger and `eventIndex` the position of the event
+ * within its transaction, both as reported by RPC.
+ */
+export interface EventOrdering {
+  ledger: number;
+  txIndex: number;
+  eventIndex: number;
 }
 
 /** A decoded event: discriminated on `kind`, payload fields spread in. */
@@ -30,6 +47,10 @@ export interface RawEvent {
   contractId?: { toString(): string } | string;
   topic: xdr.ScVal[];
   value: xdr.ScVal;
+  /** Position of the transaction within its ledger, if RPC provides it. */
+  txIndex?: number;
+  /** Position of the event within its transaction, if RPC provides it. */
+  eventIndex?: number;
 }
 
 /** An event matched a Lafiya prefix topic but none of its payload versions. */
@@ -53,6 +74,25 @@ for (const kind of Object.keys(EVENT_SPECS) as EventKind[]) {
 
 function symbolOf(val: xdr.ScVal): string | undefined {
   return val.switch().name === "scvSymbol" ? val.sym().toString() : undefined;
+}
+
+/**
+ * Derive the ordering key for a raw event. Falls back to `0` for the
+ * sub-ledger indices when RPC omits them; the ledger is always authoritative.
+ */
+function orderingOf(raw: RawEvent): EventOrdering {
+  return {
+    ledger: raw.ledger,
+    txIndex: raw.txIndex ?? 0,
+    eventIndex: raw.eventIndex ?? 0,
+  };
+}
+
+/** Compare two ordering keys; negative if `a` precedes `b`. */
+export function compareOrdering(a: EventOrdering, b: EventOrdering): number {
+  if (a.ledger !== b.ledger) return a.ledger - b.ledger;
+  if (a.txIndex !== b.txIndex) return a.txIndex - b.txIndex;
+  return a.eventIndex - b.eventIndex;
 }
 
 function convert(val: xdr.ScVal, type: SpecType): unknown {
@@ -177,6 +217,7 @@ export function decodeEvent(raw: RawEvent): LafiyaEvent | undefined {
         ledgerClosedAt: raw.ledgerClosedAt,
         txHash: raw.txHash,
         cursor: raw.id,
+        ordering: orderingOf(raw),
       } as LafiyaEvent;
     } catch (err) {
       lastError = (err as Error).message;
@@ -185,12 +226,17 @@ export function decodeEvent(raw: RawEvent): LafiyaEvent | undefined {
   throw new EventDecodeError(kind, raw.id, lastError);
 }
 
-/** Decode a batch of raw events, skipping non-Lafiya events. */
+/**
+ * Decode a batch of raw events, skipping non-Lafiya events. The result is
+ * sorted by {@link EventOrdering} so callers observe a deterministic order
+ * independent of RPC paging.
+ */
 export function decodeEvents(raws: RawEvent[]): LafiyaEvent[] {
   const out: LafiyaEvent[] = [];
   for (const raw of raws) {
     const decoded = decodeEvent(raw);
     if (decoded) out.push(decoded);
   }
+  out.sort((a, b) => compareOrdering(a.ordering, b.ordering));
   return out;
 }

@@ -134,6 +134,9 @@ enum DataKey {
     SessionKey(BytesN<32>),
     /// Session key pks delegated by an attester.
     AttesterSessions(Address),
+    /// Monotonic generation counter for an attester's session keys. Bumping it
+    /// invalidates every session issued under an earlier generation in O(1).
+    SessionGeneration(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -212,6 +215,9 @@ pub struct SessionKey {
     pub expires_at: u64,
     /// The single operation this session key is allowed to perform.
     pub scope: Symbol,
+    /// The attester's session generation at issuance. A session is only valid
+    /// while this matches the attester's current generation.
+    pub generation: u32,
 }
 
 #[contracttype]
@@ -281,6 +287,11 @@ pub const BATCH_LIMIT: u32 = 40;
 const REGIONAL_BATCH_LIMIT: u32 = 20;
 const REGIONAL_REMOVE_BATCH_LIMIT: u32 = 8;
 
+/// Maximum number of concurrent (live) session keys a single attester may
+/// hold. Bounds the per-attester session index so device-management UIs and
+/// `list_sessions` stay cheap.
+pub const MAX_SESSIONS_PER_ATTESTER: u32 = 16;
+
 /// Errors returned by the attester registry's public entry points.
 #[contracterror]
 #[derive(Copy, Clone, Debug, Eq, PartialEq, PartialOrd, Ord)]
@@ -340,6 +351,8 @@ pub enum Error {
     InvalidSessionScope = 20,
     /// The session key expiry is not in the future.
     InvalidSessionExpiry = 21,
+    /// The attester already holds `MAX_SESSIONS_PER_ATTESTER` live sessions.
+    TooManySessions = 22,
 }
 
 /// Emitted when admin ownership finishes transferring to a new address.
@@ -484,6 +497,21 @@ pub struct SessionKeyRevoked {
     pub schema_version: u32,
 }
 
+/// Emitted when every session key of an attester is invalidated at once by
+/// bumping the attester's session generation.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct SessionsRevoked {
+    #[topic]
+    pub attester: Address,
+    /// The new session generation; all earlier sessions are now invalid.
+    pub generation: u32,
+    pub contract_kind: Symbol,
+    pub schema_version: u32,
+    /// Per-contract monotonic event sequence number (gap detection).
+    pub seq: u64,
+}
+
 /// Emitted when an attester is suspended.
 #[contractevent]
 #[derive(Clone, Debug)]
@@ -619,6 +647,7 @@ impl AttesterRegistry {
             &DataKey::AttesterRotation(previous_attester.clone()),
             &new_attester,
         );
+        Self::bump_session_generation(&env, &previous_attester);
         Self::clear_attester_sessions(&env, &previous_attester);
         Self::record_status_change(&env, &previous_attester, false);
         Self::record_status_change(&env, &new_attester, !suspended);
@@ -647,6 +676,7 @@ impl AttesterRegistry {
             info.trust_revoked_after = Some(env.ledger().timestamp());
             storage::set(&env, &DataKey::Attester(attester.clone()), &info);
             Self::clear_regional_attester(&env, &attester);
+            Self::bump_session_generation(&env, &attester);
             Self::clear_attester_sessions(&env, &attester);
             let count = Self::attester_count(&env);
             if count > 0 {
@@ -1225,6 +1255,7 @@ impl AttesterRegistry {
                 info.trust_revoked_after = Some(env.ledger().timestamp());
                 storage::set(&env, &key, &info);
                 Self::clear_regional_attester(&env, &attester);
+                Self::bump_session_generation(&env, &attester);
                 Self::clear_attester_sessions(&env, &attester);
                 count = count.saturating_sub(1);
                 Self::record_status_change(&env, &attester, false);
@@ -1260,6 +1291,7 @@ impl AttesterRegistry {
             info.trust_revoked_after = Some(env.ledger().timestamp());
             storage::set(&env, &DataKey::Attester(attester.clone()), info);
             Self::clear_regional_attester(&env, &attester);
+            Self::bump_session_generation(&env, &attester);
             Self::clear_attester_sessions(&env, &attester);
         }
         if was_present {
@@ -1366,6 +1398,7 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .set(&DataKey::Attester(attester.clone()), &info);
+        Self::bump_session_generation(&env, &attester);
         Self::clear_attester_sessions(&env, &attester);
         Self::record_status_change(&env, &attester, false);
         probation::flag_if_active(&env, &attester, &reason);
@@ -1439,22 +1472,29 @@ impl AttesterRegistry {
             return Err(Error::InvalidSessionExpiry);
         }
 
-        let session = SessionKey {
-            session_pk: session_pk.clone(),
-            attester: attester.clone(),
-            expires_at,
-            scope: scope.clone(),
-        };
-        env.storage()
-            .persistent()
-            .set(&DataKey::SessionKey(session_pk.clone()), &session);
         let index_key = DataKey::AttesterSessions(attester.clone());
         let mut sessions: Vec<BytesN<32>> = env
             .storage()
             .persistent()
             .get(&index_key)
             .unwrap_or_else(|| Vec::new(&env));
-        if !sessions.contains(session_pk.clone()) {
+        let already_indexed = sessions.contains(session_pk.clone());
+        if !already_indexed && sessions.len() >= MAX_SESSIONS_PER_ATTESTER {
+            return Err(Error::TooManySessions);
+        }
+
+        let generation = Self::session_generation(&env, &attester);
+        let session = SessionKey {
+            session_pk: session_pk.clone(),
+            attester: attester.clone(),
+            expires_at,
+            scope: scope.clone(),
+            generation,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::SessionKey(session_pk.clone()), &session);
+        if !already_indexed {
             sessions.push_back(session_pk.clone());
             env.storage().persistent().set(&index_key, &sessions);
         }
@@ -1502,35 +1542,62 @@ impl AttesterRegistry {
         Ok(())
     }
 
+    /// Revoke every session key delegated by `attester` in O(1) writes by
+    /// bumping the attester's session generation. The caller must authorize as
+    /// `attester`. Emits `SessionsRevoked`.
+    pub fn revoke_all_sessions(env: Env, attester: Address) -> Result<(), Error> {
+        attester.require_auth();
+        let generation = Self::bump_session_generation(&env, &attester);
+        Self::clear_attester_sessions(&env, &attester);
+        SessionsRevoked {
+            attester,
+            generation,
+            contract_kind: Symbol::new(&env, "attester_registry"),
+            schema_version: EVENT_SCHEMA_VERSION,
+            seq: storage::next_event_seq(&env),
+        }
+        .publish(&env);
+        storage::extend_instance_ttl(&env, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        Ok(())
+    }
+
+    /// List the session public keys currently indexed for `attester`. Entries
+    /// may include expired or generation-stale keys; use `is_session_valid` to
+    /// check liveness. Bounded by `MAX_SESSIONS_PER_ATTESTER`.
+    pub fn list_sessions(env: Env, attester: Address) -> Vec<BytesN<32>> {
+        env.storage()
+            .persistent()
+            .get(&DataKey::AttesterSessions(attester))
+            .unwrap_or_else(|| Vec::new(&env))
+    }
+
+    /// The current session generation for `attester`. Sessions issued under a
+    /// different generation are invalid.
+    pub fn get_session_generation(env: Env, attester: Address) -> u32 {
+        Self::session_generation(&env, &attester)
+    }
+
     /// Verify that `session_pk` is a live session key authorized for `scope`.
     ///
     /// Returns distinct errors so callers (notably the `attestation-registry`)
     /// can react precisely: `SessionNotFound` if the key was never delegated
     /// or has been revoked, `SessionExpired` if it is past `expires_at`, and
     /// `SessionScopeMismatch` if it is not authorized for `scope`. Also fails
-    /// with `AttesterNotFound` if the delegating attester is no longer active.
+    /// with `AttesterNotFound` if the delegating attester is no longer active,
+    /// and with `SessionNotFound` if the session's generation is stale.
     pub fn is_session_valid(env: Env, session_pk: BytesN<32>, scope: Symbol) -> Result<(), Error> {
-        let session: SessionKey = env
-            .storage()
-            .persistent()
-            .get(&DataKey::SessionKey(session_pk))
-            .ok_or(Error::SessionNotFound)?;
-        if env.ledger().timestamp() >= session.expires_at {
-            return Err(Error::SessionExpired);
-        }
-        if session.scope != scope {
-            return Err(Error::SessionScopeMismatch);
-        }
-        let active = env
-            .storage()
-            .persistent()
-            .get::<_, StoredAttesterInfo>(&DataKey::Attester(session.attester.clone()))
-            .map(|info| !info.removed && !info.suspended)
-            .unwrap_or(false);
-        if !active {
-            return Err(Error::AttesterNotFound);
-        }
-        Ok(())
+        Self::resolve_session(&env, &session_pk, &scope).map(|_| ())
+    }
+
+    /// Resolve `session_pk` to its live [`SessionKey`] record, enforcing expiry,
+    /// scope, generation, and attester activity. Shared by `is_session_valid`
+    /// and callers that need the resolved record.
+    pub fn resolve_session(
+        env: Env,
+        session_pk: BytesN<32>,
+        scope: Symbol,
+    ) -> Result<SessionKey, Error> {
+        Self::resolve_session(&env, &session_pk, &scope)
     }
 
     /// Return the stored session key record for `session_pk`, if any.
@@ -1844,6 +1911,56 @@ impl AttesterRegistry {
                 }
             }
         }
+    }
+
+    /// The current session generation for `attester`, defaulting to 0.
+    fn session_generation(env: &Env, attester: &Address) -> u32 {
+        storage::get(env, &DataKey::SessionGeneration(attester.clone())).unwrap_or(0)
+    }
+
+    /// Increment `attester`'s session generation, invalidating every session
+    /// issued under an earlier generation. Returns the new generation.
+    fn bump_session_generation(env: &Env, attester: &Address) -> u32 {
+        let next = Self::session_generation(env, attester).wrapping_add(1);
+        storage::set(
+            env,
+            &DataKey::SessionGeneration(attester.clone()),
+            &next,
+        );
+        next
+    }
+
+    /// Shared session validation: expiry, scope, generation, and attester
+    /// activity. Returns the resolved session record on success.
+    fn resolve_session(
+        env: &Env,
+        session_pk: &BytesN<32>,
+        scope: &Symbol,
+    ) -> Result<SessionKey, Error> {
+        let session: SessionKey = env
+            .storage()
+            .persistent()
+            .get(&DataKey::SessionKey(session_pk.clone()))
+            .ok_or(Error::SessionNotFound)?;
+        if env.ledger().timestamp() >= session.expires_at {
+            return Err(Error::SessionExpired);
+        }
+        if &session.scope != scope {
+            return Err(Error::SessionScopeMismatch);
+        }
+        if session.generation != Self::session_generation(env, &session.attester) {
+            return Err(Error::SessionNotFound);
+        }
+        let active = env
+            .storage()
+            .persistent()
+            .get::<_, StoredAttesterInfo>(&DataKey::Attester(session.attester.clone()))
+            .map(|info| !info.removed && !info.suspended)
+            .unwrap_or(false);
+        if !active {
+            return Err(Error::AttesterNotFound);
+        }
+        Ok(session)
     }
 
     fn remove_session(env: &Env, attester: &Address, session_pk: &BytesN<32>) {

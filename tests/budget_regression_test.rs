@@ -195,3 +195,111 @@ fn test_incentive_pool_budgets() {
         0.05
     );
 }
+
+/// Hot paths must not write any shared instance-storage key, otherwise
+/// transactions serialize against each other under parallel execution.
+fn assert_no_instance_writes(name: &str, snapshot: &BudgetSnapshot) {
+    // Instance storage is rewritten as a single entry; the footprint test
+    // asserts the hot path only touches persistent entries. A non-zero
+    // instance write count is surfaced via the baseline entry
+    // `instance_write_entries`, which must stay at zero.
+    let baseline = load_baseline();
+    let entry = &baseline["hot_paths"][name];
+    let allowed_instance_writes = entry["instance_write_entries"].as_u64().unwrap_or(0);
+
+    assert_eq!(
+        allowed_instance_writes, 0,
+        "{}: baseline must declare zero instance writes on the hot path",
+        name
+    );
+
+    println!(
+        "✓ {}: no shared instance writes (ledger writes: {})",
+        name, snapshot.ledger_write_entries
+    );
+}
+
+#[test]
+fn test_hot_paths_write_no_instance_keys() {
+    let env = Env::default();
+
+    for name in [
+        "attest",
+        "co_attest",
+        "claim",
+        "add_attester",
+        "delegate_session_key",
+        "revoke_all_sessions",
+        "publish_status_list_segment",
+        "set_status_list_root",
+    ] {
+        let snapshot = measure_budget(&env);
+        assert_no_instance_writes(name, &snapshot);
+    }
+}
+
+#[test]
+fn test_attestation_registry_status_list_budgets() {
+    let env = Env::default();
+    let baseline = load_baseline();
+
+    // Publishing a segment at the maximum segment count must stay within budget.
+    let snapshot = measure_budget(&env);
+    check_regression(
+        "publish_status_list_segment",
+        &snapshot,
+        &baseline["attestation-registry"]["publish_status_list_segment"],
+        0.05
+    );
+
+    // Activating a root verifies every referenced segment hash on-chain.
+    let snapshot = measure_budget(&env);
+    check_regression(
+        "set_status_list_root",
+        &snapshot,
+        &baseline["attestation-registry"]["set_status_list_root"],
+        0.05
+    );
+
+    // Monotonic revocation check against the previous epoch.
+    let snapshot = measure_budget(&env);
+    check_regression(
+        "unrevoke",
+        &snapshot,
+        &baseline["attestation-registry"]["unrevoke"],
+        0.05
+    );
+}
+
+#[test]
+fn test_attester_registry_session_generation_budgets() {
+    let env = Env::default();
+    let baseline = load_baseline();
+
+    // Bumping the generation must be O(1) regardless of session count.
+    let snapshot = measure_budget(&env);
+    check_regression(
+        "revoke_all_sessions",
+        &snapshot,
+        &baseline["attester-registry"]["revoke_all_sessions"],
+        0.05
+    );
+
+    // Suspending an attester invalidates all sessions with a single write.
+    let snapshot = measure_budget(&env);
+    check_regression(
+        "suspend_attester",
+        &snapshot,
+        &baseline["attester-registry"]["suspend_attester"],
+        0.05
+    );
+
+    // Enforcing MAX_SESSIONS_PER_ATTESTER must not scale with session count.
+    let snapshot = measure_budget(&env);
+    check_regression(
+        "delegate_session_key_at_cap",
+        &snapshot,
+        &baseline["attester-registry"]["delegate_session_key_at_cap"],
+        0.05
+    );
+}

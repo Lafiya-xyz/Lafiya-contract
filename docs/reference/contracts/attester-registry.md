@@ -59,6 +59,15 @@ fn get_admin() -> Result<Address, Error>
 
 Return the current admin address.
 
+### `get_session_generation`
+
+```rust
+fn get_session_generation(attester: Address) -> u32
+```
+
+The current session generation for `attester`. Every session key issued
+under an older generation is invalid; see `revoke_all_sessions`.
+
 ### `get_attester_count`
 
 ```rust
@@ -127,6 +136,28 @@ fn is_paused() -> bool
 
 Whether the contract is currently paused.
 
+### `is_session_valid`
+
+```rust
+fn is_session_valid(attester: Address, session_key: BytesN<32>) -> bool
+```
+
+Whether `session_key` is a currently valid session for `attester`. A
+session is valid only if it was issued under the attester's current
+session generation and the attester is allowlisted and not suspended.
+Callable by anyone, including other contracts.
+
+### `list_sessions`
+
+```rust
+fn list_sessions(attester: Address) -> Vec<BytesN<32>>
+```
+
+List the session keys currently recorded for `attester`, for
+device-management UIs. Keys issued under a stale generation may still
+appear here; use `is_session_valid` to filter them. Bounded by
+`MAX_SESSIONS_PER_ATTESTER`.
+
 ### `migrate`
 
 ```rust
@@ -180,6 +211,9 @@ fn remove_attester(attester: Address) -> Result<(), Error>
 Remove `attester` from the allowlist. Requires the admin's
 authorization. A no-op if the attester was never allowlisted.
 
+Removing an attester bumps its session generation, invalidating all of
+its session keys in O(1) writes.
+
 ### `remove_attesters`
 
 ```rust
@@ -195,6 +229,39 @@ Addresses that are not currently allowlisted are silently skipped
 and no spurious events are emitted. Exactly one `AttesterRemoved` event
 is emitted per address that was actually removed.
 
+### `resolve_session`
+
+```rust
+fn resolve_session(attester: Address, session_key: BytesN<32>) -> Result<Address, Error>
+```
+
+Resolve `session_key` to the attester that owns it, rejecting sessions
+whose generation differs from the attester's current generation (or
+whose owner is no longer allowlisted or is suspended). Returns
+`Error::SessionInvalid` if the session is not usable.
+
+### `revoke_all_sessions`
+
+```rust
+fn revoke_all_sessions(attester: Address) -> Result<(), Error>
+```
+
+Invalidate every session key belonging to `attester` in constant time
+by bumping its session generation. Requires the admin's
+authorization. Emits `SessionsRevoked`. The same bump happens
+automatically on `suspend_attester`, `remove_attester`, and
+`rotate_attester`, so this is only needed for explicit revocation.
+
+### `rotate_attester`
+
+```rust
+fn rotate_attester(attester: Address) -> Result<(), Error>
+```
+
+Rotate `attester`'s credentials, invalidating all of its session keys
+in O(1) writes by bumping its session generation. Requires the admin's
+authorization.
+
 ### `set_max_attesters`
 
 ```rust
@@ -205,6 +272,16 @@ Set the soft cap on the number of allowlisted attesters. Requires the
 admin's authorization. Does not evict existing attesters if lowered
 below the current count; it only blocks further `add_attester` calls.
 
+### `set_max_sessions_per_attester`
+
+```rust
+fn set_max_sessions_per_attester(max_sessions: u32) -> Result<(), Error>
+```
+
+Set the cap on concurrent sessions per attester. Requires the admin's
+authorization. Does not revoke existing sessions if lowered below the
+current count; it only blocks further session issuance.
+
 ### `suspend_attester`
 
 ```rust
@@ -212,6 +289,9 @@ fn suspend_attester(attester: Address) -> Result<(), Error>
 ```
 
 Suspend an allowlisted attester. Requires the admin's authorization.
+
+Suspending an attester bumps its session generation, invalidating all
+of its session keys in O(1) writes.
 
 **Note:** this function does **not** check whether `attester` was ever
 added via `add_attester`. If called on an address that is not in the
@@ -296,6 +376,8 @@ state, as returned by `get_attester_status`.
 | 6 | `MigrationNotRequired` | `migrate()` was called while the stored schema version is already `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal that there is nothing pending, not a failure to react to. |
 | 7 | `AttesterNotFound` | The referenced attester is not currently allowlisted (never added, or since removed). |
 | 8 | `BatchTooLarge` | The supplied batch exceeds `BATCH_LIMIT` addresses. |
+| 9 | `SessionInvalid` | The referenced session key is unknown, was issued under a stale session generation, or its owning attester is no longer allowlisted or is suspended. |
+| 10 | `SessionLimitReached` | The attester already holds `MAX_SESSIONS_PER_ATTESTER` concurrent sessions. Revoke existing sessions via `revoke_all_sessions` before issuing more. |
 
 ## Events
 
@@ -309,5 +391,6 @@ state, as returned by `get_attester_status`.
 | `AttesterSuspended` | `"attester_suspended"`, `attester: Address` |  | Emitted when an attester is suspended. |
 | `Initialized` | `"initialized"`, `admin: Address` |  | Emitted once, when the contract is initialized. |
 | `Paused` | `"paused"`, `by: Address` |  | Emitted when state-changing operations are paused. |
+| `SessionsRevoked` | `"sessions_revoked"`, `attester: Address`, `generation: u32` |  | Emitted when an attester's session generation is bumped, invalidating all of its session keys. Emitted by `revoke_all_sessions` and by the automatic invalidation on suspend, remove, and rotate. |
 | `Unpaused` | `"unpaused"`, `by: Address` |  | Emitted when state-changing operations are unpaused. |
 | `Upgraded` | `"upgraded"`, `new_wasm_hash: BytesN<32>` |  | Emitted when the contract is upgraded to new wasm. |

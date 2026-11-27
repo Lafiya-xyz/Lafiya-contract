@@ -1384,6 +1384,154 @@ fn rotate_attester_clears_session_keys() {
 }
 
 #[test]
+fn suspend_attester_invalidates_all_sessions_with_constant_writes() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let scope = Symbol::new(&env, "attest");
+    let expires_at = env.ledger().timestamp() + 1_000;
+
+    let mut sessions = Vec::new(&env);
+    for i in 0..MAX_SESSIONS_PER_ATTESTER {
+        let session_pk = BytesN::from_array(&env, &[i as u8; 32]);
+        client.delegate_session_key(&attester, &session_pk, &expires_at, &scope);
+        sessions.push_back(session_pk);
+    }
+
+    // Suspension must invalidate every session without touching each one.
+    client.suspend_attester(&admin, &attester);
+    for session_pk in sessions.iter() {
+        assert_eq!(
+            client.is_session_valid(&attester, &session_pk, &scope),
+            Err(Ok(Error::SessionNotFound))
+        );
+    }
+}
+
+#[test]
+fn remove_attester_invalidates_all_sessions_with_constant_writes() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let scope = Symbol::new(&env, "attest");
+    let expires_at = env.ledger().timestamp() + 1_000;
+
+    let mut sessions = Vec::new(&env);
+    for i in 0..MAX_SESSIONS_PER_ATTESTER {
+        let session_pk = BytesN::from_array(&env, &[i as u8; 32]);
+        client.delegate_session_key(&attester, &session_pk, &expires_at, &scope);
+        sessions.push_back(session_pk);
+    }
+
+    client.remove_attester(&admin, &attester);
+    for session_pk in sessions.iter() {
+        assert_eq!(
+            client.is_session_valid(&attester, &session_pk, &scope),
+            Err(Ok(Error::SessionNotFound))
+        );
+    }
+}
+
+#[test]
+fn rotate_attester_invalidates_all_sessions_with_constant_writes() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let scope = Symbol::new(&env, "attest");
+    let expires_at = env.ledger().timestamp() + 1_000;
+
+    let mut sessions = Vec::new(&env);
+    for i in 0..MAX_SESSIONS_PER_ATTESTER {
+        let session_pk = BytesN::from_array(&env, &[i as u8; 32]);
+        client.delegate_session_key(&attester, &session_pk, &expires_at, &scope);
+        sessions.push_back(session_pk);
+    }
+
+    let new_attester = Address::generate(&env);
+    client.rotate_attester(&admin, &attester, &new_attester);
+    for session_pk in sessions.iter() {
+        assert_eq!(
+            client.is_session_valid(&attester, &session_pk, &scope),
+            Err(Ok(Error::SessionNotFound))
+        );
+    }
+}
+
+#[test]
+fn delegate_session_key_beyond_cap_fails_with_typed_error() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let scope = Symbol::new(&env, "attest");
+    let expires_at = env.ledger().timestamp() + 1_000;
+
+    for i in 0..MAX_SESSIONS_PER_ATTESTER {
+        let session_pk = BytesN::from_array(&env, &[i as u8; 32]);
+        client.delegate_session_key(&attester, &session_pk, &expires_at, &scope);
+    }
+
+    let overflow_pk = BytesN::from_array(&env, &[0xffu8; 32]);
+    assert_eq!(
+        client.try_delegate_session_key(&attester, &overflow_pk, &expires_at, &scope),
+        Err(Ok(Error::SessionLimitReached))
+    );
+    assert_eq!(
+        client.is_session_valid(&attester, &overflow_pk, &scope),
+        Err(Ok(Error::SessionNotFound))
+    );
+}
+
+#[test]
+fn revoke_all_sessions_invalidates_sessions_and_emits_event() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    client.add_attester(&admin, &attester);
+    let scope = Symbol::new(&env, "attest");
+    let expires_at = env.ledger().timestamp() + 1_000;
+
+    let mut sessions = Vec::new(&env);
+    for i in 0..3u8 {
+        let session_pk = BytesN::from_array(&env, &[i; 32]);
+        client.delegate_session_key(&attester, &session_pk, &expires_at, &scope);
+        sessions.push_back(session_pk);
+    }
+
+    let expected_event = SessionsRevoked {
+        seq: last_seq(&env, &client.address) + 1,
+        attester: attester.clone(),
+        contract_kind: Symbol::new(&env, "attester_registry"),
+        schema_version: EVENT_SCHEMA_VERSION,
+    };
+    client.revoke_all_sessions(&admin, &attester);
+    assert_eq!(
+        env.events().all(),
+        std::vec![expected_event.to_xdr(&env, &client.address)],
+    );
+
+    for session_pk in sessions.iter() {
+        assert_eq!(
+            client.is_session_valid(&attester, &session_pk, &scope),
+            Err(Ok(Error::SessionNotFound))
+        );
+    }
+
+    // A fresh session issued after the mass revocation is valid again.
+    let fresh_pk = BytesN::from_array(&env, &[9u8; 32]);
+    client.delegate_session_key(&attester, &fresh_pk, &expires_at, &scope);
+    assert_eq!(client.is_session_valid(&attester, &fresh_pk, &scope), Ok(()));
+}
+
+#[test]
 fn revoke_session_key_is_idempotent() {
     let (env, client, admin) = setup();
     initialize_for_tests(&client, &admin);
