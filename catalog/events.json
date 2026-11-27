@@ -655,6 +655,112 @@
           "location": "data"
         }
       ]
+    },
+    {
+      "contract": "facility-registry",
+      "name": "FacilityEnrolled",
+      "prefix_topics": [
+        "facility_enrolled"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "facility_id",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "local_id",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "facility_code_hash",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "data"
+        },
+        {
+          "name": "jurisdiction",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "issuing_authority",
+          "type": "symbol",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "facility-registry",
+      "name": "FacilityDeactivated",
+      "prefix_topics": [
+        "facility_deactivated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "facility_id",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "local_id",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "deactivation_reason",
+          "type": "symbol",
+          "location": "data"
+        },
+        {
+          "name": "deactivated_at",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "facility-registry",
+      "name": "FacilityReactivated",
+      "prefix_topics": [
+        "facility_reactivated"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "facility_id",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "local_id",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "reactivated_at",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
     }
   ]
 }

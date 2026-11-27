@@ -154,6 +154,164 @@ fn fixture(command: &str) -> SimulationResult {
                 vec!["pause".to_string()],
             )]),
         },
+        "facility_enroll" => SimulationResult {
+            success: true,
+            ledger_entries: vec![
+                LedgerEntryChange {
+                    key: "facility:GFAC...FACILITY".to_string(),
+                    before: None,
+                    after: Some(
+                        "{\"active\":true,\"name\":\"Synthetic Clinic\",\"enrolled_at\":1700000000}"
+                            .to_string(),
+                    ),
+                },
+                LedgerEntryChange {
+                    key: "facility:index".to_string(),
+                    before: Some("[]".to_string()),
+                    after: Some("[\"GFAC...FACILITY\"]".to_string()),
+                },
+            ],
+            balance_changes: vec![],
+            events: vec![EventChange {
+                contract: "facility-registry".to_string(),
+                topics: vec!["facility_enrolled".to_string()],
+                data: "{\"facility\":\"GFAC...FACILITY\"}".to_string(),
+            }],
+            auth: AuthTree::new(vec![AuthNode::leaf(
+                "admin",
+                "GADMIN...ADMIN",
+                vec!["enroll_facility".to_string()],
+            )]),
+        },
+        "facility_deactivate" => SimulationResult {
+            success: true,
+            ledger_entries: vec![LedgerEntryChange {
+                key: "facility:GFAC...FACILITY".to_string(),
+                before: Some(
+                    "{\"active\":true,\"name\":\"Synthetic Clinic\",\"enrolled_at\":1700000000}"
+                        .to_string(),
+                ),
+                after: Some(
+                    "{\"active\":false,\"name\":\"Synthetic Clinic\",\"enrolled_at\":1700000000,\
+                     \"deactivation_reason\":\"licence_lapsed\",\"deactivated_at\":1700003600}"
+                        .to_string(),
+                ),
+            }],
+            balance_changes: vec![],
+            events: vec![EventChange {
+                contract: "facility-registry".to_string(),
+                topics: vec!["facility_deactivated".to_string()],
+                data: "{\"facility\":\"GFAC...FACILITY\",\"reason\":\"licence_lapsed\",\
+                       \"timestamp\":1700003600}"
+                    .to_string(),
+            }],
+            auth: AuthTree::new(vec![AuthNode::leaf(
+                "admin",
+                "GADMIN...ADMIN",
+                vec!["deactivate_facility".to_string()],
+            )]),
+        },
+        "facility_deactivate_fraud" => SimulationResult {
+            success: true,
+            ledger_entries: vec![LedgerEntryChange {
+                key: "facility:GFAC...FACILITY".to_string(),
+                before: Some(
+                    "{\"active\":true,\"name\":\"Synthetic Clinic\",\"enrolled_at\":1700000000}"
+                        .to_string(),
+                ),
+                after: Some(
+                    "{\"active\":false,\"name\":\"Synthetic Clinic\",\"enrolled_at\":1700000000,\
+                     \"deactivation_reason\":\"fraud\",\"deactivated_at\":1700003600}"
+                        .to_string(),
+                ),
+            }],
+            balance_changes: vec![],
+            events: vec![EventChange {
+                contract: "facility-registry".to_string(),
+                topics: vec!["facility_deactivated".to_string()],
+                data: "{\"facility\":\"GFAC...FACILITY\",\"reason\":\"fraud\",\
+                       \"timestamp\":1700003600}"
+                    .to_string(),
+            }],
+            auth: AuthTree::new(vec![AuthNode::leaf(
+                "admin",
+                "GADMIN...ADMIN",
+                vec!["deactivate_facility".to_string()],
+            )]),
+        },
+        "facility_reactivate" => SimulationResult {
+            success: true,
+            ledger_entries: vec![LedgerEntryChange {
+                key: "facility:GFAC...FACILITY".to_string(),
+                before: Some(
+                    "{\"active\":false,\"name\":\"Synthetic Clinic\",\"enrolled_at\":1700000000,\
+                     \"deactivation_reason\":\"licence_lapsed\",\"deactivated_at\":1700003600}"
+                        .to_string(),
+                ),
+                after: Some(
+                    "{\"active\":true,\"name\":\"Synthetic Clinic\",\"enrolled_at\":1700000000}"
+                        .to_string(),
+                ),
+            }],
+            balance_changes: vec![],
+            events: vec![EventChange {
+                contract: "facility-registry".to_string(),
+                topics: vec!["facility_reactivated".to_string()],
+                data: "{\"facility\":\"GFAC...FACILITY\"}".to_string(),
+            }],
+            auth: AuthTree::new(vec![AuthNode::leaf(
+                "admin",
+                "GADMIN...ADMIN",
+                vec!["reactivate_facility".to_string()],
+            )]),
+        },
+        "facility_affiliate" => SimulationResult {
+            success: true,
+            ledger_entries: vec![LedgerEntryChange {
+                key: "facility:affiliation:GFAC...FACILITY:GATT...ATTESTER".to_string(),
+                before: None,
+                after: Some("{\"active\":true,\"since\":1700000000}".to_string()),
+            }],
+            balance_changes: vec![],
+            events: vec![EventChange {
+                contract: "facility-registry".to_string(),
+                topics: vec!["facility_affiliated".to_string()],
+                data: "{\"facility\":\"GFAC...FACILITY\",\"attester\":\"GATT...ATTESTER\"}"
+                    .to_string(),
+            }],
+            auth: AuthTree::new(vec![AuthNode::leaf(
+                "admin",
+                "GADMIN...ADMIN",
+                vec!["affiliate_attester".to_string()],
+            )]),
+        },
+        "facility_disaffiliate" => SimulationResult {
+            success: true,
+            ledger_entries: vec![LedgerEntryChange {
+                key: "facility:affiliation:GFAC...FACILITY:GATT...ATTESTER".to_string(),
+                before: Some("{\"active\":true,\"since\":1700000000}".to_string()),
+                after: None,
+            }],
+            balance_changes: vec![],
+            events: vec![EventChange {
+                contract: "facility-registry".to_string(),
+                topics: vec!["facility_disaffiliated".to_string()],
+                data: "{\"facility\":\"GFAC...FACILITY\",\"attester\":\"GATT...ATTESTER\"}"
+                    .to_string(),
+            }],
+            auth: AuthTree::new(vec![AuthNode::leaf(
+                "admin",
+                "GADMIN...ADMIN",
+                vec!["disaffiliate_attester".to_string()],
+            )]),
+        },
+        "facility_list_affiliations" => SimulationResult {
+            success: true,
+            ledger_entries: vec![],
+            balance_changes: vec![],
+            events: vec![],
+            auth: AuthTree::new(vec![]),
+        },
         "pool_claim" => SimulationResult {
             success: true,
             ledger_entries: vec![
@@ -225,6 +383,99 @@ fn golden_ops_pause() {
 #[test]
 fn golden_pool_claim() {
     check_command("pool_claim");
+}
+
+#[test]
+fn golden_facility_enroll() {
+    check_command("facility_enroll");
+}
+
+#[test]
+fn golden_facility_deactivate() {
+    check_command("facility_deactivate");
+}
+
+#[test]
+fn golden_facility_deactivate_fraud() {
+    check_command("facility_deactivate_fraud");
+}
+
+#[test]
+fn golden_facility_reactivate() {
+    check_command("facility_reactivate");
+}
+
+#[test]
+fn golden_facility_affiliate() {
+    check_command("facility_affiliate");
+}
+
+#[test]
+fn golden_facility_disaffiliate() {
+    check_command("facility_disaffiliate");
+}
+
+#[test]
+fn golden_facility_list_affiliations() {
+    check_command("facility_list_affiliations");
+}
+
+/// Facility deactivation previews must surface the reason code and timestamp
+/// so operators can distinguish a routine `licence_lapsed` closure from a
+/// `fraud` deactivation that untrusts prior scoped attestations.
+#[test]
+fn facility_deactivation_preview_surfaces_reason() {
+    for (command, reason) in [
+        ("facility_deactivate", "licence_lapsed"),
+        ("facility_deactivate_fraud", "fraud"),
+    ] {
+        let sim = fixture(command);
+        let preview = Preview::from_simulation(&sim);
+
+        let text = render_preview_text(&preview);
+        assert!(
+            text.contains(reason),
+            "{command} text preview missing reason {reason}: {text}"
+        );
+        assert!(
+            text.contains("1700003600"),
+            "{command} text preview missing deactivation timestamp: {text}"
+        );
+
+        let json = render_preview_json(&preview).expect("render json");
+        let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+        let storage = value
+            .get("storage")
+            .and_then(|v| v.as_array())
+            .expect("storage array present");
+        let after = storage[0]
+            .get("after")
+            .and_then(|v| v.as_str())
+            .expect("after value present");
+        assert!(
+            after.contains(reason),
+            "{command} json preview missing reason {reason}: {after}"
+        );
+    }
+}
+
+/// The paginated affiliation listing is a read-only simulation: it must not
+/// report any storage writes, balance changes, or events.
+#[test]
+fn facility_list_affiliations_is_read_only() {
+    let sim = fixture("facility_list_affiliations");
+    let preview = Preview::from_simulation(&sim);
+
+    let json = render_preview_json(&preview).expect("render json");
+    let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
+
+    for key in ["storage", "balances", "events"] {
+        let arr = value
+            .get(key)
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("{key} array present"));
+        assert!(arr.is_empty(), "{key} should be empty for a read-only call");
+    }
 }
 
 /// Sanity check: the JSON export must be valid JSON and round-trip the

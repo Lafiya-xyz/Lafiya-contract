@@ -94,8 +94,32 @@ fn get_verification(record_hash: BytesN<32>) -> VerificationResult
 
 Return the aggregated verification view for `record_hash`: the number
 of distinct live co-attestations, whether the applicable quorum policy
-is satisfied, and whether the record is disputed. Only public data is
-returned; no underlying health data is exposed. Callable by anyone.
+is satisfied, whether the record is disputed, and whether the record is
+untrusted because it was attested at a facility that was later
+deactivated for fraud. Only public data is returned; no underlying
+health data is exposed. Callable by anyone.
+
+#### Facility deactivation semantics
+
+Attestations created via `attest_with_scope` may claim a facility. When
+that facility is later deactivated (`deactivate_facility`), the effect
+on already-scoped attestations depends on the recorded
+`deactivation_reason`:
+
+- `closed` / `licence_lapsed`: attestations made **before** the
+  facility's `deactivated_at` timestamp remain valid. The facility's
+  status only affects attestations made at or after deactivation.
+- `fraud`: attestations made **before** `deactivated_at` are marked
+  `facility_untrusted`. The `facility_untrusted` flag is set in
+  `VerificationResult` and `facility_untrusted_since` carries the
+  timestamp from which the attestation is considered untrusted (the
+  facility's `deactivated_at`). This mirrors attester compromise
+  windows: trust is retroactively withdrawn from the compromise point.
+
+Reactivating a facility (`reactivate_facility`) clears the facility's
+active deactivation but does **not** clear a `fraud`-derived
+`facility_untrusted` marking on past attestations; those remain
+untrusted unless the underlying attestation is revoked.
 
 ### `get_status_list_segment`
 
@@ -247,6 +271,20 @@ Aggregated, public-only verification view for a record hash.
 | `attester_count` | `u32` | Number of distinct live co-attestations. |
 | `quorum_satisfied` | `bool` | Whether the applicable quorum policy is satisfied. |
 | `disputed` | `bool` | Whether a patient dispute overlay is present. |
+| `facility_untrusted` | `bool` | Whether the attestation is untrusted because its scoped facility was deactivated for `fraud`. |
+| `facility_untrusted_since` | `Option<u64>` | Timestamp from which the attestation is untrusted (the facility's `deactivated_at`), if `facility_untrusted` is set. |
+
+### `DeactivationReason`
+
+Reason code recorded when a facility is deactivated. Stored alongside
+the facility's `deactivated_at` timestamp and emitted in
+`FacilityDeactivated`.
+
+| Variant | Description |
+| --- | --- |
+| `Closed` | The facility has closed. Past scoped attestations remain valid. |
+| `LicenceLapsed` | The facility's licence lapsed. Past scoped attestations remain valid. |
+| `Fraud` | The facility is implicated in fraud. Scoped attestations made before deactivation are marked `facility_untrusted`. |
 
 ### `StatusListSegment`
 
@@ -286,5 +324,7 @@ Versioned bitstring segment for compact bulk revocation checks.
 | `QuorumPolicySet` | `"quorum_policy_set"`, `record_class: u32` | `required: u32` | Emitted when a record class's quorum policy is configured. |
 | `StatusListUpdated` | `"status_list_updated"`, `segment_index: u32` | `version: u32` | Emitted when a status-list segment's bits or version change. |
 | `AttesterRegistryRepointed` | `"attester_registry_repointed"`, `previous: Address`, `new: Address` |  | Emitted when the `attester-registry` contract this registry consults is repointed. |
+| `FacilityDeactivated` | `"facility_deactivated"`, `facility: Address` | `reason: DeactivationReason`, `deactivated_at: u64` | Emitted when a facility is deactivated, recording the reason code and timestamp. |
+| `FacilityReactivated` | `"facility_reactivated"`, `facility: Address` | `reactivated_at: u64` | Emitted when a facility is reactivated. |
 | `Paused` | `"paused"`, `by: Address` |  | Emitted when state-changing operations are paused. |
 | `Unpaused` | `"unpaused"`, `by: Address` |  | Emitted when state-changing operations are unpaused. |

@@ -1,0 +1,240 @@
+{
+  "contract": "facility-registry",
+  "version": 1,
+  "generated_by": "scripts/conformance/extract_interface.py",
+  "functions": [
+    {
+      "name": "initialize",
+      "args": [
+        { "name": "admin", "type": "Address" }
+      ],
+      "returns": "Result<(), FacilityError>"
+    },
+    {
+      "name": "enroll_facility",
+      "args": [
+        { "name": "admin", "type": "Address" },
+        { "name": "facility_code", "type": "String" },
+        { "name": "jurisdiction", "type": "String" },
+        { "name": "issuing_authority", "type": "String" },
+        { "name": "licence_number", "type": "String" }
+      ],
+      "returns": "Result<u64, FacilityError>"
+    },
+    {
+      "name": "deactivate_facility",
+      "args": [
+        { "name": "admin", "type": "Address" },
+        { "name": "facility_id", "type": "u64" },
+        { "name": "reason", "type": "DeactivationReason" }
+      ],
+      "returns": "Result<(), FacilityError>"
+    },
+    {
+      "name": "reactivate_facility",
+      "args": [
+        { "name": "admin", "type": "Address" },
+        { "name": "facility_id", "type": "u64" }
+      ],
+      "returns": "Result<(), FacilityError>"
+    },
+    {
+      "name": "affiliate_attester",
+      "args": [
+        { "name": "admin", "type": "Address" },
+        { "name": "facility_id", "type": "u64" },
+        { "name": "attester", "type": "Address" }
+      ],
+      "returns": "Result<(), FacilityError>"
+    },
+    {
+      "name": "disaffiliate_attester",
+      "args": [
+        { "name": "admin", "type": "Address" },
+        { "name": "facility_id", "type": "u64" },
+        { "name": "attester", "type": "Address" }
+      ],
+      "returns": "Result<(), FacilityError>"
+    },
+    {
+      "name": "get_facility",
+      "args": [
+        { "name": "facility_id", "type": "u64" }
+      ],
+      "returns": "Result<Facility, FacilityError>"
+    },
+    {
+      "name": "get_facility_by_portable_id",
+      "args": [
+        { "name": "portable_id", "type": "BytesN<32>" }
+      ],
+      "returns": "Result<Facility, FacilityError>"
+    },
+    {
+      "name": "get_facility_by_code_hash",
+      "args": [
+        { "name": "code_hash", "type": "BytesN<32>" }
+      ],
+      "returns": "Result<Facility, FacilityError>"
+    },
+    {
+      "name": "get_facility_count",
+      "args": [],
+      "returns": "Result<u64, FacilityError>"
+    },
+    {
+      "name": "is_affiliated",
+      "args": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "attester", "type": "Address" }
+      ],
+      "returns": "Result<bool, FacilityError>"
+    },
+    {
+      "name": "was_affiliated_at",
+      "args": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "attester", "type": "Address" },
+        { "name": "timestamp", "type": "u64" }
+      ],
+      "returns": "Result<bool, FacilityError>"
+    },
+    {
+      "name": "get_affiliation_periods",
+      "args": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "attester", "type": "Address" },
+        { "name": "cursor", "type": "Option<u32>" },
+        { "name": "limit", "type": "u32" }
+      ],
+      "returns": "Result<AffiliationPeriodPage, FacilityError>"
+    },
+    {
+      "name": "list_affiliations",
+      "args": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "cursor", "type": "Option<u32>" },
+        { "name": "limit", "type": "u32" }
+      ],
+      "returns": "Result<AffiliationListPage, FacilityError>"
+    },
+    {
+      "name": "get_deactivation",
+      "args": [
+        { "name": "facility_id", "type": "u64" }
+      ],
+      "returns": "Result<Option<DeactivationRecord>, FacilityError>"
+    }
+  ],
+  "types": [
+    {
+      "name": "Facility",
+      "kind": "struct",
+      "fields": [
+        { "name": "id", "type": "u64" },
+        { "name": "portable_id", "type": "BytesN<32>" },
+        { "name": "code_hash", "type": "BytesN<32>" },
+        { "name": "facility_code", "type": "String" },
+        { "name": "jurisdiction", "type": "String" },
+        { "name": "issuing_authority", "type": "String" },
+        { "name": "licence_number", "type": "String" },
+        { "name": "enrolled_at", "type": "u64" },
+        { "name": "active", "type": "bool" }
+      ]
+    },
+    {
+      "name": "DeactivationReason",
+      "kind": "enum",
+      "variants": ["Closed", "LicenceLapsed", "Fraud"]
+    },
+    {
+      "name": "DeactivationRecord",
+      "kind": "struct",
+      "fields": [
+        { "name": "reason", "type": "DeactivationReason" },
+        { "name": "deactivated_at", "type": "u64" },
+        { "name": "reactivated_at", "type": "Option<u64>" }
+      ]
+    },
+    {
+      "name": "AffiliationPeriod",
+      "kind": "struct",
+      "fields": [
+        { "name": "started_at", "type": "u64" },
+        { "name": "ended_at", "type": "Option<u64>" }
+      ]
+    },
+    {
+      "name": "AffiliationPeriodPage",
+      "kind": "struct",
+      "fields": [
+        { "name": "periods", "type": "Vec<AffiliationPeriod>" },
+        { "name": "next_cursor", "type": "Option<u32>" }
+      ]
+    },
+    {
+      "name": "AffiliationListPage",
+      "kind": "struct",
+      "fields": [
+        { "name": "attesters", "type": "Vec<Address>" },
+        { "name": "next_cursor", "type": "Option<u32>" }
+      ]
+    },
+    {
+      "name": "FacilityError",
+      "kind": "enum",
+      "variants": [
+        "AlreadyInitialized",
+        "NotInitialized",
+        "Unauthorized",
+        "FacilityNotFound",
+        "FacilityInactive",
+        "DuplicateFacility",
+        "DuplicateAffiliation",
+        "NotAffiliated",
+        "InvalidReason",
+        "InvalidPagination"
+      ]
+    }
+  ],
+  "events": [
+    {
+      "name": "facility_enrolled",
+      "fields": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "portable_id", "type": "BytesN<32>" }
+      ]
+    },
+    {
+      "name": "facility_deactivated",
+      "fields": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "reason", "type": "DeactivationReason" },
+        { "name": "deactivated_at", "type": "u64" }
+      ]
+    },
+    {
+      "name": "facility_reactivated",
+      "fields": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "reactivated_at", "type": "u64" }
+      ]
+    },
+    {
+      "name": "attester_affiliated",
+      "fields": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "attester", "type": "Address" },
+        { "name": "started_at", "type": "u64" }
+      ]
+    },
+    {
+      "name": "attester_disaffiliated",
+      "fields": [
+        { "name": "facility_id", "type": "u64" },
+        { "name": "attester", "type": "Address" },
+        { "name": "ended_at", "type": "u64" }
+      ]
+    }
+  ]
+}

@@ -281,6 +281,48 @@ fn ops_is_paused_help_prints_usage() {
     assert_help_ok(&["ops", "is-paused"]);
 }
 
+// ── facility ──────────────────────────────────────────────────────────────────
+
+#[test]
+fn facility_help_prints_usage() {
+    assert_help_ok(&["facility"]);
+}
+
+#[test]
+fn facility_enroll_help_prints_usage() {
+    assert_help_ok(&["facility", "enroll"]);
+}
+
+#[test]
+fn facility_deactivate_help_prints_usage() {
+    assert_help_ok(&["facility", "deactivate"]);
+}
+
+#[test]
+fn facility_reactivate_help_prints_usage() {
+    assert_help_ok(&["facility", "reactivate"]);
+}
+
+#[test]
+fn facility_affiliate_help_prints_usage() {
+    assert_help_ok(&["facility", "affiliate"]);
+}
+
+#[test]
+fn facility_disaffiliate_help_prints_usage() {
+    assert_help_ok(&["facility", "disaffiliate"]);
+}
+
+#[test]
+fn facility_show_help_prints_usage() {
+    assert_help_ok(&["facility", "show"]);
+}
+
+#[test]
+fn facility_list_affiliations_help_prints_usage() {
+    assert_help_ok(&["facility", "list-affiliations"]);
+}
+
 // ── deploy ────────────────────────────────────────────────────────────────────
 
 #[test]
@@ -351,4 +393,15 @@ fn attestation_dispute_help_documents_flags() {
 #[ignore = "command lost in merge; CLI wiring pending"]
 fn attestation_clear_dispute_help_documents_flags() {
     assert_help_contains(&["attestation", "clear-dispute"], "record-hash");
+}
+
+#[test]
+fn facility_help_lists_subcommands() {
+    assert_help_contains(&["facility"], "enroll");
+    assert_help_contains(&["facility"], "deactivate");
+    assert_help_contains(&["facility"], "reactivate");
+    assert_help_contains(&["facility"], "affiliate");
+    assert_help_contains(&["facility"], "disaffiliate");
+    assert_help_contains(&["facility"], "show");
+    assert_help_contains(&["facility"], "list-affiliations");
 }

@@ -22,6 +22,7 @@ pub enum Verdict {
     Revoked,
     AttesterCompromised,
     AttesterRemoved,
+    FacilityUntrusted,
     Expired,
     AttesterSuspended,
     Superseded,
@@ -39,6 +40,7 @@ pub enum Reason {
     AttesterStatusReadFailed,
     CompromiseWindow,
     AttesterRemoved,
+    FacilityDeactivationFraud,
     AgeExceedsPolicy,
     AttesterSuspended,
     Superseded,
@@ -66,6 +68,25 @@ pub enum AttesterStatus {
     Removed,
 }
 
+/// Why a facility was deactivated (spec section 4).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DeactivationReason {
+    Closed,
+    LicenceLapsed,
+    Fraud,
+}
+
+/// Facility state as read by the verifier. `deactivated_at` is the ledger
+/// timestamp of the deactivation; it is only meaningful when
+/// `deactivation_reason` is set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct FacilityStatus {
+    pub deactivation_reason: Option<DeactivationReason>,
+    pub deactivated_at: Option<u64>,
+}
+
 /// `default_input` of `verification-model.json`. Unknown fields are
 /// rejected so a new model input cannot be silently ignored.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -78,6 +99,11 @@ pub struct Input {
     pub revoked: bool,
     pub attester_status: AttesterStatus,
     pub attested_in_compromise_window: bool,
+    /// Ledger timestamp of the attestation, compared against the facility
+    /// deactivation timestamp.
+    pub attested_at: u64,
+    /// `None` when the attestation was not scoped to a facility.
+    pub facility: Option<FacilityStatus>,
     pub age_exceeds_policy: bool,
     pub superseded: bool,
     pub offline: bool,
@@ -108,6 +134,10 @@ pub fn evaluate(i: &Input) -> Outcome {
         (Verdict::AttesterCompromised, Reason::CompromiseWindow)
     } else if i.attester_status == AttesterStatus::Removed {
         (Verdict::AttesterRemoved, Reason::AttesterRemoved)
+    // A facility deactivated for fraud taints attestations made at or after
+    // its deactivation; earlier ones stay valid, as with compromise windows.
+    } else if facility_untrusted(i) {
+        (Verdict::FacilityUntrusted, Reason::FacilityDeactivationFraud)
     } else if i.age_exceeds_policy {
         (Verdict::Expired, Reason::AgeExceedsPolicy)
     } else if i.attester_status == AttesterStatus::Suspended {
@@ -121,6 +151,21 @@ pub fn evaluate(i: &Input) -> Outcome {
         verdict,
         reason,
         qualifier,
+    }
+}
+
+/// Whether the attestation falls in a fraud deactivation window. `closed`
+/// and `licence_lapsed` never taint past attestations.
+fn facility_untrusted(i: &Input) -> bool {
+    let Some(facility) = i.facility else {
+        return false;
+    };
+    if facility.deactivation_reason != Some(DeactivationReason::Fraud) {
+        return false;
+    }
+    match facility.deactivated_at {
+        Some(deactivated_at) => i.attested_at >= deactivated_at,
+        None => false,
     }
 }
 
@@ -144,6 +189,7 @@ mod tests {
             let input: Input = serde_json::from_value(Value::Object(input)).unwrap();
             let got = serde_json::to_value(evaluate(&input)).unwrap();
             assert_eq!(got["verdict"], case["verdict"], "case {}", case["id"]);
+            assert_eq!(got["reason"], case["reason"], "case {}", case["id"]);
             assert_eq!(
                 got["qualifier"],
                 case.get("qualifier").cloned().unwrap_or(Value::Null),

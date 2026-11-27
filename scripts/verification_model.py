@@ -30,6 +30,13 @@ def explain(i: dict[str, Any]) -> tuple[str, str, str | None]:
         return "NotFound", "attestation_missing", qualifier
     if i["revoked"]:
         return "Revoked", "revoked", qualifier
+    # Facility state: a fraud deactivation marks attestations made at or after
+    # the deactivation timestamp as untrusted; other reasons leave past
+    # attestations valid. Never guess facility state when it is needed.
+    if i.get("facility_untrusted"):
+        return "FacilityUntrusted", "facility_untrusted", qualifier
+    if i.get("facility_status_read", "ok") != "ok":
+        return "Indeterminate", "facility_status_read_failed", qualifier
     # Everything below depends on attester state; never guess it.
     if i["attester_status_read"] != "ok":
         return "Indeterminate", "attester_status_read_failed", qualifier

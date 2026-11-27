@@ -196,23 +196,70 @@ function hexToBytes(hex: string): Uint8Array | null {
   return out;
 }
 
+/**
+ * Portable facility identifier: `H(domain || jurisdiction || issuing_authority
+ * || facility_code)` as a 32-byte hash, hex-encoded (64 lowercase hex chars).
+ * The sequential `u64` remains a local alias for compatibility.
+ */
+export type FacilityId = string;
+
+const FACILITY_ID = /^[0-9a-f]{64}$/;
+
+/** Why a facility was deactivated. */
+export type FacilityDeactivationReason = "closed" | "licence_lapsed" | "fraud";
+
+/** Facility status as read from the registry. */
+export interface FacilityStatus {
+  active: boolean;
+  /** Present when `active` is false. */
+  deactivationReason?: FacilityDeactivationReason;
+  /** Unix seconds at which the facility was deactivated. */
+  deactivatedAt?: number;
+}
+
 /** Same shape as the single-deployment verifier result. */
 export interface VerificationResult {
   valid: boolean;
   reason?:
     | "unknown_jurisdiction"
-    | "stale_anchor"
     | "bad_signature"
     | "foreign_registry_unavailable"
     | "attestation_not_found"
     | "attester_not_trusted"
-    | "attestation_revoked";
+    | "attestation_revoked"
+    | "facility_untrusted";
+}
+
+/**
+ * Decide whether an attestation made at `attestedAt` (unix seconds) at a
+ * facility with `status` is still valid.
+ *
+ * - Active facility: valid.
+ * - Deactivated for `closed` / `licence_lapsed`: attestations made *before*
+ *   deactivation remain valid; later ones are `facility_untrusted`.
+ * - Deactivated for `fraud`: every attestation is `facility_untrusted`.
+ */
+export function facilityTrust(
+  status: FacilityStatus | null,
+  attestedAt: number,
+): VerificationResult {
+  if (!status) return { valid: false, reason: "facility_untrusted" };
+  if (status.active) return { valid: true };
+  if (status.deactivationReason === "fraud") {
+    return { valid: false, reason: "facility_untrusted" };
+  }
+  const deactivatedAt = status.deactivatedAt ?? 0;
+  if (attestedAt < deactivatedAt) return { valid: true };
+  return { valid: false, reason: "facility_untrusted" };
 }
 
 /** Minimal read-only registry surface used for foreign lookups. */
 export interface ForeignRegistryReader {
-  getAttestation(id: string): Promise<{ revoked: boolean } | null>;
+  getAttestation(
+    id: string,
+  ): Promise<{ revoked: boolean; attestedAt: number; facilityId?: FacilityId } | null>;
   getAttesterStatus(attester: string): Promise<{ trusted: boolean } | null>;
+  getFacilityStatus(facilityId: FacilityId): Promise<FacilityStatus | null>;
 }
 
 export type ForeignAttestationQuery = {
@@ -256,6 +303,14 @@ export async function verifyForeignAttestation(
     const att = await reader.getAttestation(query.attestationId);
     if (!att) return { valid: false, reason: "attestation_not_found" };
     if (att.revoked) return { valid: false, reason: "attestation_revoked" };
+    if (att.facilityId !== undefined) {
+      if (!FACILITY_ID.test(att.facilityId)) {
+        return { valid: false, reason: "facility_untrusted" };
+      }
+      const facility = await reader.getFacilityStatus(att.facilityId);
+      const facilityResult = facilityTrust(facility, att.attestedAt);
+      if (!facilityResult.valid) return facilityResult;
+    }
     return { valid: true };
   } catch {
     return { valid: false, reason: "foreign_registry_unavailable" };

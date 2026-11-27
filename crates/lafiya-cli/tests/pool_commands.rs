@@ -560,6 +560,251 @@ async fn preview_matches_post_execution_state() {
     );
 }
 
+// ---------------------------------------------------------------------------
+// Facility subcommands (issue #686)
+// ---------------------------------------------------------------------------
+
+/// A representative facility-registry contract id.
+const FACILITY_ID: &str = "CBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB4EU4";
+
+/// A representative facility identifier.
+const FACILITY_KEY: &str = "fac-0001";
+
+/// A representative attester address.
+const ATTESTER: &str = "GBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB";
+
+#[tokio::test]
+async fn facility_enroll_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "fac111").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "enroll",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--name",
+        "Synthetic Clinic",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "enroll failed: {stderr}");
+    assert!(stdout.contains("fac111"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn facility_deactivate_requires_reason() {
+    // No mocks mounted: the client must reject a missing reason before RPC.
+    let server = MockServer::start().await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "deactivate",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--yes",
+    ]);
+    let (_stdout, stderr, ok) = run(&mut cmd);
+    assert!(!ok, "expected failure without --reason");
+    assert!(
+        stderr.to_lowercase().contains("reason"),
+        "expected reason error, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn facility_deactivate_rejects_unknown_reason() {
+    let server = MockServer::start().await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "deactivate",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--reason",
+        "boredom",
+        "--yes",
+    ]);
+    let (_stdout, stderr, ok) = run(&mut cmd);
+    assert!(!ok, "expected failure for unknown reason code");
+    assert!(
+        stderr.to_lowercase().contains("reason"),
+        "expected reason error, got: {stderr}"
+    );
+}
+
+#[tokio::test]
+async fn facility_deactivate_with_reason_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "fac222").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "deactivate",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--reason",
+        "licence_lapsed",
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "deactivate failed: {stderr}");
+    assert!(stdout.contains("fac222"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn facility_reactivate_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "fac333").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "reactivate",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "reactivate failed: {stderr}");
+    assert!(stdout.contains("fac333"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn facility_affiliate_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "fac444").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "affiliate",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--attester",
+        ATTESTER,
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "affiliate failed: {stderr}");
+    assert!(stdout.contains("fac444"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn facility_disaffiliate_submits() {
+    let server = MockServer::start().await;
+    stub_mutation_success(&server, "fac555").await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "disaffiliate",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--attester",
+        ATTESTER,
+        "--yes",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "disaffiliate failed: {stderr}");
+    assert!(stdout.contains("fac555"), "got: {stdout}");
+}
+
+#[tokio::test]
+async fn facility_show_renders_facility() {
+    let server = MockServer::start().await;
+    stub_pool_state(&server).await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "show",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "show failed: {stderr}");
+    let lower = stdout.to_lowercase();
+    assert!(
+        lower.contains("facility") || lower.contains("status"),
+        "expected facility details in output, got: {stdout}"
+    );
+}
+
+#[tokio::test]
+async fn facility_list_affiliations_paginates() {
+    let server = MockServer::start().await;
+    stub_pool_state(&server).await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "list-affiliations",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--attester",
+        ATTESTER,
+        "--cursor",
+        "0",
+        "--limit",
+        "2",
+    ]);
+    let (stdout, stderr, ok) = run(&mut cmd);
+    assert!(ok, "list-affiliations failed: {stderr}");
+    let lower = stdout.to_lowercase();
+    assert!(
+        lower.contains("affiliation") || lower.contains("cursor"),
+        "expected paginated affiliations in output, got: {stdout}"
+    );
+}
+
+#[tokio::test]
+async fn facility_list_affiliations_rejects_zero_limit() {
+    let server = MockServer::start().await;
+
+    let mut cmd = lafiya(&server);
+    cmd.args([
+        "facility",
+        "list-affiliations",
+        "--contract",
+        FACILITY_ID,
+        "--facility",
+        FACILITY_KEY,
+        "--attester",
+        ATTESTER,
+        "--limit",
+        "0",
+    ]);
+    let (_stdout, stderr, ok) = run(&mut cmd);
+    assert!(!ok, "expected failure for zero limit");
+    assert!(
+        stderr.to_lowercase().contains("limit"),
+        "expected limit error, got: {stderr}"
+    );
+}
+
 #[tokio::test]
 async fn failed_simulation_blocks_submission() {
     let server = MockServer::start().await;

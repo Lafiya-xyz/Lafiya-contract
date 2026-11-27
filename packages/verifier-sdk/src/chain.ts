@@ -12,6 +12,35 @@ export interface OnChainAttestation {
   attester: string;
   /** Ledger timestamp (unix seconds) the attestation was recorded at. */
   timestamp: bigint;
+  /**
+   * Portable facility identifier (`FacilityId = BytesN<32>`, hex-encoded)
+   * the attestation was scoped to via `attest_with_scope`, if any.
+   */
+  facilityId?: string;
+}
+
+/**
+ * Why a facility was deactivated. Mirrors the facility-registry contract's
+ * `deactivation_reason` codes.
+ */
+export type FacilityDeactivationReason = "closed" | "licence_lapsed" | "fraud";
+
+/** facility-registry's view of a facility (`get_facility`). */
+export interface FacilityState {
+  /**
+   * Portable identifier, hex-encoded `BytesN<32>`:
+   * `H(domain || jurisdiction || issuing_authority || facility_code)`.
+   */
+  facilityId: string;
+  /** Local sequential alias assigned at enrollment (legacy compatibility). */
+  localId?: bigint;
+  /** External facility code hash (hex-encoded), if one was registered. */
+  externalCodeHash?: string;
+  active: boolean;
+  /** Set when `active` is false; `null`/absent otherwise. */
+  deactivationReason?: FacilityDeactivationReason | null;
+  /** Unix seconds the facility was deactivated at, if it was. */
+  deactivatedAt?: bigint | null;
 }
 
 /** attester-registry's view of an attester (`get_attester_status`). */
@@ -46,6 +75,20 @@ export interface ChainReader {
     attester: string,
     opts?: CallOptions,
   ): Promise<AttesterState | null>;
+  /**
+   * Look up a facility by its portable {@link FacilityState.facilityId}
+   * (hex-encoded `BytesN<32>`). `null` when unknown.
+   */
+  getFacility?(trust: NetworkTrust, facilityId: string, opts?: CallOptions): Promise<FacilityState | null>;
+  /**
+   * Look up a facility by the hash of its external code (national registry
+   * code, licence number, ...). `null` when unknown.
+   */
+  getFacilityByExternalCodeHash?(
+    trust: NetworkTrust,
+    externalCodeHash: string,
+    opts?: CallOptions,
+  ): Promise<FacilityState | null>;
   /**
    * Whether `recordHash` was explicitly revoked. `revoke_attestation`
    * deletes storage, so on-chain reads alone cannot tell "revoked" from
@@ -136,15 +179,31 @@ export interface OfflineBundle {
   /** Unix seconds the snapshot was taken at. */
   snapshotAt: number;
   /** Record hash -> attestation history, oldest first. */
-  attestations: Record<string, { attester: string; timestamp: string }[]>;
+  attestations: Record<string, { attester: string; timestamp: string; facilityId?: string }[]>;
   /** Allowlisted attesters and their status. */
   attesters: Record<string, AttesterState>;
+  /** Facilities keyed by portable facility ID (hex-encoded). */
+  facilities?: Record<string, OfflineFacilityState>;
+  /** Facilities keyed by external code hash (hex-encoded). */
+  facilitiesByExternalCodeHash?: Record<string, string>;
   /** Record hashes revoked by the admin. */
   revoked: string[];
   /** Status-list segments captured in the snapshot, keyed by segment index. */
   statusListSegments?: Record<string, StatusListSegment>;
   /** The signed status-list root the captured segments commit to. */
   statusListRoot?: StatusListRoot;
+}
+
+/** A facility as captured in an {@link OfflineBundle}. */
+export interface OfflineFacilityState {
+  /** Local sequential alias assigned at enrollment (legacy compatibility). */
+  localId?: string;
+  /** External facility code hash (hex-encoded), if one was registered. */
+  externalCodeHash?: string;
+  active: boolean;
+  deactivationReason?: FacilityDeactivationReason | null;
+  /** Unix seconds the facility was deactivated at. */
+  deactivatedAt?: string | null;
 }
 
 /** Verify from an {@link OfflineBundle} (no network access). */
@@ -161,6 +220,7 @@ export class OfflineChainReader implements ChainReader {
     return (this.bundle.attestations[recordHash] ?? []).map((a) => ({
       attester: a.attester,
       timestamp: BigInt(a.timestamp),
+      ...(a.facilityId !== undefined ? { facilityId: a.facilityId } : {}),
     }));
   }
 
@@ -170,6 +230,18 @@ export class OfflineChainReader implements ChainReader {
 
   async getAttesterStatus(_t: NetworkTrust, attester: string) {
     return this.bundle.attesters[attester] ?? null;
+  }
+
+  async getFacility(_t: NetworkTrust, facilityId: string) {
+    const facility = this.bundle.facilities?.[facilityId];
+    return facility ? toFacilityState(facilityId, facility) : null;
+  }
+
+  async getFacilityByExternalCodeHash(_t: NetworkTrust, externalCodeHash: string) {
+    const facilityId = this.bundle.facilitiesByExternalCodeHash?.[externalCodeHash];
+    if (facilityId === undefined) return null;
+    const facility = this.bundle.facilities?.[facilityId];
+    return facility ? toFacilityState(facilityId, facility) : null;
   }
 
   async isRevoked(_t: NetworkTrust, recordHash: string) {
@@ -187,4 +259,15 @@ export class OfflineChainReader implements ChainReader {
   async getStatusListRoot(_t: NetworkTrust) {
     return this.bundle.statusListRoot ?? null;
   }
+}
+
+function toFacilityState(facilityId: string, facility: OfflineFacilityState): FacilityState {
+  return {
+    facilityId,
+    ...(facility.localId !== undefined ? { localId: BigInt(facility.localId) } : {}),
+    ...(facility.externalCodeHash !== undefined ? { externalCodeHash: facility.externalCodeHash } : {}),
+    active: facility.active,
+    deactivationReason: facility.deactivationReason ?? null,
+    deactivatedAt: facility.deactivatedAt != null ? BigInt(facility.deactivatedAt) : null,
+  };
 }
