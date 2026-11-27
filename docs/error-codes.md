@@ -110,3 +110,13 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `21` | `Unauthorized` | The caller is neither the approver nor the admin. |
 | `22` | `ReconciliationRequired` | The pool's token balance diverged from internal accounting; `claim` is blocked until the admin calls `resolve_drift`. |
 | `23` | `TokenBalanceMismatch` | A token transfer moved a different amount than requested. |
+| `24` | `AssetNotAllowlisted` | The referenced asset is not on the pool's admin-managed asset allowlist. Add it via `add_asset` after the interface probe succeeds. |
+| `25` | `AssetAlreadyAllowlisted` | The asset is already on the pool's allowlist. |
+| `26` | `InvalidAsset` | The asset address failed the interface probe (not a SAC-compatible token, or its decimals are unsupported). |
+| `27` | `AssetCapExceeded` | The payout would exceed the per-asset cumulative cap for the work item's asset. |
+| `28` | `AssetMismatch` | The work item, payout rate, or funding operation references an asset that does not match the recorded asset for that entry. |
+| `29` | `PushNotEnabled` | The attester has not opted in to approver-initiated push disbursement on their payout binding. |
+| `30` | `ApprovalVoided` | The work item's approval was voided by `void_approvals_since`; it can no longer be claimed. |
+| `31` | `InvalidVoidWatermark` | The `since` watermark supplied to `void_approvals_since` is invalid (e.g. in the future or earlier than an existing watermark). |
+| `32` | `IdentityCapExceeded` | The payout would exceed the per-identity cumulative cap shared across attester addresses with the same identity key. |
+| `33` | `IdentityKeyUnavailable` | The attester-registry does not expose identity keys, so identity-keyed caps cannot be enforced; per-address caps apply instead. |

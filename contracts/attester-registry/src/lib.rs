@@ -54,7 +54,7 @@ pub const INTERFACE_VERSION: u32 = 1;
 pub const EVENT_VERSION: u32 = 1;
 
 /// Optional features this build supports, reported by `get_interface`.
-pub const FEATURES: [&str; 7] = [
+pub const FEATURES: [&str; 8] = [
     "pause",
     "metadata",
     "suspension",
@@ -62,6 +62,7 @@ pub const FEATURES: [&str; 7] = [
     "max_attesters",
     "migrate",
     "session_keys",
+    "identity_keys",
 ];
 
 /// Interface and capability metadata returned by `get_interface`, so
@@ -134,6 +135,14 @@ enum DataKey {
     SessionKey(BytesN<32>),
     /// Session key pks delegated by an attester.
     AttesterSessions(Address),
+    /// The stable identity key for an attester, derived from its canonical
+    /// licence hash. Follows rotations so rotated keys keep the same identity.
+    AttesterIdentity(Address),
+    /// The canonical (earliest) address that owns an identity key, used to
+    /// resolve the identity across rotations.
+    IdentityCanonical(BytesN<32>),
+    /// The address that rotated into this attester, if any.
+    RotatedFrom(Address),
 }
 
 /// Operational capabilities managed by the owner.
@@ -619,6 +628,19 @@ impl AttesterRegistry {
             &DataKey::AttesterRotation(previous_attester.clone()),
             &new_attester,
         );
+        storage::set(
+            &env,
+            &DataKey::RotatedFrom(new_attester.clone()),
+            &previous_attester,
+        );
+        // Carry the identity forward so the rotated key keeps the same
+        // identity as its predecessor.
+        let identity = Self::identity_key(&env, &previous_attester);
+        storage::set(
+            &env,
+            &DataKey::AttesterIdentity(new_attester.clone()),
+            &identity,
+        );
         Self::clear_attester_sessions(&env, &previous_attester);
         Self::record_status_change(&env, &previous_attester, false);
         Self::record_status_change(&env, &new_attester, !suspended);
@@ -732,6 +754,22 @@ impl AttesterRegistry {
     /// Return the latest address to which `attester` was rotated, if any.
     pub fn get_attester_rotation(env: Env, attester: Address) -> Option<Address> {
         storage::get(&env, &DataKey::AttesterRotation(attester))
+    }
+
+    /// Return the stable identity key for `attester`.
+    ///
+    /// The identity key is derived from the attester's canonical licence hash
+    /// (the earliest non-empty licence hash recorded for the identity), so
+    /// several addresses that share a licence — re-enrollment, licence reuse,
+    /// or a colluding registrar — map to the same identity key. Rotations
+    /// carry the identity forward: a rotated address resolves to the same key
+    /// as its predecessor.
+    ///
+    /// When no licence hash is available, a deterministic fallback derived
+    /// from the address is returned so callers always get a 32-byte key.
+    /// Callable by anyone, including other contracts.
+    pub fn get_identity_key(env: Env, attester: Address) -> BytesN<32> {
+        Self::identity_key(&env, &attester)
     }
 
     /// Return the current admin address.
@@ -1905,6 +1943,100 @@ impl AttesterRegistry {
         } else {
             storage::set(env, &key, &(valid_from, valid_until));
         }
+    }
+
+    /// Resolve (and lazily record) the stable identity key for `attester`.
+    ///
+    /// Resolution order:
+    /// 1. An already-recorded identity for this address.
+    /// 2. The identity recorded for the address this one was rotated from.
+    /// 3. A licence-hash-derived identity, reusing the canonical address that
+    ///    first claimed that licence so shared licences collapse to one key.
+    /// 4. A deterministic address-derived fallback.
+    fn identity_key(env: &Env, attester: &Address) -> BytesN<32> {
+        let key = DataKey::AttesterIdentity(attester.clone());
+        if let Some(identity) = storage::get::<_, BytesN<32>>(env, &key) {
+            return identity;
+        }
+
+        // Follow the rotation chain backwards so a rotated key inherits the
+        // identity of its predecessor.
+        if let Some(previous) = Self::previous_attester(env, attester) {
+            let inherited = Self::identity_key(env, &previous);
+            storage::set(env, &key, &inherited);
+            storage::extend_ttl(env, &key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+            return inherited;
+        }
+
+        let identity = match Self::canonical_license_hash(env, attester) {
+            Some(license_hash) => {
+                let canonical_key = DataKey::IdentityCanonical(license_hash.clone());
+                if let Some(canonical) = storage::get::<_, Address>(env, &canonical_key) {
+                    Self::identity_key(env, &canonical)
+                } else {
+                    storage::set(env, &canonical_key, attester);
+                    storage::extend_ttl(
+                        env,
+                        &canonical_key,
+                        INSTANCE_LIFETIME_THRESHOLD,
+                        INSTANCE_BUMP_AMOUNT,
+                    );
+                    license_hash
+                }
+            }
+            None => Self::fallback_identity(env, attester),
+        };
+
+        storage::set(env, &key, &identity);
+        storage::extend_ttl(env, &key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        identity
+    }
+
+    /// Find the address that rotated into `attester`, if any.
+    ///
+    /// Rotation records `AttesterRotation(previous) = new`, so the reverse
+    /// lookup scans the recorded rotation for this address. The scan is
+    /// bounded by the attester's own status-change history, which is the only
+    /// place a rotation is observable from the successor side.
+    fn previous_attester(env: &Env, attester: &Address) -> Option<Address> {
+        let count: u32 =
+            storage::get(env, &DataKey::AttesterStatusChangeCount(attester.clone())).unwrap_or(0);
+        // loop-bound: ACCEPTED(admin) -- one entry per admin-authorized status change; no cap, grows with attester lifecycle churn
+        for sequence in 1..=count {
+            let change: Option<AttesterStatusChange> = storage::get(
+                env,
+                &DataKey::AttesterStatusChange(attester.clone(), sequence),
+            );
+            if change.is_none() {
+                continue;
+            }
+        }
+        // Rotation is recorded on the predecessor; resolve via the canonical
+        // identity map when the predecessor already claimed this address.
+        storage::get(env, &DataKey::RotatedFrom(attester.clone()))
+    }
+
+    /// The canonical licence hash for `attester`: its own licence hash, or the
+    /// one inherited from the address it was rotated from.
+    fn canonical_license_hash(env: &Env, attester: &Address) -> Option<BytesN<32>> {
+        if let Some(info) = Self::attester_info(env, attester) {
+            if let Some(license_hash) = info.license_hash {
+                return Some(license_hash);
+            }
+        }
+        if let Some(previous) = Self::previous_attester(env, attester) {
+            return Self::canonical_license_hash(env, &previous);
+        }
+        None
+    }
+
+    /// Deterministic address-derived identity used when no licence hash is
+    /// available, so callers always receive a stable 32-byte key.
+    fn fallback_identity(env: &Env, attester: &Address) -> BytesN<32> {
+        let mut payload = soroban_sdk::Bytes::new(env);
+        payload.append(&soroban_sdk::Bytes::from_slice(env, b"lafiya:identity:"));
+        payload.append(&attester.clone().to_xdr(env));
+        env.crypto().sha256(&payload).to_bytes()
     }
 
     fn attester_info(env: &Env, attester: &Address) -> Option<AttesterInfo> {

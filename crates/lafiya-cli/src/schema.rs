@@ -23,7 +23,7 @@ use clap::Command;
 
 /// Current schema contract version. Bump this (and the per-schema versions
 /// below) whenever an additive-breaking change is made to any `--json` output.
-pub const SCHEMA_VERSION: &str = "1.0.0";
+pub const SCHEMA_VERSION: &str = "1.1.0";
 
 /// Directory (relative to the crate root) where schemas are published.
 pub const SCHEMA_DIR: &str = "schemas";
@@ -81,13 +81,13 @@ pub const JSON_SCHEMAS: &[JsonSchemaDoc] = &[
 
 const PREVIEW_SCHEMA: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lafiya.dev/schemas/preview-1.0.0.json",
+  "$id": "https://lafiya.dev/schemas/preview-1.1.0.json",
   "title": "lafiya preview --json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "kind", "operations"],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schema_version": { "type": "string", "const": "1.1.0" },
     "kind": { "type": "string", "const": "preview" },
     "operations": {
       "type": "array",
@@ -99,6 +99,7 @@ const PREVIEW_SCHEMA: &str = r#"{
           "id": { "type": "string" },
           "action": { "type": "string" },
           "target": { "type": "string" },
+          "asset": { "type": ["string", "null"] },
           "details": { "type": ["object", "null"] }
         }
       }
@@ -108,23 +109,99 @@ const PREVIEW_SCHEMA: &str = r#"{
 
 const POOL_READ_SCHEMA: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lafiya.dev/schemas/pool-read-1.0.0.json",
+  "$id": "https://lafiya.dev/schemas/pool-read-1.1.0.json",
   "title": "lafiya pool read --json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "kind", "pool"],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schema_version": { "type": "string", "const": "1.1.0" },
     "kind": { "type": "string", "const": "pool.read" },
     "pool": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["id", "name", "size"],
+      "required": ["id", "name", "size", "assets"],
       "properties": {
         "id": { "type": "string" },
         "name": { "type": "string" },
         "size": { "type": "integer", "minimum": 0 },
-        "members": { "type": "array", "items": { "type": "string" } }
+        "members": { "type": "array", "items": { "type": "string" } },
+        "assets": {
+          "type": "array",
+          "description": "Per-asset accounting. Each allowlisted asset has isolated balances, caps, and drift.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["asset", "total_deposited", "total_paid", "reserved", "cap"],
+            "properties": {
+              "asset": { "type": "string", "description": "Asset identifier (SAC contract id or symbol)." },
+              "total_deposited": { "type": "string", "pattern": "^[0-9]+$" },
+              "total_paid": { "type": "string", "pattern": "^[0-9]+$" },
+              "reserved": { "type": "string", "pattern": "^[0-9]+$" },
+              "available": { "type": "string", "pattern": "^[0-9]+$" },
+              "cap": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": ["max_total"],
+                "properties": {
+                  "max_total": { "type": "string", "pattern": "^[0-9]+$" },
+                  "max_per_attester": { "type": ["string", "null"], "pattern": "^[0-9]+$" },
+                  "max_per_identity": { "type": ["string", "null"], "pattern": "^[0-9]+$" }
+                }
+              },
+              "drift": {
+                "type": ["object", "null"],
+                "additionalProperties": false,
+                "properties": {
+                  "expected": { "type": "string", "pattern": "^[0-9]+$" },
+                  "observed": { "type": "string", "pattern": "^[0-9]+$" },
+                  "detected_at": { "type": ["integer", "null"], "minimum": 0 }
+                }
+              }
+            }
+          }
+        },
+        "identity_totals": {
+          "type": "array",
+          "description": "Cumulative payouts keyed by stable identity (from attester-registry).",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["identity_key", "asset", "total_paid"],
+            "properties": {
+              "identity_key": { "type": "string" },
+              "asset": { "type": "string" },
+              "total_paid": { "type": "string", "pattern": "^[0-9]+$" }
+            }
+          }
+        },
+        "push_mode": {
+          "type": "array",
+          "description": "Attesters who have opted in to approver-initiated push disbursement.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["attester", "enabled"],
+            "properties": {
+              "attester": { "type": "string" },
+              "enabled": { "type": "boolean" },
+              "payout_address": { "type": ["string", "null"] }
+            }
+          }
+        },
+        "approver_watermarks": {
+          "type": "array",
+          "description": "Approver revocation watermarks; items approved at or after `since` are void.",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["approver", "since"],
+            "properties": {
+              "approver": { "type": "string" },
+              "since": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
       }
     }
   }
@@ -132,13 +209,13 @@ const POOL_READ_SCHEMA: &str = r#"{
 
 const POOL_LIST_SCHEMA: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lafiya.dev/schemas/pool-list-1.0.0.json",
+  "$id": "https://lafiya.dev/schemas/pool-list-1.1.0.json",
   "title": "lafiya pool list --json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "kind", "pools"],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schema_version": { "type": "string", "const": "1.1.0" },
     "kind": { "type": "string", "const": "pool.list" },
     "pools": {
       "type": "array",
@@ -148,7 +225,8 @@ const POOL_LIST_SCHEMA: &str = r#"{
         "required": ["id", "name"],
         "properties": {
           "id": { "type": "string" },
-          "name": { "type": "string" }
+          "name": { "type": "string" },
+          "assets": { "type": "array", "items": { "type": "string" } }
         }
       }
     }
@@ -157,13 +235,13 @@ const POOL_LIST_SCHEMA: &str = r#"{
 
 const CONFIG_SCHEMA: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lafiya.dev/schemas/config-1.0.0.json",
+  "$id": "https://lafiya.dev/schemas/config-1.1.0.json",
   "title": "lafiya config --json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "kind", "config"],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schema_version": { "type": "string", "const": "1.1.0" },
     "kind": { "type": "string", "const": "config" },
     "config": {
       "type": "object",
@@ -174,13 +252,13 @@ const CONFIG_SCHEMA: &str = r#"{
 
 const VERSION_SCHEMA: &str = r#"{
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://lafiya.dev/schemas/version-1.0.0.json",
+  "$id": "https://lafiya.dev/schemas/version-1.1.0.json",
   "title": "lafiya version --json",
   "type": "object",
   "additionalProperties": false,
   "required": ["schema_version", "kind", "version"],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schema_version": { "type": "string", "const": "1.1.0" },
     "kind": { "type": "string", "const": "version" },
     "version": { "type": "string" }
   }
@@ -525,6 +603,28 @@ mod tests {
             // Minimal structural sanity: balanced braces and quoted keys.
             assert!(doc.body.trim_start().starts_with('{'));
             assert!(doc.body.trim_end().ends_with('}'));
+        }
+    }
+
+    #[test]
+    fn pool_read_schema_has_per_asset_fields() {
+        let body = schema_body_for("pool.read").expect("pool.read schema");
+        assert!(body.contains("\"assets\""), "missing per-asset balances");
+        assert!(body.contains("\"cap\""), "missing per-asset caps");
+        assert!(body.contains("\"identity_totals\""), "missing identity-keyed totals");
+        assert!(body.contains("\"push_mode\""), "missing push-mode flags");
+        assert!(body.contains("\"approver_watermarks\""), "missing approver watermarks");
+    }
+
+    #[test]
+    fn schema_version_is_consistent() {
+        for doc in JSON_SCHEMAS {
+            assert_eq!(doc.version, SCHEMA_VERSION);
+            assert!(
+                doc.body.contains(&format!("\"const\": \"{SCHEMA_VERSION}\"")),
+                "schema {} does not embed contract version {SCHEMA_VERSION}",
+                doc.id
+            );
         }
     }
 }

@@ -285,19 +285,22 @@ struct SubmitOpts {
 
 #[derive(Subcommand, Debug)]
 enum PoolSub {
-    /// Deposit funds into the pool (transfers `amount` from the source)
+    /// Deposit funds into the pool (transfers `amount` of `asset` from the source)
     ///
     /// Amounts are decimal token units (7 dp), e.g. `10`, `0.5`, `12.3456789`.
-    /// Example: `lafiya-cli pool fund 100 --source alice --yes`
+    /// Example: `lafiya-cli pool fund 100 --asset C... --source alice --yes`
     Fund {
         /// Amount to deposit, in token units (e.g. 100 or 0.5)
         amount: String,
+        /// Asset (SAC contract id, C...) to deposit
+        #[arg(long)]
+        asset: String,
         #[command(flatten)]
         opts: SubmitOpts,
     },
     /// Approve a work item for payout (admin only)
     ///
-    /// Example: `lafiya-cli pool approve --work-item 42 --attester G... --amount 25 --yes`
+    /// Example: `lafiya-cli pool approve --work-item 42 --attester G... --amount 25 --asset C... --yes`
     Approve {
         /// Work item id
         #[arg(long)]
@@ -308,43 +311,124 @@ enum PoolSub {
         /// Payout amount in token units (e.g. 25 or 0.25)
         #[arg(long)]
         amount: String,
+        /// Asset (SAC contract id, C...) the payout is denominated in
+        #[arg(long)]
+        asset: String,
         #[command(flatten)]
         opts: SubmitOpts,
     },
     /// Claim an approved payout for a work item (attester)
     ///
-    /// Example: `lafiya-cli pool claim --work-item 42 --source attester-id --yes`
+    /// Example: `lafiya-cli pool claim --work-item 42 --asset C... --source attester-id --yes`
     Claim {
         /// Work item id
         #[arg(long)]
         work_item: u64,
+        /// Asset (SAC contract id, C...) the payout is denominated in
+        #[arg(long)]
+        asset: String,
         #[command(flatten)]
         opts: SubmitOpts,
     },
     /// Withdraw an attester's accumulated balance
     ///
-    /// Example: `lafiya-cli pool withdraw 5 --source attester-id --yes`
+    /// Example: `lafiya-cli pool withdraw 5 --asset C... --source attester-id --yes`
     Withdraw {
         /// Amount to withdraw in token units (e.g. 5 or 0.5)
         amount: String,
+        /// Asset (SAC contract id, C...) to withdraw
+        #[arg(long)]
+        asset: String,
+        #[command(flatten)]
+        opts: SubmitOpts,
+    },
+    /// Disburse approved work items to their bound payout addresses (approver only)
+    ///
+    /// Push mode: pays each item to its current payout binding without the
+    /// attester signing. The attester must have opted in to push mode.
+    /// Example: `lafiya-cli pool disburse --work-item 42 --work-item 43 --yes`
+    Disburse {
+        /// Work item id (repeatable; bounded batch)
+        #[arg(long = "work-item", required = true)]
+        work_items: Vec<u64>,
+        #[command(flatten)]
+        opts: SubmitOpts,
+    },
+    /// Void all approvals issued by an approver at or after a ledger (admin/guardian)
+    ///
+    /// Example: `lafiya-cli pool void-approvals-since --approver G... --since 12345 --yes`
+    VoidApprovalsSince {
+        /// Approver address (G...) whose approvals should be voided
+        #[arg(long)]
+        approver: String,
+        /// Ledger sequence; approvals at or after this ledger are voided
+        #[arg(long)]
+        since: u32,
+        #[command(flatten)]
+        opts: SubmitOpts,
+    },
+    /// Permissionless cleanup of expired reservations (optionally for one asset)
+    ///
+    /// Example: `lafiya-cli pool sweep --asset C... --yes`
+    Sweep {
+        /// Asset (SAC contract id, C...) to sweep (omit for all assets)
+        #[arg(long)]
+        asset: Option<String>,
         #[command(flatten)]
         opts: SubmitOpts,
     },
     /// Show pool caps (payout cap, claim cap, total liabilities)
-    Caps,
+    Caps {
+        /// Asset (SAC contract id, C...) to query (omit for all assets)
+        #[arg(long)]
+        asset: Option<String>,
+    },
     /// Show the pool's token balance
-    Balance,
+    Balance {
+        /// Asset (SAC contract id, C...) to query (omit for all assets)
+        #[arg(long)]
+        asset: Option<String>,
+    },
     /// Show total outstanding liabilities
-    Liabilities,
+    Liabilities {
+        /// Asset (SAC contract id, C...) to query (omit for all assets)
+        #[arg(long)]
+        asset: Option<String>,
+    },
     /// Show an attester's accumulated (unclaimed) total
     AttesterTotal {
         /// Attester address (G...)
         attester: String,
+        /// Asset (SAC contract id, C...) to query (omit for all assets)
+        #[arg(long)]
+        asset: Option<String>,
     },
     /// Show whether a work item has been approved / claimed
     WorkItem {
         /// Work item id
         work_item: u64,
+    },
+    /// Manage the admin-controlled asset allowlist
+    Asset {
+        #[command(subcommand)]
+        sub: PoolAssetSub,
+    },
+    /// Configure the per-identity payout cap
+    SetMaxPerIdentity {
+        /// Maximum payout per identity, in token units (e.g. 100 or 0.5)
+        #[arg(long)]
+        max: String,
+        /// Asset (SAC contract id, C...) the cap applies to
+        #[arg(long)]
+        asset: String,
+        #[command(flatten)]
+        opts: SubmitOpts,
+    },
+    /// Show the per-identity payout cap
+    GetMaxPerIdentity {
+        /// Asset (SAC contract id, C...) to query (omit for all assets)
+        #[arg(long)]
+        asset: Option<String>,
     },
     /// Pause the pool (admin only)
     Pause {
@@ -358,6 +442,30 @@ enum PoolSub {
     },
     /// Query whether the pool is paused
     IsPaused,
+}
+
+#[derive(Subcommand, Debug)]
+enum PoolAssetSub {
+    /// Add an asset to the allowlist (admin only); probes decimals and SAC interface
+    ///
+    /// Example: `lafiya-cli pool asset add C... --yes`
+    Add {
+        /// Asset (SAC contract id, C...) to allowlist
+        asset: String,
+        #[command(flatten)]
+        opts: SubmitOpts,
+    },
+    /// Remove an asset from the allowlist (admin only)
+    ///
+    /// Example: `lafiya-cli pool asset remove C... --yes`
+    Remove {
+        /// Asset (SAC contract id, C...) to remove
+        asset: String,
+        #[command(flatten)]
+        opts: SubmitOpts,
+    },
+    /// List allowlisted assets
+    List,
 }
 
 #[derive(Subcommand, Debug)]
@@ -2391,11 +2499,47 @@ fn precheck_positive(amount: i128) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Maximum number of work items accepted by `pool disburse` in one call.
+///
+/// Derived from the per-item budget measurement documented in
+/// `docs/incentive-pool.md` (push disbursement): each item costs roughly the
+/// same as a `claim`, and the batch is bounded so a single transaction stays
+/// well inside the Soroban instruction budget.
+const MAX_DISBURSE_BATCH: usize = 20;
+
+/// Validate an asset (SAC contract id, `C...`) before it reaches the CLI.
+fn validate_asset(field: &str, asset: &str) -> anyhow::Result<()> {
+    validate_address(field, asset)
+        .with_context(|| format!("invalid {field} (expected a C... SAC contract id)"))
+}
+
+/// Build the `--asset <C...>` argument pair for a read-only query.
+///
+/// Returns the function arguments and the audit-log call arguments; both are
+/// empty when no asset is supplied (query all assets).
+fn asset_query_args(asset: Option<&str>) -> anyhow::Result<(Vec<String>, Vec<String>)> {
+    match asset {
+        Some(a) => {
+            validate_asset("asset", a)?;
+            Ok((
+                vec!["--asset".to_string(), a.to_string()],
+                vec![a.to_string()],
+            ))
+        }
+        None => Ok((Vec::new(), Vec::new())),
+    }
+}
+
 fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Result<()> {
     let contract_id = pool_contract_id(network, cfg)?;
 
     match sub {
-        PoolSub::Fund { amount, opts } => {
+        PoolSub::Fund {
+            amount,
+            asset,
+            opts,
+        } => {
+            validate_asset("asset", &asset)?;
             let stroops = parse_amount(&amount)?;
             precheck_positive(stroops)?;
             let source = validated_source(opts.source)?;
@@ -2405,13 +2549,13 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
                 contract_id,
                 source.as_deref(),
                 "fund",
-                &["--amount", &amount_str],
+                &["--asset", &asset, "--amount", &amount_str],
             );
             submit_with_preview(
                 cfg,
                 contract_id,
                 "fund",
-                &[&amount_str],
+                &[&asset, &amount_str],
                 source.as_deref(),
                 args,
                 &opts,
@@ -2421,10 +2565,12 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
             work_item,
             attester,
             amount,
+            asset,
             opts,
         } => {
             validate_address("attester address", &attester)
                 .context("invalid attester address")?;
+            validate_asset("asset", &asset)?;
             let stroops = parse_amount(&amount)?;
             precheck_positive(stroops)?;
             let source = validated_source(opts.source)?;
@@ -2440,6 +2586,8 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
                     &work_item_str,
                     "--attester",
                     &attester,
+                    "--asset",
+                    &asset,
                     "--amount",
                     &amount_str,
                 ],
@@ -2448,13 +2596,18 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
                 cfg,
                 contract_id,
                 "approve",
-                &[&work_item_str, &attester, &amount_str],
+                &[&work_item_str, &attester, &asset, &amount_str],
                 source.as_deref(),
                 args,
                 &opts,
             )?;
         }
-        PoolSub::Claim { work_item, opts } => {
+        PoolSub::Claim {
+            work_item,
+            asset,
+            opts,
+        } => {
+            validate_asset("asset", &asset)?;
             let source = validated_source(opts.source)?;
             let work_item_str = work_item.to_string();
             let args = invoke_args(
@@ -2462,19 +2615,24 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
                 contract_id,
                 source.as_deref(),
                 "claim",
-                &["--work_item", &work_item_str],
+                &["--work_item", &work_item_str, "--asset", &asset],
             );
             submit_with_preview(
                 cfg,
                 contract_id,
                 "claim",
-                &[&work_item_str],
+                &[&work_item_str, &asset],
                 source.as_deref(),
                 args,
                 &opts,
             )?;
         }
-        PoolSub::Withdraw { amount, opts } => {
+        PoolSub::Withdraw {
+            amount,
+            asset,
+            opts,
+        } => {
+            validate_asset("asset", &asset)?;
             let stroops = parse_amount(&amount)?;
             precheck_positive(stroops)?;
             let source = validated_source(opts.source)?;
@@ -2484,35 +2642,211 @@ fn handle_pool(sub: PoolSub, network: &str, cfg: &NetworkConfig) -> anyhow::Resu
                 contract_id,
                 source.as_deref(),
                 "withdraw",
-                &["--amount", &amount_str],
+                &["--asset", &asset, "--amount", &amount_str],
             );
             submit_with_preview(
                 cfg,
                 contract_id,
                 "withdraw",
-                &[&amount_str],
+                &[&asset, &amount_str],
                 source.as_deref(),
                 args,
                 &opts,
             )?;
         }
-        PoolSub::Caps => {
-            pool_query(cfg, contract_id, "get_caps", &[])?;
+        PoolSub::Disburse { work_items, opts } => {
+            if work_items.is_empty() {
+                anyhow::bail!("--work-item must be supplied at least once");
+            }
+            if work_items.len() > MAX_DISBURSE_BATCH {
+                anyhow::bail!(
+                    "too many work items ({}); the maximum batch size is {MAX_DISBURSE_BATCH}",
+                    work_items.len()
+                );
+            }
+            let source = validated_source(opts.source)?;
+            let ids: Vec<String> = work_items.iter().map(u64::to_string).collect();
+            let mut fn_args: Vec<String> = Vec::with_capacity(ids.len() + 1);
+            fn_args.push("--work_item_ids".to_string());
+            fn_args.push(format!("[{}]", ids.join(",")));
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            let ids_ref: Vec<&str> = ids.iter().map(String::as_str).collect();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "disburse",
+                &fn_args_ref,
+            );
+            submit_with_preview(
+                cfg,
+                contract_id,
+                "disburse",
+                &ids_ref,
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
         }
-        PoolSub::Balance => {
-            pool_query(cfg, contract_id, "get_balance", &[])?;
+        PoolSub::VoidApprovalsSince {
+            approver,
+            since,
+            opts,
+        } => {
+            validate_address("approver address", &approver)
+                .context("invalid approver address")?;
+            let source = validated_source(opts.source)?;
+            let since_str = since.to_string();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "void_approvals_since",
+                &["--approver", &approver, "--since", &since_str],
+            );
+            submit_with_preview(
+                cfg,
+                contract_id,
+                "void_approvals_since",
+                &[&approver, &since_str],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
         }
-        PoolSub::Liabilities => {
-            pool_query(cfg, contract_id, "get_total_liabilities", &[])?;
+        PoolSub::Sweep { asset, opts } => {
+            let source = validated_source(opts.source)?;
+            let (fn_args, call_args): (Vec<String>, Vec<String>) = match &asset {
+                Some(a) => {
+                    validate_asset("asset", a)?;
+                    (
+                        vec!["--asset".to_string(), a.clone()],
+                        vec![a.clone()],
+                    )
+                }
+                None => (Vec::new(), Vec::new()),
+            };
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            let call_args_ref: Vec<&str> = call_args.iter().map(String::as_str).collect();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "sweep_expired",
+                &fn_args_ref,
+            );
+            submit_with_preview(
+                cfg,
+                contract_id,
+                "sweep_expired",
+                &call_args_ref,
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
         }
-        PoolSub::AttesterTotal { attester } => {
+        PoolSub::Caps { asset } => {
+            let (fn_args, call_args) = asset_query_args(asset.as_deref())?;
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            let call_args_ref: Vec<&str> = call_args.iter().map(String::as_str).collect();
+            pool_query(cfg, contract_id, "get_caps", &fn_args_ref)?;
+            let _ = call_args_ref;
+        }
+        PoolSub::Balance { asset } => {
+            let (fn_args, _) = asset_query_args(asset.as_deref())?;
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            pool_query(cfg, contract_id, "get_balance", &fn_args_ref)?;
+        }
+        PoolSub::Liabilities { asset } => {
+            let (fn_args, _) = asset_query_args(asset.as_deref())?;
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            pool_query(cfg, contract_id, "get_total_liabilities", &fn_args_ref)?;
+        }
+        PoolSub::AttesterTotal { attester, asset } => {
             validate_address("attester address", &attester)
                 .context("invalid attester address")?;
-            pool_query(cfg, contract_id, "get_attester_total", &["--attester", &attester])?;
+            let (asset_args, _) = asset_query_args(asset.as_deref())?;
+            let mut fn_args: Vec<String> = vec!["--attester".to_string(), attester.clone()];
+            fn_args.extend(asset_args);
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            pool_query(cfg, contract_id, "get_attester_total", &fn_args_ref)?;
         }
         PoolSub::WorkItem { work_item } => {
             let work_item_str = work_item.to_string();
             pool_query(cfg, contract_id, "get_work_item", &["--work_item", &work_item_str])?;
+        }
+        PoolSub::Asset { sub } => match sub {
+            PoolAssetSub::Add { asset, opts } => {
+                validate_asset("asset", &asset)?;
+                let source = validated_source(opts.source)?;
+                let args = invoke_args(
+                    cfg,
+                    contract_id,
+                    source.as_deref(),
+                    "add_asset",
+                    &["--asset", &asset],
+                );
+                submit_with_preview(
+                    cfg,
+                    contract_id,
+                    "add_asset",
+                    &[&asset],
+                    source.as_deref(),
+                    args,
+                    &opts,
+                )?;
+            }
+            PoolAssetSub::Remove { asset, opts } => {
+                validate_asset("asset", &asset)?;
+                let source = validated_source(opts.source)?;
+                let args = invoke_args(
+                    cfg,
+                    contract_id,
+                    source.as_deref(),
+                    "remove_asset",
+                    &["--asset", &asset],
+                );
+                submit_with_preview(
+                    cfg,
+                    contract_id,
+                    "remove_asset",
+                    &[&asset],
+                    source.as_deref(),
+                    args,
+                    &opts,
+                )?;
+            }
+            PoolAssetSub::List => {
+                pool_query(cfg, contract_id, "get_assets", &[])?;
+            }
+        },
+        PoolSub::SetMaxPerIdentity { max, asset, opts } => {
+            validate_asset("asset", &asset)?;
+            let stroops = parse_amount(&max)?;
+            precheck_positive(stroops)?;
+            let source = validated_source(opts.source)?;
+            let max_str = stroops.to_string();
+            let args = invoke_args(
+                cfg,
+                contract_id,
+                source.as_deref(),
+                "set_max_per_identity",
+                &["--asset", &asset, "--max", &max_str],
+            );
+            submit_with_preview(
+                cfg,
+                contract_id,
+                "set_max_per_identity",
+                &[&asset, &max_str],
+                source.as_deref(),
+                args,
+                &opts,
+            )?;
+        }
+        PoolSub::GetMaxPerIdentity { asset } => {
+            let (fn_args, _) = asset_query_args(asset.as_deref())?;
+            let fn_args_ref: Vec<&str> = fn_args.iter().map(String::as_str).collect();
+            pool_query(cfg, contract_id, "get_max_per_identity", &fn_args_ref)?;
         }
         PoolSub::Pause { opts } => {
             let source = validated_source(opts.source)?;

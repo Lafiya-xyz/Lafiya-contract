@@ -1170,6 +1170,77 @@ fn get_interface_reports_kind_versions_and_features() {
 }
 
 #[test]
+fn get_interface_advertises_identity_key_feature() {
+    let (env, client, _admin) = setup();
+
+    // The feature flag must be advertised so downstream contracts (e.g. the
+    // incentive pool) can negotiate identity-key support and fall back to
+    // per-address behavior against older registries.
+    let info = client.get_interface();
+    assert!(info.features.contains(Symbol::new(&env, "identity_key")));
+}
+
+#[test]
+fn get_identity_key_is_derived_from_canonical_licence_hash() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[42u8; 32]);
+    client.add_attester_with_info(
+        &admin,
+        &attester,
+        &Some(license_hash.clone()),
+        &Some(String::from_str(&env, "NG-LA")),
+        &None,
+        &None,
+    );
+
+    let identity_key = client.get_identity_key(&attester);
+    assert_eq!(identity_key, identity_key_from_licence_hash(&env, &license_hash));
+
+    // Deterministic: repeated lookups return the same key.
+    assert_eq!(client.get_identity_key(&attester), identity_key);
+}
+
+#[test]
+fn get_identity_key_is_stable_across_attester_rotation() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let old_attester = Address::generate(&env);
+    let license_hash = BytesN::from_array(&env, &[7u8; 32]);
+    client.add_attester_with_info(
+        &admin,
+        &old_attester,
+        &Some(license_hash.clone()),
+        &Some(String::from_str(&env, "NG-LA")),
+        &None,
+        &None,
+    );
+    let identity_key = client.get_identity_key(&old_attester);
+
+    let new_attester = Address::generate(&env);
+    client.rotate_attester(&admin, &old_attester, &new_attester);
+
+    // The rotated address resolves to the same identity key, so cumulative
+    // per-identity totals carry over across rotations.
+    assert_eq!(client.get_identity_key(&new_attester), identity_key);
+}
+
+#[test]
+fn get_identity_key_for_unknown_attester_fails() {
+    let (env, client, admin) = setup();
+    initialize_for_tests(&client, &admin);
+
+    let unknown = Address::generate(&env);
+    assert_eq!(
+        client.try_get_identity_key(&unknown),
+        Err(Ok(Error::AttesterNotFound))
+    );
+}
+
+#[test]
 fn get_interface_works_before_initialize() {
     let (_, client, _) = setup();
     assert_eq!(client.get_interface().interface_version, INTERFACE_VERSION);

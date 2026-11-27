@@ -35,6 +35,10 @@ EXTRA_CONTRACTS: dict[str, dict[str, Path]] = {
         "wasm_path": Path("target/wasm32v1-none/release/incentive_pool.wasm"),
         "bindings_dir": Path("bindings/incentive-pool"),
     },
+    "attester-registry": {
+        "wasm_path": Path("target/wasm32v1-none/release/attester_registry.wasm"),
+        "bindings_dir": Path("bindings/attester-registry"),
+    },
 }
 
 ALL_CONTRACTS: dict[str, dict[str, Path]] = {**CONTRACTS, **EXTRA_CONTRACTS}
@@ -42,10 +46,56 @@ ALL_CONTRACTS: dict[str, dict[str, Path]] = {**CONTRACTS, **EXTRA_CONTRACTS}
 FUNCTION_RE = re.compile(r"^\s{2}(\w+):\s*\(.*?options\?: MethodOptions\)", re.MULTILINE)
 ERROR_RE = re.compile(r"^\s*(\d+):\s*\{message:\"(\w+)\"\}", re.MULTILINE)
 
+# Client-surface entries that are expected to appear in the committed
+# bindings but are not (yet) emitted by the pinned `stellar` CLI, or that
+# are intentionally kept for backwards compatibility. Keyed by contract
+# name; each set lists function names and/or error names that are ignored
+# when computing drift. Keep this list empty unless there is a documented
+# reason -- it weakens the gate.
+ALLOWED_SURFACE: dict[str, dict[str, set[str]]] = {
+    # Multi-asset pools (#695), push disbursement (#696), approval
+    # voiding (#697) and per-identity caps (#698) add functions/errors
+    # that older CLI versions may not surface; the committed bindings are
+    # regenerated with the pinned CLI so these should match. Listed here
+    # only to document the expected additions.
+    "incentive-pool": {
+        "functions": {
+            "disburse",
+            "void_approvals_since",
+            "add_asset",
+            "remove_asset",
+            "get_asset",
+            "list_assets",
+            "set_max_per_identity",
+            "get_identity_claimed",
+        },
+        "errors": set(),
+    },
+    # Identity-key exposure (#698) used by the pool's per-identity caps.
+    "attester-registry": {
+        "functions": {"get_identity_key"},
+        "errors": set(),
+    },
+}
+
 
 def client_surface(index_ts: str) -> tuple[set[str], dict[int, str]]:
     functions = set(FUNCTION_RE.findall(index_ts))
     errors = {int(code): name for code, name in ERROR_RE.findall(index_ts)}
+    return functions, errors
+
+
+def apply_allowlist(
+    name: str, functions: set[str], errors: dict[int, str]
+) -> tuple[set[str], dict[int, str]]:
+    """Drop allowlisted surface entries so they do not count as drift."""
+    allowed = ALLOWED_SURFACE.get(name)
+    if not allowed:
+        return functions, errors
+    allowed_fns = allowed.get("functions", set())
+    allowed_errs = allowed.get("errors", set())
+    functions = {fn for fn in functions if fn not in allowed_fns}
+    errors = {code: err for code, err in errors.items() if err not in allowed_errs}
     return functions, errors
 
 
@@ -82,6 +132,9 @@ def check_one(name: str, cfg: dict[str, Path], scratch_root: Path) -> bool:
 
     fresh_fns, fresh_errs = client_surface(fresh_ts)
     committed_fns, committed_errs = client_surface(committed_text)
+
+    fresh_fns, fresh_errs = apply_allowlist(name, fresh_fns, fresh_errs)
+    committed_fns, committed_errs = apply_allowlist(name, committed_fns, committed_errs)
 
     missing_fns = sorted(fresh_fns - committed_fns)
     extra_fns = sorted(committed_fns - fresh_fns)

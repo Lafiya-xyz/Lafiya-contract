@@ -297,6 +297,215 @@
       "i18n_key": "err.attester.batch_too_large",
       "since": "0.1.0",
       "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 9,
+      "name": "IdentityKeyNotSupported",
+      "doc": "`get_identity_key` was called on a build that does not expose stable identity keys. Negotiate support through `get_interface()` before relying on identity-keyed caps; callers should fall back to per-address behavior.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attester.identity_key_not_supported",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 10,
+      "name": "IdentityKeyNotFound",
+      "doc": "No stable identity key could be derived for the referenced attester (for example the attester has no canonical licence hash on record).",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.identity_key_not_found",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 1,
+      "name": "NotInitialized",
+      "doc": "`initialize` has not been called yet; call `initialize(...)` before using the contract.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.pool.not_initialized",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 2,
+      "name": "AlreadyInitialized",
+      "doc": "`initialize` was called more than once.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.pool.already_initialized",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 3,
+      "name": "Unauthorized",
+      "doc": "The caller is not authorized for this operation (not the admin, approver, or bound payout address as required).",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.unauthorized",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 4,
+      "name": "ContractPaused",
+      "doc": "The requested operation is blocked while the contract is paused.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.contract_paused",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 5,
+      "name": "WorkItemNotFound",
+      "doc": "No work item exists for the given id.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.work_item_not_found",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 6,
+      "name": "AlreadyClaimed",
+      "doc": "The work item has already been paid out. Replay protection rejects a second claim or push disbursement for the same item.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.already_claimed",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 7,
+      "name": "CapExceeded",
+      "doc": "The payout would exceed the per-asset pool cap or the per-attester cap.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.cap_exceeded",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 8,
+      "name": "InsufficientReservation",
+      "doc": "The pool's reserved balance for the asset does not cover the payout.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.pool.insufficient_reservation",
+      "since": "0.1.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 9,
+      "name": "AssetNotAllowlisted",
+      "doc": "The asset is not on the admin-managed allowlist for this pool. Add it via the admin asset-allowlist entry point before funding, approving, or paying in that asset.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.asset_not_allowlisted",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 10,
+      "name": "InvalidAsset",
+      "doc": "The asset failed the interface probe on add: it is not a valid Stellar Asset Contract, or its reported decimals are outside the supported range. No cross-asset conversion is performed on-chain.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.pool.invalid_asset",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 11,
+      "name": "AssetAlreadyAllowlisted",
+      "doc": "The asset is already on the pool's allowlist.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.asset_already_allowlisted",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 12,
+      "name": "AssetMismatch",
+      "doc": "The asset supplied for the operation does not match the asset recorded on the work item or payout rate.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.asset_mismatch",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 13,
+      "name": "PushNotOptedIn",
+      "doc": "Approver-initiated push disbursement was attempted for an attester whose payout binding has not opted in to push mode. The attester must enable push on their payout binding first.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.push_not_opted_in",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 14,
+      "name": "ApprovalVoided",
+      "doc": "The work item's approval was issued by an approver whose approvals were voided from a given ledger onward (`void_approvals_since`). The item can no longer be claimed or disbursed.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.approval_voided",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 15,
+      "name": "IdentityCapExceeded",
+      "doc": "The payout would exceed `max_per_identity` for the attester's stable identity key, aggregated across every attester address that shares that identity.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.identity_cap_exceeded",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 16,
+      "name": "BatchTooLarge",
+      "doc": "The supplied batch of work item ids exceeds the maximum batch size derived from budget measurements.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.pool.batch_too_large",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 17,
+      "name": "MigrationNotRequired",
+      "doc": "`migrate()` was called while the stored schema version is already `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal that there is nothing pending, not a failure to react to.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.pool.migration_not_required",
+      "since": "0.3.0",
+      "deprecated": null
     }
   ]
 }

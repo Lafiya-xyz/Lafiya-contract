@@ -655,6 +655,254 @@
           "location": "data"
         }
       ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "AssetAllowed",
+      "prefix_topics": [
+        "asset_allowed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "decimals",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "added_by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "AssetRemoved",
+      "prefix_topics": [
+        "asset_removed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "removed_by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "AssetCapSet",
+      "prefix_topics": [
+        "asset_cap_set"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "max_total_deposited",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "max_per_attester",
+          "type": "i128",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "Deposited",
+      "prefix_topics": [
+        "deposited"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "depositor",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "total_deposited",
+          "type": "i128",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "Withdrawn",
+      "prefix_topics": [
+        "withdrawn"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "recipient",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "total_deposited",
+          "type": "i128",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "WorkItemDisbursed",
+      "prefix_topics": [
+        "work_item_disbursed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "work_item_id",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "payout_address",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "disbursed_by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "ApprovalsVoided",
+      "prefix_topics": [
+        "approvals_voided"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "approver",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "since",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "voided_by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "IdentityCapSet",
+      "prefix_topics": [
+        "identity_cap_set"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "max_per_identity",
+          "type": "i128",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "IdentityClaimed",
+      "prefix_topics": [
+        "identity_claimed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "identity_key",
+          "type": {
+            "bytes_n": {
+              "n": 32
+            }
+          },
+          "location": "topic_list"
+        },
+        {
+          "name": "asset",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "cumulative_claimed",
+          "type": "i128",
+          "location": "data"
+        }
+      ]
     }
   ]
 }

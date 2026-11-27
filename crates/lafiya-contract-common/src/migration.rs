@@ -119,6 +119,83 @@ impl Migration {
     }
 }
 
+/// Dual-read routing for a layout rewrite that keys single-asset state by
+/// asset (e.g. `TotalDeposited` -> `TotalDeposited(asset)`).
+///
+/// The old layout holds one value per logical item; the new layout holds one
+/// value per `(item, asset)` pair. The migration cursor still walks logical
+/// items in index order, so a resumed run never re-migrates or skips an item.
+/// Callers use [`AssetKeyedMigration::layout`] to decide which layout a read
+/// or write must touch, and [`AssetKeyedMigration::step`] to move items.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct AssetKeyedMigration {
+    inner: Migration,
+    assets: u32,
+}
+
+impl AssetKeyedMigration {
+    pub const fn idle() -> Self {
+        Self {
+            inner: Migration::idle(),
+            assets: 0,
+        }
+    }
+
+    /// Start migrating `total` logical items across `assets` allowlisted
+    /// assets (admin-gated by the caller). `assets == 0` completes at once.
+    pub fn begin(&mut self, total: u32, assets: u32) -> Result<(), MigrationError> {
+        self.inner.begin(total)?;
+        self.assets = assets;
+        if assets == 0 && self.inner.phase() == Phase::Running {
+            // Nothing to key by: treat as an empty migration.
+            self.inner.begin(0)?;
+        }
+        Ok(())
+    }
+
+    /// Migrate up to `max_items` (clamped to `MAX_STEP_ITEMS`) logical items,
+    /// calling `apply(item, asset)` for every `(item, asset)` pair of each
+    /// migrated item. Returns the number of logical items migrated.
+    pub fn step<F: FnMut(u32, u32)>(
+        &mut self,
+        max_items: u32,
+        mut apply: F,
+    ) -> Result<u32, MigrationError> {
+        let assets = self.assets;
+        self.inner.step(max_items, |item| {
+            for asset in 0..assets {
+                apply(item, asset);
+            }
+        })
+    }
+
+    /// Layout holding `(item, asset)` (used by both reads and writes).
+    pub fn layout(&self, item: u32, _asset: u32) -> Layout {
+        self.inner.layout(item)
+    }
+
+    /// Layout holding a whole logical item (all of its assets).
+    pub fn item_layout(&self, item: u32) -> Layout {
+        self.inner.layout(item)
+    }
+
+    pub fn phase(&self) -> Phase {
+        self.inner.phase()
+    }
+
+    pub fn cursor(&self) -> u32 {
+        self.inner.cursor()
+    }
+
+    pub fn assets(&self) -> u32 {
+        self.assets
+    }
+
+    pub fn is_paused_for_writes(&self) -> bool {
+        self.inner.is_paused_for_writes()
+    }
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used, clippy::expect_used, clippy::panic)]
 mod tests {
@@ -216,6 +293,64 @@ mod tests {
             prop_assert!(old.is_empty());
             prop_assert_eq!(new, one_shot);
         }
+    }
+
+    proptest! {
+        /// Asset-keyed migration: every `(item, asset)` pair is moved exactly
+        /// once, and dual-read routing stays consistent across interleavings.
+        #[test]
+        fn asset_keyed_resumed_equals_one_shot(
+            total in 1u32..40,
+            assets in 1u32..4,
+            steps in proptest::collection::vec(0u32..40, 0..60),
+        ) {
+            let mut m = AssetKeyedMigration::idle();
+            m.begin(total, assets).unwrap();
+            let mut moved: BTreeMap<(u32, u32), u32> = BTreeMap::new();
+            for n in steps {
+                if m.phase() != Phase::Running {
+                    break;
+                }
+                let before = m.cursor();
+                let done = m.step(n, |item, asset| {
+                    // Routing must agree with the cursor at apply time.
+                    prop_assert_eq!(m.item_layout(item), Layout::Old);
+                    prop_assert!(moved.insert((item, asset), item).is_none());
+                }).unwrap();
+                prop_assert_eq!(done, m.cursor() - before);
+            }
+            while m.phase() == Phase::Running {
+                m.step(MAX_STEP_ITEMS, |item, asset| {
+                    prop_assert!(moved.insert((item, asset), item).is_none());
+                }).unwrap();
+            }
+            prop_assert_eq!(m.phase(), Phase::Complete);
+            prop_assert_eq!(moved.len() as u32, total * assets);
+            for item in 0..total {
+                prop_assert_eq!(m.item_layout(item), Layout::New);
+                for asset in 0..assets {
+                    prop_assert_eq!(m.layout(item, asset), Layout::New);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn asset_keyed_state_machine() {
+        let mut m = AssetKeyedMigration::idle();
+        assert_eq!(m.step(1, |_, _| {}), Err(MigrationError::NotRunning));
+        m.begin(3, 2).unwrap();
+        assert!(m.is_paused_for_writes());
+        assert_eq!(m.assets(), 2);
+        assert_eq!(m.begin(1, 1), Err(MigrationError::AlreadyRunning));
+        let mut seen = Vec::new();
+        assert_eq!(m.step(u32::MAX, |i, a| seen.push((i, a))).unwrap(), 3);
+        assert_eq!(seen, std::vec![(0, 0), (0, 1), (1, 0), (1, 1), (2, 0), (2, 1)]);
+        assert_eq!(m.phase(), Phase::Complete);
+        assert!(!m.is_paused_for_writes());
+        // Zero assets completes immediately.
+        m.begin(5, 0).unwrap();
+        assert_eq!(m.phase(), Phase::Complete);
     }
 
     #[test]

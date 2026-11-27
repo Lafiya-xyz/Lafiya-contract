@@ -152,8 +152,73 @@ pub const ATTESTATION_REGISTRY: Requirement = Requirement {
 
 pub const INCENTIVE_POOL: Requirement = Requirement {
     contract_kind: "lafiya_incentive_pool",
-    min_interface_version: 1,
+    min_interface_version: 2,
 };
+
+/// Feature flag: the pool keys accounting per asset and accepts an asset
+/// parameter on deposit/claim/payout operations.
+pub const FEATURE_MULTI_ASSET: &str = "multi_asset";
+
+/// Feature flag: the approver can push disbursements to opt-in payout
+/// bindings via `disburse`.
+pub const FEATURE_PUSH_DISBURSEMENT: &str = "push_disbursement";
+
+/// Feature flag: approvals issued by a compromised approver can be voided
+/// with `void_approvals_since`.
+pub const FEATURE_APPROVER_REVOCATION: &str = "approver_revocation";
+
+/// Feature flag: payout caps are enforced per stable identity key rather than
+/// per attester address.
+pub const FEATURE_IDENTITY_CAPS: &str = "identity_caps";
+
+/// Capabilities the CLI expects from an incentive pool. Each is negotiated
+/// through `get_interface()`; a pool missing any of them is too old to operate
+/// against safely.
+pub const INCENTIVE_POOL_FEATURES: &[&str] = &[
+    FEATURE_MULTI_ASSET,
+    FEATURE_PUSH_DISBURSEMENT,
+    FEATURE_APPROVER_REVOCATION,
+    FEATURE_IDENTITY_CAPS,
+];
+
+/// Check the raw `get_interface` output against `req` and, when `features` is
+/// non-empty, require every listed feature to be advertised.
+///
+/// This is the strict form used for contracts whose newer capabilities change
+/// on-chain semantics (e.g. the incentive pool). Callers that only need the
+/// version check use [`negotiate`].
+pub fn negotiate_with_features(
+    contract_id: &str,
+    raw: Option<&str>,
+    req: Requirement,
+    features: &[&str],
+) -> Result<InterfaceInfo, String> {
+    let info = negotiate(contract_id, raw, req)?;
+    let missing: Vec<&str> = features
+        .iter()
+        .copied()
+        .filter(|f| !info.supports(f))
+        .collect();
+    if !missing.is_empty() {
+        return Err(format!(
+            "contract {contract_id} is a {} interface v{} but does not advertise required \
+             feature(s) {}; upgrade the contract or use an older CLI",
+            info.contract_kind,
+            info.interface_version,
+            missing.join(", ")
+        ));
+    }
+    Ok(info)
+}
+
+/// Negotiate the incentive pool, requiring every capability in
+/// [`INCENTIVE_POOL_FEATURES`].
+pub fn negotiate_incentive_pool(
+    contract_id: &str,
+    raw: Option<&str>,
+) -> Result<InterfaceInfo, String> {
+    negotiate_with_features(contract_id, raw, INCENTIVE_POOL, INCENTIVE_POOL_FEATURES)
+}
 
 /// Check the raw `get_interface` output against `req`.
 ///
@@ -233,6 +298,52 @@ mod tests {
     fn rejects_garbage_output() {
         let err = negotiate("CDX", Some("not json"), ATTESTER_REGISTRY).unwrap_err();
         assert!(err.contains("unreadable"), "{err}");
+    }
+
+    const POOL_V2: &str = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":2,
+        "features":["multi_asset","push_disbursement","approver_revocation","identity_caps"],
+        "schema_version":3,"event_version":2}"#;
+
+    #[test]
+    fn accepts_pool_with_all_required_features() {
+        let info = negotiate_incentive_pool("CPOOL", Some(POOL_V2)).unwrap();
+        assert_eq!(info.interface_version, 2);
+        for feature in INCENTIVE_POOL_FEATURES {
+            assert!(info.supports(feature), "missing {feature}");
+        }
+    }
+
+    #[test]
+    fn rejects_pool_at_old_interface_version() {
+        let old = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":1,
+            "features":["multi_asset","push_disbursement","approver_revocation","identity_caps"],
+            "schema_version":2,"event_version":1}"#;
+        let err = negotiate_incentive_pool("CPOOL", Some(old)).unwrap_err();
+        assert!(err.contains("interface v1"), "{err}");
+        assert!(err.contains(">= v2"), "{err}");
+    }
+
+    #[test]
+    fn rejects_pool_missing_a_feature() {
+        let partial = r#"{"contract_kind":"lafiya_incentive_pool","interface_version":2,
+            "features":["multi_asset","push_disbursement"],
+            "schema_version":3,"event_version":2}"#;
+        let err = negotiate_incentive_pool("CPOOL", Some(partial)).unwrap_err();
+        assert!(err.contains("approver_revocation"), "{err}");
+        assert!(err.contains("identity_caps"), "{err}");
+        assert!(!err.contains("multi_asset"), "{err}");
+    }
+
+    #[test]
+    fn rejects_pool_without_get_interface() {
+        let err = negotiate_incentive_pool("CPOOL", None).unwrap_err();
+        assert!(err.contains("interface v0"), "{err}");
+    }
+
+    #[test]
+    fn rejects_non_pool_contract_as_pool() {
+        let err = negotiate_incentive_pool("CDX", Some(NEW)).unwrap_err();
+        assert!(err.contains("expected lafiya_incentive_pool"), "{err}");
     }
 
     fn argv(items: &[&str]) -> Vec<String> {

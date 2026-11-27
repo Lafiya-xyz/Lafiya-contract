@@ -29,7 +29,13 @@ def parse_docs_table(markdown: str, contract_name: str) -> dict[int, str] | None
     )
     if not section:
         return None
-    rows = re.findall(r"^\|\s*`(\d+)`\s*\|\s*`(\w+)`\s*\|", section.group(1), re.MULTILINE)
+    # Rows may carry extra columns (e.g. a description or notes column) after
+    # the code/name pair, so only anchor on the leading `code` | `name` cells.
+    rows = re.findall(
+        r"^\|\s*`(\d+)`\s*\|\s*`(\w+)`\s*\|",
+        section.group(1),
+        re.MULTILINE,
+    )
     return {int(code): name for code, name in rows}
 
 
@@ -69,11 +75,28 @@ def check_one(name: str, cfg: dict[str, Path], markdown: str) -> bool:
     return ok
 
 
+# Contracts whose error enums are extended by the multi-asset / push-disbursement
+# / approval-void / identity-cap work (#695-#698). They must always be checked so
+# a new variant cannot land without a matching docs row.
+REQUIRED_CONTRACTS = ("incentive-pool", "attester-registry")
+
+
 def main() -> None:
     names = sys.argv[1:] or list(CONTRACTS)
     unknown = [n for n in names if n not in CONTRACTS]
     if unknown:
         sys.exit(f"error: unknown contract(s): {', '.join(unknown)}")
+
+    missing = [n for n in REQUIRED_CONTRACTS if n not in CONTRACTS]
+    if missing:
+        sys.exit(f"error: required contract(s) not configured: {', '.join(missing)}")
+
+    # Always include the contracts touched by the advanced incentive-pool work,
+    # even when a caller passes an explicit subset, so their error variants are
+    # never silently skipped.
+    for name in REQUIRED_CONTRACTS:
+        if name not in names:
+            names.append(name)
 
     markdown = ERROR_CODES_MD.read_text()
     ok = all(check_one(name, CONTRACTS[name], markdown) for name in names)
