@@ -249,6 +249,7 @@ def cell(v):
 
 
 def table(title, key, rows, prov):
+    """Semantic table: the primary, JS-free representation of every figure."""
     head = f"<h2 id='{key}'>{html.escape(title)}</h2>"
     links = (
         f"<p class='src'>Download: <a href='data/{key}.csv'>CSV</a> · "
@@ -258,11 +259,45 @@ def table(title, key, rows, prov):
     if not rows:
         return head + "<p>No data yet.</p>" + links
     cols = list(rows[0].keys())
-    th = "".join(f"<th>{html.escape(c)}</th>" for c in cols)
+    th = "".join(f"<th scope='col'>{html.escape(c)}</th>" for c in cols)
     trs = "".join(
         "<tr>" + "".join(f"<td>{cell(r[c])}</td>" for c in cols) + "</tr>" for r in rows
     )
-    return f"{head}<div class='t'><table><tr>{th}</tr>{trs}</table></div>{links}"
+    caption = f"<caption>{html.escape(title)}</caption>"
+    return (
+        f"{head}<div class='t'><table>{caption}<thead><tr>{th}</tr></thead>"
+        f"<tbody>{trs}</tbody></table></div>{links}"
+    )
+
+
+def sms_summary(data):
+    """Plain-text summary for SMS/USSD channels: ASCII only, one figure per
+    line, no markup, no suppressed values. Kept under 480 characters so it
+    fits a few concatenated SMS segments."""
+    prov = data["provenance"]
+    lines = [f"Lafiya {prov['network']} ledgers {prov['ledger_from']}-{prov['ledger_to']}"]
+    att = data["attesters"]
+    if att:
+        last = att[-1]
+        lines.append(
+            f"Attesters wk {last['week']}: {last['active']} active, "
+            f"{last['suspended']} suspended, {last['removed']} removed"
+        )
+    act = data["verification_activity"]
+    if act:
+        new = sum(r["new"] for r in act if isinstance(r["new"], int))
+        rev = sum(r["revoked"] for r in act if isinstance(r["revoked"], int))
+        lines.append(f"Records: {new} new, {rev} revoked (cells <{K_ANONYMITY} hidden)")
+    inc = data["incentives"]
+    if inc:
+        paid = sum(r["paid"] for r in inc)
+        lines.append(f"Incentives paid: {paid}")
+    health = data["contract_health"]
+    if health:
+        paused = sum(1 for h in health if h["paused"])
+        lines.append(f"Contracts: {len(health)} tracked, {paused} paused")
+    text = "\n".join(lines)
+    return text.encode("ascii", "replace").decode("ascii")[:480]
 
 
 def render_html(data):
@@ -281,17 +316,25 @@ def render_html(data):
 <title>Lafiya Transparency</title>
 <style>
 body{{font:15px/1.5 system-ui,sans-serif;margin:0 auto;max-width:960px;padding:1rem;color:#1b1f23;background:#fff}}
-table{{border-collapse:collapse;width:100%}}td,th{{border-bottom:1px solid #ddd;padding:.3rem .5rem;text-align:left;font-variant-numeric:tabular-nums}}
+table{{border-collapse:collapse;width:100%}}caption{{text-align:left;font-weight:600;padding:.3rem 0}}
+td,th{{border-bottom:1px solid #767676;padding:.3rem .5rem;text-align:left;font-variant-numeric:tabular-nums}}
 .t{{overflow-x:auto}}.src{{color:#555;font-size:13px}}
-@media (prefers-color-scheme:dark){{body{{background:#111;color:#eee}}td,th{{border-color:#333}}.src{{color:#aaa}}a{{color:#8ab4f8}}}}
+a:focus-visible,button:focus-visible{{outline:3px solid #1b1f23;outline-offset:2px}}
+.skip{{position:absolute;left:-9999px}}.skip:focus{{position:static;display:inline-block}}
+@media (prefers-color-scheme:dark){{body{{background:#111;color:#eee}}td,th{{border-color:#888}}.src{{color:#bbb}}a{{color:#8ab4f8}}a:focus-visible,button:focus-visible{{outline-color:#eee}}}}
 </style></head><body>
-<h1>Lafiya transparency dashboard</h1>
+<a class="skip" href="#main">Skip to content</a>
+<header><h1>Lafiya transparency dashboard</h1></header>
+<main id="main">
 <p>Every number below is computed from public Soroban contract events on
 <b>{html.escape(prov['network'])}</b>, ledgers {prov['ledger_from']}–{prov['ledger_to']}.
 Recompute it with the command in <a href="data/provenance.json">provenance.json</a>.
 Cells with fewer than {K_ANONYMITY} records are shown as &lt;{K_ANONYMITY}
 (<a href="https://github.com/Lafiya-xyz/Lafiya-contract/blob/main/dashboard/PRIVACY.md">privacy review</a>).</p>
+<p class="src">Low-bandwidth: <a href="data/summary.txt">plain-text summary</a>
+(SMS/USSD friendly, no JavaScript needed).</p>
 {''.join(sections)}
+</main>
 </body></html>
 """
 
@@ -355,6 +398,8 @@ def main(argv=None):
         json.dump(provenance, f, indent=2, sort_keys=True)
         f.write("\n")
     snapshot.write_manifest(os.path.join(args.out, "data"), args.ledger_to, events)
+    with open(os.path.join(args.out, "data", "summary.txt"), "w", encoding="utf-8") as f:
+        f.write(sms_summary(data) + "\n")
     with open(os.path.join(args.out, "index.html"), "w", encoding="utf-8") as f:
         f.write(render_html(data))
     return 0

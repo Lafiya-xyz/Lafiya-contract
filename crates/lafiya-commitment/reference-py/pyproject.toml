@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lafiya-commitment-ref"
+version = "0.1.0"
+description = "Python reference implementation of the Lafiya Record Commitment (LRC-1) canonicalization and HKDF-SHA256 salt derivation"
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+# Differential cross-checks against the Rust and TypeScript references.
+test = ["hypothesis>=6.100", "pytest>=8"]
+
+[tool.setuptools]
+# The reference modules are flat files (lrc1.py, salt.py); ship them as
+# top-level modules so `import lrc1` keeps working for the existing suites.
+py-modules = ["lrc1", "salt"]
+
+[tool.setuptools.package-data]
+# Ship the shared cross-language fixtures so the installed package can be
+# checked against the same vectors as the Rust and TypeScript references.
+"*" = ["vectors/*.json"]
+
+[tool.mypy]
+python_version = "3.8"
+strict = true
+files = ["lrc1.py", "salt.py"]
+
+[tool.pytest.ini_options]
+testpaths = ["."]
+python_files = ["*_test.py", "test_*.py"]
