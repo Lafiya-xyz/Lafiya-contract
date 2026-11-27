@@ -43,6 +43,56 @@ def stellar_extend(entry: dict, ledgers: int, source: str) -> int:
     return entry.get("est_cost_stroops", 0)
 
 
+# Key classes whose persistent entries must never be archived. Each class expands into one
+# watchlist entry per configured instance so operators only register the class once.
+#   payout_binding: incentive-pool PayoutBinding(attester) written by set_payout_address;
+#                   if archived mid-delay the pending binding (and its cancellation window)
+#                   silently disappears, so it is kept alive like any other critical entry.
+KEY_CLASSES = {
+    "payout_binding": {
+        "contract": "incentive_pool",
+        "durability": "persistent",
+        "description": "incentive-pool PayoutBinding(attester) pending payout recipient",
+    },
+}
+
+
+def expand_entries(cfg: dict) -> list[dict]:
+    """Expand `key_classes` in the config into concrete watchlist entries.
+
+    Config shape:
+        {"key_classes": [{"class": "payout_binding", "instances": [
+            {"id": "payout_binding:attester-1", "key": "...", "key_xdr": "..."}]}],
+         "entries": [...]}
+    Explicit `entries` are kept as-is and take precedence by `id`.
+    """
+    entries: list[dict] = []
+    seen: set[str] = set()
+    for spec in cfg.get("key_classes", []):
+        name = spec["class"]
+        if name not in KEY_CLASSES:
+            raise ValueError(f"unknown key class: {name}")
+        cls = KEY_CLASSES[name]
+        for inst in spec.get("instances", []):
+            entry = {
+                "id": inst["id"],
+                "contract": inst.get("contract", cls["contract"]),
+                "durability": cls["durability"],
+                "key_class": name,
+                "key_xdr": inst["key_xdr"],
+                "est_cost_stroops": inst.get("est_cost_stroops", 0),
+            }
+            if inst.get("key"):
+                entry["key"] = inst["key"]
+            entries.append(entry)
+            seen.add(entry["id"])
+    for entry in cfg.get("entries", []):
+        if entry["id"] not in seen:
+            entries.append(entry)
+            seen.add(entry["id"])
+    return entries
+
+
 def today() -> str:
     return time.strftime("%Y-%m-%d", time.gmtime())
 
@@ -57,7 +107,7 @@ def run(cfg: dict, rpc, extend, state_path: Path, dry_run: bool, log) -> int:
         state = json.loads(raw) if raw else {}
         if state.get("day") != today():
             state = {"day": today(), "spent_stroops": 0}
-        for entry in cfg["entries"]:
+        for entry in expand_entries(cfg):
             latest, live_until = rpc.live_until(entry)
             headroom = live_until - latest
             if headroom < cfg["extend_below_ledgers"]:

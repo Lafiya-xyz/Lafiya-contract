@@ -5,13 +5,20 @@
 //! custody invariant still holds.
 //!
 //! Targets: `fuzz_fund`, `fuzz_withdraw`, `fuzz_approve`, `fuzz_claim`,
-//! `fuzz_caps`, plus the sequence-driven `fuzz_sequence`.
+//! `fuzz_caps`, `fuzz_payout_delay`, `fuzz_cancel_payout_address`,
+//! `fuzz_resolve_drift`, plus the sequence-driven `fuzz_sequence`.
+//!
+//! The pool is deployed through its `__constructor` (no `initialize`), so the
+//! harness passes configuration atomically at deploy time.
 //!
 //! Findings triaged into regression tests below:
 //! - `claim` overflowed (`attester_claimed + amount`, `total_paid + amount`)
 //!   when caps were set near `i128::MAX`, trapping instead of returning
 //!   `AttesterClaimCapExceeded`/`InsufficientPoolBalance`. Fixed with
 //!   saturating adds; see `regression_claim_cap_overflow`.
+//! - `set_payout_address` computed `now + PAYOUT_ADDRESS_DELAY` with unchecked
+//!   arithmetic, trapping under `overflow-checks`. Fixed with `checked_add`
+//!   returning `Error::PayoutDelayOverflow`; see `regression_payout_delay_overflow`.
 //!
 //! Reproduce a failure locally: proptest prints the minimal input and saves
 //! a seed under `proptest-regressions/`; rerun with
@@ -99,10 +106,92 @@ proptest! {
         prop_assert_eq!(h.pool.get_max_per_attester(), attester_cap);
     }
 
+    /// The delay arithmetic must never trap: any ledger timestamp combined
+    /// with `PAYOUT_ADDRESS_DELAY` either schedules or returns a typed error.
+    #[test]
+    fn fuzz_payout_delay(now in any::<u64>(), addr in any::<[u8; 32]>()) {
+        let h = harness();
+        h.env.ledger().set_timestamp(now);
+        let addr = Address::from_array(&h.env, &addr);
+        let r = outcome!(h.pool.try_set_payout_address(&h.attesters[0], &addr));
+        match r {
+            Ok(()) => {
+                let binding = h.pool.get_payout_binding(&h.attesters[0]).unwrap();
+                prop_assert_eq!(binding.pending, Some(addr));
+                prop_assert!(binding.effective_at >= now);
+            }
+            Err(e) => prop_assert_eq!(e, Error::PayoutDelayOverflow),
+        }
+    }
+
+    /// Cancellation is only possible while a binding is pending, and it is
+    /// callable by the attester or the guardian.
+    #[test]
+    fn fuzz_cancel_payout_address(
+        addr in any::<[u8; 32]>(),
+        by_guardian in any::<bool>(),
+        advance in 0u64..=PAYOUT_ADDRESS_DELAY,
+    ) {
+        let h = harness();
+        let addr = Address::from_array(&h.env, &addr);
+        h.pool.set_payout_address(&h.attesters[0], &addr);
+        h.env.ledger().set_timestamp(h.env.ledger().timestamp() + advance);
+        let caller = if by_guardian { h.guardian.clone() } else { h.attesters[0].clone() };
+        let r = outcome!(h.pool.try_cancel_payout_address(&caller, &h.attesters[0]));
+        prop_assert!(r.is_ok());
+        prop_assert!(h.pool.get_payout_binding(&h.attesters[0]).unwrap().pending.is_none());
+        // Cancelling twice is a typed error, never a trap.
+        prop_assert!(outcome!(h.pool.try_cancel_payout_address(&caller, &h.attesters[0])).is_err());
+    }
+
+    /// `resolve_drift` must deterministically cancel or defer reservations that
+    /// can no longer be covered after a clawback, emitting per-item events.
+    #[test]
+    fn fuzz_resolve_drift(
+        amounts in prop::collection::vec(1i128..=1_000, 1..8),
+        clawback in 0i128..=1_000,
+    ) {
+        let h = harness();
+        let mut ids = std::vec::Vec::new();
+        for (i, amount) in amounts.iter().enumerate() {
+            let id = item_id(&h.env, i as u64);
+            h.pool.fund(amount);
+            h.pool.approve_work_item(&id, &h.attesters[0], amount);
+            ids.push(id);
+        }
+        let reserved: i128 = amounts.iter().sum();
+        let claw = clawback.min(reserved);
+        if claw > 0 {
+            h.sac.clawback(&h.pool.address, &claw);
+        }
+        prop_assert_eq!(h.pool.is_drift_detected(), claw > 0);
+        let r = outcome!(h.pool.try_resolve_drift(&h.admin));
+        prop_assert!(r.is_ok());
+        // After resolution the pool is reconciled again.
+        prop_assert!(!h.pool.is_drift_detected());
+        custody_holds(&h);
+        // Every reservation is either still claimable or explicitly cancelled.
+        for id in ids {
+            let status = h.pool.get_work_item_status(&id);
+            prop_assert!(status == WorkItemStatus::Approved || status == WorkItemStatus::Cancelled);
+        }
+    }
+
     #[test]
     fn fuzz_sequence(ops in prop::collection::vec(op_strategy(), 1..60)) {
         replay(ops);
     }
+}
+
+#[test]
+fn regression_payout_delay_overflow() {
+    let h = harness();
+    h.env.ledger().set_timestamp(u64::MAX - 1);
+    let addr = Address::from_array(&h.env, &[7u8; 32]);
+    assert_eq!(
+        outcome!(h.pool.try_set_payout_address(&h.attesters[0], &addr)),
+        Err(Error::PayoutDelayOverflow)
+    );
 }
 
 #[test]

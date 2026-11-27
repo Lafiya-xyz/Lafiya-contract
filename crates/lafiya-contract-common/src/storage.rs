@@ -93,3 +93,17 @@ where
 pub fn extend_instance_ttl(env: &Env, threshold: u32, extend_to: u32) {
     env.storage().instance().extend_ttl(threshold, extend_to);
 }
+
+/// Writes `val` under `key` and immediately extends its TTL.
+///
+/// Use this for persistent entries that must outlive the transaction that
+/// created them (e.g. a pending `PayoutBinding`). Writing and extending in a
+/// single helper guarantees the entry is never stored without a TTL bump.
+pub fn set_with_ttl<K, V>(env: &Env, key: &K, val: &V, threshold: u32, extend_to: u32)
+where
+    K: StorageKey + IntoVal<Env, Val>,
+    V: IntoVal<Env, Val>,
+{
+    set(env, key, val);
+    extend_ttl(env, key, threshold, extend_to);
+}

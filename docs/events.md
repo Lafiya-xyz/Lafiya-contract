@@ -195,7 +195,22 @@ address), `amount`.
 
 ### `PayoutAddressScheduled`
 Topics: `attester`. Data: `recipient`, `effective_at`. The new recipient is
-used for claims from `effective_at` (now + 48h).
+used for claims from `effective_at` (now + 48h). Operations should treat this
+as a watchdog signal: alert when an attester with pending work items schedules
+a new payout address, so the CHW can be contacted out of band.
+
+### `PayoutAddressCancelled`
+Topics: `attester`. Data: `cancelled_by`, `recipient`, `effective_at`.
+Emitted by `cancel_payout_address` when a pending binding is cancelled during
+the delay window, either by the attester or by a guardian/admin. The previous
+binding (if any) remains in effect.
+
+### `DriftResolved`
+Topics: `work_item_id`. Data: `attester`, `amount`, `action` (`Symbol`:
+`cancelled` or `deferred`), `reason` (`Symbol`). Emitted once per reservation
+by `resolve_drift` when a clawback leaves the pool unable to cover reserved
+but unclaimed work items. Resolution is deterministic: reservations are
+processed FIFO by approval time.
 
 ### `AttestationRegistryRepointed`
 Topics: `previous` (optional), `new`.

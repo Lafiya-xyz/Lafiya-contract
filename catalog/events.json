@@ -655,6 +655,81 @@
           "location": "data"
         }
       ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "PayoutAddressScheduled",
+      "prefix_topics": [
+        "payout_address_scheduled"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "payout_address",
+          "type": "address",
+          "location": "data"
+        },
+        {
+          "name": "effective_at",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "PayoutAddressCancelled",
+      "prefix_topics": [
+        "payout_address_cancelled"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "cancelled_by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "DriftReservationReleased",
+      "prefix_topics": [
+        "drift_reservation_released"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "work_item_id",
+          "type": "u64",
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "data"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "policy",
+          "type": "symbol",
+          "location": "data"
+        }
+      ]
     }
   ]
 }

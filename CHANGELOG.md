@@ -12,6 +12,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking
+
+- **`incentive-pool`: `initialize` replaced by `__constructor` (issue #690).**
+  The public `initialize(admin, approver, token, attester_registry, …)`
+  entry point has been removed. Configuration now happens atomically in the
+  contract constructor at deploy time, closing the deploy-then-initialize
+  front-running window in which an attacker could call `initialize` first
+  and install themselves as admin and approver. The constructor performs the
+  same validation as before, including the interface probes of
+  `attester_registry` and `token`. Deploy scripts, the CLI, generated
+  bindings, sandbox scenarios, and upgrade fixtures have been updated; the
+  interface snapshot reflects the change. Any off-chain tooling that
+  submitted an `initialize` transaction must switch to deploying with
+  constructor arguments.
+
 ### Security
 
 - **`lafiya-cli config env` command injection fix (issue #396).**
@@ -26,6 +41,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   treats every character as a literal.
   `scripts/lib/config.sh` received the same fix via a new `shell_quote`
   helper and a `print_env_exports` function.
+
+### Added
+
+- **`incentive-pool`: payout-binding lifecycle hardening (issue #691).**
+  New `cancel_payout_address(attester)` entry point lets the attester or a
+  guardian/admin cancel a pending payout binding during the
+  `PAYOUT_ADDRESS_DELAY` window, so a stolen attester key can no longer
+  irreversibly redirect payouts. `PayoutBinding` persistent entries now have
+  their TTL extended on write and are registered with the TTL keeper, and
+  the delay computation uses `checked_add` with a typed error instead of
+  unchecked arithmetic. A watchdog rule alerts on `PayoutAddressScheduled`
+  for attesters with pending work items so operations can contact the CHW
+  out of band.
+
+- **`incentive-pool`: typed `AttesterRegistryUnavailable` error (issue #692).**
+  `claim` and `set_payout_address` now use `try_is_attester` and map
+  transport or contract failures to the new `AttesterRegistryUnavailable`
+  error instead of trapping with a host error when the registry is
+  archived, mid-upgrade, or misconfigured. A Dylint lint in `lints/` flags
+  non-`try_` cross-contract client calls in contract crates; the error docs
+  and catalog are updated.
+
+- **`incentive-pool`: deterministic clawback drift-resolution policy
+  (issue #693).** `resolve_drift` now applies a documented, deterministic
+  policy that cancels or defers reservations that can no longer be covered
+  after a USDC clawback, emitting a per-item event. Clawback scenarios
+  (partial, full, and during a claim) are tested against a real Stellar
+  Asset Contract with clawback enabled, and the `incentive-pool-drift.md`
+  runbook and ADR addendum describe detection, reservation prioritization,
+  and donor communication.
 
 ### Fixed
 

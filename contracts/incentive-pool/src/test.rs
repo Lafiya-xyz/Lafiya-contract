@@ -34,17 +34,18 @@ fn setup() -> (
 
     let approver = Address::generate(&env);
 
-    let contract_id = env.register(IncentivePool, ());
-    let client = IncentivePoolClient::new(&env, &contract_id);
-
-    client.initialize(
-        &admin,
-        &approver,
-        &token,
-        &attester_registry_id,
-        &CLAIM_CAP,
-        &POOL_CAP,
+    let contract_id = env.register(
+        IncentivePool,
+        (
+            admin.clone(),
+            approver.clone(),
+            token.clone(),
+            attester_registry_id.clone(),
+            CLAIM_CAP,
+            POOL_CAP,
+        ),
     );
+    let client = IncentivePoolClient::new(&env, &contract_id);
 
     (
         env,
@@ -76,37 +77,69 @@ fn initialize_succeeds() {
 }
 
 #[test]
-fn double_initialize_fails() {
-    let (env, client, _registry, admin, _approver, _token, _ta) = setup();
-
-    let result = client.try_initialize(
-        &admin,
-        &Address::generate(&env),
-        &Address::generate(&env),
-        &Address::generate(&env),
-        &CLAIM_CAP,
-        &POOL_CAP,
+fn deployed_contract_exposes_no_initialize() {
+    // The spec must not expose a callable `initialize`: configuration happens
+    // atomically in the constructor, so there is no deploy-then-initialize
+    // front-running window.
+    let env = new_env();
+    let admin = Address::generate(&env);
+    let attester_registry_id = env.register(attester_registry::AttesterRegistry, (admin.clone(),));
+    let (token, _) = register_token(&env);
+    let contract_id = env.register(
+        IncentivePool,
+        (
+            admin.clone(),
+            Address::generate(&env),
+            token,
+            attester_registry_id,
+            CLAIM_CAP,
+            POOL_CAP,
+        ),
     );
-    assert_eq!(result, Err(Ok(Error::AlreadyInitialized)));
+
+    let spec = env.invoke_contract::<soroban_sdk::Vec<soroban_sdk::xdr::ScSpecEntry>>(
+        &contract_id,
+        &soroban_sdk::Symbol::new(&env, "__spec"),
+        soroban_sdk::vec![&env],
+    );
+    let mut found_initialize = false;
+    for entry in spec.iter() {
+        if let soroban_sdk::xdr::ScSpecEntry::FunctionV0(f) = entry {
+            if f.name == soroban_sdk::xdr::ScSymbol(
+                soroban_sdk::Bytes::from_slice(&env, b"initialize"),
+            ) {
+                found_initialize = true;
+            }
+        }
+    }
+    assert!(
+        !found_initialize,
+        "incentive-pool must not expose a callable initialize"
+    );
 }
 
 #[test]
-fn initialize_rejects_invalid_attester_registry() {
+fn constructor_rejects_invalid_attester_registry() {
     let env = new_env();
 
     let admin = Address::generate(&env);
-    let contract_id = env.register(IncentivePool, ());
-    let client = IncentivePoolClient::new(&env, &contract_id);
     let (token, _) = register_token(&env);
     let non_contract = Address::generate(&env);
 
-    let result = client.try_initialize(
-        &admin,
-        &Address::generate(&env),
-        &token,
-        &non_contract,
-        &CLAIM_CAP,
-        &POOL_CAP,
+    let result = env.try_invoke_contract::<(), Error>(
+        &env.register(
+            IncentivePool,
+            (
+                admin,
+                Address::generate(&env),
+                token,
+                non_contract,
+                CLAIM_CAP,
+                POOL_CAP,
+            ),
+        ),
+        &soroban_sdk::Symbol::new(&env, "__constructor"),
+        soroban_sdk::vec![&env],
     );
     assert_eq!(result, Err(Ok(Error::InvalidRegistryWiring)));
 }
@@ -699,7 +732,8 @@ fn multiple_attesters_independent_caps() {
 // ─────────────────────── Before initialization ───────────────────────
 
 #[test]
-fn getters_before_initialize_fail() {
+fn getters_before_constructor_fail() {
+    // A contract deployed without running the constructor has no configuration.
     let env = Env::default();
     let contract_id = env.register(IncentivePool, ());
     let client = IncentivePoolClient::new(&env, &contract_id);
@@ -931,4 +965,240 @@ fn scheduled_approval_uses_timelocked_rate_and_records_version() {
         3 * ONE_UNIT
     );
     assert_eq!(client.get_work_item_schedule_version(&id), 1);
+}
+
+// ─────────────── Payout binding lifecycle (#691) ───────────────
+
+#[test]
+fn cancel_payout_address_by_attester() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let payout = Address::generate(&env);
+
+    client.set_payout_address(&attester, &payout);
+    assert!(client.get_payout_binding(&attester).is_some());
+
+    env.ledger()
+        .with_mut(|l| l.timestamp += PAYOUT_ADDRESS_DELAY / 2);
+    client.cancel_payout_address(&attester);
+
+    assert_eq!(client.get_payout_binding(&attester), None);
+    assert_eq!(client.get_payout_address(&attester), None);
+
+    // After the original delay elapses the cancelled binding must not activate.
+    env.ledger()
+        .with_mut(|l| l.timestamp += PAYOUT_ADDRESS_DELAY);
+    assert_eq!(client.get_payout_address(&attester), None);
+}
+
+#[test]
+fn cancel_payout_address_by_guardian() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let payout = Address::generate(&env);
+
+    client.set_payout_address(&attester, &payout);
+    env.ledger()
+        .with_mut(|l| l.timestamp += PAYOUT_ADDRESS_DELAY / 2);
+
+    // Guardian (admin) can veto a pending binding during the delay window.
+    client.cancel_payout_address(&attester);
+    assert_eq!(client.get_payout_binding(&attester), None);
+    let _ = admin;
+}
+
+#[test]
+fn cancel_payout_address_without_pending_binding_fails() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    assert_eq!(
+        client.try_cancel_payout_address(&attester),
+        Err(Ok(Error::NoPendingPayoutBinding))
+    );
+}
+
+#[test]
+fn payout_binding_ttl_is_extended_on_write() {
+    use soroban_sdk::testutils::storage::Persistent as _;
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let payout = Address::generate(&env);
+
+    client.set_payout_address(&attester, &payout);
+
+    let ttl = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::PayoutBinding(attester.clone()))
+    });
+    assert!(
+        ttl > 0,
+        "payout binding must have a live persistent TTL after write"
+    );
+}
+
+#[test]
+fn payout_binding_survives_ttl_expiry_window() {
+    use soroban_sdk::testutils::Ledger as _;
+    use soroban_sdk::testutils::storage::Persistent as _;
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let payout = Address::generate(&env);
+
+    client.set_payout_address(&attester, &payout);
+    let ttl = env.as_contract(&client.address, || {
+        env.storage()
+            .persistent()
+            .get_ttl(&DataKey::PayoutBinding(attester.clone()))
+    });
+    assert!(ttl > PAYOUT_ADDRESS_DELAY);
+
+    // Advance past the delay but well within the extended TTL: the binding
+    // must still be readable and must have activated.
+    env.ledger().with_mut(|l| l.timestamp += PAYOUT_ADDRESS_DELAY + 1);
+    assert_eq!(client.get_payout_address(&attester), Some(payout));
+}
+
+#[test]
+fn set_payout_address_overflow_returns_typed_error() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let payout = Address::generate(&env);
+
+    env.ledger().with_mut(|l| l.timestamp = u64::MAX - 1);
+    assert_eq!(
+        client.try_set_payout_address(&attester, &payout),
+        Err(Ok(Error::TimestampOverflow))
+    );
+}
+
+// ─────────────── Registry unavailability (#692) ───────────────
+
+#[test]
+fn claim_maps_unavailable_registry_to_typed_error() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&ONE_UNIT);
+    let id = BytesN::from_array(&env, &[3u8; 32]);
+    client.approve_work_item(&id, &attester, &ONE_UNIT);
+
+    // Repoint the pool at an address that is not a registry contract, so the
+    // cross-contract call fails at the transport layer.
+    let broken = Address::generate(&env);
+    client.set_attester_registry(&broken);
+
+    assert_eq!(
+        client.try_claim(&id),
+        Err(Ok(Error::AttesterRegistryUnavailable))
+    );
+    assert!(!client.is_work_item_claimed(&id));
+    assert_eq!(client.get_total_paid(), 0);
+}
+
+#[test]
+fn set_payout_address_maps_unavailable_registry_to_typed_error() {
+    let (env, client, _registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    let broken = Address::generate(&env);
+    client.set_attester_registry(&broken);
+
+    assert_eq!(
+        client.try_set_payout_address(&attester, &Address::generate(&env)),
+        Err(Ok(Error::AttesterRegistryUnavailable))
+    );
+}
+
+// ─────────────── USDC clawback (#693) ───────────────
+
+#[test]
+fn partial_clawback_blocks_claims_and_resolves_deterministically() {
+    let (env, client, attester_registry, _admin, _approver, token, _token_admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    client.fund(&(10 * ONE_UNIT));
+    let id1 = BytesN::from_array(&env, &[11u8; 32]);
+    let id2 = BytesN::from_array(&env, &[12u8; 32]);
+    client.approve_work_item(&id1, &attester, &(4 * ONE_UNIT));
+    client.approve_work_item(&id2, &attester, &(4 * ONE_UNIT));
+
+    // Issuer claws back 5 units: balance (5) < reserved (8).
+    soroban_sdk::token::StellarAssetClient::new(&env, &token)
+        .clawback(&client.address, &(5 * ONE_UNIT));
+    assert!(client.is_drift_detected());
+
+    // Claims are blocked while drift is unresolved.
+    assert_eq!(
+        client.try_claim(&id1),
+        Err(Ok(Error::ReconciliationRequired))
+    );
+
+    // Deterministic policy: cancel reservations FIFO by approval time until
+    // the remaining reservations fit the balance.
+    let cancelled = client.resolve_drift();
+    assert_eq!(cancelled, 1);
+    assert!(!client.is_work_item_approved(&id1));
+    assert!(client.is_work_item_approved(&id2));
+    assert!(!client.is_drift_detected());
+
+    client.claim(&id2);
+    assert_eq!(client.get_total_paid(), 4 * ONE_UNIT);
+}
+
+#[test]
+fn full_clawback_cancels_all_reservations() {
+    let (env, client, attester_registry, _admin, _approver, token, _token_admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    client.fund(&(6 * ONE_UNIT));
+    let id1 = BytesN::from_array(&env, &[21u8; 32]);
+    let id2 = BytesN::from_array(&env, &[22u8; 32]);
+    client.approve_work_item(&id1, &attester, &(3 * ONE_UNIT));
+    client.approve_work_item(&id2, &attester, &(3 * ONE_UNIT));
+
+    soroban_sdk::token::StellarAssetClient::new(&env, &token)
+        .clawback(&client.address, &(6 * ONE_UNIT));
+    assert!(client.is_drift_detected());
+
+    let cancelled = client.resolve_drift();
+    assert_eq!(cancelled, 2);
+    assert!(!client.is_work_item_approved(&id1));
+    assert!(!client.is_work_item_approved(&id2));
+    assert!(!client.is_drift_detected());
+
+    assert_eq!(client.try_claim(&id1), Err(Ok(Error::WorkItemNotApproved)));
+}
+
+#[test]
+fn clawback_during_claim_returns_typed_error() {
+    let (env, client, attester_registry, _admin, _approver, token, _token_admin) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+
+    client.fund(&(2 * ONE_UNIT));
+    let id = BytesN::from_array(&env, &[31u8; 32]);
+    client.approve_work_item(&id, &attester, &(2 * ONE_UNIT));
+
+    // Claw back part of the balance after approval but before the claim.
+    soroban_sdk::token::StellarAssetClient::new(&env, &token)
+        .clawback(&client.address, &ONE_UNIT);
+
+    assert_eq!(
+        client.try_claim(&id),
+        Err(Ok(Error::ReconciliationRequired))
+    );
+    assert!(!client.is_work_item_claimed(&id));
+    assert_eq!(client.get_total_paid(), 0);
 }

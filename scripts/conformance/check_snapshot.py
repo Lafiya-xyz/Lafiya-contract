@@ -30,6 +30,11 @@ from extract_interface import extract
 
 Key = tuple[str, str]
 
+# Contracts configured atomically at deploy via `__constructor` rather than a
+# post-deploy `initialize` call. Their interface must expose a constructor and
+# no externally callable `initialize` function.
+CONSTRUCTOR_CONTRACTS = {"incentive-pool"}
+
 VERSIONS_FILE = SNAPSHOT_DIR / "interface_versions.json"
 _VERSION_RE = re.compile(r"pub const INTERFACE_VERSION: u32 = (\d+);")
 
@@ -97,6 +102,24 @@ def save_versions(versions: dict[str, int]) -> None:
     VERSIONS_FILE.write_text(json.dumps(versions, indent=2, sort_keys=True) + "\n")
 
 
+def check_constructor_contract(name: str, entries: list[dict[str, Any]]) -> bool:
+    """Assert a constructor-configured contract has no callable `initialize`.
+
+    The contract must expose a `__constructor` and must not expose any
+    function named `initialize` (which would reopen the deploy-then-initialize
+    front-running window).
+    """
+    ok = True
+    functions = {e["name"] for e in entries if e["kind"] == "func"}
+    if "__constructor" not in functions:
+        print(f"[{name}] missing `__constructor` -- configuration must happen at deploy")
+        ok = False
+    if "initialize" in functions:
+        print(f"[{name}] exposes a callable `initialize` -- must be a `__constructor`")
+        ok = False
+    return ok
+
+
 def check_one(name: str, cfg: dict[str, pathlib.Path]) -> bool:
     snap_file = snapshot_path(name)
     current = extract(cfg["wasm_path"])
@@ -106,6 +129,8 @@ def check_one(name: str, cfg: dict[str, pathlib.Path]) -> bool:
         return False
 
     ok = True
+    if name in CONSTRUCTOR_CONTRACTS:
+        ok = check_constructor_contract(name, current) and ok
     recorded = load_versions().get(name)
     version = code_interface_version(cfg["crate_dir"])
     if recorded != version:
@@ -140,6 +165,10 @@ def update_one(name: str, cfg: dict[str, pathlib.Path]) -> bool:
     versions = load_versions()
     version = code_interface_version(cfg["crate_dir"])
     recorded = versions.get(name)
+
+    if name in CONSTRUCTOR_CONTRACTS and not check_constructor_contract(name, current):
+        print(f"[{name}] refusing to update: constructor-configured contract is misconfigured")
+        return False
 
     if snap_file.exists() and recorded is not None:
         baseline = json.loads(snap_file.read_text())

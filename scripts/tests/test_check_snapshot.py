@@ -215,3 +215,15 @@ def test_missing_interface_version(env: dict[str, Any]) -> None:
 def test_repo_contracts_declare_interface_version() -> None:
     for cfg in CONTRACTS.values():
         assert check_snapshot.code_interface_version(cfg["crate_dir"]) >= 1
+
+
+def test_incentive_pool_snapshot_has_constructor_and_no_initialize() -> None:
+    snapshot = json.loads(
+        (check_snapshot.SNAPSHOT_DIR / "incentive_pool.json").read_text()
+    )
+    entries = snapshot["entries"] if isinstance(snapshot, dict) else snapshot
+    functions = {e["name"] for e in entries if e["kind"] == "function_v0"}
+    constructors = {e["name"] for e in entries if e["kind"] == "function_v0" and e.get("constructor")}
+    assert "initialize" not in functions
+    assert "__constructor" in functions or "__constructor" in constructors
+=======

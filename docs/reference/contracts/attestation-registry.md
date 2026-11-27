@@ -144,24 +144,33 @@ fn get_attester_registry() -> Result<Address, Error>
 
 Return the configured attester-registry contract address.
 
-### `initialize`
+### `__constructor`
 
 ```rust
-fn initialize(admin: Address, attester_registry: Address) -> Result<(), Error>
+fn __constructor(admin: Address, attester_registry: Address) -> Result<(), Error>
 ```
 
 Set the admin and the `attester-registry` contract this registry
-consults for allowlist checks. Can only be called once; the caller
-must authorize as the given `admin`.
+consults for allowlist checks. Configuration happens atomically at
+deploy time; there is no externally callable `initialize` entry point,
+so the deploy-then-initialize front-running window is closed.
 
 ## Best-effort interface check
 
-This function performs a lightweight sanity check against
+The constructor performs a lightweight sanity check against
 `attester_registry`: it calls `is_attester` with a throwaway address
 and confirms the call does not trap. This confirms the address
 implements the expected interface \xe2\x80\x94 it does **not** prove the address
 is the canonical, trusted `attester-registry` deployment. A malicious
 contract that happens to expose `is_attester` would pass this check.
+
+## Cross-contract calls
+
+All cross-contract client calls made by this contract use the
+non-panicking `try_` variants. Transport or contract failures are
+mapped to typed errors (e.g. `AttesterRegistryUnavailable`) rather than
+trapping with a host error.
+=======
 
 ### `is_paused`
 
@@ -262,8 +271,8 @@ Versioned bitstring segment for compact bulk revocation checks.
 
 | Code | Name | Description |
 | --- | --- | --- |
-| 1 | `NotInitialized` | `initialize` has not been called yet. |
-| 2 | `AlreadyInitialized` | `initialize` was called more than once. |
+| 1 | `NotInitialized` | The contract has not been configured yet. |
+| 2 | `AlreadyInitialized` | Configuration was attempted more than once. |
 | 3 | `AttesterNotAllowlisted` | The caller is not allowlisted by the `attester-registry` contract. |
 | 4 | `NoPendingTransfer` | `accept_admin` was called with no pending admin transfer. Admin transfer is a two-step flow: the current admin must first call `propose_admin` to nominate a successor, then the nominated address must call `accept_admin` to complete the transfer. This error is returned when `accept_admin` is called before a corresponding `propose_admin` call has set a pending admin. |
 | 5 | `InvalidRegistryWiring` | The configured `attester-registry` address does not implement the expected interface. Re-run `set_attester_registry` with the correct address, or check your network configuration. |
@@ -273,6 +282,7 @@ Versioned bitstring segment for compact bulk revocation checks.
 | 9 | `DisputeLimitReached` | The per-hash dispute bound (`MAX_DISPUTES_PER_HASH`) has been reached. |
 | 10 | `InvalidQuorumPolicy` | The requested quorum policy is invalid (e.g. `required` is zero or exceeds the attester count bound). |
 | 11 | `TtlHorizonExceeded` | The requested TTL exceeds `MAX_TTL_HORIZON` ledgers from the current ledger. |
+| 12 | `AttesterRegistryUnavailable` | A cross-contract call to the `attester-registry` failed (archived, mid-upgrade, or misconfigured). The call is retried or surfaced as this typed error instead of trapping. |
 
 ## Events
 

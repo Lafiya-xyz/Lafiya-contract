@@ -184,6 +184,7 @@ is submitted. An alert with no matching announcement is an incident.
 | `attester_slashed` | high | A bond slash executed (`SlashExecuted`) | Confirm the case evidence and consider suspending or removing the attester |
 | `mass_enrollment` | high | More than N attesters added within M ledgers | Check the batch against the approved attester list |
 | `bulk_revocation` | info | Attestation revoked | Watch for bursts |
+| `payout_address_scheduled` | high | A payout recipient change was scheduled for an attester with pending work items (`PayoutAddressScheduled`) | Contact the CHW out of band; if unplanned, cancel via `cancel_payout_address` (see [Payout binding changes](#payout-binding-changes-payout_address_scheduled)) |
 CI runs `every_critical_rule_reaches_the_webhook`, which feeds the same event
 sequence through the rules and a real HTTP webhook sink into a mock server.
 
@@ -199,12 +200,55 @@ Thresholds live in the `[pool]` section of `watchdog.toml`:
 | `approval_burst_count` | `10` | Number of approvals that constitutes a burst |
 | `approval_burst_ledgers` | `100` | Window (in ledgers) over which approvals are counted |
 | `readd_window_ledgers` | `1000` | How far back to look for a remove/re-add of the claiming attester |
+| `payout_binding_watch_ledgers` | `34560` (about 48h) | How long after `PayoutAddressScheduled` the watchdog keeps checking for a pending binding |
 
 Tune the thresholds to the pool's normal payout size before enabling the
 rules; a threshold far below typical payouts will page on every cycle. The
 `claim_by_readded_attester` rule keeps a bounded in-memory history of attester
 removals, so after a watchdog restart it can only flag re-adds that happened
 since startup; replay over an exported event range covers the gap.
+
+### Payout binding changes (`payout_address_scheduled`)
+
+`set_payout_address` does not take effect immediately: it schedules the new
+recipient `PAYOUT_ADDRESS_DELAY` (48h) in the future so a stolen attester key
+cannot silently redirect payouts. The delay only helps if someone notices the
+first step, so the watchdog raises `payout_address_scheduled` (severity `high`)
+on every `PayoutAddressScheduled` event for an attester that has pending work
+items (unclaimed or in-flight payouts). The alert carries the attester, the
+previous and new payout addresses, and the ledger at which the binding becomes
+effective.
+
+First response:
+
+1. **Contact the CHW out of band.** The alert is only a signal; the watchdog
+   cannot reach the CHW. Use the contact channel on file for the attester
+   (phone/SMS or the CHW's secure messaging channel) — never reply to the
+   address in the event, which may be the attacker's.
+2. **Confirm intent.** Ask the CHW whether they scheduled the change. If yes,
+   record the confirmation in the security channel and close the alert.
+3. **If not planned, cancel the pending binding.** During the delay window the
+   attester **or** a guardian/admin can call `cancel_payout_address(attester)`;
+   the guardian path exists precisely for a compromised attester key. Cancel
+   first, then rotate the attester key and start incident response.
+4. **If the delay has already elapsed**, the binding is live: pause the pool
+   via the guardian multisig (see
+   [`docs/adr/0012-coordinated-emergency-stop.md`](../adr/0012-coordinated-emergency-stop.md))
+   before any further payouts resolve, then cancel/rotate.
+
+Operational notes:
+
+- The rule keeps a bounded in-memory window (`payout_binding_watch_ledgers`)
+  of scheduled bindings so it can re-alert if a binding is still pending near
+  the end of the delay. After a watchdog restart it only sees bindings
+  scheduled since startup; replay over an exported event range covers the gap.
+- A `PayoutAddressCancelled` event for the same attester closes the alert
+  automatically; if you cancelled out of band, note it in the security channel
+  so the on-call does not chase a stale page.
+- Pending bindings are stored with an extended TTL and registered with the TTL
+  keeper, so they do not archive mid-delay. If `get_payout_binding` returns
+  nothing for an attester you expected to be pending, treat it as a possible
+  archived entry and escalate rather than assuming the change was cancelled.
 | `attestation_expiring` | high | An attestation's live-until ledger is within the configured horizon (default 30 days) | Notify the attester and the patient; anyone may extend it (see below) |
 | `attestation_archived` | high | An attestation entry has archived (rent lapsed) | Restore it with the CLI helper (see below) and extend its TTL |
 | `attestation_disputed` | high | A patient flagged an attestation as disputed | Surface the dispute to verifiers; only the attester or admin can clear it (see below) |

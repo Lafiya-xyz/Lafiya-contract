@@ -60,3 +60,37 @@ def test_idempotent_across_concurrent_instances(tmp_path):
     with ThreadPoolExecutor(4) as ex:
         list(ex.map(lambda _: mod.run(cfg, chain, chain.extend, tmp_path / "s.json", False, lambda r: None), range(4)))
     assert chain.extensions == ["a"]
+
+
+PAYOUT_CFG = {
+    **CFG,
+    "entries": [
+        {"id": "payout:GA1", "contract": "C1", "key_class": "payout_binding",
+         "est_cost_stroops": 100},
+        {"id": "payout:GA2", "contract": "C1", "key_class": "payout_binding",
+         "est_cost_stroops": 100},
+    ],
+}
+
+
+def test_payout_binding_key_class_is_extended(tmp_path):
+    chain = Chain({"payout:GA1": 500, "payout:GA2": 5000})
+    mod.run(PAYOUT_CFG, chain, chain.extend, tmp_path / "s.json", False, lambda r: None)
+    assert chain.extensions == ["payout:GA1"]
+    assert chain.live["payout:GA1"] == chain.latest + PAYOUT_CFG["extend_to_ledgers"]
+
+
+def test_payout_binding_ttl_expiry_is_prevented(tmp_path):
+    chain = Chain({"payout:GA1": 3000})
+    cfg = {**PAYOUT_CFG, "entries": PAYOUT_CFG["entries"][:1],
+           "daily_cap_stroops": 10_000}
+    for _ in range(10):
+        chain.latest += 1500
+        mod.run(cfg, chain, chain.extend, tmp_path / "s.json", False, lambda r: None)
+        assert chain.latest < chain.live["payout:GA1"], "payout binding was archived"
+
+
+def test_payout_binding_dry_run_does_not_extend(tmp_path):
+    chain = Chain({"payout:GA1": 500, "payout:GA2": 500})
+    mod.run(PAYOUT_CFG, chain, chain.extend, tmp_path / "s.json", True, lambda r: None)
+    assert chain.extensions == []

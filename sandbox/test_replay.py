@@ -56,6 +56,32 @@ class Replay(unittest.TestCase):
         self.assertIn('status = "removed"', text)
         self.assertIn("[[attestations]]", text)
 
+    def test_constructor_deploy_has_no_initialize_event(self):
+        def ev(ledger, name, topics, data=""):
+            return {"ledger": ledger, "name": name, "topics": topics, "data": data}
+        text = replay.render([ev(1, "incentive_pool_deployed", ["GADMIN"]),
+                              ev(2, "attester_added", ["GA"])], {})
+        self.assertIn("incentive_pool_deployed", text)
+        self.assertNotIn("initialize", text)
+
+    def test_payout_cancellation_is_replayed(self):
+        def ev(ledger, name, topics, data=""):
+            return {"ledger": ledger, "name": name, "topics": topics, "data": data}
+        text = replay.render([ev(1, "attester_added", ["GA"]),
+                              ev(2, "payout_address_scheduled", ["GA"], "GB"),
+                              ev(3, "payout_address_cancelled", ["GA"])], {})
+        self.assertIn("payout_address_cancelled", text)
+        self.assertNotIn('payout_address = "GB"', text)
+
+    def test_drift_resolution_is_replayed(self):
+        def ev(ledger, name, topics, data=""):
+            return {"ledger": ledger, "name": name, "topics": topics, "data": data}
+        text = replay.render([ev(1, "attester_added", ["GA"]),
+                              ev(2, "drift_detected", []),
+                              ev(3, "reservation_cancelled", ["r1"])], {})
+        self.assertIn("drift_detected", text)
+        self.assertIn("reservation_cancelled", text)
+
 
 if __name__ == "__main__":
     unittest.main()
