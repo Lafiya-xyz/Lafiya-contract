@@ -35,9 +35,47 @@ EXTRA_CONTRACTS: dict[str, dict[str, Path]] = {
         "wasm_path": Path("target/wasm32v1-none/release/incentive_pool.wasm"),
         "bindings_dir": Path("bindings/incentive-pool"),
     },
+    "attester-registry": {
+        "wasm_path": Path("target/wasm32v1-none/release/attester_registry.wasm"),
+        "bindings_dir": Path("bindings/attester-registry"),
+    },
 }
 
 ALL_CONTRACTS: dict[str, dict[str, Path]] = {**CONTRACTS, **EXTRA_CONTRACTS}
+
+# Functions/errors introduced by the bond-accounting (#677), probation
+# promotion (#678), bounded-validation (#681) and vesting (#694) work. These
+# must be present in the committed bindings for the affected contracts; if a
+# contract exposes them but the committed bindings do not, the drift gate
+# fails even when the rest of the surface happens to match.
+REQUIRED_SURFACE: dict[str, dict[str, set]] = {
+    "attester-registry": {
+        "functions": {
+            "bond_reconcile",
+            "check_invariants",
+            "try_promote",
+        },
+        "errors": {
+            "InputTooLong",
+            "InvalidCharset",
+            "InvalidRegionCode",
+            "ProbationCriteriaNotMet",
+            "BondInvariantViolated",
+        },
+    },
+    "incentive-pool": {
+        "functions": {
+            "claim_vested",
+            "forfeit",
+        },
+        "errors": {
+            "VestingNotClaimable",
+            "VestingAlreadyForfeited",
+            "InputTooLong",
+            "InvalidCharset",
+        },
+    },
+}
 
 FUNCTION_RE = re.compile(r"^\s{2}(\w+):\s*\(.*?options\?: MethodOptions\)", re.MULTILINE)
 ERROR_RE = re.compile(r"^\s*(\d+):\s*\{message:\"(\w+)\"\}", re.MULTILINE)
@@ -91,12 +129,41 @@ def check_one(name: str, cfg: dict[str, Path], scratch_root: Path) -> bool:
         c for c in set(fresh_errs) & set(committed_errs) if fresh_errs[c] != committed_errs[c]
     )
 
-    ok = not (missing_fns or extra_fns or missing_errs or extra_errs or changed_errs)
+    # Required-surface gate: functions/errors the contract must expose and
+    # that the committed bindings must therefore also expose.
+    required = REQUIRED_SURFACE.get(name, {})
+    required_fns = required.get("functions", set())
+    required_err_names = required.get("errors", set())
+    committed_err_names = set(committed_errs.values())
+    fresh_err_names = set(fresh_errs.values())
+
+    absent_from_contract_fns = sorted(required_fns - fresh_fns)
+    absent_from_bindings_fns = sorted(required_fns - committed_fns)
+    absent_from_contract_errs = sorted(required_err_names - fresh_err_names)
+    absent_from_bindings_errs = sorted(required_err_names - committed_err_names)
+
+    ok = not (
+        missing_fns
+        or extra_fns
+        or missing_errs
+        or extra_errs
+        or changed_errs
+        or absent_from_contract_fns
+        or absent_from_bindings_fns
+        or absent_from_contract_errs
+        or absent_from_bindings_errs
+    )
 
     if ok:
+        required_note = ""
+        if required_fns or required_err_names:
+            required_note = (
+                f"; {len(required_fns)} required function(s) and "
+                f"{len(required_err_names)} required error(s) present"
+            )
         print(
             f"[{name}] OK -- {len(fresh_fns)} function(s), "
-            f"{len(fresh_errs)} error code(s) match committed bindings"
+            f"{len(fresh_errs)} error code(s) match committed bindings{required_note}"
         )
         return True
 
@@ -114,6 +181,14 @@ def check_one(name: str, cfg: dict[str, Path], scratch_root: Path) -> bool:
             f"  ~ error {code} is `{fresh_errs[code]}` in the contract but "
             f"`{committed_errs[code]}` in bindings"
         )
+    for fn in absent_from_contract_fns:
+        print(f"  ! required function `{fn}` is missing from the contract itself")
+    for fn in absent_from_bindings_fns:
+        print(f"  ! required function `{fn}` is missing from the committed bindings")
+    for err in absent_from_contract_errs:
+        print(f"  ! required error `{err}` is missing from the contract itself")
+    for err in absent_from_bindings_errs:
+        print(f"  ! required error `{err}` is missing from the committed bindings")
 
     fresh_lines = fresh_ts.count("\n")
     committed_lines = committed_text.count("\n")

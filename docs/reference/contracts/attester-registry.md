@@ -51,6 +51,29 @@ call never fails due to duplicates in the batch and no duplicate events
 are emitted. Exactly one `AttesterAdded` event is emitted per newly
 added address.
 
+### `bond_reconcile`
+
+```rust
+fn bond_reconcile() -> Result<BondReconciliation, Error>
+```
+
+Reconcile the bond module's internal accounting against the actual
+token balance held by the contract. Returns the summed bonds, the
+slashed-but-unswept amount, the expected total
+(`sum(bonds) + slashed_unswept`), the observed token balance, and
+whether the two diverge (`drift_detected`). Mirrors the incentive
+pool's `reconcile` view. Callable by anyone.
+
+### `extend_probation`
+
+```rust
+fn extend_probation(attester: Address, until_ledger: u32) -> Result<(), Error>
+```
+
+Admin-only. Extend (or set) the probation end ledger for `attester`,
+even if the objective promotion criteria are already satisfied. Emits
+`ProbationExtended`. Cannot shorten an existing probation window.
+
 ### `get_admin`
 
 ```rust
@@ -58,6 +81,46 @@ fn get_admin() -> Result<Address, Error>
 ```
 
 Return the current admin address.
+======>>> REPLACE
+
+<<<<<<< SEARCH
+### `get_max_attesters`
+
+```rust
+fn get_max_attesters() -> u32
+```
+
+The current soft cap on the number of allowlisted attesters.
+=======
+### `get_max_attesters`
+
+```rust
+fn get_max_attesters() -> u32
+```
+
+The current soft cap on the number of allowlisted attesters.
+
+### `get_probation_policy`
+
+```rust
+fn get_probation_policy() -> ProbationPolicy
+```
+
+Return the active, versioned probation policy used by `try_promote`.
+======>>> REPLACE
+
+<<<<<<< SEARCH
+### `suspend_attester`
+
+```rust
+fn suspend_attester(attester: Address) -> Result<(), Error>
+```
+=======
+### `suspend_attester`
+
+```rust
+fn suspend_attester(attester: Address, reason: Symbol) -> Result<(), Error>
+```
 
 ### `get_attester_count`
 
@@ -224,6 +287,21 @@ This diverges from `update_attester_info`, which returns
 known and documented here rather than silently changed; a follow-up
 issue should decide whether to align both functions.
 
+### `try_promote`
+
+```rust
+fn try_promote(attester: Address) -> Result<(), Error>
+```
+
+Permissionless. Promote `attester` out of probation if, and only if,
+the active `ProbationPolicy` criteria are met: minimum attestation
+count, minimum tenure (ledgers), zero upheld disputes, and zero
+revocations. Counters are maintained by narrow, one-way hooks from
+`attestation-registry` (no circular cross-contract calls). Emits
+`ProbationCompleted` on success and fails with
+`Error::ProbationCriteriaNotMet` otherwise. The admin may still extend
+probation via `extend_probation`.
+
 ### `unpause`
 
 ```rust
@@ -231,6 +309,53 @@ fn unpause() -> Result<(), Error>
 ```
 
 Resume normal operation after a `pause`. Requires the admin's authorization.
+======>>> REPLACE
+
+<<<<<<< SEARCH
+### `AttesterStatus`
+
+An allowlisted attester's metadata together with its current suspension
+state, as returned by `get_attester_status`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `info` | `AttesterInfo` | The attester's stored metadata. |
+| `suspended` | `bool` | Whether the attester is currently suspended. |
+=======
+### `AttesterStatus`
+
+An allowlisted attester's metadata together with its current suspension
+state, as returned by `get_attester_status`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `info` | `AttesterInfo` | The attester's stored metadata. |
+| `suspended` | `bool` | Whether the attester is currently suspended. |
+
+### `BondReconciliation`
+
+Result of `bond_reconcile`, mirroring the incentive pool's reconciliation
+view.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `sum_bonds` | `i128` | Sum of all outstanding attester bonds. |
+| `slashed_unswept` | `i128` | Slashed amounts not yet swept to the slash destination. |
+| `expected_balance` | `i128` | `sum_bonds + slashed_unswept`. |
+| `actual_balance` | `i128` | The contract's observed token balance. |
+| `drift_detected` | `bool` | Whether `expected_balance != actual_balance`. |
+
+### `ProbationPolicy`
+
+Versioned, on-chain promotion criteria evaluated by `try_promote`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `version` | `u32` | Policy version; bumped whenever criteria change. |
+| `min_attestations` | `u32` | Minimum attestations issued while on probation. |
+| `min_tenure_ledgers` | `u32` | Minimum ledgers since enrollment. |
+| `max_upheld_disputes` | `u32` | Maximum upheld disputes allowed (typically `0`). |
+| `max_revocations` | `u32` | Maximum revocations allowed (typically `0`). |
 
 ### `update_attester_info`
 
@@ -296,6 +421,11 @@ state, as returned by `get_attester_status`.
 | 6 | `MigrationNotRequired` | `migrate()` was called while the stored schema version is already `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal that there is nothing pending, not a failure to react to. |
 | 7 | `AttesterNotFound` | The referenced attester is not currently allowlisted (never added, or since removed). |
 | 8 | `BatchTooLarge` | The supplied batch exceeds `BATCH_LIMIT` addresses. |
+| 9 | `InputTooLong` | A `String`/`Bytes`/`Symbol` input exceeds the bound for its field (see `docs/storage-cost.md`). |
+| 10 | `InvalidCharset` | A `String`/`Symbol` input contains characters outside the allowed ASCII set for its field. |
+| 11 | `InvalidRegionCode` | A region input is not a well-formed region code. |
+| 12 | `ProbationCriteriaNotMet` | `try_promote` was called but the active `ProbationPolicy` criteria are not yet satisfied. |
+| 13 | `BondAccountingDrift` | A bond deposit, withdraw, or slash observed a token balance delta inconsistent with the recorded accounting. |
 
 ## Events
 
@@ -309,5 +439,22 @@ state, as returned by `get_attester_status`.
 | `AttesterSuspended` | `"attester_suspended"`, `attester: Address` |  | Emitted when an attester is suspended. |
 | `Initialized` | `"initialized"`, `admin: Address` |  | Emitted once, when the contract is initialized. |
 | `Paused` | `"paused"`, `by: Address` |  | Emitted when state-changing operations are paused. |
+| `ProbationCompleted` | `"probation_completed"`, `attester: Address` |  | Emitted when `try_promote` promotes an attester out of probation. |
+| `ProbationExtended` | `"probation_extended"`, `attester: Address` |  | Emitted when the admin extends an attester's probation via `extend_probation`. |
 | `Unpaused` | `"unpaused"`, `by: Address` |  | Emitted when state-changing operations are unpaused. |
 | `Upgraded` | `"upgraded"`, `new_wasm_hash: BytesN<32>` |  | Emitted when the contract is upgraded to new wasm. |
+
+## Bond accounting
+
+The bond module custodies tokens and maintains the invariant
+`sum(bonds) + slashed_unswept == token.balance(contract)`. This invariant
+is asserted by `check_invariants()` and exposed for off-chain monitoring
+via `bond_reconcile()`. Deposit, withdraw, and slash each verify the
+observed token balance delta against the recorded accounting and fail
+with `Error::BondAccountingDrift` on mismatch (a token that charges a
+transfer fee is handled by crediting only the received delta).
+
+Slashed funds are held in `slashed_unswept` until swept to the
+configured slash destination (treasury, burn, or incentive pool, as set
+at initialization). Only the admin may sweep; see the bond ADR for the
+full rationale and the sweep authority.

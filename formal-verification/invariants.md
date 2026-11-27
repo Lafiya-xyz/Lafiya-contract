@@ -92,10 +92,44 @@ critical `invariant_violation` alert when `violations` is non-empty.
 | `pending_admin_inconsistent` | both | `PendingAdmin` and its expiry are set together | Invariant 3 |
 | `registry_wiring_invalid` | attestation-registry | the configured attester registry exposes the allowlist interface | Invariant 4 |
 | `rate_limit_window_zero` | attestation-registry | an enabled rate limit has a non-zero window | - |
+| `bond_accounting_mismatch` | attester-registry | `sum(bonds) + slashed_unswept == token.balance(contract)` | Invariant 8 |
+| `vesting_reservation_mismatch` | incentive-pool | reserved liabilities include unvested and unclaimed grant amounts | Invariant 9 |
 
 Every check is O(1) storage reads (CPU is asserted below 250k and 400k
 instructions in the contract tests). Corruption tests inject bad state
 through test-only storage writes and assert the matching symbol is reported.
+
+## Bond Accounting Invariants (attester-registry)
+
+### Invariant 8: Bond Custody Reconciliation
+```
+sum(bonds[a] for a ∈ Attesters) + slashed_unswept = token.balance(contract)
+```
+
+**Verification:** `bond_reconcile()` view plus `check_invariants()`; stateful
+proptest over bond, unbond, slash, and sweep sequences (including a
+fee-charging token), ≥10k cases in nightly
+**Property:** The contract never custodies tokens it cannot account for; no bond
+can be paid out twice and slashed funds are never double-counted
+**Test:** Token balance deltas are asserted on deposit, withdraw, and slash,
+mirroring the incentive-pool `reconcile` / `is_drift_detected` pattern. The
+slash destination (treasury / burn / incentive pool) and the sweep authority are
+explicit and covered by tests; see the bond ADR.
+
+## Incentive Pool Vesting Invariants (incentive-pool)
+
+### Invariant 9: Vesting Liabilities Are Reserved
+```
+reserved_liabilities ≥ sum(unvested(g) + unclaimed_vested(g) for g ∈ grants)
+```
+
+**Verification:** Stateful proptest over create, claim, and forfeit sequences,
+including rounding; TLA+ model extended with vesting (if present)
+**Property:** `withdraw` cannot drain funds backing outstanding vesting grants;
+`claim_vested(g)` pays exactly the vested-but-unclaimed amount and never more
+than `total`; forfeiting an unvested remainder returns it to the pool
+**Test:** Linear vesting after the cliff, with boundary cases at start, cliff,
+and end of duration
 
 ## Gaps Not Covered by Formal Verification
 

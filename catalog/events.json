@@ -655,6 +655,191 @@
           "location": "data"
         }
       ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "ProbationCompleted",
+      "prefix_topics": [
+        "probation_completed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "policy_version",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "attestation_count",
+          "type": "u32",
+          "location": "data"
+        },
+        {
+          "name": "tenure_ledgers",
+          "type": "u32",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "BondSwept",
+      "prefix_topics": [
+        "bond_swept"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "destination",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "attester-registry",
+      "name": "BondReconciled",
+      "prefix_topics": [
+        "bond_reconciled"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "expected",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "actual",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "drift",
+          "type": "i128",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "VestingGrantCreated",
+      "prefix_topics": [
+        "vesting_grant_created"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "grant_id",
+          "type": "u64",
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "total",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "start",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "cliff",
+          "type": "u64",
+          "location": "data"
+        },
+        {
+          "name": "duration",
+          "type": "u64",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "VestingGrantClaimed",
+      "prefix_topics": [
+        "vesting_grant_claimed"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "grant_id",
+          "type": "u64",
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "claimed_total",
+          "type": "i128",
+          "location": "data"
+        }
+      ]
+    },
+    {
+      "contract": "incentive-pool",
+      "name": "VestingGrantForfeited",
+      "prefix_topics": [
+        "vesting_grant_forfeited"
+      ],
+      "data_format": "map",
+      "params": [
+        {
+          "name": "grant_id",
+          "type": "u64",
+          "location": "topic_list"
+        },
+        {
+          "name": "attester",
+          "type": "address",
+          "location": "topic_list"
+        },
+        {
+          "name": "unvested_amount",
+          "type": "i128",
+          "location": "data"
+        },
+        {
+          "name": "by",
+          "type": "address",
+          "location": "data"
+        }
+      ]
     }
   ]
 }

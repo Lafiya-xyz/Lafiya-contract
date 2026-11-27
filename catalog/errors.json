@@ -297,6 +297,138 @@
       "i18n_key": "err.attester.batch_too_large",
       "since": "0.1.0",
       "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 9,
+      "name": "InputTooLong",
+      "doc": "A `String` or `Bytes` parameter exceeds the maximum length allowed by the shared `validate` module. Bounds are documented in `docs/storage-cost.md`; shorten the input and retry.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.input_too_long",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 10,
+      "name": "InvalidCharset",
+      "doc": "A `String` parameter contains characters outside the allowed ASCII set for its field (for example a region code or licence metadata field). Only the documented printable ASCII subset is accepted.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.invalid_charset",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 11,
+      "name": "InvalidRegionCode",
+      "doc": "The supplied region code is not a well-formed region identifier. Region codes must match the canonical encoding enforced by `validate::region_code()`.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.invalid_region_code",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 12,
+      "name": "BondAccountingDrift",
+      "doc": "The bond accounting invariant `sum(bonds) + slashed_unswept == token.balance(contract)` does not hold. Reported by `bond_reconcile()` and `check_invariants()`; indicates a bug or an unsupported token (for example one with a transfer fee) and must be escalated.",
+      "severity": "operator",
+      "retryable": false,
+      "i18n_key": "err.attester.bond_accounting_drift",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 13,
+      "name": "UnauthorizedSweep",
+      "doc": "Only the configured sweep authority (admin/treasury) may sweep slashed funds. See the bond ADR for the slash destination and sweep authority.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.unauthorized_sweep",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "attester-registry",
+      "code": 14,
+      "name": "NothingToSweep",
+      "doc": "`sweep_slashed` was called while `slashed_unswept` is zero.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.attester.nothing_to_sweep",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 1,
+      "name": "VestingGrantNotFound",
+      "doc": "No vesting grant exists for the given `grant_id`.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.incentive.vesting_grant_not_found",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 2,
+      "name": "NothingVested",
+      "doc": "`claim_vested` was called before the cliff elapsed or while no additional amount has vested since the last claim.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.incentive.nothing_vested",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 3,
+      "name": "GrantAlreadyForfeited",
+      "doc": "The vesting grant was already forfeited; the unvested remainder has been returned to the pool and cannot be claimed.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.incentive.grant_already_forfeited",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 4,
+      "name": "UnauthorizedForfeit",
+      "doc": "Only the admin or guardian may forfeit a vesting grant, and only for cause (attester removal for fraud).",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.incentive.unauthorized_forfeit",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 5,
+      "name": "InvalidVestingSchedule",
+      "doc": "The vesting schedule is invalid: `duration` must be non-zero, `cliff` must not exceed `duration`, and `total` must be non-zero.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.incentive.invalid_vesting_schedule",
+      "since": "0.3.0",
+      "deprecated": null
+    },
+    {
+      "contract": "incentive-pool",
+      "code": 6,
+      "name": "InsufficientReservedLiability",
+      "doc": "The pool cannot cover the requested withdrawal because reserved vesting liabilities (unvested and unclaimed grant amounts) would be drained. Wait for grants to vest and be claimed, or fund the pool further.",
+      "severity": "user",
+      "retryable": false,
+      "i18n_key": "err.incentive.insufficient_reserved_liability",
+      "since": "0.3.0",
+      "deprecated": null
     }
   ]
 }

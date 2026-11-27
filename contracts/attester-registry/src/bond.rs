@@ -161,12 +161,83 @@ pub struct SlashCancelled {
     pub case_id: u64,
 }
 
+/// Reconciliation snapshot for bond accounting (issue #677).
+///
+/// Invariant: `sum(bonds) + slashed_unswept == token.balance(contract)`.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct BondReconcile {
+    /// Sum of every attester's bonded `amount`.
+    pub total_bonds: i128,
+    /// Slashed funds still held by the contract (not yet swept).
+    pub slashed_unswept: i128,
+    /// `total_bonds + slashed_unswept`, the amount the contract should hold.
+    pub accounted: i128,
+    /// Actual token balance of the contract.
+    pub token_balance: i128,
+    /// `token_balance - accounted`; non-zero means drift.
+    pub drift: i128,
+    /// Whether `drift != 0`.
+    pub drift_detected: bool,
+}
+
 fn config(env: &Env) -> Result<BondConfig, Error> {
     env.storage()
         .instance()
         .get(&DataKey::BondConfig)
         .ok_or(Error::BondNotConfigured)
 }
+
+/// Running total of all bonded amounts, maintained on every bond mutation.
+fn total_bonds(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::BondTotalBonds)
+        .unwrap_or(0)
+}
+
+fn set_total_bonds(env: &Env, value: i128) {
+    env.storage().instance().set(&DataKey::BondTotalBonds, &value);
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+/// Slashed funds the contract still holds and has not swept to the recipient.
+fn slashed_unswept(env: &Env) -> i128 {
+    env.storage()
+        .instance()
+        .get(&DataKey::SlashedUnswept)
+        .unwrap_or(0)
+}
+
+fn set_slashed_unswept(env: &Env, value: i128) {
+    env.storage()
+        .instance()
+        .set(&DataKey::SlashedUnswept, &value);
+    env.storage()
+        .instance()
+        .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+/// Compute the reconciliation snapshot without mutating state.
+fn reconcile(env: &Env) -> Result<BondReconcile, Error> {
+    let cfg = config(env)?;
+    let total_bonds = total_bonds(env);
+    let slashed_unswept = slashed_unswept(env);
+    let accounted = total_bonds + slashed_unswept;
+    let token_balance = token::Client::new(env, &cfg.token).balance(&env.current_contract_address());
+    let drift = token_balance - accounted;
+    Ok(BondReconcile {
+        total_bonds,
+        slashed_unswept,
+        accounted,
+        token_balance,
+        drift,
+        drift_detected: drift != 0,
+    })
+}
+=======
 
 fn bond(env: &Env, attester: &Address) -> Option<BondInfo> {
     env.storage()
@@ -230,6 +301,7 @@ fn close_case(env: &Env, case_id: u64, value: &SlashCase, slashed: bool) {
         info.open_cases = info.open_cases.saturating_sub(1);
         if slashed {
             info.amount -= value.amount;
+            set_total_bonds(env, total_bonds(env) - value.amount);
         }
         save_bond(env, &value.attester, &info);
     }
@@ -252,6 +324,8 @@ pub(crate) fn rotate(env: &Env, previous: &Address, new: &Address) {
     merged.open_cases += old.open_cases;
     merged.withdraw_at = old.withdraw_at.or(merged.withdraw_at);
     save_bond(env, new, &merged);
+    // `total_bonds` is a sum over attesters, so moving a bond between keys
+    // leaves the aggregate unchanged.
     env.storage()
         .persistent()
         .remove(&DataKey::Bond(previous.clone()));
@@ -316,6 +390,49 @@ impl AttesterRegistry {
         bond(&env, &attester)
     }
 
+    /// Reconciliation view for bond accounting (issue #677).
+    ///
+    /// Returns `sum(bonds) + slashed_unswept` alongside the contract's actual
+    /// token balance and a drift flag. Mirrors the incentive-pool `reconcile`.
+    pub fn bond_reconcile(env: Env) -> Result<BondReconcile, Error> {
+        reconcile(&env)
+    }
+
+    /// Total slashed funds held by the contract awaiting sweep to the
+    /// configured recipient.
+    pub fn get_slashed_unswept(env: Env) -> i128 {
+        slashed_unswept(&env)
+    }
+
+    /// Sweep unswept slashed funds to the configured slash recipient.
+    ///
+    /// Slash destination is `BondConfig.recipient`; the sweep authority is the
+    /// admin. Anyone may execute a slash, but only the admin moves the funds
+    /// out of the contract, keeping the accounting invariant checkable.
+    pub fn sweep_slashed(env: Env) -> Result<i128, Error> {
+        Self::admin(&env)?.require_auth();
+        let cfg = config(&env)?;
+        let amount = slashed_unswept(&env);
+        if amount <= 0 {
+            return Err(Error::NoSlashedFunds);
+        }
+        let client = token::Client::new(&env, &cfg.token);
+        let before = client.balance(&env.current_contract_address());
+        client.transfer(&env.current_contract_address(), &cfg.recipient, &amount);
+        let after = client.balance(&env.current_contract_address());
+        // Fee-charging tokens may debit more than `amount`; reconcile against
+        // the actual delta so the invariant stays exact.
+        let paid = before - after;
+        set_slashed_unswept(&env, 0);
+        // Any fee shortfall is absorbed by the recipient, not the bond holders;
+        // if the token charged the contract extra, record the residual drift.
+        if paid != amount {
+            let residual = slashed_unswept(&env) + (paid - amount).max(0);
+            set_slashed_unswept(&env, residual);
+        }
+        Ok(amount)
+    }
+
     /// Whether `attester`'s unlocked bond meets the configured minimum.
     pub fn is_bonded(env: Env, attester: Address) -> bool {
         let (Ok(cfg), Some(info)) = (config(&env), bond(&env, &attester)) else {
@@ -342,20 +459,26 @@ impl AttesterRegistry {
             .get::<_, StoredAttesterInfo>(&DataKey::Attester(attester.clone()))
             .filter(|info| !info.removed)
             .ok_or(Error::AttesterNotFound)?;
-        token::Client::new(&env, &cfg.token).transfer(
-            &attester,
-            env.current_contract_address(),
-            &amount,
-        );
+        let client = token::Client::new(&env, &cfg.token);
+        let before = client.balance(&env.current_contract_address());
+        client.transfer(&attester, env.current_contract_address(), &amount);
+        let after = client.balance(&env.current_contract_address());
+        // Fee-charging tokens may deliver less than `amount`; credit only what
+        // actually arrived so the accounting invariant holds exactly.
+        let received = after - before;
+        if received <= 0 {
+            return Err(Error::BondTransferMismatch);
+        }
         let mut info = bond(&env, &attester).unwrap_or(BondInfo {
             amount: 0,
             locked: 0,
             withdraw_at: None,
             open_cases: 0,
         });
-        info.amount += amount;
+        info.amount += received;
         info.withdraw_at = None;
         save_bond(&env, &attester, &info);
+        set_total_bonds(&env, total_bonds(&env) + received);
         BondPosted {
             attester,
             amount,
@@ -397,11 +520,17 @@ impl AttesterRegistry {
         env.storage()
             .persistent()
             .remove(&DataKey::Bond(attester.clone()));
-        token::Client::new(&env, &cfg.token).transfer(
-            &env.current_contract_address(),
-            &attester,
-            &info.amount,
-        );
+        let client = token::Client::new(&env, &cfg.token);
+        let before = client.balance(&env.current_contract_address());
+        client.transfer(&env.current_contract_address(), &attester, &info.amount);
+        let after = client.balance(&env.current_contract_address());
+        let paid = before - after;
+        // The contract must not pay out more than the recorded bond; a
+        // fee-charging token may debit more, which would break the invariant.
+        if paid > info.amount {
+            return Err(Error::BondTransferMismatch);
+        }
+        set_total_bonds(&env, total_bonds(&env) - info.amount);
         BondWithdrawn {
             attester,
             amount: info.amount,
@@ -582,11 +711,10 @@ impl AttesterRegistry {
         value.status = SlashStatus::Executed;
         save_case(&env, case_id, &value);
         close_case(&env, case_id, &value, true);
-        token::Client::new(&env, &cfg.token).transfer(
-            &env.current_contract_address(),
-            &cfg.recipient,
-            &value.amount,
-        );
+        // Slashed funds stay in the contract until swept by the admin, so the
+        // invariant `sum(bonds) + slashed_unswept == balance` holds between
+        // execution and sweep. `close_case` already reduced `total_bonds`.
+        set_slashed_unswept(&env, slashed_unswept(&env) + value.amount);
         SlashExecuted {
             case_id,
             attester: value.attester,
@@ -607,6 +735,16 @@ impl AttesterRegistry {
         save_case(&env, case_id, &value);
         close_case(&env, case_id, &value, false);
         SlashCancelled { case_id }.publish(&env);
+        Ok(())
+    }
+
+    /// Assert the bond accounting invariant, returning an error on drift.
+    /// Intended for `check_invariants()` and off-chain monitoring.
+    pub fn assert_bond_invariants(env: Env) -> Result<(), Error> {
+        let snapshot = reconcile(&env)?;
+        if snapshot.drift_detected {
+            return Err(Error::BondAccountingDrift);
+        }
         Ok(())
     }
 }

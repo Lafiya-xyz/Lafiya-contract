@@ -1,10 +1,28 @@
-//! Probation for newly enrolled attesters (issue #589).
+//! Probation for newly enrolled attesters (issues #589, #678).
 //!
 //! While probation is configured, every fresh enrollment starts a probation
 //! window. During the window the attester is `Probation` (or `Flagged` once a
 //! registrar or guardian flags it); consumers read the limits through
 //! `get_probation_limits` / `is_payout_eligible`. State is derived lazily from
 //! the ledger timestamp, so automatic promotion costs no transaction.
+//!
+//! Exit from probation is objective and counter-based: `try_promote` is
+//! permissionless and checks the versioned [`ProbationPolicy`] criteria against
+//! per-attester counters (attestations, upheld disputes, revocations). Admins
+//! can still `extend_probation` (or `promote_attester` for an override).
+//!
+//! # Call graph (acyclic)
+//!
+//! ```text
+//! attestation-registry --(record_attestation / record_dispute / record_revocation)-->
+//!     attester-registry
+//! ```
+//!
+//! The attestation registry pushes counters into this contract through narrow
+//! hooks; this contract never calls back into the attestation registry or the
+//! incentive pool. The incentive pool only reads `is_payout_eligible`. There are
+//! no circular cross-contract dependencies.
+//!
 //! See `docs/specs/attester-probation.md`.
 
 use soroban_sdk::{contractevent, contractimpl, contracttype, Address, Env, Symbol};
@@ -28,6 +46,52 @@ pub struct ProbationConfig {
     pub rate_window_ledgers: u32,
     /// Whether a probationary attester may receive incentive-pool payouts.
     pub payout_eligible: bool,
+}
+
+/// Versioned, objective promotion criteria (issue #678).
+///
+/// A probationary attester may be promoted permissionlessly via `try_promote`
+/// once it satisfies every criterion below. Bump `version` whenever the
+/// semantics change so off-chain consumers can interpret counters correctly.
+#[contracttype]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ProbationPolicy {
+    /// Policy schema version.
+    pub version: u32,
+    /// Minimum number of attestations recorded while on probation.
+    pub min_attestations: u32,
+    /// Minimum tenure, in seconds, since probation started.
+    pub min_tenure_secs: u64,
+    /// Maximum upheld disputes tolerated (inclusive).
+    pub max_upheld_disputes: u32,
+    /// Maximum revocations tolerated (inclusive).
+    pub max_revocations: u32,
+}
+
+/// Current `ProbationPolicy` schema version.
+pub const PROBATION_POLICY_VERSION: u32 = 1;
+
+impl ProbationPolicy {
+    /// Default v1 criteria.
+    pub fn v1() -> Self {
+        Self {
+            version: PROBATION_POLICY_VERSION,
+            min_attestations: 10,
+            min_tenure_secs: 7 * 24 * 60 * 60,
+            max_upheld_disputes: 0,
+            max_revocations: 0,
+        }
+    }
+}
+
+/// Per-attester counters feeding the promotion criteria. Updated only through
+/// the narrow hooks below, pushed by the attestation registry.
+#[contracttype]
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct ProbationCounters {
+    pub attestations: u32,
+    pub upheld_disputes: u32,
+    pub revocations: u32,
 }
 
 /// Per-attester probation window, created at enrollment.
@@ -110,6 +174,37 @@ pub struct ProbationPromoted {
     pub early: bool,
 }
 
+/// Emitted when `try_promote` succeeds and the attester leaves probation.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ProbationCompleted {
+    #[topic]
+    pub attester: Address,
+    pub policy_version: u32,
+    pub attestations: u32,
+    pub tenure_secs: u64,
+}
+
+/// Emitted when the promotion policy is updated.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ProbationPolicyUpdated {
+    pub version: u32,
+    pub min_attestations: u32,
+    pub min_tenure_secs: u64,
+    pub max_upheld_disputes: u32,
+    pub max_revocations: u32,
+}
+
+/// Emitted when an admin extends a probation window.
+#[contractevent]
+#[derive(Clone, Debug)]
+pub struct ProbationExtended {
+    #[topic]
+    pub attester: Address,
+    pub ends_at: u64,
+}
+
 pub(crate) fn config(env: &Env) -> Option<ProbationConfig> {
     env.storage().instance().get(&DataKey::ProbationConfig)
 }
@@ -118,6 +213,43 @@ fn record(env: &Env, attester: &Address) -> Option<ProbationRecord> {
     env.storage()
         .persistent()
         .get(&DataKey::Probation(attester.clone()))
+}
+
+/// The active promotion policy, falling back to the v1 defaults.
+pub(crate) fn policy(env: &Env) -> ProbationPolicy {
+    env.storage()
+        .instance()
+        .get(&DataKey::ProbationPolicy)
+        .unwrap_or_else(ProbationPolicy::v1)
+}
+
+fn counters(env: &Env, attester: &Address) -> ProbationCounters {
+    env.storage()
+        .persistent()
+        .get(&DataKey::ProbationCounters(attester.clone()))
+        .unwrap_or_default()
+}
+
+fn save_counters(env: &Env, attester: &Address, c: &ProbationCounters) {
+    let key = DataKey::ProbationCounters(attester.clone());
+    env.storage().persistent().set(&key, c);
+    env.storage()
+        .persistent()
+        .extend_ttl(&key, INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+}
+
+/// Whether `attester` currently satisfies every promotion criterion.
+fn meets_criteria(
+    env: &Env,
+    rec: &ProbationRecord,
+    c: &ProbationCounters,
+    p: &ProbationPolicy,
+) -> bool {
+    let tenure = env.ledger().timestamp().saturating_sub(rec.started_at);
+    c.attestations >= p.min_attestations
+        && tenure >= p.min_tenure_secs
+        && c.upheld_disputes <= p.max_upheld_disputes
+        && c.revocations <= p.max_revocations
 }
 
 fn save(env: &Env, attester: &Address, rec: &ProbationRecord) {
@@ -158,6 +290,9 @@ pub(crate) fn clear(env: &Env, attester: &Address) {
     env.storage()
         .persistent()
         .remove(&DataKey::Probation(attester.clone()));
+    env.storage()
+        .persistent()
+        .remove(&DataKey::ProbationCounters(attester.clone()));
 }
 
 /// Flag probation if still running; used when an attester is suspended.
@@ -178,8 +313,10 @@ pub(crate) fn flag_if_active(env: &Env, attester: &Address, reason: &Symbol) {
 /// Carry probation state across a key rotation.
 pub(crate) fn rotate(env: &Env, previous: &Address, new: &Address) {
     if let Some(rec) = record(env, previous) {
+        let c = counters(env, previous);
         clear(env, previous);
         save(env, new, &rec);
+        save_counters(env, new, &c);
     }
 }
 
@@ -245,6 +382,140 @@ impl AttesterRegistry {
         config(&env)
     }
 
+    /// Set the versioned promotion criteria. Requires the admin's authorization.
+    pub fn set_probation_policy(
+        env: Env,
+        min_attestations: u32,
+        min_tenure_secs: u64,
+        max_upheld_disputes: u32,
+        max_revocations: u32,
+    ) -> Result<(), Error> {
+        Self::admin(&env)?.require_auth();
+        let p = ProbationPolicy {
+            version: PROBATION_POLICY_VERSION,
+            min_attestations,
+            min_tenure_secs,
+            max_upheld_disputes,
+            max_revocations,
+        };
+        env.storage()
+            .instance()
+            .set(&DataKey::ProbationPolicy, &p);
+        env.storage()
+            .instance()
+            .extend_ttl(INSTANCE_LIFETIME_THRESHOLD, INSTANCE_BUMP_AMOUNT);
+        ProbationPolicyUpdated {
+            version: p.version,
+            min_attestations,
+            min_tenure_secs,
+            max_upheld_disputes,
+            max_revocations,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// The active promotion policy (v1 defaults if never set).
+    pub fn get_probation_policy(env: Env) -> ProbationPolicy {
+        policy(&env)
+    }
+
+    /// Counters feeding the promotion criteria for `attester`.
+    pub fn get_probation_counters(env: Env, attester: Address) -> ProbationCounters {
+        counters(&env, &attester)
+    }
+
+    /// Hook: record an attestation for a probationary attester. Pushed by the
+    /// attestation registry; a no-op for attesters not on probation.
+    pub fn record_probation_attestation(
+        env: Env,
+        caller: Address,
+        attester: Address,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &caller)?;
+        if record(&env, &attester).is_none() {
+            return Ok(());
+        }
+        let mut c = counters(&env, &attester);
+        c.attestations = c.attestations.saturating_add(1);
+        save_counters(&env, &attester, &c);
+        Ok(())
+    }
+
+    /// Hook: record an upheld dispute against a probationary attester.
+    pub fn record_probation_dispute(
+        env: Env,
+        caller: Address,
+        attester: Address,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &caller)?;
+        if record(&env, &attester).is_none() {
+            return Ok(());
+        }
+        let mut c = counters(&env, &attester);
+        c.upheld_disputes = c.upheld_disputes.saturating_add(1);
+        save_counters(&env, &attester, &c);
+        Ok(())
+    }
+
+    /// Hook: record a revocation for a probationary attester.
+    pub fn record_probation_revocation(
+        env: Env,
+        caller: Address,
+        attester: Address,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &caller)?;
+        if record(&env, &attester).is_none() {
+            return Ok(());
+        }
+        let mut c = counters(&env, &attester);
+        c.revocations = c.revocations.saturating_add(1);
+        save_counters(&env, &attester, &c);
+        Ok(())
+    }
+
+    /// Permissionlessly promote `attester` once it satisfies the versioned
+    /// promotion criteria. Refuses with `ProbationCriteriaNotMet` otherwise.
+    pub fn try_promote(env: Env, attester: Address) -> Result<(), Error> {
+        Self::require_not_paused(&env)?;
+        let rec = record(&env, &attester).ok_or(Error::ProbationNotFound)?;
+        let c = counters(&env, &attester);
+        let p = policy(&env);
+        if !meets_criteria(&env, &rec, &c, &p) {
+            return Err(Error::ProbationCriteriaNotMet);
+        }
+        let tenure_secs = env.ledger().timestamp().saturating_sub(rec.started_at);
+        clear(&env, &attester);
+        ProbationCompleted {
+            attester,
+            policy_version: p.version,
+            attestations: c.attestations,
+            tenure_secs,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
+    /// Extend a probation window by `extra_secs`. Requires a global registrar.
+    pub fn extend_probation(
+        env: Env,
+        registrar: Address,
+        attester: Address,
+        extra_secs: u64,
+    ) -> Result<(), Error> {
+        Self::require_role(&env, Role::Registrar, &registrar)?;
+        Self::require_not_paused(&env)?;
+        let mut rec = record(&env, &attester).ok_or(Error::ProbationNotFound)?;
+        rec.ends_at = rec.ends_at.saturating_add(extra_secs);
+        save(&env, &attester, &rec);
+        ProbationExtended {
+            attester,
+            ends_at: rec.ends_at,
+        }
+        .publish(&env);
+        Ok(())
+    }
+
     /// Probation state of `attester` at the current ledger time.
     pub fn get_probation_state(env: Env, attester: Address) -> ProbationState {
         state_of(&env, &attester).0
@@ -308,7 +579,9 @@ impl AttesterRegistry {
         Ok(())
     }
 
-    /// End probation early and clear any flag. Requires a global registrar.
+    /// Admin override: end probation early and clear any flag. Requires a
+    /// global registrar. Prefer the permissionless `try_promote`; this remains
+    /// for exceptional cases only.
     pub fn promote_attester(env: Env, registrar: Address, attester: Address) -> Result<(), Error> {
         Self::require_role(&env, Role::Registrar, &registrar)?;
         Self::require_not_paused(&env)?;

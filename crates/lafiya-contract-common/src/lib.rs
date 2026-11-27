@@ -12,10 +12,13 @@ pub mod migration;
 pub mod pausable;
 pub mod storage;
 pub mod ttl;
+pub mod validate;
 
 pub use admin::Admin;
 pub use pausable::Pausable;
 pub use ttl::{extend_instance_ttl, INSTANCE_BUMP_AMOUNT, INSTANCE_LIFETIME_THRESHOLD};
+pub use validate::{bounded_ascii, bounded_bytes, region_code, ValidationError};
 
 // Re-export commonly used soroban types
 pub use soroban_sdk::{Address, Env};
+</｜｜DSML｜｜ parameter>

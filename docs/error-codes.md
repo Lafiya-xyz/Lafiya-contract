@@ -29,6 +29,15 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `16` | `InvalidRegion` | The region is not a valid ISO 3166-2 style code such as `NG-LA`. |
 | `17` | `UnknownIssuer` | The credential issuer is not in the issuer registry, or was revoked. |
 | `18` | `InvalidCredential` | The credential is expired, not yet valid, or issued to another subject. |
+| `19` | `InputTooLong` | A `String` or `Bytes` parameter exceeds its documented maximum length (see `docs/storage-cost.md`). |
+| `20` | `InvalidInputCharset` | A `String` parameter contains characters outside its allowed set (e.g. a region code that is not `XX-XX` ASCII). |
+| `21` | `EmptyInput` | A `String` or `Bytes` parameter that must be non-empty was supplied empty. |
+| `22` | `BondNotFound` | No bond record exists for the referenced attester. |
+| `23` | `InsufficientBond` | The attester's bond is below the amount required for the requested operation. |
+| `24` | `BondReconciliationRequired` | The contract's token balance diverged from `sum(bonds) + slashed_unswept`; bond operations are blocked until the admin resolves the drift. |
+| `25` | `BondTokenBalanceMismatch` | A token transfer moved a different amount than requested during deposit, withdraw, or slash. |
+| `26` | `SlashExceedsBond` | The requested slash amount exceeds the attester's current bond. |
+| `27` | `NothingToSweep` | `sweep_slashed` was called while no slashed funds are pending. |
 
 ## `attestation-registry`
 
@@ -67,6 +76,9 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `31` | `DisputeLimitExceeded` | The per-record dispute spam bound has been reached; further disputes are rejected until existing ones are cleared. |
 | `32` | `InvalidStatusListProof` | The supplied status-list inclusion proof does not validate against the signed segment root. |
 | `33` | `StatusListSegmentNotFound` | No status-list segment exists for the requested version or index. |
+| `34` | `InputTooLong` | A `String` or `Bytes` parameter exceeds its documented maximum length (see `docs/storage-cost.md`). |
+| `35` | `InvalidInputCharset` | A `String` parameter contains characters outside its allowed set. |
+| `36` | `EmptyInput` | A `String` or `Bytes` parameter that must be non-empty was supplied empty. |
 
 ## `multisig-account`
 
@@ -110,3 +122,12 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `21` | `Unauthorized` | The caller is neither the approver nor the admin. |
 | `22` | `ReconciliationRequired` | The pool's token balance diverged from internal accounting; `claim` is blocked until the admin calls `resolve_drift`. |
 | `23` | `TokenBalanceMismatch` | A token transfer moved a different amount than requested. |
+| `24` | `VestingGrantNotFound` | No vesting grant exists for the supplied grant id. |
+| `25` | `VestingNotStarted` | `claim_vested` was called before the grant's cliff has elapsed; nothing is claimable yet. |
+| `26` | `VestingNothingToClaim` | `claim_vested` was called but the vested amount has already been fully claimed. |
+| `27` | `VestingGrantForfeited` | The grant was forfeited (e.g. attester removed for cause) and can no longer be claimed. |
+| `28` | `InvalidVestingSchedule` | The vesting schedule is invalid: zero total, zero duration, or a cliff longer than the duration. |
+| `29` | `VestingReservedLiability` | The requested withdrawal would drain tokens reserved for unvested or unclaimed vesting grants. |
+| `30` | `InputTooLong` | A `String` or `Bytes` parameter exceeds its documented maximum length (see `docs/storage-cost.md`). |
+| `31` | `InvalidInputCharset` | A `String` parameter contains characters outside its allowed set. |
+| `32` | `EmptyInput` | A `String` or `Bytes` parameter that must be non-empty was supplied empty. |

@@ -78,6 +78,37 @@ pub enum LafiyaEvent {
     PoolUnpaused {
         by: String,
     },
+    /// An attester exited probation through the objective criteria.
+    ProbationCompleted {
+        attester: String,
+    },
+    /// A vesting grant was created for an attester.
+    VestingGrantCreated {
+        grant_id: u64,
+        attester: String,
+        amount: i128,
+    },
+    /// A vested amount was claimed from a grant.
+    VestingClaimed {
+        grant_id: u64,
+        attester: String,
+        amount: i128,
+    },
+    /// The unvested remainder of a grant was forfeited back to the pool.
+    VestingForfeited {
+        grant_id: u64,
+        attester: String,
+        amount: i128,
+    },
+    /// Slashed bond funds were swept to their destination.
+    BondSwept {
+        recipient: String,
+        amount: i128,
+    },
+    /// The bond module's accounting was reconciled.
+    BondReconciled {
+        by: String,
+    },
     /// Administration events, with their topic fields rendered as strings.
     Admin {
         name: String,
@@ -104,6 +135,12 @@ impl LafiyaEvent {
             Self::PoolWithdrawn { .. } => "pool_withdrawn",
             Self::PoolPaused { .. } => "pool_paused",
             Self::PoolUnpaused { .. } => "pool_unpaused",
+            Self::ProbationCompleted { .. } => "probation_completed",
+            Self::VestingGrantCreated { .. } => "vesting_grant_created",
+            Self::VestingClaimed { .. } => "vesting_claimed",
+            Self::VestingForfeited { .. } => "vesting_forfeited",
+            Self::BondSwept { .. } => "bond_swept",
+            Self::BondReconciled { .. } => "bond_reconciled",
             Self::Admin { name, .. } | Self::Unknown { name } => name,
         }
     }
@@ -219,6 +256,47 @@ pub fn decode(raw: &RawEvent) -> Result<LafiyaEvent, DecodeError> {
             by: address_topic(1)?,
         },
         "pool_unpaused" => LafiyaEvent::PoolUnpaused {
+            by: address_topic(1)?,
+        },
+        "probation_completed" => LafiyaEvent::ProbationCompleted {
+            attester: address_topic(1)?,
+        },
+        "vesting_grant_created" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::VestingGrantCreated {
+                grant_id: u64_topic(1)?,
+                attester: address_topic(2)?,
+                amount: map_i128(&data, "amount")
+                    .ok_or_else(|| err("data.amount missing".into()))?,
+            }
+        }
+        "vesting_claimed" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::VestingClaimed {
+                grant_id: u64_topic(1)?,
+                attester: address_topic(2)?,
+                amount: map_i128(&data, "amount")
+                    .ok_or_else(|| err("data.amount missing".into()))?,
+            }
+        }
+        "vesting_forfeited" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::VestingForfeited {
+                grant_id: u64_topic(1)?,
+                attester: address_topic(2)?,
+                amount: map_i128(&data, "amount")
+                    .ok_or_else(|| err("data.amount missing".into()))?,
+            }
+        }
+        "bond_swept" => {
+            let data = parse_scval(&raw.value).map_err(err)?;
+            LafiyaEvent::BondSwept {
+                recipient: address_topic(1)?,
+                amount: map_i128(&data, "amount")
+                    .ok_or_else(|| err("data.amount missing".into()))?,
+            }
+        }
+        "bond_reconciled" => LafiyaEvent::BondReconciled {
             by: address_topic(1)?,
         },
         other => match ADMIN_EVENTS.iter().find(|(n, _)| *n == other) {
@@ -456,6 +534,93 @@ mod tests {
             amount_map(1)
         ))
         .is_err());
+    }
+
+    #[test]
+    fn decodes_probation_completed() {
+        let (addr, addr_str) = addr();
+        let ev = decode(&raw(vec![sym("probation_completed"), addr], ScVal::Void)).unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::ProbationCompleted {
+                attester: addr_str
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_vesting_events() {
+        let (addr, addr_str) = addr();
+        let ev = decode(&raw(
+            vec![sym("vesting_grant_created"), ScVal::U64(3), addr.clone()],
+            amount_map(1_000),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::VestingGrantCreated {
+                grant_id: 3,
+                attester: addr_str.clone(),
+                amount: 1_000,
+            }
+        );
+        let ev = decode(&raw(
+            vec![sym("vesting_claimed"), ScVal::U64(3), addr.clone()],
+            amount_map(400),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::VestingClaimed {
+                grant_id: 3,
+                attester: addr_str.clone(),
+                amount: 400,
+            }
+        );
+        let ev = decode(&raw(
+            vec![sym("vesting_forfeited"), ScVal::U64(3), addr],
+            amount_map(600),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::VestingForfeited {
+                grant_id: 3,
+                attester: addr_str,
+                amount: 600,
+            }
+        );
+    }
+
+    #[test]
+    fn decodes_bond_events() {
+        let (addr, addr_str) = addr();
+        let ev = decode(&raw(
+            vec![sym("bond_swept"), addr.clone()],
+            amount_map(75),
+        ))
+        .unwrap();
+        assert_eq!(
+            ev,
+            LafiyaEvent::BondSwept {
+                recipient: addr_str.clone(),
+                amount: 75,
+            }
+        );
+        let ev = decode(&raw(vec![sym("bond_reconciled"), addr], ScVal::Void)).unwrap();
+        assert_eq!(ev, LafiyaEvent::BondReconciled { by: addr_str });
+    }
+
+    #[test]
+    fn rejects_malformed_new_events() {
+        assert!(decode(&raw(vec![sym("probation_completed")], ScVal::Void)).is_err());
+        assert!(decode(&raw(
+            vec![sym("vesting_grant_created"), ScVal::U64(1)],
+            amount_map(1)
+        ))
+        .is_err());
+        assert!(decode(&raw(vec![sym("bond_swept")], amount_map(1))).is_err());
+        assert!(decode(&raw(vec![sym("bond_reconciled")], ScVal::Void)).is_err());
     }
 
     #[test]

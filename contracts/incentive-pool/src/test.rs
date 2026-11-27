@@ -900,6 +900,337 @@ fn claim_to_unauthorized_recipient_returns_typed_error_without_mutation() {
     assert!(client.is_work_item_claimed(&id));
 }
 
+// ─────────────── Vesting grants (#694) ───────────────
+
+fn setup_vesting() -> (
+    Env,
+    IncentivePoolClient<'static>,
+    attester_registry::AttesterRegistryClient<'static>,
+    Address,
+    Address,
+) {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, admin, _approver, _token, _ta) = setup();
+    env.ledger().with_mut(|l| l.timestamp = 1_000);
+    (env, client, attester_registry, admin, client.get_approver())
+}
+
+#[test]
+fn create_vesting_grant_succeeds() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id = client.create_vesting_grant(
+        &attester,
+        &(10 * ONE_UNIT),
+        &1_000,
+        &1_000,
+        &10_000,
+    );
+
+    let grant = client.get_vesting_grant(&grant_id).unwrap();
+    assert_eq!(grant.attester, attester);
+    assert_eq!(grant.total, 10 * ONE_UNIT);
+    assert_eq!(grant.start, 1_000);
+    assert_eq!(grant.cliff, 1_000);
+    assert_eq!(grant.duration, 10_000);
+    assert_eq!(grant.claimed, 0);
+    assert_eq!(grant.forfeited_at, None);
+    assert_eq!(client.get_reserved_vesting(), 10 * ONE_UNIT);
+}
+
+#[test]
+fn create_vesting_grant_rejects_non_allowlisted_attester() {
+    let (env, client, _registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    client.fund(&(10 * ONE_UNIT));
+
+    let result =
+        client.try_create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    assert_eq!(result, Err(Ok(Error::AttesterNotAllowlisted)));
+}
+
+#[test]
+fn create_vesting_grant_rejects_non_positive_total() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let result = client.try_create_vesting_grant(&attester, &0, &1_000, &1_000, &10_000);
+    assert_eq!(result, Err(Ok(Error::NonPositiveAmount)));
+}
+
+#[test]
+fn create_vesting_grant_rejects_zero_duration() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let result =
+        client.try_create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &0);
+    assert_eq!(result, Err(Ok(Error::InvalidVestingSchedule)));
+}
+
+#[test]
+fn create_vesting_grant_rejects_cliff_beyond_duration() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let result =
+        client.try_create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &20_000, &10_000);
+    assert_eq!(result, Err(Ok(Error::InvalidVestingSchedule)));
+}
+
+#[test]
+fn create_vesting_grant_rejects_insufficient_unreserved_balance() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&ONE_UNIT);
+
+    let result =
+        client.try_create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    assert_eq!(result, Err(Ok(Error::InsufficientPoolBalance)));
+}
+
+#[test]
+fn vested_amount_is_zero_before_cliff() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    assert_eq!(client.get_vested_amount(&grant_id), 0);
+    assert_eq!(client.try_claim_vested(&grant_id), Err(Ok(Error::NothingToClaim)));
+}
+
+#[test]
+fn vested_amount_is_linear_after_cliff() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+
+    // Halfway through the vesting window.
+    env.ledger().with_mut(|l| l.timestamp = 6_000);
+    assert_eq!(client.get_vested_amount(&grant_id), 5 * ONE_UNIT);
+
+    // Fully vested.
+    env.ledger().with_mut(|l| l.timestamp = 11_000);
+    assert_eq!(client.get_vested_amount(&grant_id), 10 * ONE_UNIT);
+}
+
+#[test]
+fn vested_amount_rounds_down() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    // 7 units over 3 seconds: at t=start+1, 7/3 = 2.33 -> 2 units.
+    let grant_id = client.create_vesting_grant(&attester, &(7 * ONE_UNIT), &1_000, &0, &3);
+    env.ledger().with_mut(|l| l.timestamp = 1_001);
+    assert_eq!(client.get_vested_amount(&grant_id), 2 * ONE_UNIT);
+    env.ledger().with_mut(|l| l.timestamp = 1_002);
+    assert_eq!(client.get_vested_amount(&grant_id), 4 * ONE_UNIT);
+    env.ledger().with_mut(|l| l.timestamp = 1_003);
+    assert_eq!(client.get_vested_amount(&grant_id), 7 * ONE_UNIT);
+}
+
+#[test]
+fn claim_vested_pays_vested_but_unclaimed() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    env.ledger().with_mut(|l| l.timestamp = 6_000);
+
+    client.claim_vested(&grant_id);
+    assert_eq!(client.get_vesting_grant(&grant_id).unwrap().claimed, 5 * ONE_UNIT);
+    assert_eq!(client.get_reserved_vesting(), 5 * ONE_UNIT);
+    assert_eq!(client.get_total_paid(), 5 * ONE_UNIT);
+
+    // Nothing new vested: second claim is a typed error.
+    assert_eq!(
+        client.try_claim_vested(&grant_id),
+        Err(Ok(Error::NothingToClaim))
+    );
+
+    // Fully vest and claim the remainder.
+    env.ledger().with_mut(|l| l.timestamp = 11_000);
+    client.claim_vested(&grant_id);
+    assert_eq!(client.get_vesting_grant(&grant_id).unwrap().claimed, 10 * ONE_UNIT);
+    assert_eq!(client.get_reserved_vesting(), 0);
+}
+
+#[test]
+fn claim_vested_requires_allowlisted_attester() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    env.ledger().with_mut(|l| l.timestamp = 6_000);
+    attester_registry.suspend_attester(&attester_registry.get_admin(), &attester);
+
+    assert_eq!(
+        client.try_claim_vested(&grant_id),
+        Err(Ok(Error::AttesterNotAllowlisted))
+    );
+}
+
+#[test]
+fn forfeit_vesting_grant_returns_unvested_to_pool() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    env.ledger().with_mut(|l| l.timestamp = 6_000);
+
+    client.forfeit_vesting_grant(&grant_id);
+    let grant = client.get_vesting_grant(&grant_id).unwrap();
+    assert_eq!(grant.forfeited_at, Some(6_000));
+    // Half vested, half returned to the pool.
+    assert_eq!(client.get_reserved_vesting(), 5 * ONE_UNIT);
+
+    // The vested half remains claimable.
+    client.claim_vested(&grant_id);
+    assert_eq!(client.get_vesting_grant(&grant_id).unwrap().claimed, 5 * ONE_UNIT);
+    assert_eq!(client.get_reserved_vesting(), 0);
+}
+
+#[test]
+fn forfeit_vesting_grant_twice_fails() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    client.forfeit_vesting_grant(&grant_id);
+    assert_eq!(
+        client.try_forfeit_vesting_grant(&grant_id),
+        Err(Ok(Error::VestingGrantAlreadyForfeited))
+    );
+}
+
+#[test]
+fn forfeit_vesting_grant_by_non_admin_fails() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    let non_admin = Address::generate(&env);
+
+    env.mock_auths(&[soroban_sdk::testutils::MockAuth {
+        address: &non_admin,
+        invoke: &soroban_sdk::testutils::MockAuthInvoke {
+            contract: &client.address,
+            fn_name: "forfeit_vesting_grant",
+            args: (grant_id,).into_val(&env),
+            sub_invokes: &[],
+        },
+    }]);
+
+    assert!(client.try_forfeit_vesting_grant(&grant_id).is_err());
+    assert_eq!(client.get_reserved_vesting(), 10 * ONE_UNIT);
+}
+
+#[test]
+fn withdraw_cannot_drain_reserved_vesting() {
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+
+    let recipient = Address::generate(&env);
+    assert_eq!(
+        client.try_withdraw(&recipient, &ONE_UNIT),
+        Err(Ok(Error::InsufficientPoolBalance))
+    );
+}
+
+#[test]
+fn solvency_holds_with_reserved_vesting() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver) = setup_vesting();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    client.fund(&(10 * ONE_UNIT));
+
+    let grant_id =
+        client.create_vesting_grant(&attester, &(10 * ONE_UNIT), &1_000, &1_000, &10_000);
+    env.ledger().with_mut(|l| l.timestamp = 6_000);
+    client.claim_vested(&grant_id);
+
+    // Reserved liabilities + paid out never exceed deposits.
+    assert_eq!(client.get_total_deposited(), 10 * ONE_UNIT);
+    assert_eq!(client.get_total_paid(), 5 * ONE_UNIT);
+    assert_eq!(client.get_reserved_vesting(), 5 * ONE_UNIT);
+    assert!(
+        client.get_total_paid() + client.get_reserved_vesting()
+            <= client.get_total_deposited()
+    );
+}
+
+// ─────────────── Bounded input validation (#681) ───────────────
+
+#[test]
+fn approve_work_item_rejects_oversized_metadata() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+
+    // Metadata longer than the documented bound must be rejected.
+    let oversized = soroban_sdk::Bytes::from_slice(&env, &[b'a'; 1024]);
+    let result = client.try_approve_work_item_with_metadata(&id, &attester, &ONE_UNIT, &oversized);
+    assert_eq!(result, Err(Ok(Error::InputTooLong)));
+}
+
+#[test]
+fn approve_work_item_rejects_invalid_charset_metadata() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let attester = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &attester);
+    let id = BytesN::from_array(&env, &[1u8; 32]);
+
+    // Non-ASCII bytes are outside the permitted charset.
+    let invalid = soroban_sdk::Bytes::from_slice(&env, &[0xff, 0xfe]);
+    let result = client.try_approve_work_item_with_metadata(&id, &attester, &ONE_UNIT, &invalid);
+    assert_eq!(result, Err(Ok(Error::InvalidInputCharset)));
+}
+
 // ─────────────── Payout schedule (#510) ───────────────
 
 #[test]
