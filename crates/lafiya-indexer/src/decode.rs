@@ -78,6 +78,34 @@ pub enum LafiyaEvent {
     PoolUnpaused {
         by: String,
     },
+    /// A facility was enrolled (facility-registry).
+    FacilityEnrolled {
+        facility_id: u64,
+        license_hash: String,
+        mutation_seq: u64,
+    },
+    /// A facility was deactivated (facility-registry).
+    FacilityDeactivated {
+        facility_id: u64,
+        mutation_seq: u64,
+    },
+    /// A facility was reactivated (facility-registry).
+    FacilityReactivated {
+        facility_id: u64,
+        mutation_seq: u64,
+    },
+    /// An attester became affiliated with a facility (facility-registry).
+    AttesterAffiliated {
+        facility_id: u64,
+        attester: String,
+        mutation_seq: u64,
+    },
+    /// An attester's affiliation with a facility ended (facility-registry).
+    AttesterDisaffiliated {
+        facility_id: u64,
+        attester: String,
+        mutation_seq: u64,
+    },
     /// Administration events, with their topic fields rendered as strings.
     Admin {
         name: String,
@@ -104,6 +132,11 @@ impl LafiyaEvent {
             Self::PoolWithdrawn { .. } => "pool_withdrawn",
             Self::PoolPaused { .. } => "pool_paused",
             Self::PoolUnpaused { .. } => "pool_unpaused",
+            Self::FacilityEnrolled { .. } => "facility_enrolled",
+            Self::FacilityDeactivated { .. } => "facility_deactivated",
+            Self::FacilityReactivated { .. } => "facility_reactivated",
+            Self::AttesterAffiliated { .. } => "attester_affiliated",
+            Self::AttesterDisaffiliated { .. } => "attester_disaffiliated",
             Self::Admin { name, .. } | Self::Unknown { name } => name,
         }
     }
@@ -235,6 +268,46 @@ pub fn decode(raw: &RawEvent) -> Result<LafiyaEvent, DecodeError> {
             None => LafiyaEvent::Unknown { name: other.into() },
         },
     })
+}
+
+/// Highest event schema version this decoder understands. Bumping this
+/// requires golden fixtures under `tests/fixtures/events/v{n}/` (enforced by
+/// `tests/schema_fixtures.rs`).
+pub const SUPPORTED_EVENT_SCHEMA_VERSION: u32 = 2;
+
+/// Schema version of an event, read from the `schema_version` field of its
+/// data map. Events emitted before versioning carry no field and are v1.
+pub fn schema_version(raw: &RawEvent) -> u32 {
+    match parse_scval(&raw.value) {
+        Ok(data) => match map_field(&data, "schema_version") {
+            Some(ScVal::U32(v)) => *v,
+            Some(ScVal::U64(v)) => u32::try_from(*v).unwrap_or(u32::MAX),
+            _ => 1,
+        },
+        Err(_) => 1,
+    }
+}
+
+/// Decode an event, preserving events from unknown future schema versions
+/// raw and flagged instead of guessing at their shape.
+pub fn decode_versioned(raw: &RawEvent) -> Result<LafiyaEvent, DecodeError> {
+    let version = schema_version(raw);
+    if version > SUPPORTED_EVENT_SCHEMA_VERSION {
+        tracing::warn!(
+            event_id = %raw.id,
+            schema_version = version,
+            supported = SUPPORTED_EVENT_SCHEMA_VERSION,
+            "unknown future event schema version; preserving raw event"
+        );
+        let name = raw
+            .topic
+            .first()
+            .and_then(|t| parse_scval(t).ok())
+            .and_then(|v| symbol(&v))
+            .unwrap_or_default();
+        return Ok(LafiyaEvent::Unknown { name });
+    }
+    decode(raw)
 }
 
 pub fn parse_scval(b64: &str) -> Result<ScVal, String> {
