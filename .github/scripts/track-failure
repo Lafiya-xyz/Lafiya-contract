@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+# Deduplicated, self-closing tracking issues for scheduled workflow failures.
+#
+# Usage:
+#   track-failure open   --workflow <name> --label <label> [--title <title>] [--body <text>] [--run-url <url>]
+#   track-failure close  --workflow <name> --label <label> [--comment <text>]
+#
+# Exactly one open issue per workflow is kept: the issue is identified by a
+# hidden marker in its body, so retitling it by hand does not break dedup.
+# `open` comments on the existing issue (or creates it); `close` closes it with
+# a recovery comment. Both are idempotent and safe to run on every scheduled
+# run, so a workflow can call `close` on success and `open` on failure.
+#
+# Requires GH_TOKEN (or GITHUB_TOKEN) with `issues: write`.
+set -euo pipefail
+
+usage() {
+  sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+}
+
+action="${1:-}"
+[ -n "$action" ] || usage
+shift
+
+workflow=""
+label=""
+title=""
+body=""
+run_url=""
+comment=""
+
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --workflow) workflow="${2:-}"; shift 2 ;;
+    --label) label="${2:-}"; shift 2 ;;
+    --title) title="${2:-}"; shift 2 ;;
+    --body) body="${2:-}"; shift 2 ;;
+    --run-url) run_url="${2:-}"; shift 2 ;;
+    --comment) comment="${2:-}"; shift 2 ;;
+    -h|--help) usage ;;
+    *) echo "track-failure: unknown argument: $1" >&2; usage ;;
+  esac
+done
+
+[ -n "$workflow" ] || { echo "track-failure: --workflow is required" >&2; exit 2; }
+[ -n "$label" ] || { echo "track-failure: --label is required" >&2; exit 2; }
+
+: "${GH_TOKEN:=${GITHUB_TOKEN:-}}"
+export GH_TOKEN
+if [ -z "$GH_TOKEN" ]; then
+  echo "track-failure: GH_TOKEN or GITHUB_TOKEN must be set" >&2
+  exit 2
+fi
+
+# Hidden marker: stable identity for the tracking issue of this workflow.
+marker="<!-- lafiya-track-failure: ${workflow} -->"
+title="${title:-Scheduled workflow failed: ${workflow}}"
+run_url="${run_url:-${GITHUB_SERVER_URL:-https://github.com}/${GITHUB_REPOSITORY:-}/actions/runs/${GITHUB_RUN_ID:-}}"
+
+# Ensure the label exists so `gh issue create --label` never fails.
+gh label create "$label" --color d93f0b \
+  --description "Automated tracking issue for scheduled workflow failures" --force >/dev/null
+
+# Find the single open tracking issue for this workflow (marker in body).
+find_open() {
+  gh issue list --state open --label "$label" --limit 100 \
+    --json number,body \
+    --jq "[.[] | select((.body // \"\") | contains(\"${marker}\"))][0].number // empty"
+}
+
+case "$action" in
+  open)
+    existing="$(find_open)"
+    if [ -n "$existing" ]; then
+      gh issue comment "$existing" --body "${body:-Failed again: ${run_url}}"
+      echo "track-failure: commented on #${existing}"
+    else
+      {
+        echo "$marker"
+        echo
+        echo "${body:-The scheduled run failed.}"
+        echo
+        echo "Run: ${run_url}"
+        echo
+        echo "_This issue closes automatically when the workflow recovers._"
+      } > /tmp/track-failure-body.md
+      gh issue create --title "$title" --label "$label" --body-file /tmp/track-failure-body.md
+      echo "track-failure: opened tracking issue for ${workflow}"
+    fi
+    ;;
+  close)
+    existing="$(find_open)"
+    if [ -n "$existing" ]; then
+      gh issue close "$existing" \
+        --comment "${comment:-Recovered: the scheduled run succeeded (${run_url}). Closing.}"
+      echo "track-failure: closed #${existing}"
+    else
+      echo "track-failure: no open tracking issue for ${workflow}"
+    fi
+    ;;
+  *)
+    echo "track-failure: unknown action: ${action}" >&2
+    usage
+    ;;
+esac

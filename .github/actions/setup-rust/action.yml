@@ -1,0 +1,30 @@
+name: Setup Rust
+description: >-
+  Install the pinned Rust toolchain (plus optional components/targets) and the
+  shared cargo cache. Single source of truth for Rust setup in CI.
+
+inputs:
+  components:
+    description: Comma-separated rustup components (e.g. rustfmt,clippy).
+    required: false
+    default: ""
+  targets:
+    description: Comma-separated rustup targets (e.g. wasm32v1-none).
+    required: false
+    default: ""
+  cache:
+    description: Whether to restore the Swatinem/rust-cache cache.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install Rust toolchain
+      uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+      with:
+        components: ${{ inputs.components }}
+        targets: ${{ inputs.targets }}
+    - name: Restore cargo cache
+      if: inputs.cache == 'true'
+      uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2

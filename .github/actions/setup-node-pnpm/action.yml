@@ -1,0 +1,22 @@
+name: Setup Node + pnpm
+description: Install the pinned Node version and pnpm.
+
+inputs:
+  node-version:
+    description: Node version to install.
+    required: false
+    default: "22"
+  pnpm:
+    description: Whether to install pnpm.
+    required: false
+    default: "true"
+
+runs:
+  using: composite
+  steps:
+    - name: Install pnpm
+      if: inputs.pnpm == 'true'
+      uses: pnpm/action-setup@v4
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}

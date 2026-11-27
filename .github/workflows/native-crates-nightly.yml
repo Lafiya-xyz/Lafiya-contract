@@ -73,23 +73,23 @@ jobs:
           RUSTDOCFLAGS: -Zsanitizer=${{ matrix.sanitizer }}
 
   report:
-    name: Report failures
+    name: Track failure
     needs: [miri, sanitizers]
-    if: failure() && github.event_name == 'schedule'
+    if: always() && github.event_name == 'schedule'
     runs-on: ubuntu-latest
     permissions:
+      contents: read
       issues: write
     steps:
-      - name: Open or update tracking issue
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Open or close tracking issue
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
         run: |
-          title="Nightly Miri/sanitizer run failed"
-          body="Run: $GITHUB_SERVER_URL/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID"
-          existing=$(gh issue list --state open --search "in:title \"$title\"" --json number -q '.[0].number')
-          if [ -n "$existing" ]; then
-            gh issue comment "$existing" --body "$body"
+          if [ "${{ needs.miri.result }}" = "success" ] && [ "${{ needs.sanitizers.result }}" = "success" ]; then
+            .github/scripts/track-failure close --workflow native-crates-nightly --label ci-tracking
           else
-            gh issue create --title "$title" --body "$body"
+            .github/scripts/track-failure open --workflow native-crates-nightly --label ci-tracking \
+              --title "Nightly Miri/sanitizer run failed"
           fi
