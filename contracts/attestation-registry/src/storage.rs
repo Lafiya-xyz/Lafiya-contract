@@ -25,7 +25,8 @@ impl StorageKey for DataKey {
             | DataKey::PendingAdminExpiresAt
             | DataKey::RateLimit
             | DataKey::Role(..)
-            | DataKey::MaxAttestationAge => Durability::Instance,
+            | DataKey::MaxAttestationAge
+            | DataKey::QuorumPolicyVersion => Durability::Instance,
             DataKey::Attestation(..)
             | DataKey::AttestationSequence(..)
             | DataKey::AttestationCount(..)
@@ -38,7 +39,8 @@ impl StorageKey for DataKey {
             | DataKey::RecordRevoked(..)
             | DataKey::RevokedThroughSequence(..)
             | DataKey::PreviousRecordHash(..)
-            | DataKey::NextRecordHash(..) => Durability::Persistent,
+            | DataKey::NextRecordHash(..)
+            | DataKey::RecordQuorumSnapshot(..) => Durability::Persistent,
             DataKey::RateWindow(..) => Durability::Temporary,
         }
     }
@@ -78,6 +80,8 @@ mod tests {
             DataKey::PendingAdminExpiresAt,
             DataKey::RateLimit,
             DataKey::RateLimitOverride(Address::generate(env)),
+            DataKey::QuorumPolicyVersion,
+            DataKey::RecordQuorumSnapshot(BytesN::from_array(env, &[7; 32])),
             DataKey::RateWindow(Address::generate(env)),
             DataKey::Role(Role::Guardian, Address::generate(env)),
             DataKey::MaxAttestationAge,
