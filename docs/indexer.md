@@ -417,6 +417,42 @@ DATABASE_URL=postgres://postgres:pg@localhost:5432/postgres crates/lafiya-indexe
 Database tests create an isolated schema per test and are skipped when
 `DATABASE_URL` is unset.
 
+## Schema migrations
+
+Migrations live in `crates/lafiya-indexer/migrations/` and are embedded in the
+binary (`sqlx::migrate!`). They run automatically on start and via
+`lafiya-indexer migrate`. The discipline is **forward-only and zero-downtime**:
+
+- **Forward-only.** A migration that has shipped is never edited or deleted;
+  sqlx records a checksum and refuses to run a changed file. Fix a mistake with
+  a new migration. There are no `down` migrations: recovery is restore-from-
+  backup, not rollback.
+- **Zero-downtime.** The old binary keeps serving while the new one starts, so
+  every migration must be compatible with the previous release:
+  1. *Expand* — add nullable columns, new tables, new indexes. Never rename or
+     drop in the same release that stops using them.
+  2. *Migrate* — backfill in bounded batches outside the migration transaction
+     (a separate `lafiya-indexer` command or a one-off SQL script), never a
+     single `UPDATE` over a large table.
+  3. *Contract* — drop the old column/table in a later release, after no
+     deployed binary reads it.
+- **Locking.** Migrations run inside a transaction, so `CREATE INDEX
+  CONCURRENTLY` is not allowed there. Add indexes on large tables as a separate
+  non-transactional step (`-- no-transaction` header) or accept the brief
+  `SHARE` lock on small tables only. Never take `ACCESS EXCLUSIVE` on
+  `raw_events` or `attestations` for longer than a metadata change.
+- **Defaults.** `ADD COLUMN ... NOT NULL DEFAULT` rewrites the table on
+  Postgres < 11 and takes a lock; add the column nullable, backfill, then set
+  `NOT NULL` with a validated constraint.
+- **Lint.** `squawk` runs in CI on every migration file (see
+  `.github/workflows/ci.yml`, job `migrations-lint`). It rejects blocking
+  operations, unvalidated constraints, and unsafe type changes.
+- **Test harness.** `crates/lafiya-indexer/tests/migrations.rs` applies the
+  full migration set to a seeded Postgres (the CI `postgres:16` service) and
+  then exercises the API, so a migration that breaks a query fails CI. Run it
+  with `DATABASE_URL` set; it is skipped otherwise, like the other database
+  tests.
+
 ## Event sequence numbers (gap detection)
 
 Every event emitted by `attester-registry` and `attestation-registry` carries a
