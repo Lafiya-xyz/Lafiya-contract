@@ -103,6 +103,16 @@ proptest! {
     fn fuzz_sequence(ops in prop::collection::vec(op_strategy(), 1..60)) {
         replay(ops);
     }
+
+    /// `check_invariants()` must never trap, and must report no violations
+    /// whenever the custody invariant holds after an arbitrary op sequence.
+    #[test]
+    fn fuzz_check_invariants(ops in prop::collection::vec(op_strategy(), 1..60)) {
+        let h = replay(ops);
+        let report = h.pool.check_invariants();
+        prop_assert!(report.is_ok());
+        custody_holds(&h);
+    }
 }
 
 #[test]

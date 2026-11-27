@@ -212,10 +212,13 @@ fn poll_once(cfg: &Config, rpc: &Rpc, engine: &mut Engine, start: u32) -> anyhow
             emit(cfg, engine, &alert, true);
         }
         // Not every contract exposes `check_invariants`; skip those that don't.
+        // This covers the incentive pool's solvency/accounting invariants as
+        // well as the registries' own reports.
         match rpc.check_invariants(contract) {
             Ok(violations) => {
                 if let Some(alert) = engine.observe_invariants(contract, &violations, latest) {
-                    emit(cfg, &alert, true);
+                    let alert = engine.attach_pause_proposal(alert);
+                    emit(cfg, engine, &alert, true);
                 }
             }
             Err(e) => tracing::debug!("check_invariants unavailable for {contract}: {e}"),

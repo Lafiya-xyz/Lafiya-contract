@@ -28,7 +28,8 @@ pub use proposal::{PauseProposal, ProposalPolicy};
 pub use state::{AlertFingerprint, PersistentState, RuleWindowState, StateStore};
 
 pub use rules::{
-    ApprovalBurstRule, ClaimByReaddedAttesterRule, LargeWithdrawalRule, PoolPausedRule,
+    ApprovalBurstRule, ClaimByReaddedAttesterRule, LargeWithdrawalRule, PoolInvariantDriftRule,
+    PoolPausedRule, POOL_INVARIANT_DRIFT_KIND,
 };
 
 use serde::{Deserialize, Serialize};

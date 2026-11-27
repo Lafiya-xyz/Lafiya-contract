@@ -38,20 +38,33 @@ def summarize(recs):
     return cells
 
 
+def is_invariant_probe(probe):
+    """True for incentive-pool invariant probes (e.g. `incentive_pool.invariants`)."""
+    return probe.startswith("incentive_pool.invariants") or probe.endswith(".invariants")
+
+
 def render(cells, incidents, now):
     rows = []
+    inv_rows = []
     for (dep, probe), buckets in sorted(cells.items()):
         last = buckets[max(buckets)]
         up = 100.0 * sum(buckets.values()) / len(buckets)
-        rows.append(f"<tr><td>{html.escape(dep)}</td><td>{html.escape(probe)}</td>"
-                    f"<td>{'up' if last else 'DOWN'}</td><td>{up:.2f}%</td></tr>")
+        row = (f"<tr><td>{html.escape(dep)}</td><td>{html.escape(probe)}</td>"
+               f"<td>{'up' if last else 'DOWN'}</td><td>{up:.2f}%</td></tr>")
+        if is_invariant_probe(probe):
+            inv_rows.append(row)
+        else:
+            rows.append(row)
     inc = "".join(
         f"<li><b>{html.escape(i['title'])}</b> ({i['start']}–{i.get('end') or 'ongoing'}): {html.escape(i.get('note', ''))}</li>"
         for i in sorted(incidents, key=lambda i: -i["start"]))
+    inv = ("<h2>Incentive pool invariants</h2>"
+           "<table><tr><th>Deployment</th><th>Probe</th><th>Now</th><th>Uptime</th></tr>"
+           + "".join(inv_rows) + "</table>") if inv_rows else ""
     return ("<!doctype html><meta charset=utf-8><title>Lafiya status</title>"
             f"<h1>Lafiya status</h1><p>Generated {time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime(now))}</p>"
             "<table><tr><th>Deployment</th><th>Probe</th><th>Now</th><th>Uptime</th></tr>"
-            + "".join(rows) + f"</table><h2>Incidents</h2><ul>{inc}</ul>")
+            + "".join(rows) + f"</table>{inv}<h2>Incidents</h2><ul>{inc}</ul>")
 
 
 def main(argv=None):
@@ -68,7 +81,9 @@ def main(argv=None):
     cells = summarize(recs)
     os.makedirs(a.out, exist_ok=True)
     open(os.path.join(a.out, "index.html"), "w", encoding="utf-8").write(render(cells, incidents, now))
-    json.dump({f"{d}/{p_}": {"buckets": len(b), "up": sum(b.values())} for (d, p_), b in cells.items()},
+    json.dump({f"{d}/{p_}": {"buckets": len(b), "up": sum(b.values()),
+                             "invariants": is_invariant_probe(p_)}
+               for (d, p_), b in cells.items()},
               open(os.path.join(a.out, "status.json"), "w"), indent=2, sort_keys=True)
     return 0
 

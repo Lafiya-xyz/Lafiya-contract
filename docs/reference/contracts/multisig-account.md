@@ -34,7 +34,56 @@ Initialize the multisig account with a set of authorized signers and a signature
 * `signers` \xe2\x80\x94 A vector of ed25519 public keys (32 bytes each) authorized to sign transactions.
 * `threshold` \xe2\x80\x94 The minimum number of signatures required to authorize a transaction; must be > 0 and \xe2\x89\xa4 the signer count.
 
+### `set_policy`
+
+```rust
+fn set_policy(policy: SignerPolicy, allow_single_point_of_failure: bool)
+```
+
+Install a combined signer policy, validating that it is satisfiable before accepting it.
+
+The policy combines a signer set, a `weight_threshold`, a `minimum_signers` count, and
+per-role `role_requirements`. Before the policy is stored, the contract performs a bounded
+exact search over signer subsets (feasible because `signers.len()` is at most
+`MAX_SIGNERS`) and rejects any policy whose combined constraints cannot be met, so an
+unsatisfiable policy can never permanently brick the account (and with it the admin of
+both registries).
+
+The check also rejects policies that hinge on a single signer: if the absence of any one
+signer makes the policy unsatisfiable, the policy is rejected unless
+`allow_single_point_of_failure` is `true`. That flag is the explicit override for
+deployments that intentionally accept this risk.
+
+# Arguments
+* `policy` \xe2\x80\x94 The `SignerPolicy` to install; must be satisfiable and free of single points of failure (unless overridden).
+* `allow_single_point_of_failure` \xe2\x80\x94 When `true`, permits policies whose satisfiability depends on a single signer.
+
+# Errors
+* `UnsatisfiablePolicy` \xe2\x80\x94 The combined `weight_threshold`, `minimum_signers`, and `role_requirements` cannot be met by the signer set.
+* `SinglePointOfFailure` \xe2\x80\x94 The policy is satisfiable only while one specific signer is present, and `allow_single_point_of_failure` is `false`.
+
 ## Types
+
+### `SignerPolicy`
+
+A combined signer policy validated for satisfiability by `set_policy`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `signers` | `Vec<BytesN<32>>` | The authorized signer public keys. |
+| `weight_threshold` | `u32` | The minimum total signer weight required to authorize a transaction. |
+| `minimum_signers` | `u32` | The minimum number of distinct signers required to authorize a transaction. |
+| `role_requirements` | `Vec<RoleRequirement>` | Per-role constraints that must also be satisfied. |
+
+### `RoleRequirement`
+
+A per-role constraint within a `SignerPolicy`.
+
+| Field | Type | Description |
+| --- | --- | --- |
+| `role` | `u32` | The role identifier the requirement applies to. |
+| `min_signers` | `u32` | The minimum number of signers holding this role required to authorize a transaction. |
+=======
 
 ### `Signature`
 
@@ -56,3 +105,5 @@ A single ed25519 signature from one signer in the multisig set.
 | 5 | `UnknownSigner` | A signature corresponds to a public key that is not a configured signer. |
 | 6 | `NotInitialized` | The contract has not been initialized; threshold or signer count is unavailable. |
 | 7 | `TooManySigners` | The supplied signature count exceeds the configured signer count. |
+| 8 | `UnsatisfiablePolicy` | The combined `weight_threshold`, `minimum_signers`, and `role_requirements` cannot be met by the signer set. |
+| 9 | `SinglePointOfFailure` | The policy is satisfiable only while one specific signer is present, and the single-point-of-failure override was not set. |

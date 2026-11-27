@@ -82,6 +82,8 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `8` | `NotEnoughWeight` | The supplied signatures do not meet the configured weight threshold. |
 | `9` | `RoleQuorumNotMet` | The supplied signatures do not meet one or more role requirements. |
 | `10` | `InvalidPolicy` | A signer weight, role requirement, or policy threshold is invalid. |
+| `11` | `UnsatisfiablePolicy` | The combined `weight_threshold`, `minimum_signers`, and `role_requirements` cannot be met by any subset of the configured signers (e.g. a role requires more signers than hold that role, or the weight threshold exceeds the total available weight). The policy would permanently lock the account, so `set_policy` rejects it. |
+| `12` | `SinglePointOfFailure` | The policy is satisfiable only when one specific signer participates: removing that signer makes the policy unsatisfiable. Re-submit with `allow_single_point_of_failure = true` to accept this risk explicitly. |
 
 ## `incentive-pool`
 
