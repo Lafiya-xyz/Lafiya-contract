@@ -17,6 +17,14 @@ pub const WATCHDOG_FAILING: &str = "watchdog_failing";
 pub const ATTESTATION_EXPIRING: &str = "attestation_expiring";
 /// A patient-initiated dispute overlay was recorded on an attestation.
 pub const ATTESTATION_DISPUTED: &str = "attestation_disputed";
+/// A regional registrar consumed at least 80% of one of its enrollment
+/// quota caps (active or windowed lifetime). See `docs/specs/` for the
+/// quota semantics.
+pub const REGISTRAR_QUOTA_NEAR_LIMIT: &str = "registrar_quota_near_limit";
+/// A scheduled removal's time has passed but the attester is still active.
+pub const SCHEDULED_REMOVAL_OVERDUE: &str = "scheduled_removal_overdue";
+/// Fraction (in percent) of a quota cap at which the watchdog alerts.
+pub const QUOTA_ALERT_PERCENT: u64 = 80;
 
 pub struct Engine {
     rules: Vec<EventRule>,
@@ -74,6 +82,13 @@ pub fn default_rules() -> Vec<EventRule> {
         rule(
             "work_item_endorsement",
             &["work_item_proposed", "work_item_endorsed"],
+            Severity::Info,
+        ),
+        // attester-registry: registrar quota consumption is informational;
+        // the 80% threshold is enforced in `evaluate_raw`.
+        rule(
+            "registrar_quota_consumed",
+            &["RegistrarQuotaConsumed"],
             Severity::Info,
         ),
     ]
@@ -198,6 +213,24 @@ impl Engine {
             ));
         }
 
+        if e.name == "RegistrarQuotaConsumed" {
+            if let Some(alert) = self.quota_threshold_alert(e) {
+                alerts.push(alert);
+            }
+        }
+
+        if e.name == "ScheduledRemovalOverdue" {
+            alerts.push(self.alert(
+                SCHEDULED_REMOVAL_OVERDUE,
+                Severity::High,
+                format!(
+                    "scheduled removal time passed but attester is still active on {}",
+                    e.contract
+                ),
+                e,
+            ));
+        }
+
         if let Some(rate) = &self.rate {
             if e.name == rate.event {
                 self.rate_window.push_back(e.ledger);
@@ -221,6 +254,46 @@ impl Engine {
         }
 
         alerts
+    }
+
+    /// Build a `REGISTRAR_QUOTA_NEAR_LIMIT` alert when a
+    /// `RegistrarQuotaConsumed` event reports usage at or above
+    /// [`QUOTA_ALERT_PERCENT`] of either the active or the windowed
+    /// lifetime enrollment cap.
+    ///
+    /// Event data is expected to carry `active_count`, `active_cap`,
+    /// `lifetime_enrollments` and `lifetime_cap` (bare integers or a JSON
+    /// object). Missing or zero caps are ignored.
+    fn quota_threshold_alert(&self, e: &Event) -> Option<Alert> {
+        let active = parse_amount(&e.data).and_then(|_| field(&e.data, "active_count"));
+        let active_cap = field(&e.data, "active_cap");
+        let lifetime = field(&e.data, "lifetime_enrollments");
+        let lifetime_cap = field(&e.data, "lifetime_cap");
+
+        let mut breached = Vec::new();
+        if let (Some(count), Some(cap)) = (active, active_cap) {
+            if cap > 0 && count * 100 >= cap * QUOTA_ALERT_PERCENT as i128 {
+                breached.push(format!("active {count}/{cap}"));
+            }
+        }
+        if let (Some(count), Some(cap)) = (lifetime, lifetime_cap) {
+            if cap > 0 && count * 100 >= cap * QUOTA_ALERT_PERCENT as i128 {
+                breached.push(format!("lifetime {count}/{cap}"));
+            }
+        }
+        if breached.is_empty() {
+            return None;
+        }
+        Some(self.alert(
+            REGISTRAR_QUOTA_NEAR_LIMIT,
+            Severity::High,
+            format!(
+                "registrar quota at >= {QUOTA_ALERT_PERCENT}% on {}: {}",
+                e.contract,
+                breached.join(", ")
+            ),
+            e,
+        ))
     }
 
     /// Check an attestation entry's remaining TTL (in ledgers) against the
@@ -365,6 +438,23 @@ fn parse_amount(data: &str) -> Option<i128> {
     }
     let key = "\"amount\"";
     let idx = data.find(key)?;
+    let rest = &data[idx + key.len()..];
+    let rest = rest.trim_start().strip_prefix(':')?.trim_start();
+    let end = rest
+        .find(|c: char| !(c.is_ascii_digit() || c == '-'))
+        .unwrap_or(rest.len());
+    rest[..end].parse::<i128>().ok()
+}
+
+/// Extract a named integer field from event data, which may be a bare
+/// integer or a JSON object with that field.
+fn field(data: &str, name: &str) -> Option<i128> {
+    let data = data.trim();
+    if let Ok(n) = data.parse::<i128>() {
+        return Some(n);
+    }
+    let key = format!("\"{name}\"");
+    let idx = data.find(&key)?;
     let rest = &data[idx + key.len()..];
     let rest = rest.trim_start().strip_prefix(':')?.trim_start();
     let end = rest
@@ -614,5 +704,49 @@ mod tests {
         assert!(Engine::new(&c)
             .evaluate(&ev("attestation_disputed", 1, &[]))
             .is_empty());
+    }
+
+    fn quota_ev(data: &str) -> Event {
+        let mut e = ev("RegistrarQuotaConsumed", 1, &[]);
+        e.data = data.into();
+        e
+    }
+
+    #[test]
+    fn registrar_quota_below_threshold_is_silent() {
+        let a = Engine::new(&cfg()).evaluate(&quota_ev(
+            r#"{"active_count":5,"active_cap":10,"lifetime_enrollments":5,"lifetime_cap":10}"#,
+        ));
+        assert!(a.iter().all(|a| a.kind != REGISTRAR_QUOTA_NEAR_LIMIT));
+    }
+
+    #[test]
+    fn registrar_quota_at_threshold_alerts() {
+        let a = Engine::new(&cfg()).evaluate(&quota_ev(
+            r#"{"active_count":8,"active_cap":10,"lifetime_enrollments":1,"lifetime_cap":10}"#,
+        ));
+        let q: Vec<_> = a
+            .iter()
+            .filter(|a| a.kind == REGISTRAR_QUOTA_NEAR_LIMIT)
+            .collect();
+        assert_eq!(q.len(), 1);
+        assert_eq!(q[0].severity, Severity::High);
+        assert!(q[0].summary.contains("active 8/10"));
+    }
+
+    #[test]
+    fn registrar_lifetime_quota_threshold_alerts() {
+        let a = Engine::new(&cfg()).evaluate(&quota_ev(
+            r#"{"active_count":1,"active_cap":10,"lifetime_enrollments":9,"lifetime_cap":10}"#,
+        ));
+        assert!(a
+            .iter()
+            .any(|a| a.kind == REGISTRAR_QUOTA_NEAR_LIMIT && a.summary.contains("lifetime 9/10")));
+    }
+
+    #[test]
+    fn scheduled_removal_overdue_alerts() {
+        let a = Engine::new(&cfg()).evaluate(&ev("ScheduledRemovalOverdue", 1, &["GATT"]));
+        assert!(kinds(&a).contains(&(SCHEDULED_REMOVAL_OVERDUE, Severity::High)));
     }
 }

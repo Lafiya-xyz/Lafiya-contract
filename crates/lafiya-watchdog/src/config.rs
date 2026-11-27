@@ -43,6 +43,14 @@ pub struct Config {
     /// Guarded auto-response proposals (#533).
     #[serde(default)]
     pub auto_response: AutoResponse,
+    /// Alert when a regional registrar consumes a large share of its quota
+    /// (#676).
+    #[serde(default)]
+    pub registrar_quota: RegistrarQuota,
+    /// Alert when a scheduled removal's time has passed but the attester is
+    /// still active (#680).
+    #[serde(default)]
+    pub scheduled_removal: ScheduledRemoval,
 }
 
 fn default_poll() -> u64 {
@@ -367,6 +375,61 @@ fn default_rate_limit() -> usize {
 
 fn default_rate_window() -> u64 {
     3600
+}
+
+/// Watchdog guidance for delegated regional registrar quotas (#676). The
+/// contract tracks both `active_count` and windowed `lifetime_enrollments`;
+/// the watchdog warns as a registrar approaches either cap.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RegistrarQuota {
+    /// Emit an alert once a registrar has consumed at least this percentage of
+    /// its quota (active or windowed lifetime). Defaults to 80%.
+    #[serde(default = "default_quota_threshold")]
+    pub warn_at_percent: u8,
+    #[serde(default = "default_high")]
+    pub severity: Severity,
+}
+
+impl Default for RegistrarQuota {
+    fn default() -> Self {
+        RegistrarQuota {
+            warn_at_percent: default_quota_threshold(),
+            severity: Severity::High,
+        }
+    }
+}
+
+fn default_quota_threshold() -> u8 {
+    80
+}
+
+/// Watchdog guidance for scheduled removals (#680). A schedule that has passed
+/// its `at` time while the attester is still active is a safety issue.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ScheduledRemoval {
+    /// Emit an alert when a scheduled removal is overdue.
+    #[serde(default = "default_true")]
+    pub alert_on_overdue: bool,
+    /// Grace period (in ledgers) after `at` before the removal is considered
+    /// overdue. Defaults to 0 (alert as soon as `at` has passed).
+    #[serde(default)]
+    pub grace_ledgers: u32,
+    #[serde(default = "default_critical")]
+    pub severity: Severity,
+}
+
+impl Default for ScheduledRemoval {
+    fn default() -> Self {
+        ScheduledRemoval {
+            alert_on_overdue: true,
+            grace_ledgers: 0,
+            severity: Severity::Critical,
+        }
+    }
+}
+
+fn default_critical() -> Severity {
+    Severity::Critical
 }
 
 #[derive(Debug, Clone, Deserialize)]

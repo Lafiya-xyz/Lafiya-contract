@@ -28,6 +28,13 @@ use soroban_sdk::{
 pub trait AttesterRegistryInterface {
     fn is_attester(env: Env, attester: Address) -> bool;
     fn is_payout_eligible(env: Env, attester: Address) -> bool;
+    /// Historical validity: whether `attester` was a valid attester at
+    /// ledger time `timestamp`. After `rotate_attester(old, new)` this
+    /// returns true for `old` at timestamps before the rotation and false
+    /// from the rotation onwards.
+    fn is_attester_at(env: Env, attester: Address, timestamp: u64) -> bool;
+    /// The successor key of `attester` if it has been rotated, else `None`.
+    fn get_attester_rotation(env: Env, attester: Address) -> Option<Address>;
 }
 
 /// Per-attester verification status as reported by `attestation-registry`.
@@ -512,6 +519,10 @@ pub enum Error {
     AttesterClaimCapExceeded = 12,
     /// The payout would exceed the per-claim cap.
     PayoutCapExceeded = 13,
+    /// The work item was approved for an attester key that has since been
+    /// rotated away. The item must be re-approved under the successor key
+    /// (see `reapprove_rotated_work_item`).
+    WorkItemAttesterRotated = 24,
     /// The token transfer call returned an error.
     TransferFailed = 14,
     /// A non-positive amount was provided where a positive amount is required.
@@ -1444,6 +1455,14 @@ impl IncentivePool {
     /// attester's auth. Pays the attester's bound payout address (see
     /// `set_payout_address`), defaulting to the attester itself. Enforces replay protection, per-attester cap,
     /// and pool balance checks. Transfers tokens on success.
+    ///
+    /// Rotation policy (issue #675): a work item approved for a key that
+    /// has since been rotated away is NOT paid to the successor key
+    /// automatically. The old key is no longer allowlisted, so `claim`
+    /// fails with `AttesterNotAllowlisted`; the approver must re-approve
+    /// the item under the successor key via `reapprove_rotated_work_item`.
+    /// This keeps the payout bound to the identity that actually did the
+    /// work while preventing a stale key from draining the pool.
     pub fn claim(env: Env, work_item_id: BytesN<32>) -> Result<(), Error> {
         Self::require_not_paused(&env)?;
 
@@ -1453,7 +1472,7 @@ impl IncentivePool {
         attester.require_auth();
 
         // Verify attester is still allowlisted (may have been suspended
-        // since approval).
+        // since approval, or rotated away).
         let registry_id = Self::attester_registry(&env)?;
         let registry = AttesterRegistryClient::new(&env, &registry_id);
         if !registry.is_attester(&attester) {
@@ -1545,6 +1564,90 @@ impl IncentivePool {
         .publish(&env);
 
         Ok(())
+    }
+
+    // ── Rotation: re-approve old-key work items ──
+
+    /// Re-approve a work item that was approved for a key which has since
+    /// been rotated away, binding it to the successor key. Requires the
+    /// approver's auth. The successor must be the registry-reported
+    /// rotation target of the original attester, must be currently
+    /// allowlisted, and the item must still be open (approved, unclaimed,
+    /// uncancelled, unexpired). The old work item is tombstoned as
+    /// cancelled and a new item is approved for the successor with the
+    /// same payout amount and a fresh approval TTL. Returns the new
+    /// work-item id.
+    pub fn reapprove_rotated_work_item(
+        env: Env,
+        work_item_id: BytesN<32>,
+        successor: Address,
+    ) -> Result<BytesN<32>, Error> {
+        Self::approver(&env)?.require_auth();
+        Self::require_not_paused(&env)?;
+
+        let work_item = Self::open_work_item(&env, &work_item_id)?;
+        let old_attester = work_item.attester.clone();
+
+        let registry_id = Self::attester_registry(&env)?;
+        let registry = AttesterRegistryClient::new(&env, &registry_id);
+
+        // The successor must be the registry-reported rotation target.
+        let rotated_to = registry
+            .try_get_attester_rotation(&old_attester)
+            .ok()
+            .and_then(|r| r.ok())
+            .flatten();
+        if rotated_to.as_ref() != Some(&successor) {
+            return Err(Error::WorkItemAttesterRotated);
+        }
+        if !registry.is_attester(&successor) {
+            return Err(Error::AttesterNotAllowlisted);
+        }
+
+        // Tombstone the old item so it can never be claimed.
+        env.storage()
+            .persistent()
+            .set(&DataKey::WorkItemCancelled(work_item_id.clone()), &true);
+
+        // Approve a fresh item for the successor, reusing the original
+        // record hash is not possible here (only the id is known), so the
+        // new id is derived from the successor and the old id.
+        let new_id = Self::derive_work_item_id(env.clone(), work_item_id.clone(), successor.clone());
+        if Self::has_work_item(&env, &new_id) {
+            return Err(Error::WorkItemAlreadyApproved);
+        }
+
+        let approved_at = env.ledger().timestamp();
+        let ttl = Self::default_ttl(&env);
+        let new_item = WorkItem {
+            attester: successor.clone(),
+            payout_amount: work_item.payout_amount,
+            approved_at,
+            expires_at: approved_at
+                .checked_add(ttl)
+                .ok_or(Error::ArithmeticOverflow)?,
+        };
+        env.storage()
+            .persistent()
+            .set(&DataKey::WorkItemV2(new_id.clone()), &new_item);
+
+        let reserved = Self::total_reserved(&env)
+            .checked_add(work_item.payout_amount)
+            .ok_or(Error::ArithmeticOverflow)?;
+        env.storage()
+            .instance()
+            .set(&DataKey::TotalReserved, &reserved);
+
+        Self::bump_instance(&env);
+
+        WorkItemApproved {
+            work_item_id: new_id.clone(),
+            attester: successor,
+            payout_amount: work_item.payout_amount,
+        }
+        .publish(&env);
+
+        Ok(new_id)
     }
 
     // ── Pause / unpause ──

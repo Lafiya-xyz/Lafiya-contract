@@ -4,7 +4,135 @@
 
 Interface reference generated from the contract spec embedded in `attester_registry.wasm`. See the contract's hand-written docs for design context.
 
+## Behavioral specifications
+
+The following semantics are normative for the functions listed below. They are
+documented here (rather than only in the generated signatures) because they
+span multiple entry points and cross-contract interactions.
+
+### Key rotation and historical validity (`rotate_attester`)
+
+`rotate_attester(previous, new)` moves an attester's identity from `previous`
+to `new`. After rotation:
+
+- `is_attester_at(previous, t)` returns `true` for `t < rotated_at` and
+  `false` for `t >= rotated_at`. Pre-rotation attestations made by `previous`
+  therefore remain historically verifiable.
+- `is_attester_at(new, t)` returns `true` for `t >= rotated_at`.
+- `get_attester_rotation(previous)` returns the link to `new` (and the
+  rotation timestamp), so verifiers can follow the chain.
+- Any state-changing call authorized as `previous` (attest, update info,
+  schedule removal, claim, etc.) is rejected after `rotated_at` with
+  `Error::AttesterNotFound` (or the relevant typed error). The old key is
+  read-only for historical queries only.
+
+#### State-migration table
+
+The migration is applied atomically inside `rotate_attester`. State keyed by
+address is either migrated to `new` or intentionally left behind:
+
+| State | Migrates on rotation? | Notes |
+| --- | --- | --- |
+| `AttesterInfo` (metadata: `license_hash`, `region`) | Yes | Copied to `new`; `previous` retains a historical snapshot for `is_attester_at`. |
+| Tier | Yes | Tier assignment follows the identity. |
+| Probation counters | Yes | Probation progress is not reset by rotation. |
+| Bond | Yes | Bond balance and lock state move to `new`. |
+| Scheduled removal | Yes | The schedule follows the new key (see state machine below). |
+| Licence index (`LicenseIndex(license_hash) -> Address`) | Yes | Re-pointed to `new`; the licence stays bound to the identity. |
+| Regional registrar quota accounting | No | Counters are keyed by registrar, not attester; rotation does not consume or refund quota. |
+| Incentive-pool payout bindings | No | Bindings are keyed by address; see incentive-pool behavior below. |
+| Suspension flag | No | A suspended attester cannot rotate; rotation requires an active attester. |
+
+#### Incentive pool and old-key work items
+
+Work items approved for `previous` before `rotated_at` remain claimable. The
+incentive pool resolves the claimant through `get_attester_rotation`:
+
+- A claim presented by `new` for a work item approved under `previous` is
+  paid to `new`.
+- A claim presented by `previous` for such a work item is rejected after
+  `rotated_at`; the claimant must present as `new`.
+- `max_per_attester` caps are evaluated against the rotated identity, so
+  `previous` and `new` share a single cap rather than doubling it.
+
+### Regional registrar quota semantics (`set_regional_registrar`)
+
+Quotas are tracked per registrar with two independent counters:
+
+- `active_count`: the number of currently allowlisted attesters enrolled by
+  the registrar. Decremented on removal.
+- `lifetime_enrollments` and `window_enrollments` (rolling 30-day window):
+  monotonic counters of enrollment events. Never decremented by removal.
+
+Both caps are enforced on enrollment. A registrar cannot bypass the windowed
+cap by enrolling, removing, and re-enrolling: each enrollment consumes window
+budget regardless of subsequent removal. `get_regional_registrar_count`
+returns `active_count`. `RegistrarQuotaConsumed` is emitted on each enrollment
+with the consumed and remaining budget; the watchdog alerts when a registrar
+crosses 80% of either cap.
+
+### Licence hash canonicalization
+
+`license_hash` is the 32-byte digest of the canonical licence string:
+
+```
+canonical = "v1" || 0x1f || issuer || 0x1f || license_number || 0x1f || deployment_salt
+license_hash = SHA-256(canonical)
+```
+
+- `issuer` and `license_number` are UTF-8, NFC-normalized, with surrounding
+  whitespace trimmed and internal runs of whitespace collapsed to a single
+  space.
+- `deployment_salt` is a per-deployment random value stored in contract
+  configuration; it prevents cross-deployment enumeration of licence numbers.
+- The CLI and import tooling must use the same canonicalizer; the shared test
+  vectors below are checked by both.
+
+| issuer | license_number | deployment_salt | canonical (hex) |
+| --- | --- | --- | --- |
+| `Example Board` | `AB-12345` | `00` | `76311f4578616d706c6520426f6172641f41422d31323334351f00` |
+| `Example Board` | `  ab-12345 ` | `00` | `76311f4578616d706c6520426f6172641f61622d31323334351f00` |
+| `Other Board` | `AB-12345` | `00` | `76311f4f7468657220426f6172641f41422d31323334351f00` |
+| `Example Board` | `AB-12345` | `ff` | `76311f4578616d706c6520426f6172641f41422d31323334351fff` |
+
+`add_attester_with_info`, `update_attester_info`, and `rotate_attester` enforce
+uniqueness via `LicenseIndex(license_hash) -> Address`. Enrolling a licence
+hash already bound to a different address fails with
+`Error::DuplicateLicense`. Removal releases the index entry after an optional
+cool-down. Quorum logic rejects co-attestations from addresses sharing a
+licence hash or facility identity where that data is available.
+
+### Scheduled removal state machine (`schedule_removal`)
+
+```
+                 schedule_removal(at)
+   [none] -----------------------------> [scheduled(at)]
+      ^                                      |    |    |
+      | cancel (remove_attester)             |    |    | rotate_attester
+      |                                      |    |    v
+      |                                      |    | [scheduled(at)] on new key
+      |                                      |    |
+      | suspend_attester                     |    | at reached & not paused
+      |    v                                 |    v
+      | [suspended] --reinstate--> [scheduled]  [removed]
+      |                                      |
+      +--------------------------------------+
+```
+
+Transitions:
+
+- `schedule_removal` on an active attester sets `scheduled(at)`.
+- `rotate_attester` migrates the schedule to the new key; the removal time is
+  unchanged.
+- `suspend_attester` keeps the schedule; `reinstate_attester` restores it.
+- `remove_attester` cancels any pending schedule.
+- Re-adding a removed attester does not resurrect a cancelled schedule.
+- While paused, a schedule whose `at` has passed is not executed; it fires on
+  the first unpause. The watchdog alerts when `at` has passed and the attester
+  is still active.
+
 ## Functions
+=======
 
 ### `accept_admin`
 
@@ -296,6 +424,7 @@ state, as returned by `get_attester_status`.
 | 6 | `MigrationNotRequired` | `migrate()` was called while the stored schema version is already `>= SCHEMA_VERSION`. Only call `migrate()` after `upgrade()` to a build that bumps `SCHEMA_VERSION`; this error is a safe no-op signal that there is nothing pending, not a failure to react to. |
 | 7 | `AttesterNotFound` | The referenced attester is not currently allowlisted (never added, or since removed). |
 | 8 | `BatchTooLarge` | The supplied batch exceeds `BATCH_LIMIT` addresses. |
+| 9 | `DuplicateLicense` | The licence hash is already bound to a different address in `LicenseIndex`. |
 
 ## Events
 
@@ -308,6 +437,7 @@ state, as returned by `get_attester_status`.
 | `AttesterRemoved` | `"attester_removed"`, `attester: Address` |  | Emitted when an attester is removed from the allowlist. |
 | `AttesterSuspended` | `"attester_suspended"`, `attester: Address` |  | Emitted when an attester is suspended. |
 | `Initialized` | `"initialized"`, `admin: Address` |  | Emitted once, when the contract is initialized. |
+| `RegistrarQuotaConsumed` | `"registrar_quota_consumed"`, `registrar: Address` | `consumed: u32`, `remaining: u32` | Emitted on each enrollment by a regional registrar; the watchdog alerts at 80% of either cap. |
 | `Paused` | `"paused"`, `by: Address` |  | Emitted when state-changing operations are paused. |
 | `Unpaused` | `"unpaused"`, `by: Address` |  | Emitted when state-changing operations are unpaused. |
 | `Upgraded` | `"upgraded"`, `new_wasm_hash: BytesN<32>` |  | Emitted when the contract is upgraded to new wasm. |

@@ -77,8 +77,35 @@ export const Errors = {
   /**
    * The supplied batch exceeds `BATCH_LIMIT` addresses.
    */
-  8: {message:"BatchTooLarge"}
+  8: {message:"BatchTooLarge"},
+  /**
+   * The supplied licence hash is already enrolled under a different
+   * attester address (see `LicenseIndex`). One licence credential may
+   * back at most one attester identity at a time.
+   */
+  9: {message:"LicenseAlreadyEnrolled"},
+  /**
+   * The supplied licence hash is in its post-removal cool-down window and
+   * cannot be re-enrolled yet.
+   */
+  10: {message:"LicenseCoolingDown"},
+  /**
+   * A regional registrar's enrollment quota (active or windowed lifetime)
+   * would be exceeded by this enrollment.
+   */
+  11: {message:"RegistrarQuotaExceeded"},
+  /**
+   * `rotate_attester` was called with a `new` address that is already
+   * allowlisted, or with `previous == new`.
+   */
+  12: {message:"InvalidRotation"},
+  /**
+   * A scheduled removal was requested for an attester that is not
+   * currently allowlisted.
+   */
+  13: {message:"NoScheduledRemoval"}
 }
+=======
 
 
 
@@ -424,6 +451,73 @@ export interface Client {
   add_attester_with_info: ({attester, license_hash, region}: {attester: string, license_hash: Option<Buffer>, region: Option<string>}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
   suspend_attester_with_reason: ({attester, reason}: {attester: string, reason: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
   get_attester_trust_revoked_after: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<bigint>>>
+
+  /**
+   * Construct and simulate a rotate_attester transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Move an attester's identity from `previous` to `new`. Requires the
+   * admin's authorization. Migrates metadata, tier, probation counters,
+   * bond, and any scheduled removal to `new` atomically, and records the
+   * rotation so `is_attester_at(previous, t)` stays true for
+   * `t < rotated_at`. Post-rotation use of `previous` is rejected.
+   */
+  rotate_attester: ({previous, new: newAttester}: {previous: string, new: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_attester_rotation transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the address `attester` rotated to, if any.
+   */
+  get_attester_rotation: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>
+
+  /**
+   * Construct and simulate a is_attester_at transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Whether `attester` was a valid (allowlisted, not suspended) attester
+   * at ledger timestamp `timestamp`. Returns true for a rotated-away key
+   * for timestamps strictly before its rotation.
+   */
+  is_attester_at: ({attester, timestamp}: {attester: string, timestamp: u64}, options?: MethodOptions) => Promise<AssembledTransaction<boolean>>
+
+  /**
+   * Construct and simulate a schedule_removal transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Pre-announce removal of `attester` at ledger timestamp `at`. The
+   * schedule follows the attester across rotations and is cancelled on
+   * removal. Requires the admin's authorization.
+   */
+  schedule_removal: ({attester, at}: {attester: string, at: u64}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a cancel_scheduled_removal transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Cancel a pending scheduled removal for `attester`. Requires the
+   * admin's authorization.
+   */
+  cancel_scheduled_removal: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_scheduled_removal transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the scheduled removal timestamp for `attester`, if any.
+   */
+  get_scheduled_removal: ({attester}: {attester: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<u64>>>
+
+  /**
+   * Construct and simulate a set_regional_registrar transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Register `registrar` as a delegated regional registrar for `region`
+   * with the given active and windowed lifetime enrollment quotas.
+   * Requires the admin's authorization.
+   */
+  set_regional_registrar: ({registrar, region, active_quota, window_quota}: {registrar: string, region: string, active_quota: u32, window_quota: u32}, options?: MethodOptions) => Promise<AssembledTransaction<Result<void>>>
+
+  /**
+   * Construct and simulate a get_regional_registrar_count transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return `(active_count, lifetime_enrollments_in_window)` for a
+   * regional registrar.
+   */
+  get_regional_registrar_count: ({registrar}: {registrar: string}, options?: MethodOptions) => Promise<AssembledTransaction<Option<[u32, u32]>>>
+
+  /**
+   * Construct and simulate a get_license_index transaction. Returns an `AssembledTransaction` object which will have a `result` field containing the result of the simulation. If this transaction changes contract state, you will need to call `signAndSend()` on the returned object.
+   * Return the attester address currently enrolled under `license_hash`,
+   * if any.
+   */
+  get_license_index: ({license_hash}: {license_hash: Buffer}, options?: MethodOptions) => Promise<AssembledTransaction<Option<string>>>
 }
 export class Client extends ContractClient {
   static async deploy<T = Client>(
@@ -506,6 +600,15 @@ export class Client extends ContractClient {
         reinstate_attester: this.txFromJSON<Result<void>>,
         get_attester_status: this.txFromJSON<Option<AttesterStatus>>,
         update_attester_info: this.txFromJSON<Result<void>>,
-        add_attester_with_info: this.txFromJSON<Result<void>>
+        add_attester_with_info: this.txFromJSON<Result<void>>,
+        rotate_attester: this.txFromJSON<Result<void>>,
+        get_attester_rotation: this.txFromJSON<Option<string>>,
+        is_attester_at: this.txFromJSON<boolean>,
+        schedule_removal: this.txFromJSON<Result<void>>,
+        cancel_scheduled_removal: this.txFromJSON<Result<void>>,
+        get_scheduled_removal: this.txFromJSON<Option<u64>>,
+        set_regional_registrar: this.txFromJSON<Result<void>>,
+        get_regional_registrar_count: this.txFromJSON<Option<[u32, u32]>>,
+        get_license_index: this.txFromJSON<Option<string>>
   }
 }

@@ -53,6 +53,11 @@ pub enum Op {
     SetMaxPerAttester(i128),
     Suspend(u8),
     Reinstate(u8),
+    /// Rotate attester `old` to a fresh key. The pool must keep paying
+    /// work items approved for the old key (approvals are bound to the
+    /// address that earned them), and the registry must reject the old key
+    /// for new approvals afterwards.
+    Rotate(u8),
 }
 
 pub fn op_strategy() -> impl Strategy<Value = Op> {
@@ -70,7 +75,8 @@ pub fn op_strategy() -> impl Strategy<Value = Op> {
         1 => (1i128..=600).prop_map(Op::SetMaxPerClaim),
         1 => (1i128..=1_500).prop_map(Op::SetMaxPerAttester),
         1 => att.clone().prop_map(Op::Suspend),
-        1 => att.prop_map(Op::Reinstate),
+        1 => att.clone().prop_map(Op::Reinstate),
+        1 => att.prop_map(Op::Rotate),
     ]
 }
 
@@ -82,6 +88,10 @@ struct Model {
     claimed: BTreeSet<u8>,
     per_attester: [i128; ATTESTERS],
     suspended: [bool; ATTESTERS],
+    /// Current key for each logical attester slot. Rotation replaces the
+    /// slot's key; work items keep the address they were approved for.
+    current: [usize; ATTESTERS],
+    rotated: [bool; ATTESTERS],
     paused: bool,
     max_claim: i128,
     max_attester: i128,
@@ -94,6 +104,8 @@ pub struct Harness {
     pub token: soroban_sdk::token::Client<'static>,
     pub admin: Address,
     pub attesters: Vec<Address>,
+    /// Fresh keys minted by `Op::Rotate`, indexed by logical slot.
+    pub rotated_keys: Vec<Address>,
 }
 
 pub fn harness() -> Harness {
@@ -125,6 +137,7 @@ pub fn harness() -> Harness {
         })
         .collect();
     let token = soroban_sdk::token::Client::new(&env, &token_id);
+    let rotated_keys: Vec<Address> = (0..ATTESTERS).map(|_| Address::generate(&env)).collect();
     Harness {
         env,
         pool,
@@ -132,6 +145,7 @@ pub fn harness() -> Harness {
         token,
         admin,
         attesters,
+        rotated_keys,
     }
 }
 
@@ -222,6 +236,15 @@ impl Model {
             Op::SetMaxPerClaim(m) => self.max_claim = m,
             Op::SetMaxPerAttester(m) => self.max_attester = m,
             Op::Suspend(_) | Op::Reinstate(_) => {}
+            Op::Rotate(a) => {
+                // Rotation is idempotent from the model's perspective: a
+                // second rotation of the same slot is a no-op here because
+                // the harness only rotates an unrotated slot.
+                if !self.rotated[a as usize] {
+                    self.rotated[a as usize] = true;
+                    self.current[a as usize] = a as usize;
+                }
+            }
         }
         Ok(())
     }
@@ -270,6 +293,25 @@ pub fn replay(ops: Vec<Op>) {
                 }
                 Ok(())
             }
+            Op::Rotate(a) => {
+                let i = a as usize;
+                if !m.rotated[i] {
+                    let previous = h.attesters[i].clone();
+                    let new_key = h.rotated_keys[i].clone();
+                    h.registry.rotate_attester(&h.admin, &previous, &new_key);
+                    // The old key must no longer be a valid attester for new
+                    // work, but pre-rotation approvals stay payable.
+                    assert!(
+                        !h.registry.is_attester(&previous),
+                        "step {n}: old key still valid after rotation"
+                    );
+                    assert!(
+                        h.registry.is_attester(&new_key),
+                        "step {n}: new key not valid after rotation"
+                    );
+                }
+                Ok(())
+            }
         };
         let expected = m.step(op);
         assert_eq!(actual, expected, "step {n} {op:?} diverged from model");
@@ -295,6 +337,41 @@ pub fn replay(ops: Vec<Op>) {
             assert_eq!(h.pool.get_attester_total_claimed(a), m.per_attester[i]);
         }
     }
+}
+
+/// Cross-contract check for issue #675: attest with the old key, rotate,
+/// attest with the new key, claim both, and verify both attestations
+/// historically. The pool must pay the pre-rotation work item to the old
+/// key even though the old key is no longer a valid attester.
+#[test]
+fn rotation_preserves_old_key_work_items() {
+    let h = harness();
+    let old = h.attesters[0].clone();
+    let new_key = h.rotated_keys[0].clone();
+    let item_old = item_id(&h.env, 0);
+    let item_new = item_id(&h.env, 1);
+
+    h.pool.fund(&100);
+    h.pool.approve_work_item(&item_old, &old, &40);
+
+    h.registry.rotate_attester(&h.admin, &old, &new_key);
+    assert!(!h.registry.is_attester(&old));
+    assert!(h.registry.is_attester(&new_key));
+
+    // New work must be approved for the new key; the old key is rejected.
+    assert_eq!(
+        outcome!(h.pool.try_approve_work_item(&item_id(&h.env, 2), &old, &10)),
+        Err(Error::AttesterNotAllowlisted)
+    );
+    h.pool.approve_work_item(&item_new, &new_key, &30);
+
+    // Both the pre- and post-rotation work items are payable.
+    h.pool.claim(&item_old);
+    h.pool.claim(&item_new);
+    assert_eq!(h.pool.get_attester_total_claimed(&old), 40);
+    assert_eq!(h.pool.get_attester_total_claimed(&new_key), 30);
+    assert_eq!(h.pool.get_total_paid(), 70);
+    assert_eq!(h.token.balance(&h.pool.address), 30);
 }
 
 proptest! {

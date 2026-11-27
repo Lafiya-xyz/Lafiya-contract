@@ -932,3 +932,111 @@ fn scheduled_approval_uses_timelocked_rate_and_records_version() {
     );
     assert_eq!(client.get_work_item_schedule_version(&id), 1);
 }
+
+// ─────────────── Attester rotation (#675) ───────────────
+
+/// Work items approved for the old key before rotation stay payable to the
+/// old key: the payout binding is captured at approval time and does not
+/// migrate with the rotation.
+#[test]
+fn old_key_work_item_approved_before_rotation_remains_claimable() {
+    let (env, client, attester_registry, _admin, _approver, token, _ta) = setup();
+    let old_key = Address::generate(&env);
+    let new_key = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &old_key);
+
+    client.fund(&(2 * ONE_UNIT));
+    let old_id = BytesN::from_array(&env, &[11u8; 32]);
+    client.approve_work_item(&old_id, &old_key, &ONE_UNIT);
+
+    attester_registry.rotate_attester(&old_key, &new_key);
+
+    // The approval still points at the old key and pays the old key.
+    assert_eq!(client.get_work_item(&old_id).unwrap().attester, old_key);
+    client.claim(&old_id);
+    assert!(client.is_work_item_claimed(&old_id));
+    assert_eq!(client.get_attester_total_claimed(&old_key), ONE_UNIT);
+    assert_eq!(client.get_attester_total_claimed(&new_key), 0);
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&old_key), ONE_UNIT);
+    assert_eq!(token_client.balance(&new_key), 0);
+}
+
+/// After rotation the old key is no longer allowlisted, so new work items
+/// cannot be approved for it; the new key can be approved and claimed.
+#[test]
+fn new_work_item_for_old_key_after_rotation_is_rejected() {
+    let (env, client, attester_registry, _admin, _approver, _token, _ta) = setup();
+    let old_key = Address::generate(&env);
+    let new_key = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &old_key);
+
+    client.fund(&(2 * ONE_UNIT));
+    attester_registry.rotate_attester(&old_key, &new_key);
+
+    let id = BytesN::from_array(&env, &[12u8; 32]);
+    assert_eq!(
+        client.try_approve_work_item(&id, &old_key, &ONE_UNIT),
+        Err(Ok(Error::AttesterNotAllowlisted))
+    );
+
+    client.approve_work_item(&id, &new_key, &ONE_UNIT);
+    client.claim(&id);
+    assert_eq!(client.get_attester_total_claimed(&new_key), ONE_UNIT);
+    assert_eq!(client.get_attester_total_claimed(&old_key), 0);
+}
+
+/// Cross-contract scenario: attest with the old key, rotate, attest with the
+/// new key, claim both payouts, and verify both attestations historically.
+#[test]
+fn rotation_cross_contract_historical_verification() {
+    use soroban_sdk::testutils::Ledger as _;
+    let (env, client, attester_registry, _admin, _approver, token, _ta) = setup();
+    let old_key = Address::generate(&env);
+    let new_key = Address::generate(&env);
+    attester_registry.add_attester(&attester_registry.get_admin(), &old_key);
+
+    client.fund(&(2 * ONE_UNIT));
+
+    // Attest with the old key.
+    let t_before = env.ledger().timestamp();
+    let old_id = BytesN::from_array(&env, &[21u8; 32]);
+    client.approve_work_item(&old_id, &old_key, &ONE_UNIT);
+
+    // Rotate to the new key.
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    let rotated_at = env.ledger().timestamp();
+    attester_registry.rotate_attester(&old_key, &new_key);
+
+    // Attest with the new key.
+    env.ledger().with_mut(|l| l.timestamp += 100);
+    let t_after = env.ledger().timestamp();
+    let new_id = BytesN::from_array(&env, &[22u8; 32]);
+    client.approve_work_item(&new_id, &new_key, &ONE_UNIT);
+
+    // Claim both payouts.
+    client.claim(&old_id);
+    client.claim(&new_id);
+    assert!(client.is_work_item_claimed(&old_id));
+    assert!(client.is_work_item_claimed(&new_id));
+    assert_eq!(client.get_total_paid(), 2 * ONE_UNIT);
+
+    let token_client = soroban_sdk::token::Client::new(&env, &token);
+    assert_eq!(token_client.balance(&old_key), ONE_UNIT);
+    assert_eq!(token_client.balance(&new_key), ONE_UNIT);
+
+    // Historical verification: the old key was valid before rotation and is
+    // not valid at or after it; the new key is valid from rotation onwards.
+    assert!(attester_registry.is_attester_at(&old_key, &t_before));
+    assert!(!attester_registry.is_attester_at(&old_key, &rotated_at));
+    assert!(!attester_registry.is_attester_at(&old_key, &t_after));
+    assert!(!attester_registry.is_attester_at(&new_key, &t_before));
+    assert!(attester_registry.is_attester_at(&new_key, &rotated_at));
+    assert!(attester_registry.is_attester_at(&new_key, &t_after));
+
+    // The rotation link is exposed for verifiers.
+    assert_eq!(
+        attester_registry.get_attester_rotation(&old_key),
+        Some(new_key.clone())
+    );
+}

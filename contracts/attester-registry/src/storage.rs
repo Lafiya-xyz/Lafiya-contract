@@ -29,11 +29,17 @@ impl StorageKey for DataKey {
             DataKey::Attester(..)
             | DataKey::Suspended(..)
             | DataKey::AttesterRotation(..)
+            | DataKey::AttesterRotationRecord(..)
             | DataKey::AttesterStatusChange(..)
             | DataKey::AttesterStatusChangeCount(..)
             | DataKey::AttesterValidity(..)
             | DataKey::RegionalRegistrarCount(..)
-            | DataKey::RegionalAttester(..) => Durability::Persistent,
+            | DataKey::RegionalAttester(..)
+            | DataKey::RegistrarQuota(..)
+            | DataKey::RegistrarWindow(..)
+            | DataKey::LicenseIndex(..)
+            | DataKey::LicenseCooldown(..)
+            | DataKey::ScheduledRemoval(..) => Durability::Persistent,
         }
     }
 }
@@ -77,6 +83,12 @@ mod tests {
             DataKey::RegionalRegistrar(Address::generate(env)),
             DataKey::RegionalRegistrarCount(Address::generate(env)),
             DataKey::RegionalAttester(Address::generate(env)),
+            DataKey::AttesterRotationRecord(Address::generate(env)),
+            DataKey::RegistrarQuota(Address::generate(env)),
+            DataKey::RegistrarWindow(Address::generate(env)),
+            DataKey::LicenseIndex(Address::generate(env)),
+            DataKey::LicenseCooldown(Address::generate(env)),
+            DataKey::ScheduledRemoval(Address::generate(env)),
         ]
     }
 
