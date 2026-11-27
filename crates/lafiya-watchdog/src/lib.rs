@@ -17,6 +17,7 @@
 
 pub mod config;
 pub mod heartbeat;
+pub mod privilege;
 pub mod proposal;
 pub mod rpc;
 pub mod rules;
@@ -24,6 +25,7 @@ pub mod sinks;
 pub mod state;
 
 pub use heartbeat::{Heartbeat, HeartbeatConfig};
+pub use privilege::{PrivilegeGraph, NEW_ADMIN_PATH};
 pub use proposal::{PauseProposal, ProposalPolicy};
 pub use state::{AlertFingerprint, PersistentState, RuleWindowState, StateStore};
 

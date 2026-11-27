@@ -93,6 +93,212 @@ pub fn heartbeat_ping(url: &str) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// HMAC-SHA256 signature of `body`, hex-encoded, for the
+/// `X-Lafiya-Signature` header (#745).
+pub fn sign_payload(key: &[u8], body: &[u8]) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = Hmac::<Sha256>::new_from_slice(key).expect("HMAC accepts any key length");
+    mac.update(body);
+    hex::encode(mac.finalize().into_bytes())
+}
+
+/// Reference verifier for `X-Lafiya-Signature`: recompute the HMAC over the
+/// exact received body and compare in constant time.
+pub fn verify_signature(key: &[u8], body: &[u8], signature_hex: &str) -> bool {
+    let expected = sign_payload(key, body);
+    let a = expected.as_bytes();
+    let b = signature_hex.trim().to_ascii_lowercase();
+    let b = b.as_bytes();
+    a.len() == b.len() && a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// One queued alert awaiting delivery to a single sink.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct OutboxEntry {
+    pub id: u64,
+    /// Index into the configured sink list.
+    pub sink: usize,
+    pub alert: Alert,
+    /// Unix seconds when the entry was first queued.
+    pub created_at: u64,
+    /// Delivery attempts so far.
+    pub attempts: u32,
+    /// Unix seconds before which the entry must not be retried.
+    pub next_attempt_at: u64,
+}
+
+/// Durable alert outbox (#745): alerts survive a sink outage and a watchdog
+/// restart. Entries are persisted as JSONL and retried with exponential
+/// backoff until `max_age_secs`, after which they are dropped and counted.
+#[derive(Debug, Clone)]
+pub struct Outbox {
+    path: std::path::PathBuf,
+    entries: Vec<OutboxEntry>,
+    next_id: u64,
+    pub base_backoff_secs: u64,
+    pub max_backoff_secs: u64,
+    pub max_age_secs: u64,
+    /// Sink index used for escalation once an entry exceeds `max_age_secs`.
+    pub escalation_sink: Option<usize>,
+    pub dropped: u64,
+    pub escalated: u64,
+}
+
+impl Outbox {
+    /// Open (or create) the outbox at `path`, reloading any pending entries.
+    pub fn open(path: impl Into<std::path::PathBuf>) -> anyhow::Result<Outbox> {
+        let path = path.into();
+        let mut entries = Vec::new();
+        if let Ok(text) = std::fs::read_to_string(&path) {
+            for line in text.lines().filter(|l| !l.trim().is_empty()) {
+                if let Ok(e) = serde_json::from_str::<OutboxEntry>(line) {
+                    entries.push(e);
+                }
+            }
+        }
+        let next_id = entries.iter().map(|e| e.id + 1).max().unwrap_or(1);
+        Ok(Outbox {
+            path,
+            entries,
+            next_id,
+            base_backoff_secs: 5,
+            max_backoff_secs: 300,
+            max_age_secs: 3600,
+            escalation_sink: None,
+            dropped: 0,
+            escalated: 0,
+        })
+    }
+
+    /// Pending entries, oldest first.
+    pub fn entries(&self) -> &[OutboxEntry] {
+        &self.entries
+    }
+
+    /// Queue `alert` for every sink it meets, then flush to disk.
+    pub fn enqueue(&mut self, sinks: &[SinkConfig], alert: &Alert, now: u64) {
+        for (idx, sink) in sinks.iter().enumerate() {
+            if alert.severity < sink.min_severity() {
+                continue;
+            }
+            self.entries.push(OutboxEntry {
+                id: self.next_id,
+                sink: idx,
+                alert: alert.clone(),
+                created_at: now,
+                attempts: 0,
+                next_attempt_at: now,
+            });
+            self.next_id += 1;
+        }
+        self.flush();
+    }
+
+    /// Exponential backoff for the given attempt count.
+    pub fn backoff_secs(&self, attempts: u32) -> u64 {
+        let shift = attempts.saturating_sub(1).min(16);
+        self.base_backoff_secs
+            .saturating_mul(1u64 << shift)
+            .min(self.max_backoff_secs)
+    }
+
+    /// Attempt delivery of every due entry. Successful entries are removed;
+    /// failures are rescheduled with backoff, or escalated/dropped past
+    /// `max_age_secs`. Returns the errors observed this pass.
+    pub fn drain(&mut self, sinks: &[SinkConfig], now: u64) -> Vec<String> {
+        let mut errors = Vec::new();
+        let mut keep = Vec::with_capacity(self.entries.len());
+        for mut entry in std::mem::take(&mut self.entries) {
+            if entry.next_attempt_at > now {
+                keep.push(entry);
+                continue;
+            }
+            if now.saturating_sub(entry.created_at) > self.max_age_secs {
+                if let Some(esc) = self.escalation_sink {
+                    if entry.sink != esc {
+                        if let Some(sink) = sinks.get(esc) {
+                            if let Err(e) = send(sink, &entry.alert) {
+                                errors.push(format!("escalation sink failed: {e}"));
+                            } else {
+                                self.escalated += 1;
+                                continue;
+                            }
+                        }
+                    }
+                }
+                self.dropped += 1;
+                errors.push(format!(
+                    "outbox entry {} for sink {} expired after {}s",
+                    entry.id, entry.sink, self.max_age_secs
+                ));
+                continue;
+            }
+            let Some(sink) = sinks.get(entry.sink) else {
+                self.dropped += 1;
+                continue;
+            };
+            match send(sink, &entry.alert) {
+                Ok(()) => {}
+                Err(e) => {
+                    errors.push(format!("sink {}: {e}", entry.sink));
+                    entry.attempts += 1;
+                    entry.next_attempt_at = now + self.backoff_secs(entry.attempts);
+                    keep.push(entry);
+                }
+            }
+        }
+        self.entries = keep;
+        self.flush();
+        errors
+    }
+
+    /// Persist pending entries as JSONL (atomic replace).
+    pub fn flush(&self) {
+        let tmp = self.path.with_extension("tmp");
+        let mut out = String::new();
+        for e in &self.entries {
+            if let Ok(line) = serde_json::to_string(e) {
+                out.push_str(&line);
+                out.push('\n');
+            }
+        }
+        if std::fs::write(&tmp, out).is_ok() {
+            let _ = std::fs::rename(&tmp, &self.path);
+        }
+    }
+
+    /// Prometheus-style metrics for the outbox (#745).
+    pub fn metrics(&self, now: u64) -> String {
+        let pending = self.entries.len();
+        let oldest = self
+            .entries
+            .iter()
+            .map(|e| now.saturating_sub(e.created_at))
+            .max()
+            .unwrap_or(0);
+        let retries: u32 = self.entries.iter().map(|e| e.attempts).sum();
+        format!(
+            "# HELP lafiya_watchdog_outbox_pending Alerts awaiting delivery\n\
+             # TYPE lafiya_watchdog_outbox_pending gauge\n\
+             lafiya_watchdog_outbox_pending {pending}\n\
+             # HELP lafiya_watchdog_outbox_oldest_age_seconds Age of the oldest pending alert\n\
+             # TYPE lafiya_watchdog_outbox_oldest_age_seconds gauge\n\
+             lafiya_watchdog_outbox_oldest_age_seconds {oldest}\n\
+             # HELP lafiya_watchdog_outbox_retries_total Delivery attempts that failed\n\
+             # TYPE lafiya_watchdog_outbox_retries_total counter\n\
+             lafiya_watchdog_outbox_retries_total {retries}\n\
+             # HELP lafiya_watchdog_outbox_dropped_total Alerts dropped past max age\n\
+             # TYPE lafiya_watchdog_outbox_dropped_total counter\n\
+             lafiya_watchdog_outbox_dropped_total {}\n\
+             # HELP lafiya_watchdog_outbox_escalated_total Alerts delivered via escalation sink\n\
+             # TYPE lafiya_watchdog_outbox_escalated_total counter\n\
+             lafiya_watchdog_outbox_escalated_total {}\n",
+            self.dropped, self.escalated
+        )
+    }
+}
+
 fn pagerduty_severity(s: Severity) -> &'static str {
     match s {
         Severity::Critical => "critical",
@@ -103,8 +309,19 @@ fn pagerduty_severity(s: Severity) -> &'static str {
 
 fn send(sink: &SinkConfig, alert: &Alert) -> anyhow::Result<()> {
     match sink {
-        SinkConfig::Webhook { url, format, .. } => {
-            ureq::post(url).send_json(webhook_body(format, alert))?;
+        SinkConfig::Webhook {
+            url,
+            format,
+            signing_key,
+            ..
+        } => {
+            let body = webhook_body(format, alert);
+            let mut req = ureq::post(url);
+            if let Some(key) = signing_key {
+                let raw = serde_json::to_vec(&body)?;
+                req = req.header("X-Lafiya-Signature", &sign_payload(key.as_bytes(), &raw));
+            }
+            req.send_json(body)?;
         }
         SinkConfig::Pagerduty { routing_key, .. } => {
             let mut payload = json!({

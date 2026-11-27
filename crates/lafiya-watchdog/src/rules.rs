@@ -40,6 +40,8 @@ pub fn default_rules() -> Vec<EventRule> {
         kind: kind.into(),
         events: events.iter().map(|e| e.to_string()).collect(),
         severity,
+        runbook: Some(format!("docs/runbooks/watchdog.md#{kind}")),
+        dedup_key: None,
     };
     vec![
         rule(

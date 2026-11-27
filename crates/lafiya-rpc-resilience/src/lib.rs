@@ -55,6 +55,12 @@ pub mod metrics;
 /// (issue #540).
 pub mod hedge;
 
+/// Channel-account pool for concurrent submissions without sequence-number
+/// contention (issue #748).
+pub mod channel;
+
+pub use channel::{Channel, ChannelLease, ChannelPool, PoolError, PooledOutcome, Quarantine};
+
 pub use breaker::{BreakerConfig, BreakerState, CircuitBreaker};
 pub use health::{HealthConfig, HealthScore, HealthTracker, ProviderHealth};
 pub use hedge::{HedgeConfig, HedgeOutcome};
