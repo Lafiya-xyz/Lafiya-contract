@@ -59,7 +59,7 @@ For programmatic decoding, use the generated [`catalog/errors.json`](../catalog/
 | `14` | `PatientConsentRequired` | No unexpired patient consent grant matches this attester, patient and record hash. |
 | `15` | `PatientConsentExpired` | The patient's consent grant has expired. |
 | `16` | `TimestampOverflow` | The current ledger timestamp cannot be safely advanced to calculate a time bound. |
-| `17` | `InvalidAttestationExpiry` | The patient-selected attestation expiry is not in the future. |
+| `17` | `InvalidAttestationExpiry` | The patient-selected attestation expiry is not in the future or exceeds `now + max_attestation_age`. |
 | `18` | `AttesterRegistryUnavailable` | The configured attester-registry could not be called. |
 | `19` | `EmptyBatch` | A Merkle batch must contain at least one record. |
 | `20` | `BatchAlreadyAnchored` | The Merkle root has already been anchored. |

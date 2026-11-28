@@ -59,6 +59,12 @@ pub fn default_rules() -> Vec<EventRule> {
             Severity::Critical,
         ),
         rule("pause_toggled", &["paused", "unpaused"], Severity::High),
+        // Staleness policy change; prospective only, but worth a human look.
+        rule(
+            "max_attestation_age_changed",
+            &["max_attestation_age_changed"],
+            Severity::High,
+        ),
         rule("bulk_revocation", &["attestation_revoked"], Severity::Info),
         // incentive-pool: approval authority and blast-radius controls.
         rule(
@@ -448,6 +454,15 @@ mod tests {
         assert_eq!(kinds(&a), vec![("probation_breach", Severity::High)]);
         let a = Engine::new(&cfg()).evaluate(&ev("slash_executed", 1, &["1", "GATT"]));
         assert_eq!(kinds(&a), vec![("attester_slashed", Severity::High)]);
+    }
+
+    #[test]
+    fn max_attestation_age_change_is_high() {
+        let a = Engine::new(&cfg()).evaluate(&ev("max_attestation_age_changed", 1, &[]));
+        assert_eq!(
+            kinds(&a),
+            vec![("max_attestation_age_changed", Severity::High)]
+        );
     }
 
     #[test]
